@@ -1,50 +1,9 @@
 # ============================================================
-#  agents/publish_agent.py  —  Posts to TikTok, YouTube & X
+#  agents/publish_agent.py  —  Posts to YouTube & TikTok
+#  X/Twitter removed (requires paid plan)
 # ============================================================
 import os
-import json
-import requests
-from pathlib import Path
-from config import (
-    TIKTOK_SESSION_ID, YOUTUBE_CLIENT_ID, YOUTUBE_CLIENT_SECRET,
-    X_API_KEY, X_API_SECRET, X_ACCESS_TOKEN, X_ACCESS_TOKEN_SECRET
-)
-
-
-# ── X / TWITTER ─────────────────────────────────────────────
-
-def post_to_x(script_data: dict) -> str:
-    """Post a text tweet to X with title, caption and hashtags."""
-    try:
-        import tweepy
-    except ImportError:
-        print("[Publish] Install: pip install tweepy")
-        return ""
-
-    try:
-        client = tweepy.Client(
-            consumer_key=X_API_KEY,
-            consumer_secret=X_API_SECRET,
-            access_token=X_ACCESS_TOKEN,
-            access_token_secret=X_ACCESS_TOKEN_SECRET
-        )
-
-        # Build tweet text (max 280 chars)
-        tweet = f"{script_data['title']}\n\n{script_data['caption']}\n\n{script_data['hashtags']}"
-        if len(tweet) > 280:
-            tweet = f"{script_data['title']}\n\n{script_data['hashtags']}"
-        if len(tweet) > 280:
-            tweet = script_data['title'][:277] + "..."
-
-        response = client.create_tweet(text=tweet)
-        tweet_id = response.data["id"]
-        url = f"https://x.com/i/web/status/{tweet_id}"
-        print(f"[Publish] X posted: {url}")
-        return url
-
-    except Exception as e:
-        print(f"[Publish] X failed: {e}")
-        return ""
+from config import TIKTOK_SESSION_ID, YOUTUBE_CLIENT_ID, YOUTUBE_CLIENT_SECRET
 
 
 # ── YOUTUBE ─────────────────────────────────────────────────
@@ -55,60 +14,107 @@ def upload_to_youtube(video_path: str, script_data: dict) -> str:
         from googleapiclient.discovery import build
         from googleapiclient.http import MediaFileUpload
     except ImportError:
-        print("[Publish] Install: pip install google-api-python-client google-auth-oauthlib")
+        print("[Publish] Install: pip install google-api-python-client")
         return ""
 
     TOKEN_FILE = "youtube_token.json"
-    SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
-
     if not os.path.exists(TOKEN_FILE):
-        print("[Publish] YouTube token not found. Run: python agents/publish_agent.py --auth-youtube")
+        print("[Publish] YouTube token not found. Skipping.")
         return ""
 
-    creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
-    youtube = build("youtube", "v3", credentials=creds)
+    try:
+        creds = Credentials.from_authorized_user_file(
+            TOKEN_FILE,
+            ["https://www.googleapis.com/auth/youtube.upload"]
+        )
+        youtube = build("youtube", "v3", credentials=creds)
 
-    body = {
-        "snippet": {
-            "title": script_data["title"],
-            "description": f"{script_data['caption']}\n\n{script_data['hashtags']}",
-            "tags": script_data["keywords"],
-            "categoryId": "22"
-        },
-        "status": {
-            "privacyStatus": "public",
-            "selfDeclaredMadeForKids": False
+        body = {
+            "snippet": {
+                "title": script_data["title"],
+                "description": f"{script_data['caption']}\n\n{script_data['hashtags']}",
+                "tags": script_data["keywords"],
+                "categoryId": "22"
+            },
+            "status": {
+                "privacyStatus": "public",
+                "selfDeclaredMadeForKids": False
+            }
         }
-    }
 
-    media = MediaFileUpload(video_path, chunksize=-1, resumable=True, mimetype="video/mp4")
-    request = youtube.videos().insert(part="snippet,status", body=body, media_body=media)
-    response = None
-    while response is None:
-        status, response = request.next_chunk()
-        if status:
-            print(f"[Publish] YouTube upload {int(status.progress() * 100)}%")
+        media = MediaFileUpload(
+            video_path, chunksize=-1,
+            resumable=True, mimetype="video/mp4"
+        )
+        request = youtube.videos().insert(
+            part="snippet,status", body=body, media_body=media
+        )
+        response = None
+        while response is None:
+            status, response = request.next_chunk()
+            if status:
+                print(f"[Publish] YouTube {int(status.progress() * 100)}%")
 
-    url = f"https://youtube.com/shorts/{response['id']}"
-    print(f"[Publish] YouTube: {url}")
-    return url
+        url = f"https://youtube.com/shorts/{response['id']}"
+        print(f"[Publish] YouTube: {url}")
+        return url
+
+    except Exception as e:
+        print(f"[Publish] YouTube failed: {e}")
+        return ""
 
 
 # ── TIKTOK ──────────────────────────────────────────────────
 
 def upload_to_tiktok(video_path: str, script_data: dict) -> str:
+    """Upload to TikTok using official API."""
     try:
-        from tiktok_uploader.upload import upload_video
-        upload_video(
-            filename=video_path,
-            description=f"{script_data['caption']} {script_data['hashtags']}"[:2200],
-            cookies="tiktok_cookies.txt"
-        )
-        print("[Publish] TikTok uploaded")
-        return "TikTok posted"
-    except ImportError:
-        print("[Publish] Install: pip install tiktok-uploader")
-        return ""
+        import requests
+        
+        # Initialize upload
+        init_url = "https://open.tiktokapis.com/v2/post/publish/video/init/"
+        headers = {
+            "Authorization": f"Bearer {TIKTOK_SESSION_ID}",
+            "Content-Type": "application/json"
+        }
+
+        video_size = os.path.getsize(video_path)
+        caption = f"{script_data['caption']} {script_data['hashtags']}"[:2200]
+
+        init_payload = {
+            "post_info": {
+                "title": caption,
+                "privacy_level": "PUBLIC_TO_EVERYONE",
+                "disable_duet": False,
+                "disable_comment": False,
+                "disable_stitch": False,
+                "video_cover_timestamp_ms": 1000
+            },
+            "source_info": {
+                "source": "FILE_UPLOAD",
+                "video_size": video_size,
+                "chunk_size": video_size,
+                "total_chunk_count": 1
+            }
+        }
+
+        init_r = requests.post(init_url, headers=headers, json=init_payload)
+        init_r.raise_for_status()
+        init_data = init_r.json()["data"]
+        publish_id = init_data["publish_id"]
+        upload_url = init_data["upload_url"]
+
+        with open(video_path, "rb") as f:
+            video_data = f.read()
+
+        upload_headers = {
+            "Content-Range": f"bytes 0-{video_size-1}/{video_size}",
+            "Content-Type": "video/mp4"
+        }
+        requests.put(upload_url, data=video_data, headers=upload_headers)
+        print(f"[Publish] TikTok posted: {publish_id}")
+        return f"TikTok: {publish_id}"
+
     except Exception as e:
         print(f"[Publish] TikTok failed: {e}")
         return ""
@@ -117,11 +123,17 @@ def upload_to_tiktok(video_path: str, script_data: dict) -> str:
 # ── COMBINED ────────────────────────────────────────────────
 
 def publish_video(video_path: str, script_data: dict) -> dict:
-    """Publish to all platforms. Returns dict of results."""
+    """Publish to YouTube and TikTok based on language."""
     results = {}
-    results["youtube"] = upload_to_youtube(video_path, script_data)
-    results["tiktok"]  = upload_to_tiktok(video_path, script_data)
-    results["x"]       = post_to_x(script_data)
+    language = script_data.get("language", "english")
+
+    if language == "english":
+        # English videos → YouTube only
+        results["youtube"] = upload_to_youtube(video_path, script_data)
+    else:
+        # Arabic videos → TikTok only
+        results["tiktok"] = upload_to_tiktok(video_path, script_data)
+
     return results
 
 
