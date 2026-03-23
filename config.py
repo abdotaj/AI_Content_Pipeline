@@ -5,6 +5,7 @@ import os
 
 # --- API Keys (set these as environment variables or paste here) ---
 GEMINI_API_KEY       = os.getenv("GEMINI_API_KEY", "YOUR_GEMINI_KEY")
+GROQ_API_KEY         = os.getenv("GROQ_API_KEY", "YOUR_GROQ_KEY")
 ELEVENLABS_API_KEY   = os.getenv("ELEVENLABS_API_KEY", "YOUR_ELEVENLABS_KEY")
 ELEVENLABS_VOICE_ID  = os.getenv("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")  # Rachel voice
 PEXELS_API_KEY       = os.getenv("PEXELS_API_KEY", "YOUR_PEXELS_KEY")
@@ -35,3 +36,10 @@ FINAL_DIR     = "output/final"
 # Run daily at 7:00 AM (set this in your cron or GitHub Actions)
 SCHEDULE_HOUR   = 7
 SCHEDULE_MINUTE = 0
+
+# --- X / Twitter API Keys ---
+X_API_KEY            = os.getenv("X_API_KEY", "YOUR_X_API_KEY")
+X_API_SECRET         = os.getenv("X_API_SECRET", "YOUR_X_API_SECRET")
+X_ACCESS_TOKEN       = os.getenv("X_ACCESS_TOKEN", "YOUR_X_ACCESS_TOKEN")
+X_ACCESS_TOKEN_SECRET= os.getenv("X_ACCESS_TOKEN_SECRET", "YOUR_X_ACCESS_TOKEN_SECRET")
+X_BEARER_TOKEN       = os.getenv("X_BEARER_TOKEN", "YOUR_X_BEARER_TOKEN")
