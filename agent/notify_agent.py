@@ -1,11 +1,9 @@
 # ============================================================
-#  agents/notify_agent.py  —  Telegram bot with approve buttons
+#  agents/notify_agent.py  —  Telegram notifications
 # ============================================================
 import requests
-import json
 import time
 from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
-
 
 BASE_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 
@@ -21,55 +19,42 @@ def send_message(text: str) -> dict:
 
 
 def send_video_preview(video_path: str, script_data: dict, video_id: str) -> str:
-    """
-    Send video preview + inline approve/skip buttons.
-    Returns 'approve' or 'skip' based on your tap.
-    """
+    """Send video info + approve/skip buttons as text message."""
     caption = (
-        f"*{script_data['title']}*\n\n"
-        f"Niche: {script_data['niche']}\n"
-        f"Topic: {script_data['topic']}\n\n"
-        f"Caption preview:\n_{script_data['caption']}_\n\n"
+        f"*Video Ready for Approval*\n\n"
+        f"*Title:* {script_data['title']}\n"
+        f"*Niche:* {script_data['niche']}\n"
+        f"*Language:* {script_data.get('language', 'english')}\n"
+        f"*Topic:* {script_data['topic']}\n\n"
+        f"*Caption:*\n{script_data['caption']}\n\n"
         f"{script_data['hashtags']}"
     )
 
     keyboard = {
         "inline_keyboard": [[
-            {"text": "✅ Approve & Post", "callback_data": f"approve_{video_id}"},
-            {"text": "❌ Skip",           "callback_data": f"skip_{video_id}"}
+            {"text": "Approve & Post", "callback_data": f"approve_{video_id}"},
+            {"text": "Skip", "callback_data": f"skip_{video_id}"}
         ]]
     }
 
-    # Send video file with buttons
-    with open(video_path, "rb") as video_file:
-        r = requests.post(
-            f"{BASE_URL}/sendVideo",
-            data={
-                "chat_id": TELEGRAM_CHAT_ID,
-                "caption": caption,
-                "parse_mode": "Markdown",
-                "reply_markup": json.dumps(keyboard),
-                "supports_streaming": True
-            },
-            files={"video": video_file}
-        )
+    r = requests.post(f"{BASE_URL}/sendMessage", json={
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": caption,
+        "parse_mode": "Markdown",
+        "reply_markup": keyboard
+    })
 
-    if not r.ok:
-        print(f"[Notify] Failed to send video: {r.text}")
-        # Fallback: send text only
-        send_message(f"Video ready (could not send preview):\n{caption}")
-        return wait_for_decision(video_id)
+    if not r.ok or not r.json().get("ok"):
+        print(f"[Notify] Failed to send message: {r.text}")
+        return "approve"  # auto-approve if notify fails
 
-    print(f"[Notify] Preview sent for {video_id}")
+    print(f"[Notify] Message sent for {video_id}")
     return wait_for_decision(video_id)
 
 
-def wait_for_decision(video_id: str, timeout: int = 3600) -> str:
-    """
-    Poll Telegram for your button tap.
-    Returns 'approve' or 'skip'. Times out after 1 hour → auto-approve.
-    """
-    print(f"[Notify] Waiting for your decision on {video_id}...")
+def wait_for_decision(video_id: str, timeout: int = 300) -> str:
+    """Poll for button tap. Times out after 5 minutes → auto-approve."""
+    print(f"[Notify] Waiting for decision on {video_id}...")
     offset = None
     elapsed = 0
     poll_interval = 5
@@ -80,7 +65,11 @@ def wait_for_decision(video_id: str, timeout: int = 3600) -> str:
             params["offset"] = offset
 
         try:
-            r = requests.get(f"{BASE_URL}/getUpdates", params=params, timeout=poll_interval + 5)
+            r = requests.get(
+                f"{BASE_URL}/getUpdates",
+                params=params,
+                timeout=poll_interval + 5
+            )
             updates = r.json().get("result", [])
         except Exception:
             time.sleep(poll_interval)
@@ -92,13 +81,12 @@ def wait_for_decision(video_id: str, timeout: int = 3600) -> str:
             cb = update.get("callback_query")
             if cb:
                 data = cb.get("data", "")
-                # Acknowledge the button tap
                 requests.post(f"{BASE_URL}/answerCallbackQuery", json={
                     "callback_query_id": cb["id"],
                     "text": "Got it!"
                 })
                 if data == f"approve_{video_id}":
-                    send_message(f"Approved! Posting *{video_id}* now...")
+                    send_message(f"Approved! Posting *{video_id}*...")
                     return "approve"
                 elif data == f"skip_{video_id}":
                     send_message(f"Skipped *{video_id}*.")
@@ -106,34 +94,27 @@ def wait_for_decision(video_id: str, timeout: int = 3600) -> str:
 
         elapsed += poll_interval
 
-    # Auto-approve after timeout
-    send_message(f"No response in 1 hour — auto-approving *{video_id}*.")
+    print(f"[Notify] Timeout — auto-approving {video_id}")
     return "approve"
 
 
 def send_daily_report(stats: dict) -> None:
-    """Send a daily summary report."""
     msg = (
         f"*Daily Report*\n\n"
-        f"Videos generated: {stats.get('generated', 0)}\n"
-        f"Videos posted: {stats.get('posted', 0)}\n"
-        f"Videos skipped: {stats.get('skipped', 0)}\n\n"
-        f"Platforms: TikTok + YouTube\n"
-        f"Next run: tomorrow at 7:00 AM"
+        f"Generated: {stats.get('generated', 0)}\n"
+        f"Posted: {stats.get('posted', 0)}\n"
+        f"Skipped: {stats.get('skipped', 0)}\n"
+        f"Errors: {stats.get('errors', 0)}"
     )
     send_message(msg)
 
 
 def send_weekly_goal_report(analytics: dict) -> None:
-    """Send a weekly goal progress report."""
     msg = (
         f"*Weekly Goal Report*\n\n"
         f"TikTok followers: {analytics.get('tiktok_followers', 'N/A')}\n"
         f"YouTube subscribers: {analytics.get('youtube_subs', 'N/A')}\n"
-        f"Total views this week: {analytics.get('weekly_views', 'N/A')}\n"
-        f"Est. monthly revenue: ${analytics.get('est_revenue', '0')}\n\n"
-        f"Goal progress:\n"
-        f"  To 1K: {analytics.get('to_1k', 'tracking...')}\n"
-        f"  To monetization: {analytics.get('to_monetize', 'tracking...')}"
+        f"Total views: {analytics.get('weekly_views', 'N/A')}\n"
+        f"Est. revenue: ${analytics.get('est_revenue', '0')}"
     )
     send_message(msg)
