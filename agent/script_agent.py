@@ -3,11 +3,10 @@
 #  Using Google Gemini (free) instead of OpenAI
 # ============================================================
 import json
-import google.generativeai as genai
+from google import genai
 from config import GEMINI_API_KEY, VIDEO_DURATION_SECONDS
 
-genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel("gemini-1.5-flash")
+client = genai.Client(api_key=GEMINI_API_KEY)
 
 
 def write_script(topic: dict) -> dict:
@@ -46,7 +45,10 @@ Return ONLY this JSON structure:
 Only return valid JSON. No markdown.
 """
 
-    response = model.generate_content(prompt)
+    response = client.models.generate_content(
+        model="gemini-2.0-flash",
+        contents=prompt
+    )
     text = response.text.strip()
     if text.startswith("```"):
         text = text.split("```")[1]
