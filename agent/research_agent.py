@@ -4,11 +4,10 @@
 # ============================================================
 import random
 import json
-import google.generativeai as genai
+from google import genai
 from config import GEMINI_API_KEY, NICHES, NICHE_WEIGHTS
 
-genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel("gemini-1.5-flash")
+client = genai.Client(api_key=GEMINI_API_KEY)
 
 
 def pick_niche() -> str:
@@ -38,7 +37,10 @@ Respond in this exact JSON format:
 
 Only return the JSON. No extra text.
 """
-    response = model.generate_content(prompt)
+    response = client.models.generate_content(
+        model="gemini-2.0-flash",
+        contents=prompt
+    )
     text = response.text.strip()
     if text.startswith("```"):
         text = text.split("```")[1]
