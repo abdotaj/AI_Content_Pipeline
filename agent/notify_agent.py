@@ -8,26 +8,39 @@ from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
 BASE_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 
 
+def clean_text(text: str) -> str:
+    """Remove special markdown characters that break Telegram."""
+    for char in ['*', '_', '`', '[', ']', '(', ')', '~', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']:
+        text = text.replace(char, ' ')
+    return text.strip()
+
+
 def send_message(text: str) -> dict:
-    """Send a plain text message."""
+    """Send a plain text message — no markdown."""
     r = requests.post(f"{BASE_URL}/sendMessage", json={
         "chat_id": TELEGRAM_CHAT_ID,
-        "text": text,
-        "parse_mode": "Markdown"
+        "text": text
     })
     return r.json()
 
 
 def send_video_preview(video_path: str, script_data: dict, video_id: str) -> str:
-    """Send video info + approve/skip buttons as text message."""
-    caption = (
-        f"*Video Ready for Approval*\n\n"
-        f"*Title:* {script_data['title']}\n"
-        f"*Niche:* {script_data['niche']}\n"
-        f"*Language:* {script_data.get('language', 'english')}\n"
-        f"*Topic:* {script_data['topic']}\n\n"
-        f"*Caption:*\n{script_data['caption']}\n\n"
-        f"{script_data['hashtags']}"
+    """Send video info + approve/skip buttons."""
+    title = clean_text(script_data.get('title', ''))
+    niche = clean_text(script_data.get('niche', ''))
+    topic = clean_text(script_data.get('topic', ''))
+    language = script_data.get('language', 'english')
+    caption = clean_text(script_data.get('caption', ''))
+    hashtags = script_data.get('hashtags', '')
+
+    message = (
+        f"Video Ready for Approval\n\n"
+        f"Title: {title}\n"
+        f"Niche: {niche}\n"
+        f"Language: {language}\n"
+        f"Topic: {topic}\n\n"
+        f"Caption:\n{caption}\n\n"
+        f"{hashtags}"
     )
 
     keyboard = {
@@ -39,21 +52,20 @@ def send_video_preview(video_path: str, script_data: dict, video_id: str) -> str
 
     r = requests.post(f"{BASE_URL}/sendMessage", json={
         "chat_id": TELEGRAM_CHAT_ID,
-        "text": caption,
-        "parse_mode": "Markdown",
+        "text": message,
         "reply_markup": keyboard
     })
 
     if not r.ok or not r.json().get("ok"):
-        print(f"[Notify] Failed to send message: {r.text}")
-        return "approve"  # auto-approve if notify fails
+        print(f"[Notify] Failed: {r.text}")
+        return "approve"
 
     print(f"[Notify] Message sent for {video_id}")
     return wait_for_decision(video_id)
 
 
 def wait_for_decision(video_id: str, timeout: int = 300) -> str:
-    """Poll for button tap. Times out after 5 minutes → auto-approve."""
+    """Poll for button tap. Times out after 5 min → auto-approve."""
     print(f"[Notify] Waiting for decision on {video_id}...")
     offset = None
     elapsed = 0
@@ -86,10 +98,10 @@ def wait_for_decision(video_id: str, timeout: int = 300) -> str:
                     "text": "Got it!"
                 })
                 if data == f"approve_{video_id}":
-                    send_message(f"Approved! Posting *{video_id}*...")
+                    send_message(f"Approved! Posting {video_id}...")
                     return "approve"
                 elif data == f"skip_{video_id}":
-                    send_message(f"Skipped *{video_id}*.")
+                    send_message(f"Skipped {video_id}.")
                     return "skip"
 
         elapsed += poll_interval
@@ -100,21 +112,10 @@ def wait_for_decision(video_id: str, timeout: int = 300) -> str:
 
 def send_daily_report(stats: dict) -> None:
     msg = (
-        f"*Daily Report*\n\n"
+        f"Daily Report\n\n"
         f"Generated: {stats.get('generated', 0)}\n"
         f"Posted: {stats.get('posted', 0)}\n"
         f"Skipped: {stats.get('skipped', 0)}\n"
         f"Errors: {stats.get('errors', 0)}"
-    )
-    send_message(msg)
-
-
-def send_weekly_goal_report(analytics: dict) -> None:
-    msg = (
-        f"*Weekly Goal Report*\n\n"
-        f"TikTok followers: {analytics.get('tiktok_followers', 'N/A')}\n"
-        f"YouTube subscribers: {analytics.get('youtube_subs', 'N/A')}\n"
-        f"Total views: {analytics.get('weekly_views', 'N/A')}\n"
-        f"Est. revenue: ${analytics.get('est_revenue', '0')}"
     )
     send_message(msg)
