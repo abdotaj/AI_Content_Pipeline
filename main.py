@@ -11,11 +11,11 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(__file__))
 
 from config import VIDEOS_PER_DAY, FINAL_DIR
-from agents.research_agent import research_topics
-from agents.script_agent   import write_scripts
-from agents.video_agent    import create_video
-from agents.notify_agent   import send_message, send_video_preview, send_daily_report
-from agents.publish_agent  import publish_video
+from agent.research_agent import research_topics
+from agent.script_agent   import write_scripts
+from agent.video_agent    import create_video
+from agent.notify_agent   import send_message, send_video_preview, send_daily_report
+from agent.publish_agent  import publish_video
 
 
 def run_pipeline():
