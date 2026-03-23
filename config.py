@@ -1,0 +1,37 @@
+# ============================================================
+#  config.py  —  All API keys and settings in one place
+# ============================================================
+import os
+
+# --- API Keys (set these as environment variables or paste here) ---
+GEMINI_API_KEY       = os.getenv("GEMINI_API_KEY", "YOUR_GEMINI_KEY")
+ELEVENLABS_API_KEY   = os.getenv("ELEVENLABS_API_KEY", "YOUR_ELEVENLABS_KEY")
+ELEVENLABS_VOICE_ID  = os.getenv("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")  # Rachel voice
+PEXELS_API_KEY       = os.getenv("PEXELS_API_KEY", "YOUR_PEXELS_KEY")
+TELEGRAM_BOT_TOKEN   = os.getenv("TELEGRAM_BOT_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID     = os.getenv("TELEGRAM_CHAT_ID", "YOUR_CHAT_ID")
+YOUTUBE_CLIENT_ID    = os.getenv("YOUTUBE_CLIENT_ID", "YOUR_YT_CLIENT_ID")
+YOUTUBE_CLIENT_SECRET= os.getenv("YOUTUBE_CLIENT_SECRET", "YOUR_YT_SECRET")
+
+# TikTok (uses unofficial approach — see README)
+TIKTOK_SESSION_ID    = os.getenv("TIKTOK_SESSION_ID", "YOUR_TIKTOK_SESSION")
+
+# --- Content Settings ---
+NICHES = ["AI & Tech news", "Educational facts", "Motivation & mindset"]
+NICHE_WEIGHTS = [0.5, 0.3, 0.2]   # 50% AI, 30% facts, 20% motivation
+
+VIDEOS_PER_DAY = 2                 # how many videos to generate daily
+VIDEO_DURATION_SECONDS = 45        # target video length (30-60 recommended)
+VIDEO_WIDTH  = 1080
+VIDEO_HEIGHT = 1920                # vertical 9:16 for TikTok/Shorts
+
+# --- Paths ---
+OUTPUT_DIR    = "output"
+AUDIO_DIR     = "output/audio"
+VIDEO_DIR     = "output/video"
+FINAL_DIR     = "output/final"
+
+# --- Schedule ---
+# Run daily at 7:00 AM (set this in your cron or GitHub Actions)
+SCHEDULE_HOUR   = 7
+SCHEDULE_MINUTE = 0
