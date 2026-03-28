@@ -1,9 +1,13 @@
 # ============================================================
-#  agents/publish_agent.py  —  Posts to YouTube & TikTok
+#  agents/publish_agent.py  —  Posts to YouTube, TikTok, Instagram & Facebook
 #  X/Twitter removed (requires paid plan)
 # ============================================================
 import os
-from config import TIKTOK_SESSION_ID, YOUTUBE_CLIENT_ID, YOUTUBE_CLIENT_SECRET
+from config import (
+    TIKTOK_SESSION_ID, YOUTUBE_CLIENT_ID, YOUTUBE_CLIENT_SECRET,
+    INSTAGRAM_ACCESS_TOKEN, INSTAGRAM_BUSINESS_ID,
+    FACEBOOK_ACCESS_TOKEN, FACEBOOK_PAGE_ID,
+)
 
 
 # ── YOUTUBE ─────────────────────────────────────────────────
@@ -120,19 +124,94 @@ def upload_to_tiktok(video_path: str, script_data: dict) -> str:
         return ""
 
 
+# ── INSTAGRAM ───────────────────────────────────────────────
+
+def upload_to_instagram(video_path: str, script_data: dict) -> str:
+    """Upload video to Instagram Reels via Instagram Graph API."""
+    try:
+        import requests
+
+        caption = f"{script_data['caption']} {script_data['hashtags']}"[:2200]
+        base_url = f"https://graph.facebook.com/v19.0/{INSTAGRAM_BUSINESS_ID}"
+
+        # Step 1: Create media container
+        container_r = requests.post(
+            f"{base_url}/media",
+            params={
+                "media_type": "REELS",
+                "video_url": video_path,
+                "caption": caption,
+                "access_token": INSTAGRAM_ACCESS_TOKEN,
+            }
+        )
+        container_r.raise_for_status()
+        container_id = container_r.json()["id"]
+
+        # Step 2: Publish the container
+        publish_r = requests.post(
+            f"{base_url}/media_publish",
+            params={
+                "creation_id": container_id,
+                "access_token": INSTAGRAM_ACCESS_TOKEN,
+            }
+        )
+        publish_r.raise_for_status()
+        media_id = publish_r.json()["id"]
+
+        url = f"https://www.instagram.com/p/{media_id}/"
+        print(f"[Publish] Instagram: {url}")
+        return url
+
+    except Exception as e:
+        print(f"[Publish] Instagram failed: {e}")
+        return ""
+
+
+# ── FACEBOOK ────────────────────────────────────────────────
+
+def upload_to_facebook(video_path: str, script_data: dict) -> str:
+    """Upload video to a Facebook Page via Graph API."""
+    try:
+        import requests
+
+        description = f"{script_data['caption']} {script_data['hashtags']}"[:63206]
+        base_url = f"https://graph.facebook.com/v19.0/{FACEBOOK_PAGE_ID}/videos"
+
+        with open(video_path, "rb") as video_file:
+            upload_r = requests.post(
+                base_url,
+                data={
+                    "description": description,
+                    "title": script_data["title"],
+                    "access_token": FACEBOOK_ACCESS_TOKEN,
+                },
+                files={"source": video_file}
+            )
+        upload_r.raise_for_status()
+        video_id = upload_r.json()["id"]
+
+        url = f"https://www.facebook.com/video/{video_id}/"
+        print(f"[Publish] Facebook: {url}")
+        return url
+
+    except Exception as e:
+        print(f"[Publish] Facebook failed: {e}")
+        return ""
+
+
 # ── COMBINED ────────────────────────────────────────────────
 
 def publish_video(video_path: str, script_data: dict) -> dict:
-    """Publish to YouTube and TikTok based on language."""
+    """Publish based on language: English → YouTube + Facebook, Arabic → TikTok + Instagram."""
     results = {}
     language = script_data.get("language", "english")
 
     if language == "english":
-        # English videos → YouTube only
         results["youtube"] = upload_to_youtube(video_path, script_data)
+        results["facebook"] = upload_to_facebook(video_path, script_data)
     else:
-        # Arabic videos → TikTok only
         results["tiktok"] = upload_to_tiktok(video_path, script_data)
+        results["instagram"] = upload_to_instagram(video_path, script_data)
 
     return results
 
