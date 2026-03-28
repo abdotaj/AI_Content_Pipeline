@@ -32,6 +32,9 @@ jobs:
           pip install moviepy==1.0.3
           pip install -r requirements.txt
     
+      - name: Write YouTube token
+        run: echo '${{ secrets.YOUTUBE_TOKEN_JSON }}' > youtube_token.json
+
       - name: Run content pipeline
         env:
           GEMINI_API_KEY:        ${{ secrets.GEMINI_API_KEY }}
