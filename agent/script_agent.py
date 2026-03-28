@@ -3,10 +3,10 @@
 #  Arabic for TikTok/X, English for YouTube
 # ============================================================
 import json
-from groq import Groq
-from config import GROQ_API_KEY, VIDEO_DURATION_SECONDS
+import anthropic
+from config import ANTHROPIC_API_KEY, VIDEO_DURATION_SECONDS
 
-client = Groq(api_key=GROQ_API_KEY)
+client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
 
 def write_script(topic: dict, language: str = "english") -> dict:
@@ -37,13 +37,13 @@ Return ONLY this JSON with no extra text:
   "thumbnail_text": "4-word thumbnail text {lang_instruction}"
 }}"""
 
-    response = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
+    response = client.messages.create(
+        model="claude-sonnet-4-5-20251001",
+        max_tokens=1024,
         messages=[{"role": "user", "content": prompt}],
         temperature=0.85,
-        response_format={"type": "json_object"}
     )
-    script_data = json.loads(response.choices[0].message.content.strip())
+    script_data = json.loads(response.content[0].text.strip())
     script_data["topic"] = topic["topic"]
     script_data["niche"] = topic["niche"]
     script_data["search_query"] = topic["search_query"]

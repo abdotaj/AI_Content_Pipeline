@@ -1,6 +1,7 @@
 # ============================================================
 #  agents/notify_agent.py  —  Telegram notifications
 # ============================================================
+import json
 import requests
 import time
 from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
@@ -33,7 +34,7 @@ def send_video_preview(video_path: str, script_data: dict, video_id: str) -> str
     caption = clean_text(script_data.get('caption', ''))
     hashtags = script_data.get('hashtags', '')
 
-    message = (
+    caption_text = (
         f"Video Ready for Approval\n\n"
         f"Title: {title}\n"
         f"Niche: {niche}\n"
@@ -50,17 +51,23 @@ def send_video_preview(video_path: str, script_data: dict, video_id: str) -> str
         ]]
     }
 
-    r = requests.post(f"{BASE_URL}/sendMessage", json={
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": message,
-        "reply_markup": keyboard
-    })
+    with open(video_path, "rb") as video_file:
+        r = requests.post(
+            f"{BASE_URL}/sendVideo",
+            data={
+                "chat_id": TELEGRAM_CHAT_ID,
+                "caption": caption_text[:1024],
+                "reply_markup": json.dumps(keyboard),
+                "supports_streaming": "true",
+            },
+            files={"video": video_file}
+        )
 
     if not r.ok or not r.json().get("ok"):
         print(f"[Notify] Failed: {r.text}")
         return "approve"
 
-    print(f"[Notify] Message sent for {video_id}")
+    print(f"[Notify] Video sent for {video_id}")
     return wait_for_decision(video_id)
 
 
