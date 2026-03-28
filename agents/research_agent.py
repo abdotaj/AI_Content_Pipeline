@@ -1,9 +1,9 @@
 import random
 import json
-import anthropic
-from config import ANTHROPIC_API_KEY, NICHES, NICHE_WEIGHTS
+from groq import Groq
+from config import GROQ_API_KEY, NICHES, NICHE_WEIGHTS
 
-client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+client = Groq(api_key=GROQ_API_KEY)
 
 
 def pick_niche() -> str:
@@ -25,13 +25,13 @@ Respond in this exact JSON format with no extra text:
   "search_query": "3-word Pexels video search query"
 }}"""
 
-    response = client.messages.create(
-        model="claude-sonnet-4-5-20251001",
-        max_tokens=512,
+    response = client.chat.completions.create(
+        model="llama-3.3-70b-versatile",
         messages=[{"role": "user", "content": prompt}],
         temperature=0.9,
+        response_format={"type": "json_object"}
     )
-    result = json.loads(response.content[0].text.strip())
+    result = json.loads(response.choices[0].message.content.strip())
     result["niche"] = niche
     return result
 
