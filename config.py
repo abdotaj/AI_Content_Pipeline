@@ -2,6 +2,9 @@
 #  config.py  —  All API keys and settings in one place
 # ============================================================
 import os
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # --- API Keys (set these as environment variables or paste here) ---
 ANTHROPIC_API_KEY    = os.getenv("ANTHROPIC_API_KEY", "YOUR_ANTHROPIC_KEY")
