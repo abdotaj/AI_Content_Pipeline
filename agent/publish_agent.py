@@ -233,11 +233,7 @@ def tiktok_auth_flow():
 
     is_sandbox = TIKTOK_CLIENT_KEY.startswith("sb")
     env_label = "SANDBOX" if is_sandbox else "PRODUCTION"
-    auth_base = (
-        "https://sandbox.tiktok.com/v2/auth/authorize/"
-        if is_sandbox else
-        "https://www.tiktok.com/v2/auth/authorize/"
-    )
+    auth_base = "https://www.tiktok.com/v2/auth/authorize/"
     redirect_uri = (
         "http://localhost:8080/"
         if is_sandbox else
