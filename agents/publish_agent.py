@@ -225,6 +225,47 @@ def publish_video(video_path: str, script_data: dict) -> dict:
     return results
 
 
+def tiktok_auth_flow():
+    """Interactive TikTok OAuth flow — saves session token to tiktok_token.json."""
+    import json
+    import requests
+    from config import TIKTOK_CLIENT_KEY, TIKTOK_CLIENT_SECRET
+
+    print("\n[TikTok Auth] Starting OAuth flow...")
+    print("1. Open this URL in your browser and authorize the app:")
+    auth_url = (
+        f"https://www.tiktok.com/v2/auth/authorize/"
+        f"?client_key={TIKTOK_CLIENT_KEY}"
+        f"&response_type=code"
+        f"&scope=user.info.basic,video.publish,video.upload"
+        f"&redirect_uri=https://abdotaj.github.io/AI_Content_Pipeline/"
+    )
+    print(f"\n  {auth_url}\n")
+
+    code = input("2. Paste the 'code' parameter from the redirect URL here: ").strip()
+
+    token_r = requests.post(
+        "https://open.tiktokapis.com/v2/oauth/token/",
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        data={
+            "client_key": TIKTOK_CLIENT_KEY,
+            "client_secret": TIKTOK_CLIENT_SECRET,
+            "code": code,
+            "grant_type": "authorization_code",
+            "redirect_uri": "https://abdotaj.github.io/AI_Content_Pipeline/",
+        }
+    )
+    token_r.raise_for_status()
+    token_data = token_r.json()
+
+    with open("tiktok_token.json", "w") as f:
+        json.dump(token_data, f, indent=2)
+
+    print(f"\n[Auth] TikTok token saved to tiktok_token.json")
+    print(f"       Access token expires in {token_data.get('expires_in', '?')} seconds")
+    print(f"       Set TIKTOK_SESSION_ID={token_data['access_token']} in your .env")
+
+
 if __name__ == "__main__":
     import sys
     if "--auth-youtube" in sys.argv:
@@ -246,3 +287,5 @@ if __name__ == "__main__":
         with open("youtube_token.json", "w") as f:
             f.write(creds.to_json())
         print("[Auth] YouTube token saved!")
+    elif "--auth-tiktok" in sys.argv:
+        tiktok_auth_flow()
