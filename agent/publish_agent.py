@@ -234,11 +234,7 @@ def tiktok_auth_flow():
     import requests
     from config import TIKTOK_CLIENT_KEY, TIKTOK_CLIENT_SECRET
 
-    # PKCE: generate code_verifier and code_challenge
-    code_verifier = base64.urlsafe_b64encode(_os.urandom(96)).rstrip(b"=").decode("ascii")[:128]
-    code_challenge = base64.urlsafe_b64encode(
-        hashlib.sha256(code_verifier.encode("ascii")).digest()
-    ).rstrip(b"=").decode("ascii")
+    VERIFIER_FILE = ".tiktok_pkce_verifier"
 
     is_sandbox = TIKTOK_CLIENT_KEY.startswith("sb")
     env_label = "SANDBOX" if is_sandbox else "PRODUCTION"
@@ -249,25 +245,41 @@ def tiktok_auth_flow():
         "https://abdotaj.github.io/AI_Content_Pipeline/"
     )
 
-    auth_url = (
-        f"{auth_base}"
-        f"?client_key={TIKTOK_CLIENT_KEY}"
-        f"&response_type=code"
-        f"&scope=user.info.basic,video.publish,video.upload"
-        f"&redirect_uri={redirect_uri}"
-        f"&code_challenge={code_challenge}"
-        f"&code_challenge_method=S256"
-    )
+    # If no saved verifier exists, generate a new one and print the auth URL
+    if not _os.path.exists(VERIFIER_FILE):
+        code_verifier = base64.urlsafe_b64encode(_os.urandom(96)).rstrip(b"=").decode("ascii")[:128]
+        code_challenge = base64.urlsafe_b64encode(
+            hashlib.sha256(code_verifier.encode("ascii")).digest()
+        ).rstrip(b"=").decode("ascii")
 
-    print(f"\n[TikTok Auth] Starting OAuth flow... ({env_label})")
-    print(f"[TikTok Auth] Client key:    {TIKTOK_CLIENT_KEY}")
-    print(f"[TikTok Auth] Redirect URI:  {redirect_uri}")
-    print(f"\n[TikTok Auth] Full auth URL:\n  {auth_url}\n")
-    print("1. Open the URL above in your browser and authorize the app.")
-    if is_sandbox:
-        print("   (Sandbox: browser will redirect to http://localhost:8080/?code=...)")
+        with open(VERIFIER_FILE, "w") as f:
+            f.write(code_verifier)
 
-    code = input("2. Paste the 'code' parameter from the redirect URL here: ").strip()
+        auth_url = (
+            f"{auth_base}"
+            f"?client_key={TIKTOK_CLIENT_KEY}"
+            f"&response_type=code"
+            f"&scope=user.info.basic,video.publish,video.upload"
+            f"&redirect_uri={redirect_uri}"
+            f"&code_challenge={code_challenge}"
+            f"&code_challenge_method=S256"
+        )
+
+        print(f"\n[TikTok Auth] Starting OAuth flow... ({env_label})")
+        print(f"[TikTok Auth] Client key:    {TIKTOK_CLIENT_KEY}")
+        print(f"[TikTok Auth] Redirect URI:  {redirect_uri}")
+        print(f"\n[TikTok Auth] Full auth URL:\n  {auth_url}\n")
+        print("1. Open the URL above in your browser and authorize the app.")
+        if is_sandbox:
+            print("   (Sandbox: browser will redirect to http://localhost:8080/?code=...)")
+        print("\n2. Run this command again and paste the 'code' from the redirect URL.")
+        return
+
+    # Second run: read the saved verifier and exchange the code
+    with open(VERIFIER_FILE) as f:
+        code_verifier = f.read().strip()
+
+    code = input("[TikTok Auth] Paste the 'code' parameter from the redirect URL: ").strip()
 
     token_r = requests.post(
         "https://open.tiktokapis.com/v2/oauth/token/",
@@ -284,12 +296,18 @@ def tiktok_auth_flow():
     token_r.raise_for_status()
     token_data = token_r.json()
 
+    _os.remove(VERIFIER_FILE)
+
     with open("tiktok_token.json", "w") as f:
         json.dump(token_data, f, indent=2)
 
+    access_token = token_data.get("access_token", "")
     print(f"\n[Auth] TikTok token saved to tiktok_token.json")
     print(f"       Access token expires in {token_data.get('expires_in', '?')} seconds")
-    print(f"       Set TIKTOK_SESSION_ID={token_data['access_token']} in your .env")
+    if access_token:
+        print(f"       Set TIKTOK_SESSION_ID={access_token} in your .env")
+    else:
+        print(f"       Warning: no access_token in response: {token_data}")
 
 
 if __name__ == "__main__":

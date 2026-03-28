@@ -4,3 +4,5 @@ __pycache__/
 .env
 output/
 youtube_token.json
+tiktok_token.json
+.tiktok_pkce_verifier
