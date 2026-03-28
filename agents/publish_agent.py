@@ -238,7 +238,11 @@ def tiktok_auth_flow():
         if is_sandbox else
         "https://www.tiktok.com/v2/auth/authorize/"
     )
-    redirect_uri = "https://abdotaj.github.io/AI_Content_Pipeline/"
+    redirect_uri = (
+        "http://localhost:8080/"
+        if is_sandbox else
+        "https://abdotaj.github.io/AI_Content_Pipeline/"
+    )
 
     auth_url = (
         f"{auth_base}"
@@ -249,9 +253,12 @@ def tiktok_auth_flow():
     )
 
     print(f"\n[TikTok Auth] Starting OAuth flow... ({env_label})")
-    print(f"[TikTok Auth] Client key: {TIKTOK_CLIENT_KEY}")
+    print(f"[TikTok Auth] Client key:    {TIKTOK_CLIENT_KEY}")
+    print(f"[TikTok Auth] Redirect URI:  {redirect_uri}")
     print(f"\n[TikTok Auth] Full auth URL:\n  {auth_url}\n")
     print("1. Open the URL above in your browser and authorize the app.")
+    if is_sandbox:
+        print("   (Sandbox: browser will redirect to http://localhost:8080/?code=...)")
 
     code = input("2. Paste the 'code' parameter from the redirect URL here: ").strip()
 
@@ -263,7 +270,7 @@ def tiktok_auth_flow():
             "client_secret": TIKTOK_CLIENT_SECRET,
             "code": code,
             "grant_type": "authorization_code",
-            "redirect_uri": "https://abdotaj.github.io/AI_Content_Pipeline/",
+            "redirect_uri": redirect_uri,
         }
     )
     token_r.raise_for_status()
