@@ -15,10 +15,11 @@ from config import (
 def upload_to_youtube(video_path: str, script_data: dict) -> str:
     try:
         from google.oauth2.credentials import Credentials
+        from google.auth.transport.requests import Request
         from googleapiclient.discovery import build
         from googleapiclient.http import MediaFileUpload
     except ImportError:
-        print("[Publish] Install: pip install google-api-python-client")
+        print("[Publish] Install: pip install google-api-python-client google-auth")
         return ""
 
     TOKEN_FILE = "youtube_token.json"
@@ -31,6 +32,14 @@ def upload_to_youtube(video_path: str, script_data: dict) -> str:
             TOKEN_FILE,
             ["https://www.googleapis.com/auth/youtube.upload"]
         )
+
+        if creds.expired and creds.refresh_token:
+            print("[Publish] YouTube token expired — refreshing...")
+            creds.refresh(Request())
+            with open(TOKEN_FILE, "w") as f:
+                f.write(creds.to_json())
+            print("[Publish] YouTube token refreshed.")
+
         youtube = build("youtube", "v3", credentials=creds)
 
         body = {
