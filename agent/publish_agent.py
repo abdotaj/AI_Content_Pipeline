@@ -226,11 +226,21 @@ def publish_video(video_path: str, script_data: dict) -> dict:
 
 
 def tiktok_auth_flow():
-    """Interactive TikTok OAuth flow — saves session token to tiktok_token.json."""
+    """Interactive TikTok OAuth flow with PKCE — single run, saves tiktok_token.json."""
+    import base64
+    import hashlib
     import json
+    import os as _os
     import requests
     from config import TIKTOK_CLIENT_KEY, TIKTOK_CLIENT_SECRET
 
+    # Step 1: Generate PKCE values
+    code_verifier = base64.urlsafe_b64encode(_os.urandom(96)).rstrip(b"=").decode("ascii")[:128]
+    code_challenge = base64.urlsafe_b64encode(
+        hashlib.sha256(code_verifier.encode("ascii")).digest()
+    ).rstrip(b"=").decode("ascii")
+
+    # Step 2: Build and print auth URL
     is_sandbox = TIKTOK_CLIENT_KEY.startswith("sb")
     env_label = "SANDBOX" if is_sandbox else "PRODUCTION"
     redirect_uri = (
@@ -245,19 +255,25 @@ def tiktok_auth_flow():
         f"&response_type=code"
         f"&scope=user.info.basic,video.publish,video.upload"
         f"&redirect_uri={redirect_uri}"
+        f"&code_challenge={code_challenge}"
+        f"&code_challenge_method=S256"
     )
 
     print(f"\n[TikTok Auth] Starting OAuth flow... ({env_label})")
-    print(f"[TikTok Auth] Client key:    {TIKTOK_CLIENT_KEY}")
-    print(f"[TikTok Auth] Redirect URI:  {redirect_uri}")
+    print(f"[TikTok Auth] Client key:      {TIKTOK_CLIENT_KEY}")
+    print(f"[TikTok Auth] Redirect URI:    {redirect_uri}")
+    print(f"[TikTok Auth] code_verifier:   {code_verifier}")
+    print(f"[TikTok Auth] code_challenge:  {code_challenge}")
     print(f"\n[TikTok Auth] Full auth URL:\n  {auth_url}\n")
     print("1. Open the URL above in your browser and authorize the app.")
     if is_sandbox:
         print("   (Sandbox: browser will redirect to http://localhost:8080/?code=...)")
 
+    # Step 3: Get code from user in this same session
     code = input("\n2. Paste the 'code' parameter from the redirect URL: ").strip()
     print(f"[TikTok Auth] code: {code}")
 
+    # Step 4: Exchange code using the same code_verifier from this run
     token_r = requests.post(
         "https://open.tiktokapis.com/v2/oauth/token/",
         headers={"Content-Type": "application/x-www-form-urlencoded"},
@@ -267,11 +283,13 @@ def tiktok_auth_flow():
             "code": code,
             "grant_type": "authorization_code",
             "redirect_uri": redirect_uri,
+            "code_verifier": code_verifier,
         }
     )
     token_r.raise_for_status()
     token_data = token_r.json()
 
+    # Step 5: Save token
     with open("tiktok_token.json", "w") as f:
         json.dump(token_data, f, indent=2)
 
