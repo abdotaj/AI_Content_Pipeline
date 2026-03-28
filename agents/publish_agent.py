@@ -275,11 +275,16 @@ def tiktok_auth_flow():
         print("\n2. Run this command again and paste the 'code' from the redirect URL.")
         return
 
-    # Second run: read the saved verifier and exchange the code
+    # Second run: read the saved verifier first, before anything else
     with open(VERIFIER_FILE) as f:
         code_verifier = f.read().strip()
 
-    code = input("[TikTok Auth] Paste the 'code' parameter from the redirect URL: ").strip()
+    print(f"\n[TikTok Auth] Resuming token exchange... ({env_label})")
+    print(f"[TikTok Auth] code_verifier ({len(code_verifier)} chars): {code_verifier}")
+    print(f"[TikTok Auth] Redirect URI:  {redirect_uri}")
+
+    code = input("\n[TikTok Auth] Paste the 'code' parameter from the redirect URL: ").strip()
+    print(f"[TikTok Auth] code: {code}")
 
     token_r = requests.post(
         "https://open.tiktokapis.com/v2/oauth/token/",
