@@ -231,16 +231,27 @@ def tiktok_auth_flow():
     import requests
     from config import TIKTOK_CLIENT_KEY, TIKTOK_CLIENT_SECRET
 
-    print("\n[TikTok Auth] Starting OAuth flow...")
-    print("1. Open this URL in your browser and authorize the app:")
+    is_sandbox = TIKTOK_CLIENT_KEY.startswith("sb")
+    env_label = "SANDBOX" if is_sandbox else "PRODUCTION"
+    auth_base = (
+        "https://sandbox.tiktok.com/v2/auth/authorize/"
+        if is_sandbox else
+        "https://www.tiktok.com/v2/auth/authorize/"
+    )
+    redirect_uri = "https://abdotaj.github.io/AI_Content_Pipeline/"
+
     auth_url = (
-        f"https://www.tiktok.com/v2/auth/authorize/"
+        f"{auth_base}"
         f"?client_key={TIKTOK_CLIENT_KEY}"
         f"&response_type=code"
         f"&scope=user.info.basic,video.publish,video.upload"
-        f"&redirect_uri=https://abdotaj.github.io/AI_Content_Pipeline/"
+        f"&redirect_uri={redirect_uri}"
     )
-    print(f"\n  {auth_url}\n")
+
+    print(f"\n[TikTok Auth] Starting OAuth flow... ({env_label})")
+    print(f"[TikTok Auth] Client key: {TIKTOK_CLIENT_KEY}")
+    print(f"\n[TikTok Auth] Full auth URL:\n  {auth_url}\n")
+    print("1. Open the URL above in your browser and authorize the app.")
 
     code = input("2. Paste the 'code' parameter from the redirect URL here: ").strip()
 
