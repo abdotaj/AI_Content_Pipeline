@@ -269,8 +269,14 @@ def tiktok_auth_flow():
     if is_sandbox:
         print("   (Sandbox: browser will redirect to http://localhost:8080/?code=...)")
 
-    # Step 3: Get code from user in this same session
-    code = input("\n2. Paste the 'code' parameter from the redirect URL: ").strip()
+    # Step 3: Get code from user in this same session (accepts raw code or full redirect URL)
+    raw = input("\n2. Paste the 'code' or the full redirect URL: ").strip()
+    if "?" in raw or "&" in raw:
+        from urllib.parse import urlparse, parse_qs
+        params = parse_qs(urlparse(raw).query)
+        code = params.get("code", [raw])[0]
+    else:
+        code = raw
     print(f"[TikTok Auth] code: {code}")
 
     # Step 4: Exchange code using the same code_verifier from this run
