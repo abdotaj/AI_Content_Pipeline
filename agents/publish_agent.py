@@ -278,8 +278,11 @@ def tiktok_auth_flow():
         code = params.get("code", [raw])[0]
     else:
         code = raw
+    print(f"[TikTok Auth] code (raw):             {code}")
     code = urllib.parse.unquote(code)
-    print(f"[TikTok Auth] code (after unquote): {code}")
+    print(f"[TikTok Auth] code (after unquote):  {code}")
+    code = urllib.parse.unquote(code)
+    print(f"[TikTok Auth] code (after unquote²): {code}")
 
     # Step 4: Exchange code using the same code_verifier from this run
     request_data = {
