@@ -117,6 +117,73 @@ def wait_for_decision(video_id: str, timeout: int = 300) -> str:
     return "approve"
 
 
+def listen_for_content(timeout: int = 60) -> None:
+    """Poll Telegram for text messages or .txt/.docx files, save to content/pending/."""
+    import os
+    from pathlib import Path
+
+    pending_dir = Path("content/pending")
+    pending_dir.mkdir(parents=True, exist_ok=True)
+
+    print(f"[Notify] Listening for content drops on Telegram ({timeout}s)...")
+    offset = None
+    elapsed = 0
+    poll_interval = 5
+
+    while elapsed < timeout:
+        params = {"timeout": poll_interval, "allowed_updates": ["message"]}
+        if offset:
+            params["offset"] = offset
+
+        try:
+            r = requests.get(f"{BASE_URL}/getUpdates", params=params, timeout=poll_interval + 5)
+            updates = r.json().get("result", [])
+        except Exception:
+            time.sleep(poll_interval)
+            elapsed += poll_interval
+            continue
+
+        for update in updates:
+            offset = update["update_id"] + 1
+            msg = update.get("message", {})
+            chat_id = msg.get("chat", {}).get("id")
+            if not chat_id:
+                continue
+
+            # Text message → use as script topic/content
+            text = msg.get("text", "").strip()
+            if text and not text.startswith("/"):
+                filename = pending_dir / f"telegram_{update['update_id']}.txt"
+                filename.write_text(text, encoding="utf-8")
+                print(f"[Notify] Text content saved: {filename}")
+                requests.post(f"{BASE_URL}/sendMessage", json={
+                    "chat_id": chat_id,
+                    "text": "Content received! Will be used in next video."
+                })
+                continue
+
+            # Document (.txt or .docx)
+            doc = msg.get("document", {})
+            doc_name = doc.get("file_name", "")
+            if doc and doc_name.lower().endswith((".txt", ".docx")):
+                file_id = doc["file_id"]
+                file_r = requests.get(f"{BASE_URL}/getFile", params={"file_id": file_id})
+                file_path = file_r.json().get("result", {}).get("file_path", "")
+                if file_path:
+                    dl_r = requests.get(
+                        f"https://api.telegram.org/file/bot{TELEGRAM_BOT_TOKEN}/{file_path}"
+                    )
+                    out_path = pending_dir / f"telegram_{update['update_id']}_{doc_name}"
+                    out_path.write_bytes(dl_r.content)
+                    print(f"[Notify] File content saved: {out_path}")
+                    requests.post(f"{BASE_URL}/sendMessage", json={
+                        "chat_id": chat_id,
+                        "text": "Content received! Will be used in next video."
+                    })
+
+        elapsed += poll_interval
+
+
 def send_daily_report(stats: dict) -> None:
     msg = (
         f"Daily Report\n\n"
