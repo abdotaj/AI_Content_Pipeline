@@ -254,7 +254,7 @@ def tiktok_auth_flow():
         f"?client_key={TIKTOK_CLIENT_KEY}"
         f"&response_type=code"
         f"&scope=user.info.basic,video.publish,video.upload"
-        f"&redirect_uri={urllib.parse.quote(redirect_uri, safe='')}"
+        f"&redirect_uri={redirect_uri}"
         f"&code_challenge={code_challenge}"
         f"&code_challenge_method=S256"
     )
