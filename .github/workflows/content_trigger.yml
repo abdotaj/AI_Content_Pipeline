@@ -1,0 +1,78 @@
+name: Content Drop Pipeline
+
+on:
+  push:
+    paths:
+      - 'content/*.json'
+
+jobs:
+  run-content:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2   # need parent commit to diff against
+
+      - name: Find newly added content files
+        id: detect
+        run: |
+          FILES=$(git diff --diff-filter=A --name-only HEAD~1 HEAD -- 'content/*.json' | tr '\n' ' ')
+          echo "files=$FILES" >> $GITHUB_OUTPUT
+          echo "Detected: $FILES"
+
+      - name: Skip if no new files
+        if: steps.detect.outputs.files == ''
+        run: |
+          echo "No new content files. Exiting."
+          exit 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg
+
+      - name: Install Python dependencies
+        run: |
+          pip install --upgrade pip
+          pip install moviepy==1.0.3
+          pip install -r requirements.txt
+
+      - name: Write YouTube token
+        run: echo '${{ secrets.YOUTUBE_TOKEN_JSON }}' > youtube_token.json
+
+      - name: Run pipeline for each content file
+        env:
+          GROQ_API_KEY:          ${{ secrets.GROQ_API_KEY }}
+          PEXELS_API_KEY:        ${{ secrets.PEXELS_API_KEY }}
+          TELEGRAM_BOT_TOKEN:    ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:      ${{ secrets.TELEGRAM_CHAT_ID }}
+          YOUTUBE_CLIENT_ID:     ${{ secrets.YOUTUBE_CLIENT_ID }}
+          YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
+          TIKTOK_SESSION_ID:     ${{ secrets.TIKTOK_SESSION_ID }}
+          TIKTOK_CLIENT_KEY:     ${{ secrets.TIKTOK_CLIENT_KEY }}
+          TIKTOK_CLIENT_SECRET:  ${{ secrets.TIKTOK_CLIENT_SECRET }}
+          INSTAGRAM_ACCESS_TOKEN: ${{ secrets.INSTAGRAM_ACCESS_TOKEN }}
+          INSTAGRAM_BUSINESS_ID:  ${{ secrets.INSTAGRAM_BUSINESS_ID }}
+          FACEBOOK_ACCESS_TOKEN:  ${{ secrets.FACEBOOK_ACCESS_TOKEN }}
+          FACEBOOK_PAGE_ID:       ${{ secrets.FACEBOOK_PAGE_ID }}
+        run: |
+          for FILE in ${{ steps.detect.outputs.files }}; do
+            echo "Processing $FILE..."
+            python run_content.py "$FILE"
+          done
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: content-error-logs
+          path: output/publish_log.jsonl
+          retention-days: 7
