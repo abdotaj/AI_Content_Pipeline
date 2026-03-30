@@ -41,8 +41,8 @@ def generate_voiceover(script_text: str, filename: str, language: str = "english
     return audio_path
 
 
-def fetch_stock_videos(query: str, count: int = 3) -> list[str]:
-    """Download only 3 clips instead of 5 — faster."""
+def fetch_stock_videos(query: str, count: int = 5) -> list[str]:
+    """Download up to 5 clips for more variety."""
     url = "https://api.pexels.com/videos/search"
     headers = {"Authorization": PEXELS_API_KEY}
     params = {"query": query, "per_page": count, "orientation": "portrait", "size": "small"}
@@ -135,28 +135,48 @@ def assemble_video(
         return ""
 
 
+# Topic keyword → (query candidates) — checked against topic text first
+TOPIC_KEYWORDS = [
+    ({"black hole", "space", "galaxy", "cosmos", "nebula", "star", "planet", "universe", "astronomy"},
+     ["space galaxy stars", "black hole universe", "cosmos nebula"]),
+    ({"ai", "artificial intelligence", "robot", "machine learning", "tech", "technology", "digital", "future"},
+     ["artificial intelligence robot", "computer technology future"]),
+    ({"motivation", "mindset", "success", "goal", "achieve", "inspire", "habit"},
+     ["success motivation run", "achievement business"]),
+    ({"history", "ancient", "civilization", "empire", "war", "monument", "ruins", "historical"},
+     ["ancient ruins civilization", "historical monument"]),
+    ({"science", "laboratory", "experiment", "discovery", "research", "biology", "chemistry", "physics"},
+     ["laboratory science experiment"]),
+    ({"deepfake", "fake", "real vs", "scam", "detect", "generated", "cyber", "security"},
+     ["face technology digital", "cyber security screen"]),
+]
+
 NICHE_QUERIES = {
-    "AI & Tech news":          ["artificial intelligence", "computer technology", "digital future", "robot technology"],
-    "Space & Astronomy facts": ["space galaxy", "stars universe", "planet earth", "cosmos"],
-    "Motivation & mindset":    ["success business", "motivation run", "achievement goal"],
-    "History & civilization":  ["ancient civilization", "history discovery"],
-    "Science & discoveries":   ["laboratory science", "scientific discovery"],
-    "AI Deepfakes & Real vs Fake": ["digital face technology", "artificial intelligence screen", "computer deep learning"],
+    "AI & Tech news":              ["artificial intelligence robot", "computer technology future"],
+    "Space & Astronomy facts":     ["space galaxy stars", "black hole universe", "cosmos nebula"],
+    "Motivation & mindset":        ["success motivation run", "achievement business"],
+    "History & civilization":      ["ancient ruins civilization", "historical monument"],
+    "Science & discoveries":       ["laboratory science experiment"],
+    "AI Deepfakes & Real vs Fake": ["face technology digital", "cyber security screen"],
 }
 
 
 def build_search_query(script_data: dict) -> str:
-    """Pick the best Pexels query based on niche, falling back to script keywords."""
+    """Pick the best Pexels query using topic keywords first, then niche, then fallback."""
+    topic = (script_data.get("topic") or "").lower()
+
+    # 1. Match against topic text
+    for keywords, candidates in TOPIC_KEYWORDS:
+        if any(kw in topic for kw in keywords):
+            return candidates[0]
+
+    # 2. Fall back to niche map
     niche = script_data.get("niche", "")
     candidates = NICHE_QUERIES.get(niche)
     if candidates:
-        # Use the first keyword from script_data to pick the most relevant candidate
-        keyword = (script_data.get("keywords") or [""])[0].lower()
-        for q in candidates:
-            if any(w in q for w in keyword.split()):
-                return q
         return candidates[0]
-    # Fallback: use the search_query from research
+
+    # 3. Last resort: research-provided search_query
     return script_data.get("search_query", "technology")
 
 
@@ -170,9 +190,9 @@ def create_video(script_data: dict, video_id: str) -> str:
 
     query = build_search_query(script_data)
     print(f"[Video] Pexels query: '{query}'")
-    clip_paths = fetch_stock_videos(query, count=3)
+    clip_paths = fetch_stock_videos(query, count=5)
     if not clip_paths:
-        clip_paths = fetch_stock_videos("technology", count=3)
+        clip_paths = fetch_stock_videos("technology", count=5)
 
     if not clip_paths:
         print("[Video] No clips found, skipping")
