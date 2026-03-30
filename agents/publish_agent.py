@@ -275,24 +275,13 @@ def tiktok_auth_flow():
     print(f"[TikTok Auth] code (after unquote²): {code}")
 
     # Step 4: Exchange code for token
-    request_data = {
-        "client_key": TIKTOK_CLIENT_KEY,
-        "client_secret": TIKTOK_CLIENT_SECRET,
-        "code": code,
-        "grant_type": "authorization_code",
-        "redirect_uri": redirect_uri,
-        "code_verifier": code_verifier,
-    }
-    print(f"\n[TikTok Auth] Token exchange request data:")
-    for k, v in request_data.items():
-        print(f"  {k}: {v}")
-    raw_body = urllib.parse.urlencode(request_data)
+    raw_body = f"client_key={TIKTOK_CLIENT_KEY}&client_secret={TIKTOK_CLIENT_SECRET}&code={code}&grant_type=authorization_code&redirect_uri={redirect_uri}&code_verifier={code_verifier}"
     print(f"\n[TikTok Auth] Raw POST body:\n  {raw_body}")
 
     token_r = requests.post(
         "https://open.tiktokapis.com/v2/oauth/token/",
+        data=raw_body,
         headers={"Content-Type": "application/x-www-form-urlencoded"},
-        data=request_data,
     )
     print(f"\n[TikTok Auth] Token exchange response (HTTP {token_r.status_code}):")
     print(f"  {token_r.text}")
