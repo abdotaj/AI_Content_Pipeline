@@ -12,10 +12,11 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from config import VIDEOS_PER_DAY, FINAL_DIR
 from agent.research_agent import research_topics
-from agent.script_agent   import write_scripts, write_script
+from agent.script_agent   import write_scripts
 from agent.video_agent    import create_video
 from agent.notify_agent   import send_message, send_video_preview, send_daily_report, listen_for_content
 from agent.publish_agent  import publish_video
+from agents.content_agent import ingest_content_files
 
 
 def run_pipeline():
@@ -33,46 +34,14 @@ def run_pipeline():
     # ── STEP 0: Check for Telegram content drops ────────────
     listen_for_content(timeout=30)
 
-    # ── STEP 1: Research or use pending content ─────────────
-    pending_dir   = Path("content/pending")
-    processed_dir = Path("content/processed")
-    processed_dir.mkdir(parents=True, exist_ok=True)
+    # ── STEP 1: Content files or research ───────────────────
+    print("[1/4] Checking content/ folder for user-provided files...")
+    scripts = ingest_content_files()
 
-    pending_files = sorted(pending_dir.glob("*.txt")) + sorted(pending_dir.glob("*.docx")) \
-        if pending_dir.exists() else []
-
-    if pending_files:
-        print(f"[1/4] Using {len(pending_files)} pending content file(s) from Telegram...")
-        scripts = []
-        for pf in pending_files:
-            try:
-                if pf.suffix == ".docx":
-                    try:
-                        import docx
-                        raw_text = "\n".join(p.text for p in docx.Document(str(pf)).paragraphs)
-                    except ImportError:
-                        print(f"[WARN] python-docx not installed, skipping {pf.name}")
-                        continue
-                else:
-                    raw_text = pf.read_text(encoding="utf-8")
-
-                topic = {
-                    "topic":        raw_text[:200],
-                    "niche":        "AI & Tech news",
-                    "angle":        "",
-                    "keywords":     [raw_text.split()[0]] if raw_text.split() else ["technology"],
-                    "search_query": raw_text.split()[0] if raw_text.split() else "technology",
-                }
-                scripts.append(write_script(topic, language="arabic"))
-                scripts.append(write_script(topic, language="english"))
-
-                # Move to processed/
-                pf.rename(processed_dir / pf.name)
-                print(f"[1/4] Processed and moved: {pf.name}")
-            except Exception as e:
-                print(f"[ERROR] Pending file {pf.name}: {e}")
+    if scripts:
+        print(f"[1/4] Using {len(scripts)} script(s) from content files.")
     else:
-        print("[1/4] No pending content — researching trending topics...")
+        print("[1/4] No content files found — researching trending topics...")
         try:
             topics = research_topics(count=VIDEOS_PER_DAY)
         except Exception as e:
