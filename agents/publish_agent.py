@@ -179,19 +179,19 @@ def upload_to_instagram(video_path: str, script_data: dict) -> str:
 # ── FACEBOOK ────────────────────────────────────────────────
 
 def upload_to_facebook(video_path: str, script_data: dict) -> str:
-    """Upload video to a Facebook Page via Graph API."""
+    """Upload video to a Facebook Page via Graph API (graph-video endpoint)."""
     try:
         import requests
 
         description = f"{script_data['caption']} {script_data['hashtags']}"[:63206]
-        base_url = f"https://graph.facebook.com/v19.0/{FACEBOOK_PAGE_ID}/videos"
+        upload_url = f"https://graph-video.facebook.com/v18.0/{FACEBOOK_PAGE_ID}/videos"
 
         with open(video_path, "rb") as video_file:
             upload_r = requests.post(
-                base_url,
+                upload_url,
                 data={
-                    "description": description,
                     "title": script_data["title"],
+                    "description": description,
                     "access_token": FACEBOOK_ACCESS_TOKEN,
                 },
                 files={"source": video_file}
