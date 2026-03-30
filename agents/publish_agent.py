@@ -249,15 +249,7 @@ def tiktok_auth_flow():
         "https://abdotaj.github.io/AI_Content_Pipeline/"
     )
 
-    auth_url = (
-        f"https://www.tiktok.com/v2/auth/authorize/"
-        f"?client_key={TIKTOK_CLIENT_KEY}"
-        f"&response_type=code"
-        f"&scope=user.info.basic,video.publish,video.upload"
-        f"&redirect_uri={redirect_uri}"
-        f"&code_challenge={code_challenge}"
-        f"&code_challenge_method=S256"
-    )
+    auth_url = f"https://www.tiktok.com/v2/auth/authorize/?client_key={TIKTOK_CLIENT_KEY}&scope=user.info.basic,video.publish,video.upload&response_type=code&redirect_uri={redirect_uri}&code_challenge={code_challenge}&code_challenge_method=S256"
 
     print(f"\n[TikTok Auth] Starting OAuth flow... ({env_label})")
     print(f"[TikTok Auth] Client key:      {TIKTOK_CLIENT_KEY}")
