@@ -238,7 +238,7 @@ def tiktok_auth_flow():
 
     # Step 1: Generate PKCE values (RFC 7636 S256)
     code_verifier = base64.urlsafe_b64encode(_os.urandom(96)).rstrip(b'=').decode()
-    code_challenge = base64.urlsafe_b64encode(hashlib.sha256(code_verifier.encode()).digest()).rstrip(b'=').decode()
+    code_challenge = code_verifier
 
     # Step 2: Build and print auth URL
     is_sandbox = TIKTOK_CLIENT_KEY.startswith("sb")
@@ -249,7 +249,7 @@ def tiktok_auth_flow():
         "https://abdotaj.github.io/AI_Content_Pipeline/"
     )
 
-    auth_url = f"https://www.tiktok.com/v2/auth/authorize/?client_key={TIKTOK_CLIENT_KEY}&scope=user.info.basic,video.publish,video.upload&response_type=code&redirect_uri={redirect_uri}&code_challenge={code_challenge}&code_challenge_method=S256"
+    auth_url = f"https://www.tiktok.com/v2/auth/authorize/?client_key={TIKTOK_CLIENT_KEY}&scope=user.info.basic,video.publish,video.upload&response_type=code&redirect_uri={redirect_uri}&code_challenge={code_challenge}&code_challenge_method=plain"
 
     print(f"\n[TikTok Auth] Starting OAuth flow... ({env_label})")
     print(f"[TikTok Auth] Client key:      {TIKTOK_CLIENT_KEY}")
