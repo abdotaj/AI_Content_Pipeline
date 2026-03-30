@@ -135,6 +135,30 @@ def assemble_video(
         return ""
 
 
+NICHE_QUERIES = {
+    "AI & Tech news":          ["artificial intelligence", "computer technology", "digital future", "robot technology"],
+    "Space & Astronomy facts": ["space galaxy", "stars universe", "planet earth", "cosmos"],
+    "Motivation & mindset":    ["success business", "motivation run", "achievement goal"],
+    "History & civilization":  ["ancient civilization", "history discovery"],
+    "Science & discoveries":   ["laboratory science", "scientific discovery"],
+}
+
+
+def build_search_query(script_data: dict) -> str:
+    """Pick the best Pexels query based on niche, falling back to script keywords."""
+    niche = script_data.get("niche", "")
+    candidates = NICHE_QUERIES.get(niche)
+    if candidates:
+        # Use the first keyword from script_data to pick the most relevant candidate
+        keyword = (script_data.get("keywords") or [""])[0].lower()
+        for q in candidates:
+            if any(w in q for w in keyword.split()):
+                return q
+        return candidates[0]
+    # Fallback: use the search_query from research
+    return script_data.get("search_query", "technology")
+
+
 def create_video(script_data: dict, video_id: str) -> str:
     language = script_data.get("language", "english")
     print(f"[Video] Starting: {script_data['title']} ({language})")
@@ -143,7 +167,9 @@ def create_video(script_data: dict, video_id: str) -> str:
         script_data["script"], video_id, language
     )
 
-    clip_paths = fetch_stock_videos(script_data["search_query"], count=3)
+    query = build_search_query(script_data)
+    print(f"[Video] Pexels query: '{query}'")
+    clip_paths = fetch_stock_videos(query, count=3)
     if not clip_paths:
         clip_paths = fetch_stock_videos("technology", count=3)
 
