@@ -237,7 +237,7 @@ def tiktok_auth_flow():
     from config import TIKTOK_CLIENT_KEY, TIKTOK_CLIENT_SECRET
 
     # Step 1: Generate PKCE values (RFC 7636 S256)
-    code_verifier = base64.urlsafe_b64encode(_os.urandom(32)).rstrip(b'=').decode()
+    code_verifier = base64.urlsafe_b64encode(_os.urandom(96)).rstrip(b'=').decode()
     code_challenge = base64.urlsafe_b64encode(hashlib.sha256(code_verifier.encode()).digest()).rstrip(b'=').decode()
 
     # Step 2: Build and print auth URL
@@ -286,6 +286,8 @@ def tiktok_auth_flow():
     print(f"\n[TikTok Auth] Token exchange request data:")
     for k, v in request_data.items():
         print(f"  {k}: {v}")
+    raw_body = urllib.parse.urlencode(request_data)
+    print(f"\n[TikTok Auth] Raw POST body:\n  {raw_body}")
 
     token_r = requests.post(
         "https://open.tiktokapis.com/v2/oauth/token/",
