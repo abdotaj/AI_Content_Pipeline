@@ -13,6 +13,20 @@ def write_script(topic: dict, language: str = "english") -> dict:
     word_count = int(VIDEO_DURATION_SECONDS * 2.3)
     lang_instruction = "in Arabic" if language == "arabic" else "in English"
 
+    is_deepfake_niche = topic.get("niche") == "AI Deepfakes & Real vs Fake"
+    deepfake_instruction = ""
+    if is_deepfake_niche:
+        if language == "arabic":
+            deepfake_instruction = """
+Style: "compare and expose" — structure the script to contrast real vs fake examples, build suspense, then reveal.
+Use hooks like "هل تستطيع تمييز الفيديو المزيف؟" or "هذا الفيديو مزيف بالذكاء الاصطناعي!" or "90% من الناس لا يستطيعون كشف هذا!".
+Guide the viewer step-by-step on how to detect fakes. End with a warning call to action."""
+        else:
+            deepfake_instruction = """
+Style: "compare and expose" — structure the script to contrast real vs fake examples, build suspense, then reveal.
+Use hooks like "Can you tell which one is AI?" or "This video is 100% AI-generated!" or "90% of people can't spot this fake!".
+Guide the viewer step-by-step on how to detect fakes. End with a warning call to action."""
+
     prompt = f"""You are an expert faceless content creator for TikTok and YouTube Shorts.
 Write a complete viral short video package {lang_instruction} for this topic.
 
@@ -21,8 +35,8 @@ Angle: {topic['angle']}
 Niche: {topic['niche']}
 Target length: {VIDEO_DURATION_SECONDS} seconds (~{word_count} words spoken)
 
-Allowed niches: AI & Tech news, Space & Astronomy facts, Motivation & mindset, History & civilization, Science & discoveries.
-Do NOT include content about animals, pets, wildlife, or nature.
+Allowed niches: AI & Tech news, Space & Astronomy facts, Motivation & mindset, History & civilization, Science & discoveries, AI Deepfakes & Real vs Fake.
+Do NOT include content about animals, pets, wildlife, or nature.{deepfake_instruction}
 
 Return ONLY this JSON with no extra text:
 {{

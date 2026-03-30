@@ -15,8 +15,15 @@ def get_trending_topic(niche: str) -> dict:
 
 Today's niche: {niche}
 
-Allowed niches: AI & Tech news, Space & Astronomy facts, Motivation & mindset, History & civilization, Science & discoveries.
+Allowed niches: AI & Tech news, Space & Astronomy facts, Motivation & mindset, History & civilization, Science & discoveries, AI Deepfakes & Real vs Fake.
 Do NOT suggest topics about animals, pets, wildlife, or nature.
+
+If the niche is "AI Deepfakes & Real vs Fake", focus on topics such as:
+- Real vs AI-generated content comparisons
+- Deepfake detection tips and tools
+- AI scam alerts and fraud cases
+- How to spot fake AI-generated videos or images
+- AI art controversies and copyright debates
 
 Give me ONE highly trending and specific topic in this niche for TikTok and YouTube Shorts.
 

@@ -141,6 +141,7 @@ NICHE_QUERIES = {
     "Motivation & mindset":    ["success business", "motivation run", "achievement goal"],
     "History & civilization":  ["ancient civilization", "history discovery"],
     "Science & discoveries":   ["laboratory science", "scientific discovery"],
+    "AI Deepfakes & Real vs Fake": ["digital face technology", "artificial intelligence screen", "computer deep learning"],
 }
 
 

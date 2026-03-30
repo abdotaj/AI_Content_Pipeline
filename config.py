@@ -38,8 +38,9 @@ NICHES = [
     "Motivation & mindset",
     "History & civilization",
     "Science & discoveries",
+    "AI Deepfakes & Real vs Fake",
 ]
-NICHE_WEIGHTS = [0.35, 0.25, 0.20, 0.10, 0.10]
+NICHE_WEIGHTS = [0.35, 0.25, 0.20, 0.10, 0.10, 0.20]
 
 VIDEOS_PER_DAY = 2                 # how many videos to generate daily
 VIDEO_DURATION_SECONDS = 45        # target video length (30-60 recommended)
