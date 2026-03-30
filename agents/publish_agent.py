@@ -270,6 +270,7 @@ def tiktok_auth_flow():
         print("   (Sandbox: browser will redirect to http://localhost:8080/?code=...)")
 
     # Step 3: Get code from user in this same session (accepts raw code or full redirect URL)
+    import urllib.parse
     raw = input("\n2. Paste the 'code' or the full redirect URL: ").strip()
     if "?" in raw or "&" in raw:
         from urllib.parse import urlparse, parse_qs
@@ -277,21 +278,29 @@ def tiktok_auth_flow():
         code = params.get("code", [raw])[0]
     else:
         code = raw
-    print(f"[TikTok Auth] code: {code}")
+    code = urllib.parse.unquote(code)
+    print(f"[TikTok Auth] code (after unquote): {code}")
 
     # Step 4: Exchange code using the same code_verifier from this run
+    request_data = {
+        "client_key": TIKTOK_CLIENT_KEY,
+        "client_secret": TIKTOK_CLIENT_SECRET,
+        "code": code,
+        "grant_type": "authorization_code",
+        "redirect_uri": redirect_uri,
+        "code_verifier": code_verifier,
+    }
+    print(f"\n[TikTok Auth] Token exchange request data:")
+    for k, v in request_data.items():
+        print(f"  {k}: {v}")
+
     token_r = requests.post(
         "https://open.tiktokapis.com/v2/oauth/token/",
         headers={"Content-Type": "application/x-www-form-urlencoded"},
-        data={
-            "client_key": TIKTOK_CLIENT_KEY,
-            "client_secret": TIKTOK_CLIENT_SECRET,
-            "code": code,
-            "grant_type": "authorization_code",
-            "redirect_uri": redirect_uri,
-            "code_verifier": code_verifier,
-        }
+        data=request_data,
     )
+    print(f"\n[TikTok Auth] Token exchange response (HTTP {token_r.status_code}):")
+    print(f"  {token_r.text}")
     token_r.raise_for_status()
     token_data = token_r.json()
 
