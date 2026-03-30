@@ -21,6 +21,9 @@ Angle: {topic['angle']}
 Niche: {topic['niche']}
 Target length: {VIDEO_DURATION_SECONDS} seconds (~{word_count} words spoken)
 
+Allowed niches: AI & Tech news, Space & Astronomy facts, Motivation & mindset, History & civilization, Science & discoveries.
+Do NOT include content about animals, pets, wildlife, or nature.
+
 Return ONLY this JSON with no extra text:
 {{
   "title": "Video title (max 60 chars) {lang_instruction}",

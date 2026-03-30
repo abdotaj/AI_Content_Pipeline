@@ -15,6 +15,9 @@ def get_trending_topic(niche: str) -> dict:
 
 Today's niche: {niche}
 
+Allowed niches: AI & Tech news, Space & Astronomy facts, Motivation & mindset, History & civilization, Science & discoveries.
+Do NOT suggest topics about animals, pets, wildlife, or nature.
+
 Give me ONE highly trending and specific topic in this niche for TikTok and YouTube Shorts.
 
 Respond in this exact JSON format with no extra text:

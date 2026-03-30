@@ -32,8 +32,14 @@ FACEBOOK_ACCESS_TOKEN  = os.getenv("FACEBOOK_ACCESS_TOKEN", "YOUR_FACEBOOK_ACCES
 FACEBOOK_PAGE_ID       = os.getenv("FACEBOOK_PAGE_ID", "YOUR_FACEBOOK_PAGE_ID")
 
 # --- Content Settings ---
-NICHES = ["AI & Tech news", "Educational facts", "Motivation & mindset"]
-NICHE_WEIGHTS = [0.5, 0.3, 0.2]   # 50% AI, 30% facts, 20% motivation
+NICHES = [
+    "AI & Tech news",
+    "Space & Astronomy facts",
+    "Motivation & mindset",
+    "History & civilization",
+    "Science & discoveries",
+]
+NICHE_WEIGHTS = [0.35, 0.25, 0.20, 0.10, 0.10]
 
 VIDEOS_PER_DAY = 2                 # how many videos to generate daily
 VIDEO_DURATION_SECONDS = 45        # target video length (30-60 recommended)
