@@ -135,49 +135,32 @@ def assemble_video(
         return ""
 
 
-# Topic keyword → (query candidates) — checked against topic text first
-TOPIC_KEYWORDS = [
-    ({"black hole", "space", "galaxy", "cosmos", "nebula", "star", "planet", "universe", "astronomy"},
-     ["space galaxy stars", "black hole universe", "cosmos nebula"]),
-    ({"ai", "artificial intelligence", "robot", "machine learning", "tech", "technology", "digital", "future"},
-     ["artificial intelligence robot", "computer technology future"]),
-    ({"motivation", "mindset", "success", "goal", "achieve", "inspire", "habit"},
-     ["success motivation run", "achievement business"]),
-    ({"history", "ancient", "civilization", "empire", "war", "monument", "ruins", "historical"},
-     ["ancient ruins civilization", "historical monument"]),
-    ({"science", "laboratory", "experiment", "discovery", "research", "biology", "chemistry", "physics"},
-     ["laboratory science experiment"]),
-    ({"deepfake", "fake", "real vs", "scam", "detect", "generated", "cyber", "security"},
-     ["face technology digital", "cyber security screen"]),
-]
-
-NICHE_QUERIES = {
-    "AI & Tech news":              ["artificial intelligence robot", "computer technology future"],
-    "Space & Astronomy facts":     ["space galaxy stars", "black hole universe", "cosmos nebula"],
-    "Motivation & mindset":        ["success motivation run", "achievement business"],
-    "History & civilization":      ["ancient ruins civilization", "historical monument"],
-    "Science & discoveries":       ["laboratory science experiment"],
-    "AI Deepfakes & Real vs Fake": ["face technology digital", "cyber security screen"],
-}
-
-
 def build_search_query(script_data: dict) -> str:
-    """Pick the best Pexels query using topic keywords first, then niche, then fallback."""
-    topic = (script_data.get("topic") or "").lower()
+    topic    = script_data.get("topic", "").lower()
+    keywords = script_data.get("keywords", [])
 
-    # 1. Match against topic text
-    for keywords, candidates in TOPIC_KEYWORDS:
-        if any(kw in topic for kw in keywords):
-            return candidates[0]
+    if any(w in topic for w in ["black hole", "space", "galaxy", "star", "planet", "universe", "cosmos", "astronomy"]):
+        return "space galaxy stars universe"
 
-    # 2. Fall back to niche map
-    niche = script_data.get("niche", "")
-    candidates = NICHE_QUERIES.get(niche)
-    if candidates:
-        return candidates[0]
+    if any(w in topic for w in ["deepfake", "fake", "detection", "scam", "fraud"]):
+        return "face technology digital screen"
 
-    # 3. Last resort: research-provided search_query
-    return script_data.get("search_query", "technology")
+    if any(w in topic for w in ["music", "concert", "singer", "song"]):
+        return "music concert performance stage"
+
+    if any(w in topic for w in ["ai", "artificial intelligence", "robot", "tech", "digital"]):
+        return "artificial intelligence technology computer"
+
+    if any(w in topic for w in ["motivation", "success", "mindset", "goal", "morning"]):
+        return "success motivation achievement"
+
+    if any(w in topic for w in ["history", "ancient", "civilization", "war", "empire"]):
+        return "ancient ruins civilization history"
+
+    if any(w in topic for w in ["science", "discovery", "research", "experiment"]):
+        return "science laboratory research"
+
+    return script_data.get("search_query", keywords[0] if keywords else "technology")
 
 
 def create_video(script_data: dict, video_id: str) -> str:
