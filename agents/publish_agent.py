@@ -196,6 +196,9 @@ def upload_to_facebook(video_path: str, script_data: dict) -> str:
                 },
                 files={"source": video_file}
             )
+
+        print(f"[Publish] Facebook response HTTP {upload_r.status_code}: {upload_r.text}")
+
         upload_r.raise_for_status()
         video_id = upload_r.json()["id"]
 

@@ -179,23 +179,26 @@ def upload_to_instagram(video_path: str, script_data: dict) -> str:
 # ── FACEBOOK ────────────────────────────────────────────────
 
 def upload_to_facebook(video_path: str, script_data: dict) -> str:
-    """Upload video to a Facebook Page via Graph API."""
+    """Upload video to a Facebook Page via Graph API (graph-video endpoint)."""
     try:
         import requests
 
         description = f"{script_data['caption']} {script_data['hashtags']}"[:63206]
-        base_url = f"https://graph.facebook.com/v19.0/{FACEBOOK_PAGE_ID}/videos"
+        upload_url = f"https://graph-video.facebook.com/v18.0/{FACEBOOK_PAGE_ID}/videos"
 
         with open(video_path, "rb") as video_file:
             upload_r = requests.post(
-                base_url,
+                upload_url,
                 data={
-                    "description": description,
                     "title": script_data["title"],
+                    "description": description,
                     "access_token": FACEBOOK_ACCESS_TOKEN,
                 },
                 files={"source": video_file}
             )
+
+        print(f"[Publish] Facebook response HTTP {upload_r.status_code}: {upload_r.text}")
+
         upload_r.raise_for_status()
         video_id = upload_r.json()["id"]
 
@@ -232,13 +235,13 @@ def tiktok_auth_flow():
     import json
     import os as _os
     import requests
+    import urllib.parse
+    from urllib.parse import urlparse, parse_qs
     from config import TIKTOK_CLIENT_KEY, TIKTOK_CLIENT_SECRET
 
-    # Step 1: Generate PKCE values
-    code_verifier = base64.urlsafe_b64encode(_os.urandom(96)).rstrip(b"=").decode("ascii")[:128]
-    code_challenge = base64.urlsafe_b64encode(
-        hashlib.sha256(code_verifier.encode("ascii")).digest()
-    ).rstrip(b"=").decode("ascii")
+    # Step 1: Generate PKCE values (RFC 7636 S256)
+    code_verifier = base64.urlsafe_b64encode(_os.urandom(32)).rstrip(b'=').decode()
+    code_challenge = base64.urlsafe_b64encode(hashlib.sha256(code_verifier.encode('ascii')).digest()).rstrip(b'=').decode()
 
     # Step 2: Build and print auth URL
     is_sandbox = TIKTOK_CLIENT_KEY.startswith("sb")
@@ -249,49 +252,42 @@ def tiktok_auth_flow():
         "https://abdotaj.github.io/AI_Content_Pipeline/"
     )
 
-    auth_url = (
-        f"https://www.tiktok.com/v2/auth/authorize/"
-        f"?client_key={TIKTOK_CLIENT_KEY}"
-        f"&response_type=code"
-        f"&scope=user.info.basic,video.publish,video.upload"
-        f"&redirect_uri={redirect_uri}"
-        f"&code_challenge={code_challenge}"
-        f"&code_challenge_method=S256"
-    )
+    auth_url = f"https://www.tiktok.com/v2/auth/authorize/?client_key={TIKTOK_CLIENT_KEY}&scope=user.info.basic,video.publish,video.upload&response_type=code&redirect_uri={redirect_uri}&code_challenge={code_challenge}&code_challenge_method=S256"
 
     print(f"\n[TikTok Auth] Starting OAuth flow... ({env_label})")
     print(f"[TikTok Auth] Client key:      {TIKTOK_CLIENT_KEY}")
     print(f"[TikTok Auth] Redirect URI:    {redirect_uri}")
-    print(f"[TikTok Auth] code_verifier:   {code_verifier}")
-    print(f"[TikTok Auth] code_challenge:  {code_challenge}")
+    print(f"[TikTok Auth] code_verifier:   {code_verifier} (len={len(code_verifier)})")
+    print(f"[TikTok Auth] code_challenge:  {code_challenge} (len={len(code_challenge)})")
     print(f"\n[TikTok Auth] Full auth URL:\n  {auth_url}\n")
     print("1. Open the URL above in your browser and authorize the app.")
     if is_sandbox:
         print("   (Sandbox: browser will redirect to http://localhost:8080/?code=...)")
 
-    # Step 3: Get code from user in this same session (accepts raw code or full redirect URL)
+    # Step 3: Get code from user (accepts raw code or full redirect URL)
     raw = input("\n2. Paste the 'code' or the full redirect URL: ").strip()
     if "?" in raw or "&" in raw:
-        from urllib.parse import urlparse, parse_qs
         params = parse_qs(urlparse(raw).query)
         code = params.get("code", [raw])[0]
     else:
         code = raw
-    print(f"[TikTok Auth] code: {code}")
+    print(f"[TikTok Auth] code (raw):             {code}")
+    code = urllib.parse.unquote(code)
+    print(f"[TikTok Auth] code (after unquote):  {code}")
+    code = urllib.parse.unquote(code)
+    print(f"[TikTok Auth] code (after unquote²): {code}")
 
-    # Step 4: Exchange code using the same code_verifier from this run
+    # Step 4: Exchange code for token
+    raw_body = f"client_key={TIKTOK_CLIENT_KEY}&client_secret={TIKTOK_CLIENT_SECRET}&code={urllib.parse.quote(code, safe='')}&grant_type=authorization_code&redirect_uri={redirect_uri}&code_verifier={code_verifier}"
+    print(f"\n[TikTok Auth] Raw POST body:\n  {raw_body}")
+
     token_r = requests.post(
         "https://open.tiktokapis.com/v2/oauth/token/",
+        data=raw_body,
         headers={"Content-Type": "application/x-www-form-urlencoded"},
-        data={
-            "client_key": TIKTOK_CLIENT_KEY,
-            "client_secret": TIKTOK_CLIENT_SECRET,
-            "code": code,
-            "grant_type": "authorization_code",
-            "redirect_uri": redirect_uri,
-            "code_verifier": code_verifier,
-        }
     )
+    print(f"\n[TikTok Auth] Token exchange response (HTTP {token_r.status_code}):")
+    print(f"  {token_r.text}")
     token_r.raise_for_status()
     token_data = token_r.json()
 
