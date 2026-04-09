@@ -27,11 +27,11 @@ def _extract_text(file_path: Path) -> str:
 
 
 def _collect_files() -> list[Path]:
-    """Return all unprocessed .txt/.docx files from content/ and content/pending/."""
+    """Return all unprocessed .txt/.docx/.json files from content/ and content/pending/."""
     files = []
     for folder in (CONTENT_DIR, PENDING_DIR):
         if folder.exists():
-            files += sorted(folder.glob("*.txt")) + sorted(folder.glob("*.docx"))
+            files += sorted(folder.glob("*.txt")) + sorted(folder.glob("*.docx")) + sorted(folder.glob("*.json"))
     return files
 
 
@@ -50,11 +50,13 @@ def _build_topic(raw_text: str, file_path: Path) -> dict:
 
 def ingest_content_files() -> list[dict]:
     """
-    Check content/ and content/pending/ for .txt/.docx files.
-    For each file: extract text → build topic → write Arabic + English scripts.
+    Check content/ and content/pending/ for .txt/.docx/.json files.
+    - .json files: loaded directly as script_data dicts (scripts already written).
+    - .txt/.docx files: extract text → build topic → write Arabic + English scripts.
     Move processed files to content/processed/.
-    Returns a flat list of script_data dicts (2 per file: arabic + english).
+    Returns a flat list of script_data dicts.
     """
+    import json
     from agents.script_agent import write_script
 
     files = _collect_files()
@@ -66,6 +68,24 @@ def ingest_content_files() -> list[dict]:
 
     for fp in files:
         print(f"[Content] Processing: {fp.name}")
+
+        # JSON files contain ready-made script_data dicts — load directly
+        if fp.suffix.lower() == ".json":
+            try:
+                data = json.loads(fp.read_text(encoding="utf-8"))
+                items = data if isinstance(data, list) else [data]
+                for item in items:
+                    if item.get("script") and item.get("title"):
+                        scripts.append(item)
+                        print(f"[Content] Loaded script: {item['title'][:60]}")
+                    else:
+                        print(f"[Content] Skipping invalid entry in {fp.name}")
+            except Exception as e:
+                print(f"[Content] Failed to parse {fp.name}: {e}")
+            fp.rename(PROCESSED_DIR / fp.name)
+            print(f"[Content] Moved to processed/: {fp.name}")
+            continue
+
         raw_text = _extract_text(fp)
         if not raw_text:
             print(f"[Content] Empty or unreadable, skipping: {fp.name}")

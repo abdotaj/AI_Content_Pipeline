@@ -33,17 +33,20 @@ FACEBOOK_PAGE_ID       = os.getenv("FACEBOOK_PAGE_ID", "YOUR_FACEBOOK_PAGE_ID")
 
 # --- Content Settings ---
 NICHES = [
-    "AI & Tech news",
-    "Space & Astronomy facts",
-    "Motivation & mindset",
-    "History & civilization",
-    "Science & discoveries",
-    "AI Deepfakes & Real vs Fake",
+    "True crime — real story behind Breaking Bad",
+    "True crime — real story behind Narcos",
+    "True crime — real story behind Money Heist",
+    "True crime — real story behind Peaky Blinders",
+    "True crime — real story behind Ozark",
+    "True crime — real story behind The Wire",
+    "True crime — real story behind Griselda",
+    "True crime — criminal psychology behind famous crime series",
 ]
-NICHE_WEIGHTS = [0.35, 0.25, 0.20, 0.10, 0.10, 0.20]
+
+NICHE_WEIGHTS = [0.20, 0.20, 0.15, 0.15, 0.10, 0.10, 0.05, 0.05]
 
 VIDEOS_PER_DAY = 2                 # how many videos to generate daily
-VIDEO_DURATION_SECONDS = 45        # target video length (30-60 recommended)
+VIDEO_DURATION_SECONDS = 720       # 12 minutes — builds watch hours fast
 VIDEO_WIDTH  = 1080
 VIDEO_HEIGHT = 1920                # vertical 9:16 for TikTok/Shorts
 

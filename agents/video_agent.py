@@ -80,10 +80,7 @@ def assemble_video(
 ) -> str:
     """Fast assembly — no text overlays, just video + audio."""
     try:
-        from moviepy.editor import (
-            VideoFileClip, AudioFileClip,
-            concatenate_videoclips
-        )
+        from moviepy import VideoFileClip, AudioFileClip, concatenate_videoclips
     except ImportError:
         print("[Video] moviepy not installed.")
         return ""
@@ -101,32 +98,43 @@ def assemble_video(
             clip = VideoFileClip(clip_path).without_audio()
 
             # Resize to vertical 9:16
-            clip = clip.resize(height=VIDEO_HEIGHT)
+            clip = clip.resized(height=VIDEO_HEIGHT)
             if clip.w > VIDEO_WIDTH:
                 x_center = clip.w / 2
-                clip = clip.crop(
+                clip = clip.cropped(
                     x1=x_center - VIDEO_WIDTH / 2,
                     x2=x_center + VIDEO_WIDTH / 2
                 )
 
             remaining = total_duration - current_duration
             if clip.duration > remaining:
-                clip = clip.subclip(0, remaining)
+                clip = clip.subclipped(0, remaining)
 
             assembled_clips.append(clip)
             current_duration += clip.duration
             clip_index += 1
 
         final = concatenate_videoclips(assembled_clips, method="compose")
-        final = final.set_audio(audio)
+        final = final.with_audio(audio)
 
         output_path = os.path.join(FINAL_DIR, f"{output_filename}.mp4")
+        temp_audio  = os.path.join(FINAL_DIR, f"{output_filename}_tmp_audio.m4a")
         final.write_videofile(
             output_path, fps=24, codec="libx264",
             audio_codec="aac", threads=4,
-            preset="ultrafast",  # fastest encoding
+            preset="ultrafast",
+            temp_audiofile=temp_audio,
             logger=None
         )
+        # Clean up temp audio (Windows sometimes holds a lock briefly)
+        import time
+        for _ in range(5):
+            try:
+                if os.path.exists(temp_audio):
+                    os.remove(temp_audio)
+                break
+            except OSError:
+                time.sleep(0.5)
         print(f"[Video] Final video: {output_path}")
         return output_path
 
@@ -136,31 +144,66 @@ def assemble_video(
 
 
 def build_search_query(script_data: dict) -> str:
-    topic    = script_data.get("topic", "").lower()
-    keywords = script_data.get("keywords", [])
+    combined = " ".join([
+        script_data.get("title", ""),
+        script_data.get("topic", ""),
+        script_data.get("niche", ""),
+    ]).lower()
 
-    if any(w in topic for w in ["black hole", "space", "galaxy", "star", "planet", "universe", "cosmos", "astronomy"]):
-        return "space galaxy stars universe"
+    if any(w in combined for w in ["narcos", "escobar", "pablo", "colombia", "cartel"]):
+        return "crime cartel dark city night"
+    if any(w in combined for w in ["breaking bad", "walter white", "heisenberg", "meth"]):
+        return "chemistry lab desert smoke dark"
+    if any(w in combined for w in ["money heist", "la casa", "bella ciao", "heist", "robbery"]):
+        return "bank heist mask robbery dark"
+    if any(w in combined for w in ["peaky blinders", "tommy shelby", "shelby", "birmingham"]):
+        return "vintage dark street fog smoke"
+    if any(w in combined for w in ["ozark", "byrde", "money laundering"]):
+        return "lake night crime dark money"
+    if any(w in combined for w in ["the wire", "baltimore", "drug trade"]):
+        return "city crime street night urban dark"
+    if any(w in combined for w in ["griselda", "blanco", "cocaine", "miami"]):
+        return "crime cartel dark city night"
 
-    if any(w in topic for w in ["deepfake", "fake", "detection", "scam", "fraud"]):
-        return "face technology digital screen"
+    return "crime investigation detective dark night"
 
-    if any(w in topic for w in ["music", "concert", "singer", "song"]):
-        return "music concert performance stage"
 
-    if any(w in topic for w in ["ai", "artificial intelligence", "robot", "tech", "digital"]):
-        return "artificial intelligence technology computer"
+SHORTS_DIR = "output/shorts"
+Path(SHORTS_DIR).mkdir(parents=True, exist_ok=True)
 
-    if any(w in topic for w in ["motivation", "success", "mindset", "goal", "morning"]):
-        return "success motivation achievement"
 
-    if any(w in topic for w in ["history", "ancient", "civilization", "war", "empire"]):
-        return "ancient ruins civilization history"
+def cut_short_clip(video_path: str, video_id: str, duration: int = 55) -> str:
+    """Cut the first `duration` seconds of a video and save to output/shorts/."""
+    try:
+        from moviepy import VideoFileClip
+    except ImportError:
+        return ""
 
-    if any(w in topic for w in ["science", "discovery", "research", "experiment"]):
-        return "science laboratory research"
-
-    return script_data.get("search_query", keywords[0] if keywords else "technology")
+    short_path = os.path.join(SHORTS_DIR, f"{video_id}_short.mp4")
+    temp_audio  = os.path.join(SHORTS_DIR, f"{video_id}_short_tmp_audio.m4a")
+    try:
+        clip = VideoFileClip(video_path)
+        end = min(duration, clip.duration)
+        short = clip.subclipped(0, end)
+        short.write_videofile(
+            short_path, fps=24, codec="libx264",
+            audio_codec="aac", threads=4, preset="ultrafast",
+            temp_audiofile=temp_audio, logger=None
+        )
+        clip.close()
+        import time
+        for _ in range(5):
+            try:
+                if os.path.exists(temp_audio):
+                    os.remove(temp_audio)
+                break
+            except OSError:
+                time.sleep(0.5)
+        print(f"[Video] Short clip saved: {short_path}")
+        return short_path
+    except Exception as e:
+        print(f"[Video] Short clip error: {e}")
+        return ""
 
 
 def create_video(script_data: dict, video_id: str) -> str:
@@ -175,14 +218,17 @@ def create_video(script_data: dict, video_id: str) -> str:
     print(f"[Video] Pexels query: '{query}'")
     clip_paths = fetch_stock_videos(query, count=5)
     if not clip_paths:
-        clip_paths = fetch_stock_videos("technology", count=5)
+        clip_paths = fetch_stock_videos("crime investigation", count=5)
 
     if not clip_paths:
         print("[Video] No clips found, skipping")
         return ""
 
-    return assemble_video(
+    video_path = assemble_video(
         audio_path=audio_path,
         clip_paths=clip_paths,
         output_filename=video_id
     )
+    if video_path:
+        script_data["short_clip_path"] = cut_short_clip(video_path, video_id)
+    return video_path

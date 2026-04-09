@@ -7,11 +7,17 @@ import json
 import datetime
 from pathlib import Path
 
+# Force UTF-8 output on Windows so Arabic/Unicode prints don't crash
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8")
+
 # Add project root to path
 sys.path.insert(0, os.path.dirname(__file__))
 
 from config import VIDEOS_PER_DAY, FINAL_DIR
-from agent.research_agent import research_topics
+from agent.research_agent import research_topics, research_series, mark_covered  # noqa: F401 (research_series used in step 1b)
 from agent.script_agent   import write_scripts
 from agent.video_agent    import create_video
 from agent.notify_agent   import send_message, send_video_preview, send_daily_report, listen_for_content
@@ -48,6 +54,17 @@ def run_pipeline():
             send_message(f"Research failed: {e}")
             print(f"[ERROR] Research: {e}")
             return
+
+        # ── STEP 1b: Web-research real facts per series ─────────
+        print("[1b] Web-researching real facts (Claude + web search)...")
+        for topic in topics:
+            niche = topic.get("niche", "")
+            series = niche.split("behind")[-1].strip() if "behind" in niche else topic.get("topic", "")
+            try:
+                topic["research"] = research_series(series)
+            except Exception as e:
+                print(f"  [WARN] Web research failed for '{series}': {e}")
+                topic["research"] = {}
 
         # ── STEP 2: Write Scripts ───────────────────────────────
         print("\n[2/4] Writing scripts...")
@@ -106,6 +123,14 @@ def run_pipeline():
                 _save_log(log_entry)
                 stats["posted"] += 1
 
+                # Mark series as covered so it won't repeat
+                series = script_data.get("series") or script_data.get("niche", "").split("behind")[-1].strip()
+                if series:
+                    try:
+                        mark_covered(series, video_id)
+                    except Exception:
+                        pass
+
                 send_message(
                     f"Posted *{script_data['title']}*\n"
                     f"YouTube: {results.get('youtube', '-')}\n"
@@ -131,8 +156,8 @@ def _save_log(entry: dict):
     """Append to a simple JSON log file."""
     log_path = os.path.join("output", "publish_log.jsonl")
     Path("output").mkdir(exist_ok=True)
-    with open(log_path, "a") as f:
-        f.write(json.dumps(entry) + "\n")
+    with open(log_path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 
 if __name__ == "__main__":
