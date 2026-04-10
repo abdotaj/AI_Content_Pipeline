@@ -41,11 +41,27 @@ def generate_voiceover(script_text: str, filename: str, language: str = "english
     return audio_path
 
 
-def fetch_stock_videos(query: str, count: int = 5) -> list[str]:
-    """Download up to 5 clips for more variety."""
+_BLOCKED_KEYWORDS = {
+    "gun", "weapon", "knife", "blood", "murder", "kill",
+    "violence", "crime scene", "body",
+}
+
+
+def _is_safe_clip(video: dict) -> bool:
+    """Return False if the clip's tags/description contain blocked keywords."""
+    text = " ".join([
+        video.get("url", ""),
+        " ".join(t.get("title", "") for t in video.get("tags", [])),
+    ]).lower()
+    return not any(kw in text for kw in _BLOCKED_KEYWORDS)
+
+
+def fetch_stock_videos(query: str, count: int = 3) -> list[str]:
+    """Download up to `count` safe clips — skips any with flagged keywords."""
     url = "https://api.pexels.com/videos/search"
     headers = {"Authorization": PEXELS_API_KEY}
-    params = {"query": query, "per_page": count, "orientation": "portrait", "size": "small"}
+    # Request extra results so we have headroom after filtering
+    params = {"query": query, "per_page": min(count * 3, 20), "orientation": "portrait", "size": "small"}
 
     try:
         response = requests.get(url, headers=headers, params=params, timeout=15)
@@ -56,20 +72,24 @@ def fetch_stock_videos(query: str, count: int = 5) -> list[str]:
         return []
 
     paths = []
-    for i, video in enumerate(videos[:count]):
+    for video in videos:
+        if len(paths) >= count:
+            break
+        if not _is_safe_clip(video):
+            print(f"[Video] Skipped flagged clip: {video.get('url', '')}")
+            continue
         files = sorted(video["video_files"], key=lambda x: x.get("width", 0))
-        # Pick smallest file for speed
         video_url = files[0]["link"]
-        clip_path = os.path.join(VIDEO_DIR, f"clip_{i}.mp4")
+        clip_path = os.path.join(VIDEO_DIR, f"clip_{len(paths)}.mp4")
         try:
             r = requests.get(video_url, stream=True, timeout=20)
             with open(clip_path, "wb") as f:
                 for chunk in r.iter_content(chunk_size=8192):
                     f.write(chunk)
             paths.append(clip_path)
-            print(f"[Video] Downloaded clip {i+1}/{count}")
+            print(f"[Video] Downloaded clip {len(paths)}/{count}")
         except Exception as e:
-            print(f"[Video] Clip {i+1} failed: {e}")
+            print(f"[Video] Clip download failed: {e}")
     return paths
 
 
@@ -143,31 +163,6 @@ def assemble_video(
         return ""
 
 
-def build_search_query(script_data: dict) -> str:
-    combined = " ".join([
-        script_data.get("title", ""),
-        script_data.get("topic", ""),
-        script_data.get("niche", ""),
-    ]).lower()
-
-    if any(w in combined for w in ["narcos", "escobar", "pablo", "colombia", "cartel"]):
-        return "crime cartel dark city night"
-    if any(w in combined for w in ["breaking bad", "walter white", "heisenberg", "meth"]):
-        return "chemistry lab desert smoke dark"
-    if any(w in combined for w in ["money heist", "la casa", "bella ciao", "heist", "robbery"]):
-        return "bank heist mask robbery dark"
-    if any(w in combined for w in ["peaky blinders", "tommy shelby", "shelby", "birmingham"]):
-        return "vintage dark street fog smoke"
-    if any(w in combined for w in ["ozark", "byrde", "money laundering"]):
-        return "lake night crime dark money"
-    if any(w in combined for w in ["the wire", "baltimore", "drug trade"]):
-        return "city crime street night urban dark"
-    if any(w in combined for w in ["griselda", "blanco", "cocaine", "miami"]):
-        return "crime cartel dark city night"
-
-    return "crime investigation detective dark night"
-
-
 SHORTS_DIR = "output/shorts"
 Path(SHORTS_DIR).mkdir(parents=True, exist_ok=True)
 
@@ -206,6 +201,35 @@ def cut_short_clip(video_path: str, video_id: str, duration: int = 55) -> str:
         return ""
 
 
+def build_search_query(script_data: dict) -> str:
+    combined = " ".join([
+        script_data.get("title", ""),
+        script_data.get("topic", ""),
+        script_data.get("niche", ""),
+    ]).lower()
+
+    if any(w in combined for w in ["narcos", "escobar", "pablo", "colombia", "cartel"]):
+        return "colombia city documentary archive"
+    if any(w in combined for w in ["breaking bad", "walter white", "heisenberg", "meth"]):
+        return "chemistry laboratory science research"
+    if any(w in combined for w in ["money heist", "la casa", "bella ciao", "heist", "robbery"]):
+        return "bank building architecture city"
+    if any(w in combined for w in ["peaky blinders", "tommy shelby", "shelby", "birmingham"]):
+        return "vintage 1920s city street historical"
+    if any(w in combined for w in ["ozark", "byrde", "money laundering"]):
+        return "lake nature landscape missouri"
+    if any(w in combined for w in ["the wire", "baltimore", "drug trade"]):
+        return "city street urban documentary"
+    if any(w in combined for w in ["scarface", "tony montana"]):
+        return "miami city night skyline"
+    if any(w in combined for w in ["griselda", "blanco", "cocaine", "miami"]):
+        return "miami documentary city lights"
+    if any(w in combined for w in ["dahmer", "monster", "serial killer"]):
+        return "courtroom justice newspaper archive"
+
+    return "documentary film city lights archive"
+
+
 def create_video(script_data: dict, video_id: str) -> str:
     language = script_data.get("language", "english")
     print(f"[Video] Starting: {script_data['title']} ({language})")
@@ -218,7 +242,7 @@ def create_video(script_data: dict, video_id: str) -> str:
     print(f"[Video] Pexels query: '{query}'")
     clip_paths = fetch_stock_videos(query, count=5)
     if not clip_paths:
-        clip_paths = fetch_stock_videos("crime investigation", count=5)
+        clip_paths = fetch_stock_videos("documentary film city lights archive", count=5)
 
     if not clip_paths:
         print("[Video] No clips found, skipping")
