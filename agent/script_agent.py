@@ -16,16 +16,26 @@ _FALLBACK_MODELS = [
 
 
 def _groq_call(**kwargs):
-    """Try Groq models in order, falling back on rate-limit or decommission errors."""
+    """Try each model with one 40-second retry on rate limit before moving to fallback."""
     import time
     last_err = None
     for model in _FALLBACK_MODELS:
-        try:
-            time.sleep(3)
-            return _groq.chat.completions.create(model=model, **kwargs)
-        except (groq_lib.RateLimitError, groq_lib.BadRequestError) as e:
-            print(f"[Groq] {type(e).__name__} on {model}, trying next model...")
-            last_err = e
+        for attempt in range(2):
+            try:
+                time.sleep(3)
+                return _groq.chat.completions.create(model=model, **kwargs)
+            except groq_lib.RateLimitError as e:
+                last_err = e
+                if attempt == 0:
+                    print(f"[Groq] Rate limit hit — waiting 40 seconds...")
+                    time.sleep(40)
+                else:
+                    print(f"[Groq] Rate limit again on {model}, trying next model...")
+                    break
+            except groq_lib.BadRequestError as e:
+                print(f"[Groq] BadRequestError on {model}, trying next model...")
+                last_err = e
+                break
     raise last_err
 
 
@@ -78,7 +88,7 @@ Start the script immediately without preamble. Write every section fully. Do not
     r1 = _groq_call(
         messages=[{"role": "user", "content": part1_prompt}],
         temperature=0.85,
-        max_tokens=4000,
+        max_tokens=2000,
     )
     script_text = r1.choices[0].message.content.strip()
 
@@ -142,7 +152,7 @@ English script:
     t1 = _groq_call(
         messages=[{"role": "user", "content": t1_prompt}],
         temperature=0.3,
-        max_tokens=3000,
+        max_tokens=2000,
     )
     ar_script_text = t1.choices[0].message.content.strip()
 

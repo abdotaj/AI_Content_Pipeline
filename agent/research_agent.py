@@ -24,15 +24,25 @@ _FALLBACK_MODELS = [
 
 
 def _groq_call(**kwargs):
-    """Try Groq models in order, falling back on rate-limit or decommission errors."""
+    """Try each model with one 40-second retry on rate limit before moving to fallback."""
     last_err = None
     for model in _FALLBACK_MODELS:
-        try:
-            time.sleep(3)
-            return _groq.chat.completions.create(model=model, **kwargs)
-        except (groq_lib.RateLimitError, groq_lib.BadRequestError) as e:
-            print(f"[Groq] {type(e).__name__} on {model}, trying next model...")
-            last_err = e
+        for attempt in range(2):
+            try:
+                time.sleep(3)
+                return _groq.chat.completions.create(model=model, **kwargs)
+            except groq_lib.RateLimitError as e:
+                last_err = e
+                if attempt == 0:
+                    print(f"[Groq] Rate limit hit — waiting 40 seconds...")
+                    time.sleep(40)
+                else:
+                    print(f"[Groq] Rate limit again on {model}, trying next model...")
+                    break
+            except groq_lib.BadRequestError as e:
+                print(f"[Groq] BadRequestError on {model}, trying next model...")
+                last_err = e
+                break
     raise last_err
 
 COVERED_TOPICS_PATH = Path("output/covered_topics.json")
@@ -117,6 +127,7 @@ Return ONLY this JSON:
         response = _groq_call(
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
+            max_tokens=1000,
             response_format={"type": "json_object"}
         )
         data = json.loads(response.choices[0].message.content.strip())
@@ -158,6 +169,7 @@ Return ONLY this JSON:
     response = _groq_call(
         messages=[{"role": "user", "content": prompt}],
         temperature=0.9,
+        max_tokens=500,
         response_format={"type": "json_object"}
     )
     result = json.loads(response.choices[0].message.content.strip())
