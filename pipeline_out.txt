@@ -1,0 +1,59 @@
+
+==================================================
+  Content Pipeline — 2026-04-09
+==================================================
+
+[Notify] Listening for content drops on Telegram (30s)...
+[1/4] Checking content/ folder for user-provided files...
+[1/4] No content files found — researching trending topics...
+[Research] Found topic: Peaky Blinders Gang War (True crime — real story behind Peaky Blinders)
+[Research] Found topic: Pablo Escobar's Hitmen (True crime — real story behind Narcos)
+
+[2/4] Writing scripts...
+[Script] Written (arabic): '_peaky Blinders الحرب'
+[Script] Written (english): 'Peaky Blinders: Real Story'
+[Script] Written (arabic): 'مغتالو إسكوبار'
+[Script] Written (english): 'Pablo Escobar's Worst Nightmare'
+
+[3/4] Creating videos...
+[Video] Starting: _peaky Blinders الحرب (arabic)
+[Video] Voiceover saved: output/audio\2026-04-09_video_1.mp3
+[Video] Downloaded clip 1/3
+[Video] Downloaded clip 2/3
+[Video] Downloaded clip 3/3
+C:\Users\abdot\AppData\Roaming\Python\Python314\site-packages\moviepy\video\io\ffmpeg_reader.py:190: UserWarning: In file output/video\clip_2.mp4, 691200 bytes wanted but 0 bytes read at frame index 351 (out of a total 351 frames), at time 14.04/14.06 sec. Using the last valid frame instead.
+  warnings.warn(
+[Video] Final video: output/final\2026-04-09_video_1.mp4
+  Video 1 ready: output/final\2026-04-09_video_1.mp4
+[Video] Starting: Peaky Blinders: Real Story (english)
+[Video] Voiceover saved: output/audio\2026-04-09_video_2.mp3
+[Video] Downloaded clip 1/3
+[Video] Downloaded clip 2/3
+[Video] Downloaded clip 3/3
+[Video] Final video: output/final\2026-04-09_video_2.mp4
+  Video 2 ready: output/final\2026-04-09_video_2.mp4
+[Video] Starting: مغتالو إسكوبار (arabic)
+[Video] Voiceover saved: output/audio\2026-04-09_video_3.mp3
+[Video] Downloaded clip 1/3
+[Video] Downloaded clip 2/3
+[Video] Downloaded clip 3/3
+C:\Users\abdot\AppData\Roaming\Python\Python314\site-packages\moviepy\video\io\ffmpeg_reader.py:190: UserWarning: In file output/video\clip_1.mp4, 691200 bytes wanted but 0 bytes read at frame index 773 (out of a total 773 frames), at time 25.77/25.77 sec. Using the last valid frame instead.
+  warnings.warn(
+[Video] Final video: output/final\2026-04-09_video_3.mp4
+  Video 3 ready: output/final\2026-04-09_video_3.mp4
+[Video] Starting: Pablo Escobar's Worst Nightmare (english)
+[Video] Voiceover saved: output/audio\2026-04-09_video_4.mp3
+[Video] Downloaded clip 1/3
+[Video] Downloaded clip 2/3
+[Video] Downloaded clip 3/3
+[Video] Final video: output/final\2026-04-09_video_4.mp4
+  Video 4 ready: output/final\2026-04-09_video_4.mp4
+
+[4/4] Sending 4 video(s) for approval...
+  [ERROR] Publishing 2026-04-09_video_1: ('Connection aborted.', ConnectionResetError(10054, 'An existing connection was forcibly closed by the remote host', None, 10054, None))
+  [ERROR] Publishing 2026-04-09_video_2: ('Connection aborted.', ConnectionResetError(10054, 'An existing connection was forcibly closed by the remote host', None, 10054, None))
+  [ERROR] Publishing 2026-04-09_video_3: ('Connection aborted.', ConnectionResetError(10054, 'An existing connection was forcibly closed by the remote host', None, 10054, None))
+  [ERROR] Publishing 2026-04-09_video_4: ('Connection aborted.', ConnectionResetError(10054, 'An existing connection was forcibly closed by the remote host', None, 10054, None))
+
+Done. Generated: 4 | Posted: 0 | Skipped: 0
+

@@ -1,0 +1,27 @@
+Traceback (most recent call last):
+  File "<string>", line 7, in <module>
+    result = research_series('Narcos')
+  File "C:\Users\abdot\content_pipeline\agents\research_agent.py", line 106, in research_series
+    response = _claude.messages.create(
+        model="claude-opus-4-6",
+    ...<2 lines>...
+        messages=messages,
+    )
+  File "C:\Users\abdot\AppData\Roaming\Python\Python314\site-packages\anthropic\_utils\_utils.py", line 282, in wrapper
+    return func(*args, **kwargs)
+  File "C:\Users\abdot\AppData\Roaming\Python\Python314\site-packages\anthropic\resources\messages\messages.py", line 996, in create
+    return self._post(
+           ~~~~~~~~~~^
+        "/v1/messages",
+        ^^^^^^^^^^^^^^^
+    ...<30 lines>...
+        stream_cls=Stream[RawMessageStreamEvent],
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\abdot\AppData\Roaming\Python\Python314\site-packages\anthropic\_base_client.py", line 1364, in post
+    return cast(ResponseT, self.request(cast_to, opts, stream=stream, stream_cls=stream_cls))
+                           ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\abdot\AppData\Roaming\Python\Python314\site-packages\anthropic\_base_client.py", line 1137, in request
+    raise self._make_status_error_from_response(err.response) from None
+anthropic.BadRequestError: Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011CZtLyg6FkjYLAXNJD3vNU'}

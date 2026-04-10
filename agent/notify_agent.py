@@ -68,6 +68,26 @@ def send_video_preview(video_path: str, script_data: dict, video_id: str) -> str
         return "approve"
 
     print(f"[Notify] Video sent for {video_id}")
+
+    # Send short clip if it was generated
+    short_path = script_data.get("short_clip_path", "")
+    if short_path:
+        import os
+        from pathlib import Path
+        if Path(short_path).exists():
+            short_caption = f"SHORT VERSION — post this to TikTok, Instagram Reels and YouTube Shorts\n\n{hashtags}"
+            with open(short_path, "rb") as sf:
+                requests.post(
+                    f"{BASE_URL}/sendVideo",
+                    data={
+                        "chat_id": TELEGRAM_CHAT_ID,
+                        "caption": short_caption[:1024],
+                        "supports_streaming": "true",
+                    },
+                    files={"video": sf}
+                )
+            print(f"[Notify] Short clip sent for {video_id}")
+
     return wait_for_decision(video_id)
 
 

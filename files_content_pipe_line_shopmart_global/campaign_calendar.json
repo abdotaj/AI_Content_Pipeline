@@ -1,0 +1,62 @@
+{
+  "title": "شوب مارت — تقويم الحملات التسويقية | Shopmart Campaign Calendar",
+  "campaigns": [
+    {
+      "name": "رمضان | Ramadan",
+      "file": "shopmart_ramadan.json",
+      "timing": "2 weeks before Ramadan starts",
+      "discount_code": "RAMADAN25",
+      "language": "arabic",
+      "platforms": ["tiktok", "snapchat", "instagram", "facebook"]
+    },
+    {
+      "name": "عيد الفطر | Eid Al-Fitr",
+      "file": "shopmart_eid_alfitr.json",
+      "timing": "1 week before Eid Al-Fitr",
+      "discount_code": "EID25",
+      "language": "arabic",
+      "platforms": ["tiktok", "snapchat", "instagram", "facebook"]
+    },
+    {
+      "name": "عيد الأضحى | Eid Al-Adha",
+      "file": "shopmart_eid_aladha.json",
+      "timing": "1 week before Eid Al-Adha",
+      "discount_code": "ADHA25",
+      "language": "arabic",
+      "platforms": ["tiktok", "snapchat", "instagram", "facebook"]
+    },
+    {
+      "name": "اليوم الوطني السعودي | Saudi National Day",
+      "file": "shopmart_saudi_national_day.json",
+      "timing": "September 23 — 1 week before",
+      "discount_code": "SAUDI25",
+      "language": "arabic",
+      "platforms": ["tiktok", "snapchat", "instagram"]
+    },
+    {
+      "name": "وايت فرايدي | White Friday",
+      "file": "shopmart_whitefriday.json",
+      "timing": "November — Last Friday of November",
+      "discount_code": "WHITE50",
+      "language": "arabic",
+      "platforms": ["tiktok", "snapchat", "instagram", "facebook"]
+    },
+    {
+      "name": "Black Friday",
+      "file": "shopmart_blackfriday.json",
+      "timing": "November — 4th Friday of November",
+      "discount_code": "BLACKFRIDAY50",
+      "language": "english",
+      "platforms": ["tiktok", "instagram", "facebook", "youtube"]
+    },
+    {
+      "name": "New Year | رأس السنة",
+      "file": "shopmart_newyear.json",
+      "timing": "December 28 - January 1",
+      "discount_code": "NEWYEAR25",
+      "language": "english",
+      "platforms": ["tiktok", "instagram", "facebook", "youtube"]
+    }
+  ],
+  "notes": "Upload the relevant campaign file to content/ folder on GitHub 1-2 weeks before each event. The pipeline will automatically generate and send the video for approval via Telegram."
+}

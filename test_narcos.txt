@@ -1,0 +1,16 @@
+[Script] Written (english): 'Dark Crime Decoded: Narcos — The Real Story'
+Title: Dark Crime Decoded: Narcos — The Real Story
+Script word count: 1164
+[Video] Starting: Dark Crime Decoded: Narcos — The Real Story (english)
+[Video] Voiceover saved: output/audio\test_fix.mp3
+[Video] Pexels query: 'crime cartel dark city night'
+[Video] Downloaded clip 1/5
+[Video] Downloaded clip 2/5
+[Video] Downloaded clip 3/5
+[Video] Downloaded clip 4/5
+[Video] Downloaded clip 5/5
+C:\Users\abdot\AppData\Roaming\Python\Python314\site-packages\moviepy\video\io\ffmpeg_reader.py:190: UserWarning: In file output/video\clip_1.mp4, 288828 bytes wanted but 0 bytes read at frame index 420 (out of a total 420 frames), at time 16.80/16.80 sec. Using the last valid frame instead.
+  warnings.warn(
+[Video] Final video: output/final\test_fix.mp4
+[Video] Short clip saved: output/shorts\test_fix_short.mp4
+Video path: output/final\test_fix.mp4

@@ -11,10 +11,29 @@ try:
     from ddgs import DDGS
 except ImportError:
     from duckduckgo_search import DDGS
+import groq as groq_lib
 from groq import Groq
 from config import GROQ_API_KEY, NICHES, NICHE_WEIGHTS
 
 _groq = Groq(api_key=GROQ_API_KEY)
+
+_FALLBACK_MODELS = [
+    "llama-3.3-70b-versatile",
+    "mixtral-8x7b-32768",
+    "gemma2-9b-it",
+]
+
+
+def _groq_call(**kwargs):
+    """Try Groq models in order, falling back automatically on rate-limit errors."""
+    last_err = None
+    for model in _FALLBACK_MODELS:
+        try:
+            return _groq.chat.completions.create(model=model, **kwargs)
+        except groq_lib.RateLimitError as e:
+            print(f"[Groq] Rate limit on {model}, trying next model...")
+            last_err = e
+    raise last_err
 
 COVERED_TOPICS_PATH = Path("output/covered_topics.json")
 
@@ -95,8 +114,7 @@ Return ONLY this JSON:
 }}"""
 
     try:
-        response = _groq.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+        response = _groq_call(
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
             response_format={"type": "json_object"}

@@ -1,0 +1,38 @@
+[Research] Searching web for: Narcos
+C:\Users\abdot\content_pipeline\agents\research_agent.py:24: RuntimeWarning: This package (`duckduckgo_search`) has been renamed to `ddgs`! Use `pip install ddgs` instead.
+  with DDGS() as ddgs:
+C:\Users\abdot\content_pipeline\agents\research_agent.py:24: RuntimeWarning: This package (`duckduckgo_search`) has been renamed to `ddgs`! Use `pip install ddgs` instead.
+  with DDGS() as ddgs:
+C:\Users\abdot\content_pipeline\agents\research_agent.py:24: RuntimeWarning: This package (`duckduckgo_search`) has been renamed to `ddgs`! Use `pip install ddgs` instead.
+  with DDGS() as ddgs:
+C:\Users\abdot\content_pipeline\agents\research_agent.py:24: RuntimeWarning: This package (`duckduckgo_search`) has been renamed to `ddgs`! Use `pip install ddgs` instead.
+  with DDGS() as ddgs:
+[Research] Research complete: Narcos
+{
+  "series": "Narcos",
+  "real_story": "The real-world story of Narcos is based on the rise and fall of the Medellín and Cali cartels in Colombia. The Medellín cartel, led by Pablo Escobar, emerged in the late 1970s and dominated the cocaine trade in the 1980s. The cartel's success was largely due to Escobar's strategic planning and ruthless tactics. In the early 1990s, the Colombian government, with the help of the US, launched a campaign to capture Escobar, who was eventually killed in a shootout with police on December 1, 1993. The Cali cartel, led by the Rodríguez Orejuela brothers, rose to prominence in the 1990s and was eventually dismantled by the Colombian government in the early 2000s. The show also touches on the M-19 communist radical group, which was active in Colombia from the 1970s to the 1990s and was involved in various kidnappings and attacks, including the Palace of Justice siege in 1985.",
+  "what_show_got_right": [
+    "Pablo Escobar was the leader of the Medellín cartel",
+    "The Medellín cartel dominated the cocaine trade in the 1980s",
+    "The Colombian government launched a campaign to capture Escobar",
+    "Escobar was killed in a shootout with police on December 1, 1993",
+    "The Cali cartel rose to prominence in the 1990s"
+  ],
+  "what_show_got_wrong": [
+    "The show portrays the DEA as having a more significant role in the capture of Escobar than they actually did",
+    "The show exaggerates the role of the M-19 communist radical group in the conflict",
+    "The show does not accurately depict the complexity of the Colombian political landscape at the time"
+  ],
+  "shocking_real_facts": [
+    "Pablo Escobar was responsible for the deaths of over 4,000 people",
+    "The Medellín cartel made over $420 million per week at the height of its power",
+    "The Cali cartel was involved in the assassination of Colombian presidential candidate Luis Carlos Galán in 1989",
+    "The Colombian government's war on the cartels resulted in the displacement of over 2 million people"
+  ],
+  "real_people_behind_characters": {
+    "Pablo Escobar": "Pablo Emilio Escobar Gaviria, leader of the Medellín cartel, killed in a shootout with police on December 1, 1993",
+    "Javier Peña": "Javier Peña, DEA agent, played a key role in the hunt for Escobar",
+    "Steve Murphy": "Steve Murphy, DEA agent, worked with the Colombian government to dismantle the cartels",
+    "Gustavo Gaviria": "Gustavo Gaviria, Pablo Escobar's cousin and right-hand man, killed in a shootout with police in 1990"
+  }
+}
