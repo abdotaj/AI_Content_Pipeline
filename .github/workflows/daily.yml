@@ -18,7 +18,7 @@ jobs:
       github.event_name == 'workflow_dispatch' && (github.event.inputs.channel == 'darkcrimed' || github.event.inputs.channel == 'both') ||
       github.event_name == 'schedule' && startsWith(github.event.schedule, '0 4')
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 55
 
     steps:
       - name: Checkout code
@@ -47,6 +47,7 @@ jobs:
 
       - name: Run Dark Crime pipeline
         env:
+          VIDEOS_PER_DAY:                    "1"
           GROQ_API_KEY:                      ${{ secrets.GROQ_API_KEY }}
           GEMINI_API_KEY:                    ${{ secrets.GEMINI_API_KEY }}
           ELEVENLABS_API_KEY:                ${{ secrets.ELEVENLABS_API_KEY }}
@@ -83,7 +84,7 @@ jobs:
       github.event_name == 'workflow_dispatch' && (github.event.inputs.channel == 'shopmart' || github.event.inputs.channel == 'both') ||
       github.event_name == 'schedule' && startsWith(github.event.schedule, '0 6')
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 20
 
     steps:
       - name: Checkout code
@@ -112,6 +113,7 @@ jobs:
 
       - name: Run Shopmart pipeline
         env:
+          VIDEOS_PER_DAY:                   "1"
           GROQ_API_KEY:                     ${{ secrets.GROQ_API_KEY }}
           GEMINI_API_KEY:                   ${{ secrets.GEMINI_API_KEY }}
           ELEVENLABS_API_KEY:               ${{ secrets.ELEVENLABS_API_KEY }}

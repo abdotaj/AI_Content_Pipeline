@@ -16,6 +16,16 @@ _YOUTUBE_TOKEN_FILE = getattr(_cfg, "YOUTUBE_TOKEN_FILE", "youtube_token.json")
 
 # ── YOUTUBE ─────────────────────────────────────────────────
 
+def _get_video_duration(video_path: str) -> float:
+    """Return video duration in seconds, or 999 on error."""
+    try:
+        from moviepy import VideoFileClip
+        with VideoFileClip(video_path) as clip:
+            return clip.duration
+    except Exception:
+        return 999.0
+
+
 def upload_to_youtube(video_path: str, script_data: dict) -> str:
     try:
         from google.oauth2.credentials import Credentials
@@ -61,10 +71,19 @@ def upload_to_youtube(video_path: str, script_data: dict) -> str:
 
         youtube = build("youtube", "v3", credentials=creds)
 
+        # Detect Shorts vs long-form by duration
+        duration = _get_video_duration(video_path)
+        is_short = duration <= 60
+        print(f"[Publish] Video duration: {duration:.1f}s → {'Shorts' if is_short else 'long-form'}")
+
         title    = script_data.get("title", "Untitled")
         caption  = script_data.get("caption", script_data.get("title", ""))
         hashtags = script_data.get("hashtags", "")
         keywords = script_data.get("keywords", [])
+
+        # Add #Shorts tag to description for short videos so YouTube classifies them
+        if is_short and "#Shorts" not in hashtags:
+            hashtags = f"#Shorts {hashtags}".strip()
 
         body = {
             "snippet": {
@@ -92,7 +111,8 @@ def upload_to_youtube(video_path: str, script_data: dict) -> str:
             if status:
                 print(f"[Publish] YouTube {int(status.progress() * 100)}%")
 
-        url = f"https://youtube.com/shorts/{response['id']}"
+        video_id = response["id"]
+        url = f"https://youtube.com/shorts/{video_id}" if is_short else f"https://youtube.com/watch?v={video_id}"
         print(f"[Publish] YouTube: {url}")
         return url
 

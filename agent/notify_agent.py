@@ -204,6 +204,37 @@ def listen_for_content(timeout: int = 60) -> None:
         elapsed += poll_interval
 
 
+def send_for_manual_posting(video_path: str, script_data: dict, platforms: str) -> None:
+    """Send a video to Telegram for manual posting — no approval buttons."""
+    title    = clean_text(script_data.get("title", ""))
+    hashtags = script_data.get("hashtags", "")
+
+    caption_text = (
+        f"MANUAL POST NEEDED\n\n"
+        f"Title: {title}\n"
+        f"Post to: {platforms}\n\n"
+        f"{hashtags}"
+    )
+
+    try:
+        with open(video_path, "rb") as video_file:
+            r = requests.post(
+                f"{BASE_URL}/sendVideo",
+                data={
+                    "chat_id": TELEGRAM_CHAT_ID,
+                    "caption": caption_text[:1024],
+                    "supports_streaming": "true",
+                },
+                files={"video": video_file}
+            )
+        if r.ok:
+            print(f"[Notify] Clip sent to Telegram for manual posting ({platforms})")
+        else:
+            print(f"[Notify] Failed to send for manual posting: {r.text}")
+    except Exception as e:
+        print(f"[Notify] Manual posting notification failed: {e}")
+
+
 def send_daily_report(stats: dict) -> None:
     msg = (
         f"Daily Report\n\n"

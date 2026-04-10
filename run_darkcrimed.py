@@ -1,7 +1,11 @@
 # ============================================================
 #  run_darkcrimed.py  —  Pipeline entry point for Dark Crime Decoded
-#  Patches 'config' module before any agent import so all agents
-#  pick up Dark Crime settings (niches, output paths, token file).
+#
+#  Daily output:
+#    • 1 long-form video (12 min) → auto-post to YouTube
+#    • 1 short clip (55 sec) cut from the long video
+#      → sent to Telegram for manual posting to TikTok, Instagram Reels,
+#        and YouTube Shorts
 # ============================================================
 import os
 import sys
@@ -21,7 +25,10 @@ sys.path.insert(0, os.path.dirname(__file__))
 import config_darkcrimed
 sys.modules["config"] = config_darkcrimed
 
-from config_darkcrimed import VIDEOS_PER_DAY, FINAL_DIR, CONTENT_DIR, YOUTUBE_TOKEN_FILE
+from config_darkcrimed import (
+    VIDEOS_PER_DAY, FINAL_DIR, CONTENT_DIR, YOUTUBE_TOKEN_FILE,
+    SHORT_CLIP_DURATION,
+)
 
 # Write YouTube token from env secret (CI) or use existing file (local)
 _yt_token_json = os.getenv("YOUTUBE_TOKEN_JSON_DARKCRIMED")
@@ -30,9 +37,9 @@ if _yt_token_json:
 
 from agent.research_agent import research_topics, research_series, mark_covered
 from agent.script_agent   import write_scripts
-from agent.video_agent    import create_video
-from agent.notify_agent   import send_message, send_video_preview, send_daily_report, listen_for_content
-from agent.publish_agent  import publish_video
+from agent.video_agent    import create_video, cut_short_clip
+from agent.notify_agent   import send_message, send_for_manual_posting, send_daily_report, listen_for_content
+from agent.publish_agent  import upload_to_youtube
 from agents.content_agent import ingest_content_files
 
 
@@ -44,7 +51,7 @@ def run_pipeline():
     print(f"  Dark Crime Decoded Pipeline — {today}")
     print(f"{'='*50}\n")
 
-    send_message(f"*Dark Crime Decoded* — Pipeline starting {today}")
+    send_message(f"Dark Crime Decoded — Pipeline starting {today}")
 
     listen_for_content(timeout=30)
 
@@ -81,59 +88,78 @@ def run_pipeline():
             return
 
     print("\n[3/4] Creating videos...")
-    video_queue = []
     for i, script_data in enumerate(scripts):
         video_id = f"{today}_darkcrimed_{i+1}"
         try:
+            # Build long-form video (12 min); cut_short_clip is called inside create_video
             video_path = create_video(script_data, video_id)
-            if video_path and Path(video_path).exists():
-                video_queue.append((video_path, script_data, video_id))
-                stats["generated"] += 1
-                print(f"  Video {i+1} ready: {video_path}")
-            else:
+            if not video_path or not Path(video_path).exists():
                 stats["errors"] += 1
+                continue
+
+            stats["generated"] += 1
+            print(f"  Long video ready: {video_path}")
+
+            # Ensure a 55-sec short clip exists (create_video stores it in script_data)
+            short_path = script_data.get("short_clip_path", "")
+            if not short_path or not Path(short_path).exists():
+                short_path = cut_short_clip(video_path, video_id, duration=SHORT_CLIP_DURATION)
+                script_data["short_clip_path"] = short_path
+
         except Exception as e:
             print(f"  [ERROR] Video {i+1}: {e}")
             stats["errors"] += 1
+            continue
 
-    if not video_queue:
-        send_message("No videos generated today. Check logs.")
-        return
+        print(f"\n[4/4] Publishing video {i+1}...")
 
-    print(f"\n[4/4] Sending {len(video_queue)} video(s) for approval...")
-    for video_path, script_data, video_id in video_queue:
+        # ── Long video → YouTube (auto-post, no approval needed) ──────────
         try:
-            decision = send_video_preview(video_path, script_data, video_id)
-            if decision == "approve":
-                results = publish_video(video_path, script_data)
-                log_entry = {
-                    "date": today, "channel": "dark_crime", "video_id": video_id,
-                    "title": script_data["title"], "niche": script_data["niche"],
-                    "youtube": results.get("youtube", ""), "facebook": results.get("facebook", ""),
-                    "tiktok": results.get("tiktok", ""),  "instagram": results.get("instagram", ""),
-                }
-                _save_log(log_entry)
-                stats["posted"] += 1
-                series = script_data.get("series") or script_data.get("niche", "").split("behind")[-1].strip()
-                if series:
-                    try:
-                        mark_covered(series, video_id)
-                    except Exception:
-                        pass
-                send_message(
-                    f"Posted *{script_data['title']}*\n"
-                    f"YouTube: {results.get('youtube', '-')}\n"
-                    f"TikTok: {results.get('tiktok', '-')}"
-                )
-            else:
-                stats["skipped"] += 1
+            yt_url = upload_to_youtube(video_path, script_data)
+            stats["posted"] += 1
         except Exception as e:
-            print(f"  [ERROR] Publishing {video_id}: {e}")
-            send_message(f"Error publishing {video_id}: {e}")
+            yt_url = ""
+            print(f"  [ERROR] YouTube upload: {e}")
+            send_message(f"YouTube upload failed for {video_id}: {e}")
             stats["errors"] += 1
 
+        # ── Short clip → Telegram for manual posting ───────────────────────
+        short_path = script_data.get("short_clip_path", "")
+        if short_path and Path(short_path).exists():
+            try:
+                send_for_manual_posting(
+                    short_path, script_data,
+                    "TikTok + Instagram Reels + YouTube Shorts"
+                )
+            except Exception as e:
+                print(f"  [WARN] Telegram short clip send failed: {e}")
+        else:
+            print("  [WARN] Short clip not found — skipping Telegram send")
+
+        # Mark topic covered and log
+        series = script_data.get("series") or script_data.get("niche", "").split("behind")[-1].strip()
+        if series:
+            try:
+                mark_covered(series, video_id)
+            except Exception:
+                pass
+
+        log_entry = {
+            "date": today, "channel": "dark_crime", "video_id": video_id,
+            "title": script_data.get("title", ""), "niche": script_data.get("niche", ""),
+            "youtube": yt_url,
+            "short_clip": short_path,
+        }
+        _save_log(log_entry)
+
+        send_message(
+            f"Dark Crime Decoded — {script_data.get('title', video_id)}\n"
+            f"YouTube (long): {yt_url or 'failed'}\n"
+            f"Short clip sent to Telegram for manual posting"
+        )
+
     send_daily_report(stats)
-    print(f"\nDone. Generated: {stats['generated']} | Posted: {stats['posted']} | Skipped: {stats['skipped']}\n")
+    print(f"\nDone. Generated: {stats['generated']} | Posted: {stats['posted']} | Errors: {stats['errors']}\n")
 
 
 def _save_log(entry: dict):

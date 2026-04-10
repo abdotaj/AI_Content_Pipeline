@@ -55,8 +55,8 @@ NICHES = [
 
 NICHE_WEIGHTS = [0.20, 0.15, 0.15, 0.12, 0.12, 0.10, 0.08, 0.08]
 
-VIDEOS_PER_DAY = 2
-VIDEO_DURATION_SECONDS = 90        # Short-form product videos
+VIDEOS_PER_DAY = 1
+VIDEO_DURATION_SECONDS = 60        # Short-form product videos (YouTube Shorts limit)
 VIDEO_WIDTH  = 1080
 VIDEO_HEIGHT = 1920
 

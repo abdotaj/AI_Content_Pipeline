@@ -1,7 +1,9 @@
 # ============================================================
 #  run_shopmart.py  —  Pipeline entry point for Shopmart Global
-#  Patches 'config' module before any agent import so all agents
-#  pick up Shopmart settings (niches, output paths, token file).
+#
+#  Daily output:
+#    • 1 short video (60 sec) → auto-post to YouTube Shorts
+#    • Same video → sent to Telegram for manual posting to TikTok + Instagram
 # ============================================================
 import os
 import sys
@@ -31,8 +33,8 @@ if _yt_token_json:
 from agent.research_agent import research_topics, research_series, mark_covered
 from agent.script_agent   import write_scripts
 from agent.video_agent    import create_video
-from agent.notify_agent   import send_message, send_video_preview, send_daily_report, listen_for_content
-from agent.publish_agent  import publish_video
+from agent.notify_agent   import send_message, send_for_manual_posting, send_daily_report, listen_for_content
+from agent.publish_agent  import upload_to_youtube
 from agents.content_agent import ingest_content_files
 
 
@@ -44,7 +46,7 @@ def run_pipeline():
     print(f"  Shopmart Global Pipeline — {today}")
     print(f"{'='*50}\n")
 
-    send_message(f"*Shopmart Global* — Pipeline starting {today}")
+    send_message(f"Shopmart Global — Pipeline starting {today}")
 
     listen_for_content(timeout=30)
 
@@ -81,53 +83,58 @@ def run_pipeline():
             return
 
     print("\n[3/4] Creating videos...")
-    video_queue = []
     for i, script_data in enumerate(scripts):
         video_id = f"{today}_shopmart_{i+1}"
         try:
             video_path = create_video(script_data, video_id)
-            if video_path and Path(video_path).exists():
-                video_queue.append((video_path, script_data, video_id))
-                stats["generated"] += 1
-                print(f"  Video {i+1} ready: {video_path}")
-            else:
+            if not video_path or not Path(video_path).exists():
                 stats["errors"] += 1
+                continue
+
+            stats["generated"] += 1
+            print(f"  Video ready: {video_path}")
+
         except Exception as e:
             print(f"  [ERROR] Video {i+1}: {e}")
             stats["errors"] += 1
+            continue
 
-    if not video_queue:
-        send_message("No videos generated today. Check logs.")
-        return
+        print(f"\n[4/4] Publishing video {i+1}...")
 
-    print(f"\n[4/4] Sending {len(video_queue)} video(s) for approval...")
-    for video_path, script_data, video_id in video_queue:
+        # ── Short video → YouTube Shorts (auto-post, no approval needed) ──
         try:
-            decision = send_video_preview(video_path, script_data, video_id)
-            if decision == "approve":
-                results = publish_video(video_path, script_data)
-                log_entry = {
-                    "date": today, "channel": "shopmart", "video_id": video_id,
-                    "title": script_data["title"], "niche": script_data["niche"],
-                    "youtube": results.get("youtube", ""), "facebook": results.get("facebook", ""),
-                    "tiktok": results.get("tiktok", ""),  "instagram": results.get("instagram", ""),
-                }
-                _save_log(log_entry)
-                stats["posted"] += 1
-                send_message(
-                    f"Posted *{script_data['title']}*\n"
-                    f"YouTube: {results.get('youtube', '-')}\n"
-                    f"Instagram: {results.get('instagram', '-')}"
-                )
-            else:
-                stats["skipped"] += 1
+            yt_url = upload_to_youtube(video_path, script_data)
+            stats["posted"] += 1
         except Exception as e:
-            print(f"  [ERROR] Publishing {video_id}: {e}")
-            send_message(f"Error publishing {video_id}: {e}")
+            yt_url = ""
+            print(f"  [ERROR] YouTube upload: {e}")
+            send_message(f"YouTube upload failed for {video_id}: {e}")
             stats["errors"] += 1
 
+        # ── Same video → Telegram for manual posting ───────────────────────
+        try:
+            send_for_manual_posting(
+                video_path, script_data,
+                "TikTok + Instagram"
+            )
+        except Exception as e:
+            print(f"  [WARN] Telegram send failed: {e}")
+
+        log_entry = {
+            "date": today, "channel": "shopmart", "video_id": video_id,
+            "title": script_data.get("title", ""), "niche": script_data.get("niche", ""),
+            "youtube": yt_url,
+        }
+        _save_log(log_entry)
+
+        send_message(
+            f"Shopmart Global — {script_data.get('title', video_id)}\n"
+            f"YouTube Shorts: {yt_url or 'failed'}\n"
+            f"Video sent to Telegram for manual posting"
+        )
+
     send_daily_report(stats)
-    print(f"\nDone. Generated: {stats['generated']} | Posted: {stats['posted']} | Skipped: {stats['skipped']}\n")
+    print(f"\nDone. Generated: {stats['generated']} | Posted: {stats['posted']} | Errors: {stats['errors']}\n")
 
 
 def _save_log(entry: dict):
