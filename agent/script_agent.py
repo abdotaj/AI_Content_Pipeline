@@ -11,17 +11,17 @@ _groq = Groq(api_key=GROQ_API_KEY)
 
 _FALLBACK_MODELS = [
     "llama-3.3-70b-versatile",   # primary
-    "llama-3.1-8b-instant",      # fallback 1
-    "mixtral-8x7b-32768",        # fallback 2
-    "llama3-70b-8192",           # fallback 3
+    "llama-3.1-8b-instant",      # fallback
 ]
 
 
 def _groq_call(**kwargs):
     """Try Groq models in order, falling back on rate-limit or decommission errors."""
+    import time
     last_err = None
     for model in _FALLBACK_MODELS:
         try:
+            time.sleep(3)
             return _groq.chat.completions.create(model=model, **kwargs)
         except (groq_lib.RateLimitError, groq_lib.BadRequestError) as e:
             print(f"[Groq] {type(e).__name__} on {model}, trying next model...")
