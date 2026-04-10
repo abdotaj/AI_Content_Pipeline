@@ -32,6 +32,8 @@ def upload_to_youtube(video_path: str, script_data: dict) -> str:
         return ""
 
     try:
+        import json as _json
+
         creds = Credentials.from_authorized_user_file(
             TOKEN_FILE,
             ["https://www.googleapis.com/auth/youtube.upload"]
@@ -40,9 +42,22 @@ def upload_to_youtube(video_path: str, script_data: dict) -> str:
         if creds.expired and creds.refresh_token:
             print("[Publish] YouTube token expired — refreshing...")
             creds.refresh(Request())
-            with open(TOKEN_FILE, "w") as f:
-                f.write(creds.to_json())
+            # Preserve channel_id when re-saving refreshed token
+            with open(TOKEN_FILE, "r+", encoding="utf-8") as f:
+                existing = _json.load(f)
+                updated  = _json.loads(creds.to_json())
+                if "channel_id" in existing:
+                    updated["channel_id"] = existing["channel_id"]
+                f.seek(0); f.truncate()
+                _json.dump(updated, f, indent=2)
             print("[Publish] YouTube token refreshed.")
+
+        # Read channel_id saved during auth flow (informational / future CMS use)
+        with open(TOKEN_FILE, encoding="utf-8") as f:
+            _token_meta = _json.load(f)
+        _channel_id = _token_meta.get("channel_id", "")
+        if _channel_id:
+            print(f"[Publish] Uploading to YouTube channel: {_channel_id}")
 
         youtube = build("youtube", "v3", credentials=creds)
 
@@ -319,26 +334,116 @@ def tiktok_auth_flow():
         print(f"       Warning: no access_token in response: {token_data}")
 
 
+def youtube_auth_flow(token_file: str = "youtube_token.json") -> None:
+    """
+    Full YouTube OAuth flow with channel selection.
+    Lists all channels on the authenticated Google account,
+    prompts the user to pick one, saves credentials + channel_id
+    to token_file.
+
+    Usage:
+        python agents/publish_agent.py --auth-youtube
+        python agents/publish_agent.py --auth-youtube --channel darkcrimed
+        python agents/publish_agent.py --auth-youtube --channel shopmart
+    """
+    import json
+    from google_auth_oauthlib.flow import InstalledAppFlow
+    from googleapiclient.discovery import build
+
+    client_config = {
+        "installed": {
+            "client_id": YOUTUBE_CLIENT_ID,
+            "client_secret": YOUTUBE_CLIENT_SECRET,
+            "redirect_uris": ["urn:ietf:wg:oauth:2.0:oob"],
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token"
+        }
+    }
+
+    print(f"\n[Auth] Starting YouTube OAuth flow → will save to: {token_file}")
+    print("[Auth] A browser window will open. Sign in and grant access.\n")
+
+    flow = InstalledAppFlow.from_client_config(
+        client_config,
+        scopes=[
+            "https://www.googleapis.com/auth/youtube.upload",
+            "https://www.googleapis.com/auth/youtube.readonly",
+        ]
+    )
+    creds = flow.run_local_server(port=0)
+
+    # ── List channels on this account ────────────────────────
+    youtube = build("youtube", "v3", credentials=creds)
+    resp = youtube.channels().list(
+        part="snippet", mine=True, maxResults=50
+    ).execute()
+    channels = resp.get("items", [])
+
+    channel_id = ""
+
+    if not channels:
+        print("[Auth] No YouTube channels found on this account.")
+
+    elif len(channels) == 1:
+        ch = channels[0]
+        channel_id = ch["id"]
+        name   = ch["snippet"]["title"]
+        handle = ch["snippet"].get("customUrl", channel_id)
+        print(f"\n[Auth] One channel found: {name} ({handle})")
+        print(f"       Channel ID: {channel_id}")
+
+    else:
+        print("\n[Auth] Channels on this Google account:")
+        for i, ch in enumerate(channels, 1):
+            name   = ch["snippet"]["title"]
+            handle = ch["snippet"].get("customUrl", ch["id"])
+            print(f"  [{i}] {name} ({handle})")
+
+        while True:
+            raw = input(f"\nSelect channel [1-{len(channels)}]: ").strip()
+            if raw.isdigit() and 1 <= int(raw) <= len(channels):
+                selected   = channels[int(raw) - 1]
+                channel_id = selected["id"]
+                name       = selected["snippet"]["title"]
+                handle     = selected["snippet"].get("customUrl", channel_id)
+                print(f"[Auth] Selected: {name} ({handle})")
+                print(f"       Channel ID: {channel_id}")
+                break
+            print(f"  Invalid — enter a number between 1 and {len(channels)}.")
+
+    # ── Save credentials + channel_id ────────────────────────
+    token_data = json.loads(creds.to_json())
+    if channel_id:
+        token_data["channel_id"] = channel_id
+
+    with open(token_file, "w", encoding="utf-8") as f:
+        json.dump(token_data, f, indent=2)
+
+    print(f"\n[Auth] Token saved to {token_file}")
+    if channel_id:
+        print(f"       Uploads from this token will go to channel: {channel_id}")
+
+
 if __name__ == "__main__":
     import sys
+
+    # ── Parse --channel argument ─────────────────────────────
+    _CHANNEL_TOKEN_MAP = {
+        "darkcrimed": "youtube_token_darkcrimed.json",
+        "shopmart":   "youtube_token_shopmart.json",
+    }
+
+    def _get_arg(flag: str) -> str:
+        """Return the value after `flag` in sys.argv, or ''."""
+        try:
+            return sys.argv[sys.argv.index(flag) + 1]
+        except (ValueError, IndexError):
+            return ""
+
     if "--auth-youtube" in sys.argv:
-        from google_auth_oauthlib.flow import InstalledAppFlow
-        client_config = {
-            "installed": {
-                "client_id": YOUTUBE_CLIENT_ID,
-                "client_secret": YOUTUBE_CLIENT_SECRET,
-                "redirect_uris": ["urn:ietf:wg:oauth:2.0:oob"],
-                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-                "token_uri": "https://oauth2.googleapis.com/token"
-            }
-        }
-        flow = InstalledAppFlow.from_client_config(
-            client_config,
-            scopes=["https://www.googleapis.com/auth/youtube.upload"]
-        )
-        creds = flow.run_local_server(port=0)
-        with open("youtube_token.json", "w") as f:
-            f.write(creds.to_json())
-        print("[Auth] YouTube token saved!")
+        channel_slug = _get_arg("--channel")
+        out_file = _CHANNEL_TOKEN_MAP.get(channel_slug, "youtube_token.json")
+        youtube_auth_flow(token_file=out_file)
+
     elif "--auth-tiktok" in sys.argv:
         tiktok_auth_flow()
