@@ -11,10 +11,29 @@ try:
     from ddgs import DDGS
 except ImportError:
     from duckduckgo_search import DDGS
+import groq as groq_lib
 from groq import Groq
 from config import GROQ_API_KEY, NICHES, NICHE_WEIGHTS
 
 _groq = Groq(api_key=GROQ_API_KEY)
+
+_FALLBACK_MODELS = [
+    "llama-3.3-70b-versatile",
+    "llama-3.1-8b-instant",
+    "gemma2-9b-it",
+]
+
+
+def _groq_call(**kwargs):
+    """Try Groq models in order, falling back on rate-limit or decommission errors."""
+    last_err = None
+    for model in _FALLBACK_MODELS:
+        try:
+            return _groq.chat.completions.create(model=model, **kwargs)
+        except (groq_lib.RateLimitError, groq_lib.BadRequestError) as e:
+            print(f"[Groq] {type(e).__name__} on {model}, trying next model...")
+            last_err = e
+    raise last_err
 
 COVERED_TOPICS_PATH = Path("output/covered_topics.json")
 
@@ -95,8 +114,7 @@ Return ONLY this JSON:
 }}"""
 
     try:
-        response = _groq.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+        response = _groq_call(
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
             response_format={"type": "json_object"}
@@ -137,8 +155,7 @@ Return ONLY this JSON:
   "search_query": "crime dark night investigation"
 }}"""
 
-    response = _groq.chat.completions.create(
-        model="llama-3.3-70b-versatile",
+    response = _groq_call(
         messages=[{"role": "user", "content": prompt}],
         temperature=0.9,
         response_format={"type": "json_object"}
@@ -222,11 +239,10 @@ Return a JSON with:
 Return only valid JSON, no other text."""
 
     try:
-        response = _groq.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+        response = _groq_call(
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
-            max_tokens=3000,
+            max_tokens=2000,
             response_format={"type": "json_object"}
         )
         data = json.loads(response.choices[0].message.content.strip())

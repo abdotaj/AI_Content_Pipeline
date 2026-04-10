@@ -3,11 +3,15 @@
 #  X/Twitter removed (requires paid plan)
 # ============================================================
 import os
+import config as _cfg
 from config import (
     TIKTOK_SESSION_ID, YOUTUBE_CLIENT_ID, YOUTUBE_CLIENT_SECRET,
     INSTAGRAM_ACCESS_TOKEN, INSTAGRAM_BUSINESS_ID,
     FACEBOOK_ACCESS_TOKEN, FACEBOOK_PAGE_ID,
 )
+
+# Token file: channel configs expose YOUTUBE_TOKEN_FILE; fall back to default
+_YOUTUBE_TOKEN_FILE = getattr(_cfg, "YOUTUBE_TOKEN_FILE", "youtube_token.json")
 
 
 # ── YOUTUBE ─────────────────────────────────────────────────
@@ -22,7 +26,7 @@ def upload_to_youtube(video_path: str, script_data: dict) -> str:
         print("[Publish] Install: pip install google-api-python-client google-auth")
         return ""
 
-    TOKEN_FILE = "youtube_token.json"
+    TOKEN_FILE = _YOUTUBE_TOKEN_FILE
     if not os.path.exists(TOKEN_FILE):
         print("[Publish] YouTube token not found. Skipping.")
         return ""
@@ -42,11 +46,16 @@ def upload_to_youtube(video_path: str, script_data: dict) -> str:
 
         youtube = build("youtube", "v3", credentials=creds)
 
+        title    = script_data.get("title", "Untitled")
+        caption  = script_data.get("caption", script_data.get("title", ""))
+        hashtags = script_data.get("hashtags", "")
+        keywords = script_data.get("keywords", [])
+
         body = {
             "snippet": {
-                "title": script_data["title"],
-                "description": f"{script_data['caption']}\n\n{script_data['hashtags']}",
-                "tags": script_data["keywords"],
+                "title": title,
+                "description": f"{caption}\n\n{hashtags}".strip(),
+                "tags": keywords,
                 "categoryId": "22"
             },
             "status": {
@@ -92,7 +101,9 @@ def upload_to_tiktok(video_path: str, script_data: dict) -> str:
         }
 
         video_size = os.path.getsize(video_path)
-        caption = f"{script_data['caption']} {script_data['hashtags']}"[:2200]
+        _caption  = script_data.get("caption", script_data.get("title", ""))
+        _hashtags = script_data.get("hashtags", "")
+        caption = f"{_caption} {_hashtags}".strip()[:2200]
 
         init_payload = {
             "post_info": {
@@ -140,7 +151,9 @@ def upload_to_instagram(video_path: str, script_data: dict) -> str:
     try:
         import requests
 
-        caption = f"{script_data['caption']} {script_data['hashtags']}"[:2200]
+        _caption  = script_data.get("caption", script_data.get("title", ""))
+        _hashtags = script_data.get("hashtags", "")
+        caption = f"{_caption} {_hashtags}".strip()[:2200]
         base_url = f"https://graph.facebook.com/v19.0/{INSTAGRAM_BUSINESS_ID}"
 
         # Step 1: Create media container
@@ -183,14 +196,16 @@ def upload_to_facebook(video_path: str, script_data: dict) -> str:
     try:
         import requests
 
-        description = f"{script_data['caption']} {script_data['hashtags']}"[:63206]
+        _caption  = script_data.get("caption", script_data.get("title", ""))
+        _hashtags = script_data.get("hashtags", "")
+        description = f"{_caption} {_hashtags}".strip()[:63206]
         upload_url = f"https://graph-video.facebook.com/v18.0/{FACEBOOK_PAGE_ID}/videos"
 
         with open(video_path, "rb") as video_file:
             upload_r = requests.post(
                 upload_url,
                 data={
-                    "title": script_data["title"],
+                    "title": script_data.get("title", "Untitled"),
                     "description": description,
                     "access_token": FACEBOOK_ACCESS_TOKEN,
                 },

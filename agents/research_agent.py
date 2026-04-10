@@ -19,19 +19,19 @@ _groq = Groq(api_key=GROQ_API_KEY)
 
 _FALLBACK_MODELS = [
     "llama-3.3-70b-versatile",
-    "mixtral-8x7b-32768",
+    "llama-3.1-8b-instant",
     "gemma2-9b-it",
 ]
 
 
 def _groq_call(**kwargs):
-    """Try Groq models in order, falling back automatically on rate-limit errors."""
+    """Try Groq models in order, falling back on rate-limit or decommission errors."""
     last_err = None
     for model in _FALLBACK_MODELS:
         try:
             return _groq.chat.completions.create(model=model, **kwargs)
-        except groq_lib.RateLimitError as e:
-            print(f"[Groq] Rate limit on {model}, trying next model...")
+        except (groq_lib.RateLimitError, groq_lib.BadRequestError) as e:
+            print(f"[Groq] {type(e).__name__} on {model}, trying next model...")
             last_err = e
     raise last_err
 
@@ -155,8 +155,7 @@ Return ONLY this JSON:
   "search_query": "crime dark night investigation"
 }}"""
 
-    response = _groq.chat.completions.create(
-        model="llama-3.3-70b-versatile",
+    response = _groq_call(
         messages=[{"role": "user", "content": prompt}],
         temperature=0.9,
         response_format={"type": "json_object"}
@@ -240,11 +239,10 @@ Return a JSON with:
 Return only valid JSON, no other text."""
 
     try:
-        response = _groq.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+        response = _groq_call(
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
-            max_tokens=3000,
+            max_tokens=2000,
             response_format={"type": "json_object"}
         )
         data = json.loads(response.choices[0].message.content.strip())

@@ -3,10 +3,30 @@
 #  English for YouTube, Arabic is a direct translation
 # ============================================================
 import json
+import groq as groq_lib
 from groq import Groq
 from config import GROQ_API_KEY
 
-client = Groq(api_key=GROQ_API_KEY)
+_groq = Groq(api_key=GROQ_API_KEY)
+
+_FALLBACK_MODELS = [
+    "llama-3.3-70b-versatile",
+    "llama-3.1-8b-instant",
+    "gemma2-9b-it",
+]
+
+
+def _groq_call(**kwargs):
+    """Try Groq models in order, falling back on rate-limit or decommission errors."""
+    last_err = None
+    for model in _FALLBACK_MODELS:
+        try:
+            return _groq.chat.completions.create(model=model, **kwargs)
+        except (groq_lib.RateLimitError, groq_lib.BadRequestError) as e:
+            print(f"[Groq] {type(e).__name__} on {model}, trying next model...")
+            last_err = e
+    raise last_err
+
 
 title_format = "Dark Crime Decoded: {series} — {curiosity_hook}"
 
@@ -54,8 +74,7 @@ REQUIREMENTS:
 
 Start the script immediately without preamble. Write every section fully. Do not stop until you have written {word_count} words."""
 
-    r1 = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
+    r1 = _groq_call(
         messages=[{"role": "user", "content": part1_prompt}],
         temperature=0.85,
         max_tokens=4000,
@@ -84,8 +103,7 @@ Return ONLY this JSON with no extra text:
   "thumbnail_text": "4-word thumbnail text"
 }}"""
 
-    r2 = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
+    r2 = _groq_call(
         messages=[{"role": "user", "content": part2_prompt}],
         temperature=0.3,
         max_tokens=800,
@@ -120,8 +138,7 @@ Keep the same tone, structure, and all facts. Translate naturally and accurately
 English script:
 {en_script['script']}"""
 
-    t1 = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
+    t1 = _groq_call(
         messages=[{"role": "user", "content": t1_prompt}],
         temperature=0.3,
         max_tokens=3000,
@@ -140,8 +157,7 @@ Return ONLY this JSON with no extra text:
   "thumbnail_text": "Arabic translation of: {en_script['thumbnail_text']}"
 }}"""
 
-    t2 = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
+    t2 = _groq_call(
         messages=[{"role": "user", "content": t2_prompt}],
         temperature=0.3,
         max_tokens=800,
