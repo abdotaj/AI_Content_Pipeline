@@ -139,52 +139,35 @@ Return ONLY this JSON with no extra text:
     return script_data
 
 
-def translate_script(en_script: dict) -> dict:
-    """Translate an English script_data dict into Arabic, keeping all metadata."""
-    # ── Part 1: Translate the script body only ──────────────────────────────
-    t1_prompt = f"""Translate the following English voiceover script to Arabic.
-Output ONLY the Arabic translation — no labels, no JSON, no preamble.
-Keep the same tone, structure, and all facts. Translate naturally and accurately.
-
-English script:
-{en_script['script']}"""
-
-    t1 = _groq_call(
-        messages=[{"role": "user", "content": t1_prompt}],
-        temperature=0.3,
-        max_tokens=2000,
-    )
-    ar_script_text = t1.choices[0].message.content.strip()
-
-    # ── Part 2: Translate short metadata fields only ─────────────────────────
-    t2_prompt = f"""Translate these English video metadata fields to Arabic.
-Return ONLY this JSON with no extra text:
-{{
-  "title": "Arabic translation of: {en_script['title']}",
-  "hook": "Arabic translation of: {en_script['hook']}",
-  "on_screen_texts": ["Arabic of: {en_script['on_screen_texts'][0] if en_script['on_screen_texts'] else ''}", "Arabic of: {en_script['on_screen_texts'][1] if len(en_script['on_screen_texts']) > 1 else ''}", "Arabic of: {en_script['on_screen_texts'][2] if len(en_script['on_screen_texts']) > 2 else ''}", "Arabic of: {en_script['on_screen_texts'][3] if len(en_script['on_screen_texts']) > 3 else ''}"],
-  "caption": "Arabic translation of: {en_script['caption']}",
-  "hashtags": "Arabic/transliterated hashtags based on: {en_script['hashtags']}",
-  "thumbnail_text": "Arabic translation of: {en_script['thumbnail_text']}"
-}}"""
-
-    t2 = _groq_call(
-        messages=[{"role": "user", "content": t2_prompt}],
-        temperature=0.3,
-        max_tokens=800,
-        response_format={"type": "json_object"},
-    )
-    meta = json.loads(t2.choices[0].message.content.strip())
-    ar_data = {
-        "title":          meta.get("title", en_script["title"]),
-        "hook":           meta.get("hook", en_script["hook"]),
-        "script":         ar_script_text,
-        "on_screen_texts": meta.get("on_screen_texts", en_script["on_screen_texts"]),
-        "caption":        meta.get("caption", en_script["caption"]),
-        "hashtags":       meta.get("hashtags", en_script["hashtags"]),
-        "thumbnail_text": meta.get("thumbnail_text", en_script["thumbnail_text"]),
+def translate_to_arabic(text: str) -> str:
+    """Translate English text to Arabic using Google Translate free REST API."""
+    url = "https://translate.googleapis.com/translate_a/single"
+    params = {
+        "client": "gtx",
+        "sl": "en",
+        "tl": "ar",
+        "dt": "t",
+        "q": text,
     }
-    # Copy non-text metadata from English version
+    import requests as _requests
+    response = _requests.get(url, params=params)
+    response.raise_for_status()
+    result = response.json()
+    translated = "".join([item[0] for item in result[0]])
+    return translated
+
+
+def translate_script(en_script: dict) -> dict:
+    """Translate an English script_data dict into Arabic using Google Translate."""
+    ar_data = {
+        "title":          translate_to_arabic(en_script["title"]),
+        "hook":           translate_to_arabic(en_script["hook"]),
+        "script":         translate_to_arabic(en_script["script"]),
+        "on_screen_texts": [translate_to_arabic(t) for t in en_script["on_screen_texts"]],
+        "caption":        translate_to_arabic(en_script["caption"]),
+        "hashtags":       translate_to_arabic(en_script["hashtags"]),
+        "thumbnail_text": translate_to_arabic(en_script["thumbnail_text"]),
+    }
     ar_data["topic"]        = en_script["topic"]
     ar_data["niche"]        = en_script["niche"]
     ar_data["search_query"] = en_script["search_query"]

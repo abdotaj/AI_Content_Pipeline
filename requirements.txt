@@ -11,3 +11,4 @@ tiktok-uploader>=0.0.8
 python-dotenv>=1.0.0
 tweepy>=4.14.0
 anthropic>=0.40.0
+google-cloud-translate==2.0.1
