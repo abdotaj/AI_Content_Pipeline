@@ -80,9 +80,12 @@ jobs:
 
   # ── Job 2: Shopmart Global ────────────────────────────────────────────────
   shopmart-pipeline:
+    needs: dark-crime-pipeline
     if: >
-      github.event_name == 'workflow_dispatch' && (github.event.inputs.channel == 'shopmart' || github.event.inputs.channel == 'both') ||
-      github.event_name == 'schedule' && startsWith(github.event.schedule, '0 6')
+      always() && (
+        github.event_name == 'workflow_dispatch' && (github.event.inputs.channel == 'shopmart' || github.event.inputs.channel == 'both') ||
+        github.event_name == 'schedule' && startsWith(github.event.schedule, '0 6')
+      )
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
