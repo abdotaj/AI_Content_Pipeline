@@ -10,9 +10,10 @@ from config import GROQ_API_KEY
 _groq = Groq(api_key=GROQ_API_KEY)
 
 _FALLBACK_MODELS = [
-    "llama-3.3-70b-versatile",
-    "llama-3.1-8b-instant",
-    "gemma2-9b-it",
+    "llama-3.3-70b-versatile",   # primary
+    "llama-3.1-8b-instant",      # fallback 1
+    "mixtral-8x7b-32768",        # fallback 2
+    "llama3-70b-8192",           # fallback 3
 ]
 
 
