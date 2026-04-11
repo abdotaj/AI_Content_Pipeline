@@ -22,7 +22,8 @@ def get_voice(language: str) -> str:
     return voices.get(language.lower(), "en-US-GuyNeural")
 
 
-def generate_voiceover(script_text: str, filename: str, language: str = "english") -> str:
+def generate_voiceover_edgetts(script_text: str, filename: str, language: str = "english") -> str:
+    """Generate voiceover using edge-tts."""
     try:
         import edge_tts
     except ImportError:
@@ -37,8 +38,53 @@ def generate_voiceover(script_text: str, filename: str, language: str = "english
         await communicate.save(audio_path)
 
     asyncio.run(_generate())
-    print(f"[Video] Voiceover saved: {audio_path}")
+    print(f"[Video] Voiceover saved (edge-tts): {audio_path}")
     return audio_path
+
+
+def generate_voiceover(script_text: str, filename: str, language: str = "english") -> str:
+    """Generate voiceover — ElevenLabs if configured, edge-tts as fallback."""
+    from config import ELEVENLABS_API_KEY, ELEVENLABS_VOICE_ID_EN, ELEVENLABS_VOICE_ID_AR, ELEVENLABS_VOICE_ID
+
+    api_key = ELEVENLABS_API_KEY
+    if not api_key or api_key == "YOUR_ELEVENLABS_KEY":
+        return generate_voiceover_edgetts(script_text, filename, language)
+
+    voice_ids = {
+        "english": ELEVENLABS_VOICE_ID_EN or ELEVENLABS_VOICE_ID,
+        "arabic":  ELEVENLABS_VOICE_ID_AR or ELEVENLABS_VOICE_ID,
+    }
+    voice_id = voice_ids.get(language.lower(), ELEVENLABS_VOICE_ID)
+    if not voice_id:
+        return generate_voiceover_edgetts(script_text, filename, language)
+
+    url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
+    headers = {
+        "Accept": "audio/mpeg",
+        "Content-Type": "application/json",
+        "xi-api-key": api_key,
+    }
+    data = {
+        "text": script_text,
+        "model_id": "eleven_multilingual_v2",
+        "voice_settings": {
+            "stability": 0.5,
+            "similarity_boost": 0.75,
+            "style": 0.5,
+            "use_speaker_boost": True,
+        },
+    }
+
+    audio_path = os.path.join(AUDIO_DIR, f"{filename}.mp3")
+    response = requests.post(url, json=data, headers=headers, timeout=120)
+    if response.status_code == 200:
+        with open(audio_path, "wb") as f:
+            f.write(response.content)
+        print(f"[Video] Voiceover saved (ElevenLabs): {audio_path}")
+        return audio_path
+
+    print(f"[Voice] ElevenLabs failed ({response.status_code}) — falling back to edge-tts")
+    return generate_voiceover_edgetts(script_text, filename, language)
 
 
 _BLOCKED_KEYWORDS = {
