@@ -48,7 +48,8 @@ from agent.script_agent   import write_script, translate_script
 from agent.video_agent    import create_video, cut_short_clip
 from agent.notify_agent   import (
     send_message, send_for_manual_posting, send_daily_report,
-    listen_for_content, send_script_preview, listen_for_voice_message,
+    listen_for_content, send_arabic_script_preview, send_english_script_preview,
+    listen_for_voice_message,
 )
 from agent.publish_agent  import upload_to_youtube
 from agents.content_agent import ingest_content_files
@@ -112,17 +113,24 @@ def run_pipeline():
         ar_script = None
 
     # ── STEP 2c: Send scripts to Telegram + wait for voice messages ──
-    print("\n[2c/4] Sending scripts to Telegram...")
+    # Arabic is priority: send Arabic first, record it first
+    print("\n[2c/4] Sending Arabic script to Telegram...")
     try:
-        send_script_preview(en_script, ar_script)
+        send_arabic_script_preview(ar_script) if ar_script else None
     except Exception as e:
-        print(f"  [WARN] Script preview send failed: {e}")
+        print(f"  [WARN] Arabic script preview send failed: {e}")
 
-    print("[2d/4] Waiting for English voice message (10 min)...")
-    en_voice_path = listen_for_voice_message("english", timeout=600)
-
-    print("[2e/4] Waiting for Arabic voice message (30 min)...")
+    print("[2d/4] Waiting for Arabic voice message (30 min)...")
     ar_voice_path = listen_for_voice_message("arabic", timeout=1800)
+
+    print("[2e/4] Sending English script to Telegram...")
+    try:
+        send_english_script_preview(en_script)
+    except Exception as e:
+        print(f"  [WARN] English script preview send failed: {e}")
+
+    print("[2f/4] Waiting for English voice message (20 min)...")
+    en_voice_path = listen_for_voice_message("english", timeout=1200)
 
     # ── STEP 3: Generate English long-form video ───────────────
     print("\n[3/4] Creating English long-form video...")
