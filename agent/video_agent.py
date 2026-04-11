@@ -230,13 +230,15 @@ def build_search_query(script_data: dict) -> str:
     return "documentary film city lights archive"
 
 
-def create_video(script_data: dict, video_id: str) -> str:
+def create_video(script_data: dict, video_id: str, custom_audio_path: str = "") -> str:
     language = script_data.get("language", "english")
     print(f"[Video] Starting: {script_data['title']} ({language})")
 
-    audio_path = generate_voiceover(
-        script_data["script"], video_id, language
-    )
+    if custom_audio_path and Path(custom_audio_path).exists():
+        audio_path = custom_audio_path
+        print(f"[Video] Using custom audio: {audio_path}")
+    else:
+        audio_path = generate_voiceover(script_data["script"], video_id, language)
 
     query = build_search_query(script_data)
     print(f"[Video] Pexels query: '{query}'")

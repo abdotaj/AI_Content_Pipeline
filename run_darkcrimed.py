@@ -46,7 +46,10 @@ if _yt_token_json:
 from agent.research_agent import research_topics, research_series, mark_covered
 from agent.script_agent   import write_script, translate_script
 from agent.video_agent    import create_video, cut_short_clip
-from agent.notify_agent   import send_message, send_for_manual_posting, send_daily_report, listen_for_content
+from agent.notify_agent   import (
+    send_message, send_for_manual_posting, send_daily_report,
+    listen_for_content, send_script_preview, listen_for_voice_message,
+)
 from agent.publish_agent  import upload_to_youtube
 from agents.content_agent import ingest_content_files
 
@@ -108,11 +111,24 @@ def run_pipeline():
         print(f"[ERROR] Translation: {e}")
         ar_script = None
 
+    # ── STEP 2c: Send scripts to Telegram + wait for voice messages ──
+    print("\n[2c/4] Sending scripts to Telegram...")
+    try:
+        send_script_preview(en_script, ar_script)
+    except Exception as e:
+        print(f"  [WARN] Script preview send failed: {e}")
+
+    print("[2d/4] Waiting for English voice message (10 min)...")
+    en_voice_path = listen_for_voice_message("english", timeout=600)
+
+    print("[2e/4] Waiting for Arabic voice message (30 min)...")
+    ar_voice_path = listen_for_voice_message("arabic", timeout=1800)
+
     # ── STEP 3: Generate English long-form video ───────────────
     print("\n[3/4] Creating English long-form video...")
     en_video_id = f"{today}_{uuid.uuid4().hex[:8]}_english"
     try:
-        en_video_path = create_video(en_script, en_video_id)
+        en_video_path = create_video(en_script, en_video_id, custom_audio_path=en_voice_path)
         if not en_video_path or not Path(en_video_path).exists():
             raise RuntimeError("create_video returned no file")
         stats["generated"] += 1
@@ -155,7 +171,7 @@ def run_pipeline():
         print("\n  Creating Arabic short video...")
         ar_video_id = f"{today}_{uuid.uuid4().hex[:8]}_arabic"
         try:
-            ar_video_path = create_video(ar_script, ar_video_id)
+            ar_video_path = create_video(ar_script, ar_video_id, custom_audio_path=ar_voice_path)
             if not ar_video_path or not Path(ar_video_path).exists():
                 raise RuntimeError("create_video returned no file")
             stats["generated"] += 1

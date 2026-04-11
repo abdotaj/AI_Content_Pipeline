@@ -235,6 +235,143 @@ def send_for_manual_posting(video_path: str, script_data: dict, platforms: str) 
         print(f"[Notify] Manual posting notification failed: {e}")
 
 
+def _add_section_headers(script: str, intro_label: str, main_label: str, conclusion_label: str) -> str:
+    """Divide a continuous script into three labelled sections."""
+    paragraphs = [p.strip() for p in script.split("\n\n") if p.strip()]
+    if not paragraphs:
+        paragraphs = [script]
+    n = len(paragraphs)
+    intro_end        = max(1, n // 5)
+    conclusion_start = max(intro_end + 1, (n * 4) // 5)
+    intro      = "\n\n".join(paragraphs[:intro_end])
+    main       = "\n\n".join(paragraphs[intro_end:conclusion_start])
+    conclusion = "\n\n".join(paragraphs[conclusion_start:])
+    parts = []
+    if intro:
+        parts.append(f"{intro_label}:\n{intro}")
+    if main:
+        parts.append(f"{main_label}:\n{main}")
+    if conclusion:
+        parts.append(f"{conclusion_label}:\n{conclusion}")
+    return "\n─────────────────\n".join(parts)
+
+
+def _send_long_text(text: str, max_len: int = 3900) -> None:
+    """Send text to Telegram, splitting at paragraph breaks if too long."""
+    text = text.strip()
+    while text:
+        if len(text) <= max_len:
+            send_message(text)
+            break
+        chunk = text[:max_len]
+        split = chunk.rfind("\n\n")
+        if split < max_len // 2:
+            split = chunk.rfind("\n")
+        if split < max_len // 2:
+            split = max_len
+        send_message(text[:split].rstrip())
+        text = text[split:].lstrip()
+
+
+def send_script_preview(en_script: dict, ar_script: dict | None = None) -> None:
+    """Send English and Arabic scripts to Telegram before video assembly."""
+    # ── English ──────────────────────────────────────────────
+    en_body = _add_section_headers(
+        en_script.get("script", ""),
+        intro_label="INTRO", main_label="MAIN STORY", conclusion_label="CONCLUSION",
+    )
+    en_msg = (
+        f"ENGLISH SCRIPT\n\n"
+        f"Title: {en_script.get('title', '')}\n"
+        f"─────────────────\n"
+        f"{en_body}\n"
+        f"─────────────────\n"
+        f"Send English voice message to use your voice.\n"
+        f"Or wait — AI voice used automatically in 10 minutes."
+    )
+    _send_long_text(en_msg)
+    print("[Notify] English script sent to Telegram")
+
+    # ── Arabic ───────────────────────────────────────────────
+    if ar_script:
+        ar_body = _add_section_headers(
+            ar_script.get("script", ""),
+            intro_label="مقدمة", main_label="القصة الرئيسية", conclusion_label="الخاتمة",
+        )
+        ar_msg = (
+            f"النص العربي\n\n"
+            f"العنوان: {ar_script.get('title', '')}\n"
+            f"─────────────────\n"
+            f"{ar_body}\n"
+            f"─────────────────\n"
+            f"أرسل رسالة صوتية بالعربي لاستخدام صوتك.\n"
+            f"أو انتظر — سيتم استخدام الصوت الآلي تلقائياً خلال 30 دقيقة."
+        )
+        _send_long_text(ar_msg)
+        print("[Notify] Arabic script sent to Telegram")
+
+
+def listen_for_voice_message(language: str, timeout: int = 600) -> str:
+    """
+    Poll Telegram for a voice message up to `timeout` seconds.
+    Returns the local path to the downloaded audio file, or "" if none received.
+    """
+    import os
+    from pathlib import Path
+
+    audio_dir = Path("output/voice_messages")
+    audio_dir.mkdir(parents=True, exist_ok=True)
+
+    print(f"[Notify] Waiting for {language} voice message ({timeout}s)...")
+    offset = None
+    elapsed = 0
+    poll_interval = 5
+
+    while elapsed < timeout:
+        params = {"timeout": poll_interval, "allowed_updates": ["message"]}
+        if offset:
+            params["offset"] = offset
+        try:
+            r = requests.get(f"{BASE_URL}/getUpdates", params=params, timeout=poll_interval + 5)
+            updates = r.json().get("result", [])
+        except Exception:
+            time.sleep(poll_interval)
+            elapsed += poll_interval
+            continue
+
+        for update in updates:
+            offset = update["update_id"] + 1
+            msg = update.get("message", {})
+            voice = msg.get("voice") or msg.get("audio")
+            if not voice:
+                continue
+            file_id = voice.get("file_id", "")
+            if not file_id:
+                continue
+            try:
+                file_r = requests.get(f"{BASE_URL}/getFile", params={"file_id": file_id}, timeout=10)
+                file_path = file_r.json().get("result", {}).get("file_path", "")
+                if not file_path:
+                    continue
+                dl_r = requests.get(
+                    f"https://api.telegram.org/file/bot{TELEGRAM_BOT_TOKEN}/{file_path}",
+                    timeout=30
+                )
+                ext = os.path.splitext(file_path)[1] or ".ogg"
+                out_path = audio_dir / f"voice_{language}_{update['update_id']}{ext}"
+                out_path.write_bytes(dl_r.content)
+                print(f"[Notify] {language} voice received: {out_path}")
+                send_message(f"Voice message received! Using your voice for the {language} video.")
+                return str(out_path)
+            except Exception as e:
+                print(f"[Notify] Voice download failed: {e}")
+
+        elapsed += poll_interval
+
+    print(f"[Notify] No {language} voice message received — using AI voice")
+    return ""
+
+
 def send_daily_report(stats: dict) -> None:
     msg = (
         f"Daily Report\n\n"
