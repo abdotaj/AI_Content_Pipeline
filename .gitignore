@@ -3,6 +3,7 @@ __pycache__/
 *.pyo
 .env
 output/
+output/images/
 youtube_token.json
 tiktok_token.json
 .tiktok_pkce_verifier
