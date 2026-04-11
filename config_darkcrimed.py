@@ -43,21 +43,26 @@ CHANNEL = "Dark Crime Decoded"
 
 # --- Content Settings ---
 NICHES = [
-    "True crime — real story behind Breaking Bad",
-    "True crime — real story behind Narcos",
-    "True crime — real story behind Money Heist",
-    "True crime — real story behind Peaky Blinders",
-    "True crime — real story behind Ozark",
-    "True crime — real story behind The Wire",
-    "True crime — real story behind Griselda",
-    "True crime — real story behind The Punisher",
-    "True crime — real story behind The Godfather",
-    "True crime — real story behind Goodfellas",
-    "True crime — real story behind American Crime Story",
-    "True crime — criminal psychology behind famous crime series",
+    "Real story behind The Godfather movie",
+    "Real story behind Scarface movie",
+    "Real story behind Narcos Netflix series",
+    "Real story behind Money Heist Netflix series",
+    "Real story behind Breaking Bad series",
+    "Real story behind Peaky Blinders series",
+    "Real story behind Goodfellas movie",
+    "Real story behind Casino movie",
+    "Real story behind Ozark Netflix series",
+    "Real story behind The Wire series",
+    "Real story behind Griselda Netflix series",
+    "Real story behind American Gangster movie",
+    "Real story behind Donnie Brasco movie",
+    "Real story behind City of God movie",
+    "Real story behind Sicario movie",
 ]
 
-NICHE_WEIGHTS = [0.15, 0.15, 0.10, 0.10, 0.08, 0.08, 0.08, 0.07, 0.07, 0.05, 0.05, 0.02]
+NICHE_WEIGHTS = [0.10, 0.10, 0.10, 0.08, 0.08,
+                 0.08, 0.08, 0.07, 0.07, 0.07,
+                 0.06, 0.05, 0.04, 0.01, 0.01]
 
 VIDEOS_PER_DAY = 1
 VIDEO_DURATION_SECONDS = 720       # 12 minutes
