@@ -219,52 +219,34 @@ def research_topics(count: int = 2) -> list[dict]:
 
 def research_series(series_name: str) -> dict:
     """
-    Search DuckDuckGo for real facts about a series, then use Groq
-    to structure them for the script agent.
+    Search DuckDuckGo for real facts about a series and return raw results
+    directly — no Groq call, no API cost.
     """
     print(f"[Research] Searching web for: {series_name}")
 
-    facts    = web_search(f"{series_name} real true story historical facts")
-    wrong    = web_search(f"{series_name} what Netflix got wrong inaccurate")
-    shocking = web_search(f"{series_name} shocking facts left out real story")
-    people   = web_search(f"{series_name} real people characters based on")
+    def _search_snippets(query: str, max_results: int = 5) -> list[str]:
+        try:
+            with DDGS() as ddgs:
+                results = list(ddgs.text(query, max_results=max_results))
+            return [r.get("body", "") for r in results if r.get("body")]
+        except Exception as e:
+            print(f"[Research] DDG search error: {e}")
+            return []
 
-    prompt = f"""You are a crime documentary researcher.
-Based on this research about {series_name}:
+    facts    = _search_snippets(f"{series_name} real true story historical facts", 5)
+    wrong    = _search_snippets(f"{series_name} what show got wrong inaccurate", 3)
+    shocking = _search_snippets(f"{series_name} shocking facts real story", 3)
+    people   = _search_snippets(f"{series_name} real people characters based on", 3)
 
-FACTS: {facts}
-INACCURACIES: {wrong}
-SHOCKING DETAILS: {shocking}
-REAL PEOPLE: {people}
-
-Return a JSON with:
-{{
-    "series": "{series_name}",
-    "real_story": "2-3 paragraph summary of the real-world story with specific facts and dates",
-    "what_show_got_right": ["specific verified fact 1", "fact 2", "fact 3", "fact 4", "fact 5"],
-    "what_show_got_wrong": ["specific inaccuracy 1", "inaccuracy 2", "inaccuracy 3"],
-    "shocking_real_facts": ["shocking fact 1", "fact 2", "fact 3", "fact 4"],
-    "real_people_behind_characters": {{
-        "character name": "real person: full name, role, fate"
-    }}
-}}
-Return only valid JSON, no other text."""
-
-    try:
-        response = _groq_call(
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.3,
-            max_tokens=2000,
-            response_format={"type": "json_object"}
-        )
-        data = json.loads(response.choices[0].message.content.strip())
-        print(f"[Research] Research complete: {series_name}")
-        return data
-    except Exception as e:
-        print(f"[Research] Research failed for '{series_name}': {e}")
-
+    print(f"[Research] Research complete (DDG only): {series_name}")
     return {
-        "series": series_name, "real_story": "",
-        "what_show_got_right": [], "what_show_got_wrong": [],
-        "shocking_real_facts": [], "real_people_behind_characters": {}
+        "series":                      series_name,
+        "real_story":                  " ".join(facts),
+        "what_show_got_right":         facts[:5],
+        "what_show_got_wrong":         wrong[:3],
+        "shocking_real_facts":         shocking[:4],
+        "real_people_behind_characters": {
+            f"character_{i}": snippet
+            for i, snippet in enumerate(people[:3])
+        },
     }
