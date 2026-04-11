@@ -5,6 +5,7 @@ import os
 import sys
 import json
 import datetime
+import uuid
 from pathlib import Path
 
 # Force UTF-8 output on Windows so Arabic/Unicode prints don't crash
@@ -80,7 +81,8 @@ def run_pipeline():
     video_queue = []
 
     for i, script_data in enumerate(scripts):
-        video_id = f"{today}_video_{i+1}"
+        language = script_data.get("language", "english")
+        video_id = f"{today}_{uuid.uuid4().hex[:8]}_{language}"
         try:
             video_path = create_video(script_data, video_id)
             if video_path and Path(video_path).exists():
