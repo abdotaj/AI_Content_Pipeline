@@ -461,12 +461,17 @@ def generate_ai_image(prompt: str, output_path: str, width: int = 1080, height: 
     encoded = requests.utils.quote(prompt)
     url = f"https://image.pollinations.ai/prompt/{encoded}?width={width}&height={height}&nologo=true"
 
+    # Always save as PNG — avoids imageio backend issues on Linux/CI
+    output_path = output_path.replace(".jpg", ".png")
+
     for attempt in range(retries):
         try:
             response = requests.get(url, timeout=120)
             if response.status_code == 200:
-                with open(output_path, "wb") as f:
-                    f.write(response.content)
+                import io
+                from PIL import Image as PILImage
+                img = PILImage.open(io.BytesIO(response.content)).convert("RGB")
+                img.save(output_path, "PNG")
                 print(f"[Image] Generated: {prompt[:60]}")
                 return output_path
             elif response.status_code == 429:
@@ -482,7 +487,7 @@ def generate_ai_image(prompt: str, output_path: str, width: int = 1080, height: 
     # Fallback: solid dark background so assembly never crashes
     from PIL import Image as PILImage
     img = PILImage.new("RGB", (width, height), color=(13, 13, 26))
-    img.save(output_path)
+    img.save(output_path, "PNG")
     print(f"[Image] Using dark background fallback for: {prompt[:60]}")
     return output_path
 
@@ -490,11 +495,16 @@ def generate_ai_image(prompt: str, output_path: str, width: int = 1080, height: 
 # ── MoviePy clip helpers ───────────────────────────────────────────────────────
 
 def image_to_clip(image_path: str, duration: int = 4):
-    """Still image → video clip with Ken Burns zoom + fade in/out."""
+    """Still image → video clip with Ken Burns zoom + fade in/out.
+    Uses PIL+numpy to bypass imageio backend requirements on Linux/CI."""
+    import numpy as np
+    from PIL import Image as PILImage
     from moviepy import ImageClip
     from moviepy.video.fx import FadeIn, FadeOut
 
-    clip = ImageClip(image_path, duration=duration)
+    pil_img = PILImage.open(image_path).convert("RGB")
+    img_array = np.array(pil_img)
+    clip = ImageClip(img_array, duration=duration)
     clip = clip.resized(lambda t: 1 + 0.03 * t)
     clip = clip.with_effects([FadeIn(0.5), FadeOut(0.5)])
     return clip

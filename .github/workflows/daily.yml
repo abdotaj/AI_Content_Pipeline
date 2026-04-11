@@ -52,6 +52,7 @@ jobs:
           pip install --upgrade pip
           pip install moviepy==1.0.3
           pip install -r requirements.txt
+          pip install "imageio[ffmpeg]" opencv-python-headless
 
       - name: Write YouTube token (Dark Crime)
         run: echo '${{ secrets.YOUTUBE_TOKEN_JSON_DARKCRIMED }}' > youtube_token_darkcrimed.json
@@ -132,6 +133,7 @@ jobs:
           pip install --upgrade pip
           pip install moviepy==1.0.3
           pip install -r requirements.txt
+          pip install "imageio[ffmpeg]" opencv-python-headless
 
       - name: Write YouTube token (Shopmart)
         run: echo '${{ secrets.YOUTUBE_TOKEN_JSON_SHOPMART }}' > youtube_token_shopmart.json
