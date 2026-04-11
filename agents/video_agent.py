@@ -51,6 +51,7 @@ def generate_voiceover(script_text: str, filename: str, language: str = "english
     from config import ELEVENLABS_API_KEY, ELEVENLABS_VOICE_ID_EN, ELEVENLABS_VOICE_ID_AR, ELEVENLABS_VOICE_ID
 
     api_key = ELEVENLABS_API_KEY
+    print(f"[Voice] ElevenLabs key: {'set' if api_key and api_key != 'YOUR_ELEVENLABS_KEY' else 'MISSING'}")
     if not api_key or api_key == "YOUR_ELEVENLABS_KEY":
         return generate_voiceover_edgetts(script_text, filename, language)
 
@@ -59,6 +60,7 @@ def generate_voiceover(script_text: str, filename: str, language: str = "english
         "arabic":  ELEVENLABS_VOICE_ID_AR or ELEVENLABS_VOICE_ID,
     }
     voice_id = voice_ids.get(language.lower(), ELEVENLABS_VOICE_ID)
+    print(f"[Voice] Voice ID ({language}): {'set' if voice_id else 'MISSING'}")
     if not voice_id:
         return generate_voiceover_edgetts(script_text, filename, language)
 
@@ -141,21 +143,35 @@ def generate_image_prompts(title: str, niche: str, script: str = "") -> list[str
     return prompts
 
 
-def generate_ai_image(prompt: str, output_path: str, width: int = 1080, height: int = 1920) -> str | None:
-    """Fetch an AI-generated image from Pollinations (free, no API key)."""
+def generate_ai_image(prompt: str, output_path: str, width: int = 1080, height: int = 1920, retries: int = 3) -> str:
+    """Fetch an AI-generated image from Pollinations with retry + dark fallback."""
     encoded = requests.utils.quote(prompt)
     url = f"https://image.pollinations.ai/prompt/{encoded}?width={width}&height={height}&nologo=true"
-    try:
-        response = requests.get(url, timeout=60)
-        if response.status_code == 200:
-            with open(output_path, "wb") as f:
-                f.write(response.content)
-            print(f"[Image] Generated: {prompt[:60]}")
-            return output_path
-        print(f"[Image] Pollinations returned {response.status_code}")
-    except Exception as e:
-        print(f"[Image] Failed: {e}")
-    return None
+
+    for attempt in range(retries):
+        try:
+            response = requests.get(url, timeout=120)
+            if response.status_code == 200:
+                with open(output_path, "wb") as f:
+                    f.write(response.content)
+                print(f"[Image] Generated: {prompt[:60]}")
+                return output_path
+            elif response.status_code == 429:
+                print(f"[Image] Rate limited, waiting 30s... (attempt {attempt + 1}/{retries})")
+                time.sleep(30)
+            else:
+                print(f"[Image] Pollinations returned {response.status_code} (attempt {attempt + 1}/{retries})")
+                time.sleep(10)
+        except Exception as e:
+            print(f"[Image] Attempt {attempt + 1} failed: {e}")
+            time.sleep(15)
+
+    # Fallback: solid dark background so assembly never crashes
+    from PIL import Image as PILImage
+    img = PILImage.new("RGB", (width, height), color=(13, 13, 26))
+    img.save(output_path)
+    print(f"[Image] Using dark background fallback for: {prompt[:60]}")
+    return output_path
 
 
 # ── MoviePy clip helpers ───────────────────────────────────────────────────────
@@ -171,14 +187,38 @@ def image_to_clip(image_path: str, duration: int = 4):
     return clip
 
 
+def _detect_font() -> str | None:
+    """Return the first usable font path/name for TextClip on this system."""
+    candidates = [
+        "C:/Windows/Fonts/arialbd.ttf",
+        "C:/Windows/Fonts/Arial.ttf",
+        "DejaVu-Sans-Bold",
+        "Arial-Bold",
+        "Arial",
+    ]
+    from moviepy import TextClip as _TC
+    for font in candidates:
+        try:
+            _TC(font=font, text="test", font_size=20).close()
+            return font
+        except Exception:
+            continue
+    return None
+
+
 def add_text_overlay(clip, text: str, position: str = "top"):
     """Burn a text label onto a clip. Returns original clip on failure."""
     try:
         from moviepy import TextClip, CompositeVideoClip
 
+        font = _detect_font()
+        if font is None:
+            print("[Video] No usable font found — text overlay skipped")
+            return clip
+
         txt = (
             TextClip(
-                font="DejaVu-Sans-Bold",
+                font=font,
                 text=text,
                 font_size=45,
                 color="white",
@@ -362,7 +402,7 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "") 
             clip = image_to_clip(result, duration=4)
             clip = add_text_overlay(clip, "Dark Crime Decoded", "top")
             image_clips.append(clip)
-        time.sleep(2)  # respect Pollinations rate limit
+        time.sleep(5)  # respect Pollinations rate limit
 
     if not image_clips:
         print("[Video] No images generated, skipping")
