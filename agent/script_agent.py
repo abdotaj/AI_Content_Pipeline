@@ -177,6 +177,48 @@ def translate_script(en_script: dict) -> dict:
     return ar_data
 
 
+def write_short_script(en_long_script: dict) -> dict:
+    """Generate a ~130-word hook script for a 55-second short video."""
+    prompt = f"""You are creating a 55-second short video for TikTok and YouTube Shorts.
+Write a punchy 130-word voiceover script based on the topic below.
+
+Topic: {en_long_script['topic']}
+Full script opening (for context): {en_long_script['script'][:600]}
+
+REQUIREMENTS:
+- Write EXACTLY 130 words — count every word
+- Opening: one shocking hook sentence to stop the scroll
+- Middle: 2-3 most explosive real facts from the story
+- End: "Follow Dark Crime Decoded for the full story"
+- No headers, no bullet points — continuous spoken text only
+
+Output ONLY the script text, nothing else."""
+
+    r = _groq_call(
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.85,
+        max_tokens=400,
+    )
+    script_text = r.choices[0].message.content.strip()
+
+    short_data = {
+        "title":           en_long_script["title"],
+        "hook":            en_long_script["hook"],
+        "script":          script_text,
+        "on_screen_texts": en_long_script.get("on_screen_texts", [])[:2],
+        "caption":         en_long_script["caption"],
+        "hashtags":        en_long_script["hashtags"],
+        "thumbnail_text":  en_long_script["thumbnail_text"],
+        "topic":           en_long_script["topic"],
+        "niche":           en_long_script["niche"],
+        "search_query":    en_long_script["search_query"],
+        "keywords":        en_long_script["keywords"],
+        "language":        "english",
+    }
+    print(f"[Script] Written (english short): '{short_data['title']}'")
+    return short_data
+
+
 def write_scripts(topics: list[dict]) -> list[dict]:
     """Write English script then translate to Arabic for each topic."""
     scripts = []

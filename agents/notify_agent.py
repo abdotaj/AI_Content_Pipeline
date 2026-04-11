@@ -280,42 +280,42 @@ def send_script_preview(en_script: dict, ar_script: dict | None = None) -> None:
         send_arabic_script_preview(ar_script)
 
 
-def send_english_script_preview(script: dict) -> None:
-    """Send English script to Telegram."""
+def send_english_script_preview(script: dict, label: str = "ENGLISH SCRIPT") -> None:
+    """Send English script to Telegram. `label` appears as the message header."""
     body = _add_section_headers(
         script.get("script", ""),
         intro_label="INTRO", main_label="MAIN STORY", conclusion_label="CONCLUSION",
     )
     msg = (
-        f"ENGLISH SCRIPT\n\n"
+        f"{label}\n\n"
         f"Title: {script.get('title', '')}\n"
         f"─────────────────\n"
         f"{body}\n"
         f"─────────────────\n"
-        f"Send English voice message to use your voice.\n"
-        f"Or wait — AI voice used automatically in 20 minutes."
+        f"Send voice message to use your voice.\n"
+        f"Or wait — AI voice used automatically in 60 minutes."
     )
     _send_long_text(msg)
-    print("[Notify] English script sent to Telegram")
+    print(f"[Notify] English script sent to Telegram ({label})")
 
 
-def send_arabic_script_preview(script: dict) -> None:
-    """Send Arabic script to Telegram."""
+def send_arabic_script_preview(script: dict, label: str = "النص العربي") -> None:
+    """Send Arabic script to Telegram. `label` appears as the message header."""
     body = _add_section_headers(
         script.get("script", ""),
         intro_label="مقدمة", main_label="القصة الرئيسية", conclusion_label="الخاتمة",
     )
     msg = (
-        f"النص العربي\n\n"
+        f"{label}\n\n"
         f"العنوان: {script.get('title', '')}\n"
         f"─────────────────\n"
         f"{body}\n"
         f"─────────────────\n"
-        f"أرسل رسالة صوتية بالعربي لاستخدام صوتك.\n"
-        f"أو انتظر — سيتم استخدام الصوت الآلي تلقائياً خلال 30 دقيقة."
+        f"أرسل رسالة صوتية لاستخدام صوتك.\n"
+        f"أو انتظر — سيتم استخدام الصوت الآلي تلقائياً خلال 60 دقيقة."
     )
     _send_long_text(msg)
-    print("[Notify] Arabic script sent to Telegram")
+    print(f"[Notify] Arabic script sent to Telegram ({label})")
 
 
 def listen_for_voice_message(language: str, timeout: int = 600) -> str:
