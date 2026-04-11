@@ -163,6 +163,80 @@ def assemble_video(
         return ""
 
 
+def clean_voice(input_path: str, output_path: str) -> str:
+    """
+    Enhance a recorded voice file:
+      1. Convert OGG → WAV via ffmpeg
+      2. Noise reduction via noisereduce (first 0.5 s as noise profile)
+      3. Apply ffmpeg audio filters (highpass, lowpass, denoiser, normalization)
+      4. Output as MP3
+    Returns output_path on success, or input_path if enhancement fails.
+    """
+    import subprocess
+    import tempfile
+
+    wav_path  = output_path.replace(".mp3", "_raw.wav")
+    clean_wav = output_path.replace(".mp3", "_clean.wav")
+
+    # Step 1: decode to WAV
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", input_path, wav_path],
+            check=True, capture_output=True
+        )
+    except Exception as e:
+        print(f"[Voice] ffmpeg decode failed: {e} — skipping enhancement")
+        return input_path
+
+    # Step 2: noise reduction
+    try:
+        import noisereduce as nr
+        import soundfile as sf
+        import numpy as np
+
+        data, rate = sf.read(wav_path)
+        noise_sample = data[:int(rate * 0.5)]
+        reduced = nr.reduce_noise(
+            y=data, sr=rate, y_noise=noise_sample,
+            prop_decrease=0.75, stationary=False
+        )
+        sf.write(clean_wav, reduced, rate)
+    except Exception as e:
+        print(f"[Voice] Noise reduction failed: {e} — using raw WAV")
+        clean_wav = wav_path
+
+    # Step 3: ffmpeg audio filters + encode to MP3
+    try:
+        subprocess.run(
+            [
+                "ffmpeg", "-y", "-i", clean_wav,
+                "-af", (
+                    "highpass=f=80,"
+                    "lowpass=f=8000,"
+                    "anlmdn=s=7:p=0.002:r=0.002,"
+                    "dynaudnorm=p=0.9"
+                ),
+                "-ar", "44100",
+                output_path,
+            ],
+            check=True, capture_output=True
+        )
+        print(f"[Voice] Enhanced audio saved: {output_path}")
+    except Exception as e:
+        print(f"[Voice] ffmpeg filter failed: {e} — using unfiltered input")
+        return input_path
+
+    # Clean up intermediates
+    for f in [wav_path, clean_wav]:
+        try:
+            if os.path.exists(f) and f != output_path:
+                os.remove(f)
+        except OSError:
+            pass
+
+    return output_path
+
+
 SHORTS_DIR = "output/shorts"
 Path(SHORTS_DIR).mkdir(parents=True, exist_ok=True)
 
@@ -235,7 +309,8 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "") 
     print(f"[Video] Starting: {script_data['title']} ({language})")
 
     if custom_audio_path and Path(custom_audio_path).exists():
-        audio_path = custom_audio_path
+        enhanced_path = os.path.join(AUDIO_DIR, f"{video_id}_enhanced.mp3")
+        audio_path = clean_voice(custom_audio_path, enhanced_path)
         print(f"[Video] Using custom audio: {audio_path}")
     else:
         audio_path = generate_voiceover(script_data["script"], video_id, language)
