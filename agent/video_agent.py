@@ -46,6 +46,26 @@ def generate_voiceover_edgetts(script_text: str, filename: str, language: str = 
     return audio_path
 
 
+def _get_ffmpeg() -> str:
+    """Locate ffmpeg binary, checking PATH and common Windows install locations."""
+    import shutil as _shutil
+    candidates = [
+        _shutil.which("ffmpeg"),
+        "C:/ffmpeg/bin/ffmpeg.exe",
+        "C:/Program Files/ffmpeg/bin/ffmpeg.exe",
+        "C:/Users/abdot/AppData/Local/Programs/ffmpeg/bin/ffmpeg.exe",
+    ]
+    for loc in candidates:
+        if loc and os.path.exists(loc):
+            return loc
+    try:
+        from moviepy.config import get_setting
+        return get_setting("FFMPEG_BINARY")
+    except Exception:
+        pass
+    return "ffmpeg"
+
+
 def _split_text(text: str, max_chars: int = 2500) -> list[str]:
     """Split text on word boundaries into chunks no larger than max_chars."""
     chunks: list[str] = []
@@ -137,25 +157,50 @@ def generate_voiceover(script_text: str, filename: str, language: str = "english
         import shutil
         shutil.move(chunk_files[0], audio_path)
     else:
+        merged = False
+
+        # Attempt 1 — ffmpeg concat
         import subprocess
         list_path = os.path.join(AUDIO_DIR, f"{filename}_list.txt")
-        with open(list_path, "w", encoding="utf-8") as f:
+        with open(list_path, "w", encoding="utf-8") as lf:
             for cf in chunk_files:
-                f.write(f"file '{os.path.abspath(cf)}'\n")
+                lf.write(f"file '{os.path.abspath(cf)}'\n")
         try:
+            ffmpeg_bin = _get_ffmpeg()
             subprocess.run(
-                ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", list_path, "-c", "copy", audio_path],
+                [ffmpeg_bin, "-y", "-f", "concat", "-safe", "0", "-i", list_path, "-c", "copy", audio_path],
                 check=True, capture_output=True,
             )
+            merged = True
+            print("[Voice] Chunks merged with ffmpeg")
         except Exception as e:
-            print(f"[Voice] ffmpeg concat failed: {e} — falling back to edge-tts")
-            for f in chunk_files + [list_path]:
-                try: os.remove(f)
-                except OSError: pass
-            return generate_voiceover_edgetts(script_text, filename, language)
-        for f in chunk_files + [list_path]:
+            print(f"[Voice] ffmpeg concat failed: {e}")
+
+        # Attempt 2 — pydub
+        if not merged:
+            try:
+                from pydub import AudioSegment
+                combined = AudioSegment.empty()
+                for cf in chunk_files:
+                    combined += AudioSegment.from_mp3(cf)
+                combined.export(audio_path, format="mp3")
+                merged = True
+                print("[Voice] Chunks merged with pydub")
+            except Exception as e:
+                print(f"[Voice] pydub merge failed: {e}")
+
+        # Attempt 3 — use first chunk only (better than silence)
+        if not merged:
+            import shutil
+            shutil.copy(chunk_files[0], audio_path)
+            print("[Voice] Using first chunk only (merge failed)")
+
+        # Cleanup
+        for f in chunk_files:
             try: os.remove(f)
             except OSError: pass
+        try: os.remove(list_path)
+        except OSError: pass
 
     print(f"[Voice] ElevenLabs complete: {len(chunks)} chunk(s) → {audio_path}")
     return audio_path
