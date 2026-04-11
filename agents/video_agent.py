@@ -46,24 +46,46 @@ def generate_voiceover_edgetts(script_text: str, filename: str, language: str = 
     return audio_path
 
 
-def _get_ffmpeg() -> str:
-    """Locate ffmpeg binary, checking PATH and common Windows install locations."""
-    import shutil as _shutil
-    candidates = [
-        _shutil.which("ffmpeg"),
-        "C:/ffmpeg/bin/ffmpeg.exe",
-        "C:/Program Files/ffmpeg/bin/ffmpeg.exe",
-        "C:/Users/abdot/AppData/Local/Programs/ffmpeg/bin/ffmpeg.exe",
-    ]
-    for loc in candidates:
-        if loc and os.path.exists(loc):
-            return loc
+def _get_ffmpeg() -> str | None:
+    """Locate ffmpeg binary — imageio_ffmpeg (bundled with moviepy) first."""
     try:
-        from moviepy.config import get_setting
-        return get_setting("FFMPEG_BINARY")
+        import imageio_ffmpeg
+        return imageio_ffmpeg.get_ffmpeg_exe()
     except Exception:
         pass
-    return "ffmpeg"
+    try:
+        import shutil as _shutil
+        path = _shutil.which("ffmpeg")
+        if path:
+            return path
+    except Exception:
+        pass
+    for loc in [
+        r"C:\Users\abdot\AppData\Roaming\Python\Python314\site-packages\imageio_ffmpeg\binaries\ffmpeg-win-x86_64-v7.1.exe",
+        "C:/ffmpeg/bin/ffmpeg.exe",
+        "C:/Program Files/ffmpeg/bin/ffmpeg.exe",
+    ]:
+        if os.path.exists(loc):
+            return loc
+    return None
+
+
+def _merge_chunks_pydub(chunk_files: list[str], output_path: str) -> bool:
+    """Merge MP3 chunks with pydub, pointing it at the imageio_ffmpeg binary."""
+    try:
+        ffmpeg_path = _get_ffmpeg()
+        import pydub
+        if ffmpeg_path:
+            pydub.AudioSegment.converter = ffmpeg_path
+        from pydub import AudioSegment
+        combined = AudioSegment.empty()
+        for cf in chunk_files:
+            combined += AudioSegment.from_mp3(cf)
+        combined.export(output_path, format="mp3")
+        return True
+    except Exception as e:
+        print(f"[Voice] pydub merge failed: {e}")
+        return False
 
 
 def _split_text(text: str, max_chars: int = 2500) -> list[str]:
@@ -165,29 +187,23 @@ def generate_voiceover(script_text: str, filename: str, language: str = "english
         with open(list_path, "w", encoding="utf-8") as lf:
             for cf in chunk_files:
                 lf.write(f"file '{os.path.abspath(cf)}'\n")
-        try:
-            ffmpeg_bin = _get_ffmpeg()
-            subprocess.run(
-                [ffmpeg_bin, "-y", "-f", "concat", "-safe", "0", "-i", list_path, "-c", "copy", audio_path],
-                check=True, capture_output=True,
-            )
-            merged = True
-            print("[Voice] Chunks merged with ffmpeg")
-        except Exception as e:
-            print(f"[Voice] ffmpeg concat failed: {e}")
-
-        # Attempt 2 — pydub
-        if not merged:
+        ffmpeg_bin = _get_ffmpeg()
+        if ffmpeg_bin:
             try:
-                from pydub import AudioSegment
-                combined = AudioSegment.empty()
-                for cf in chunk_files:
-                    combined += AudioSegment.from_mp3(cf)
-                combined.export(audio_path, format="mp3")
+                subprocess.run(
+                    [ffmpeg_bin, "-y", "-f", "concat", "-safe", "0", "-i", list_path, "-c", "copy", audio_path],
+                    check=True, capture_output=True,
+                )
+                merged = True
+                print("[Voice] Chunks merged with ffmpeg")
+            except Exception as e:
+                print(f"[Voice] ffmpeg concat failed: {e}")
+
+        # Attempt 2 — pydub (with imageio_ffmpeg path injected)
+        if not merged:
+            if _merge_chunks_pydub(chunk_files, audio_path):
                 merged = True
                 print("[Voice] Chunks merged with pydub")
-            except Exception as e:
-                print(f"[Voice] pydub merge failed: {e}")
 
         # Attempt 3 — use first chunk only (better than silence)
         if not merged:
