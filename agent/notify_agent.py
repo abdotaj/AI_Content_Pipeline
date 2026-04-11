@@ -292,8 +292,7 @@ def send_english_script_preview(script: dict, label: str = "ENGLISH SCRIPT") -> 
         f"─────────────────\n"
         f"{body}\n"
         f"─────────────────\n"
-        f"Send voice message to use your voice.\n"
-        f"Or wait — AI voice used automatically in 60 minutes."
+        f"Generating video automatically..."
     )
     _send_long_text(msg)
     print(f"[Notify] English script sent to Telegram ({label})")
@@ -311,8 +310,7 @@ def send_arabic_script_preview(script: dict, label: str = "النص العربي
         f"─────────────────\n"
         f"{body}\n"
         f"─────────────────\n"
-        f"أرسل رسالة صوتية لاستخدام صوتك.\n"
-        f"أو انتظر — سيتم استخدام الصوت الآلي تلقائياً خلال 60 دقيقة."
+        f"جاري توليد الفيديو تلقائياً..."
     )
     _send_long_text(msg)
     print(f"[Notify] Arabic script sent to Telegram ({label})")

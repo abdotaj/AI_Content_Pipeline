@@ -15,11 +15,9 @@
 #    OUTPUT 4 — Arabic short (55 sec)
 #               Sent to Telegram → POST TO: TikTok Arabic + Instagram Arabic
 #
-#  Voice collection order (before video assembly):
-#    1. Arabic SHORT script → wait 60 min
-#    2. Arabic LONG script  → wait 60 min
-#    3. English SHORT script → wait 60 min
-#    4. English LONG script  → wait 60 min
+#  Fully automated — ElevenLabs cloned voices generate audio,
+#  Pollinations API generates AI images. No human intervention
+#  needed except approving short clips on Telegram for posting.
 # ============================================================
 import os
 import sys
@@ -55,12 +53,9 @@ from agent.video_agent    import create_video
 from agent.notify_agent   import (
     send_message, send_for_manual_posting, send_daily_report,
     listen_for_content, send_arabic_script_preview, send_english_script_preview,
-    listen_for_voice_message,
 )
 from agent.publish_agent  import upload_to_youtube
 from agents.content_agent import ingest_content_files
-
-VOICE_TIMEOUT = 3600  # 60 minutes per voice window
 
 
 def run_pipeline():
@@ -105,7 +100,7 @@ def run_pipeline():
         # ── STEP 2: Generate 4 scripts ─────────────────────────
         print("\n[2/5] Writing scripts...")
         try:
-            en_long  = write_script(topic, language="english")
+            en_long = write_script(topic, language="english")
             print("  [2/5] English long script done")
         except Exception as e:
             send_message(f"Script writing failed: {e}")
@@ -121,7 +116,7 @@ def run_pipeline():
         return
 
     try:
-        ar_long  = translate_script(en_long)
+        ar_long = translate_script(en_long)
         print("  [2/5] Arabic long script done")
     except Exception as e:
         send_message(f"Arabic translation failed: {e}")
@@ -136,55 +131,38 @@ def run_pipeline():
         print(f"[ERROR] Arabic short translation: {e}")
         return
 
-    # ── STEP 3: Send scripts + collect voice messages ──────────
-    print("\n[3/5] Voice collection (Arabic short → Arabic long → English short → English long)...")
-
-    # 3a: Arabic short
-    try:
-        send_arabic_script_preview(ar_short, label="Arabic SHORT script (55 sec) — record now")
-    except Exception as e:
-        print(f"  [WARN] Arabic short preview failed: {e}")
-    ar_short_voice = listen_for_voice_message("arabic_short", timeout=VOICE_TIMEOUT)
-
-    # 3b: Arabic long
-    try:
-        send_arabic_script_preview(ar_long, label="Arabic LONG script (10-12 min) — record now")
-    except Exception as e:
-        print(f"  [WARN] Arabic long preview failed: {e}")
-    ar_long_voice = listen_for_voice_message("arabic_long", timeout=VOICE_TIMEOUT)
-
-    # 3c: English short
-    try:
-        send_english_script_preview(en_short, label="English SHORT script (55 sec) — record now")
-    except Exception as e:
-        print(f"  [WARN] English short preview failed: {e}")
-    en_short_voice = listen_for_voice_message("english_short", timeout=VOICE_TIMEOUT)
-
-    # 3d: English long
-    try:
-        send_english_script_preview(en_long, label="English LONG script (10-12 min) — record now")
-    except Exception as e:
-        print(f"  [WARN] English long preview failed: {e}")
-    en_long_voice = listen_for_voice_message("english_long", timeout=VOICE_TIMEOUT)
+    # ── STEP 3: Send scripts to Telegram for review (non-blocking) ────────────
+    print("\n[3/5] Sending scripts to Telegram for review...")
+    for fn, script, label in [
+        (send_arabic_script_preview,  ar_short, "Arabic SHORT script (55 sec)"),
+        (send_arabic_script_preview,  ar_long,  "Arabic LONG script (10-12 min)"),
+        (send_english_script_preview, en_short, "English SHORT script (55 sec)"),
+        (send_english_script_preview, en_long,  "English LONG script (10-12 min)"),
+    ]:
+        try:
+            fn(script, label=label)
+        except Exception as e:
+            print(f"  [WARN] Script preview failed ({label}): {e}")
+    print("  Scripts sent — continuing pipeline immediately.")
 
     # ── STEP 4: Generate all 4 videos ─────────────────────────
     print("\n[4/5] Generating videos...")
 
     # OUTPUT 1 — English long-form → YouTube
     en_long_id   = f"{today}_{uuid.uuid4().hex[:8]}_english_long"
-    en_long_path = _make_video(en_long, en_long_id, en_long_voice, stats)
+    en_long_path = _make_video(en_long, en_long_id, stats)
 
     # OUTPUT 2 — Arabic long-form → YouTube
     ar_long_id   = f"{today}_{uuid.uuid4().hex[:8]}_arabic_long"
-    ar_long_path = _make_video(ar_long, ar_long_id, ar_long_voice, stats)
+    ar_long_path = _make_video(ar_long, ar_long_id, stats)
 
     # OUTPUT 3 — English short → Telegram
     en_short_id   = f"{today}_{uuid.uuid4().hex[:8]}_english_short"
-    en_short_path = _make_video(en_short, en_short_id, en_short_voice, stats)
+    en_short_path = _make_video(en_short, en_short_id, stats)
 
     # OUTPUT 4 — Arabic short → Telegram
     ar_short_id   = f"{today}_{uuid.uuid4().hex[:8]}_arabic_short"
-    ar_short_path = _make_video(ar_short, ar_short_id, ar_short_voice, stats)
+    ar_short_path = _make_video(ar_short, ar_short_id, stats)
 
     # ── STEP 5: Publish ────────────────────────────────────────
     print("\n[5/5] Publishing...")
@@ -257,10 +235,10 @@ def run_pipeline():
     print(f"\nDone. Generated: {stats['generated']} | Posted: {stats['posted']} | Errors: {stats['errors']}\n")
 
 
-def _make_video(script_data: dict, video_id: str, voice_path: str, stats: dict) -> str:
-    """Create a video, update stats, return path or empty string on failure."""
+def _make_video(script_data: dict, video_id: str, stats: dict) -> str:
+    """Create a video using ElevenLabs + Pollinations, update stats, return path."""
     try:
-        path = create_video(script_data, video_id, custom_audio_path=voice_path)
+        path = create_video(script_data, video_id)
         if path and Path(path).exists():
             stats["generated"] += 1
             print(f"  Video ready: {path}")
