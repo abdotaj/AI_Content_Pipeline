@@ -46,8 +46,57 @@ def generate_voiceover_edgetts(script_text: str, filename: str, language: str = 
     return audio_path
 
 
+def _split_text(text: str, max_chars: int = 2500) -> list[str]:
+    """Split text on word boundaries into chunks no larger than max_chars."""
+    chunks: list[str] = []
+    words = text.split()
+    current: list[str] = []
+    current_len = 0
+    for word in words:
+        if current_len + len(word) > max_chars:
+            chunks.append(" ".join(current))
+            current = [word]
+            current_len = len(word)
+        else:
+            current.append(word)
+            current_len += len(word) + 1
+    if current:
+        chunks.append(" ".join(current))
+    return chunks
+
+
+def _elevenlabs_chunk(chunk: str, voice_id: str, api_key: str, chunk_path: str) -> bool:
+    """POST one chunk to ElevenLabs. Returns True on success."""
+    url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
+    headers = {
+        "Accept": "audio/mpeg",
+        "Content-Type": "application/json",
+        "xi-api-key": api_key,
+    }
+    data = {
+        "text": chunk,
+        "model_id": "eleven_multilingual_v2",
+        "voice_settings": {
+            "stability": 0.5,
+            "similarity_boost": 0.85,
+            "style": 0.4,
+            "use_speaker_boost": True,
+        },
+    }
+    try:
+        response = requests.post(url, json=data, headers=headers, timeout=60)
+        if response.status_code == 200:
+            with open(chunk_path, "wb") as f:
+                f.write(response.content)
+            return True
+        print(f"[Voice] ElevenLabs chunk failed: {response.status_code}")
+    except Exception as e:
+        print(f"[Voice] ElevenLabs chunk error: {e}")
+    return False
+
+
 def generate_voiceover(script_text: str, filename: str, language: str = "english") -> str:
-    """Generate voiceover — ElevenLabs if configured, edge-tts as fallback."""
+    """Generate voiceover — ElevenLabs (chunked) if configured, edge-tts as fallback."""
     from config import ELEVENLABS_API_KEY, ELEVENLABS_VOICE_ID_EN, ELEVENLABS_VOICE_ID_AR, ELEVENLABS_VOICE_ID
 
     api_key = ELEVENLABS_API_KEY
@@ -64,33 +113,52 @@ def generate_voiceover(script_text: str, filename: str, language: str = "english
     if not voice_id:
         return generate_voiceover_edgetts(script_text, filename, language)
 
-    url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
-    headers = {
-        "Accept": "audio/mpeg",
-        "Content-Type": "application/json",
-        "xi-api-key": api_key,
-    }
-    data = {
-        "text": script_text,
-        "model_id": "eleven_multilingual_v2",
-        "voice_settings": {
-            "stability": 0.5,
-            "similarity_boost": 0.85,
-            "style": 0.4,
-            "use_speaker_boost": True,
-        },
-    }
-
     audio_path = os.path.join(AUDIO_DIR, f"{filename}.mp3")
-    response = requests.post(url, json=data, headers=headers, timeout=120)
-    if response.status_code == 200:
-        with open(audio_path, "wb") as f:
-            f.write(response.content)
-        print(f"[Video] Voiceover saved (ElevenLabs): {audio_path}")
-        return audio_path
+    chunks = _split_text(script_text, max_chars=2500)
+    print(f"[Voice] ElevenLabs: {len(chunks)} chunk(s) for {language}")
 
-    print(f"[Voice] ElevenLabs failed ({response.status_code}) — falling back to edge-tts")
-    return generate_voiceover_edgetts(script_text, filename, language)
+    chunk_files: list[str] = []
+    for i, chunk in enumerate(chunks):
+        chunk_path = os.path.join(AUDIO_DIR, f"{filename}_chunk_{i}.mp3")
+        if _elevenlabs_chunk(chunk, voice_id, api_key, chunk_path):
+            chunk_files.append(chunk_path)
+            print(f"[Voice] Chunk {i + 1}/{len(chunks)} done")
+            if i < len(chunks) - 1:
+                time.sleep(2)
+        else:
+            # Clean up and fall back to edge-tts for the whole script
+            for f in chunk_files:
+                try: os.remove(f)
+                except OSError: pass
+            print(f"[Voice] Chunk {i + 1} failed — falling back to edge-tts")
+            return generate_voiceover_edgetts(script_text, filename, language)
+
+    if len(chunk_files) == 1:
+        import shutil
+        shutil.move(chunk_files[0], audio_path)
+    else:
+        import subprocess
+        list_path = os.path.join(AUDIO_DIR, f"{filename}_list.txt")
+        with open(list_path, "w", encoding="utf-8") as f:
+            for cf in chunk_files:
+                f.write(f"file '{os.path.abspath(cf)}'\n")
+        try:
+            subprocess.run(
+                ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", list_path, "-c", "copy", audio_path],
+                check=True, capture_output=True,
+            )
+        except Exception as e:
+            print(f"[Voice] ffmpeg concat failed: {e} — falling back to edge-tts")
+            for f in chunk_files + [list_path]:
+                try: os.remove(f)
+                except OSError: pass
+            return generate_voiceover_edgetts(script_text, filename, language)
+        for f in chunk_files + [list_path]:
+            try: os.remove(f)
+            except OSError: pass
+
+    print(f"[Voice] ElevenLabs complete: {len(chunks)} chunk(s) → {audio_path}")
+    return audio_path
 
 
 # ── AI Image generation (Pollinations — free, no key) ─────────────────────────
