@@ -220,7 +220,7 @@ def generate_voiceover(script_text: str, filename: str, language: str = "english
         try: os.remove(list_path)
         except OSError: pass
 
-    print(f"[Voice] ElevenLabs complete: {len(chunks)} chunk(s) → {audio_path}")
+    print(f"[Voice] ElevenLabs complete: {len(chunks)} chunk(s) -> {audio_path}")
     return audio_path
 
 
@@ -467,117 +467,84 @@ def generate_ai_image(prompt: str, output_path: str, seed: int = None) -> str:
 
 # ── MoviePy clip helpers ───────────────────────────────────────────────────────
 
-def image_to_clips_varied(image_path: str, n_variations: int = 4) -> list:
-    """Return up to n_variations clips from one image with zoom and pan effects.
-    Uses PIL+numpy to bypass imageio backend on Linux/CI.
-    Effects: zoom-in, zoom-out, pan-left, pan-right."""
+def image_to_clips(image_path: str, n_variations: int = 4) -> list:
+    """Return n_variations animated zoom clips, all exactly 1080x1920.
+
+    Root cause of 'width not divisible by 2' (libx264 error):
+      int(1080 * 1.04) = 1123 — odd width — libx264 refuses to encode.
+
+    Fix: use VideoClip(make_frame=fn) where make_frame rounds each dimension
+    up to the next even number and then center-crops back to exactly 1080x1920.
+    Output frames are always (1920, 1080, 3) regardless of zoom scale.
+    MoviePy calls make_frame(0) on construction to set clip.size = (1080,1920),
+    which is what ffmpeg receives as the output resolution — no mismatch.
+    """
     import numpy as np
     from PIL import Image as PILImage
-    from moviepy import ImageClip
-    from moviepy.video.fx import FadeIn, FadeOut
+    from moviepy import VideoClip
 
-    pil_img = PILImage.open(image_path).convert("RGB")
-    img_array = np.array(pil_img)
-    h, w = img_array.shape[:2]
-    max_pan = max(80, int(w * 0.08))
+    TARGET_W, TARGET_H = 1080, 1920
 
-    def _zoom_clip(scale_fn):
-        dur = random.uniform(6, 9)
-        c = ImageClip(img_array, duration=dur).resized(scale_fn)
-        return c.with_effects([FadeIn(0.5), FadeOut(0.5)])
+    pil_base = PILImage.open(image_path).convert("RGB").resize(
+        (TARGET_W, TARGET_H), PILImage.LANCZOS
+    )
 
-    def _pan_clip(direction: str):
-        """Pan left or right via crop. Falls back to zoom on any error."""
-        dur = random.uniform(6, 9)
-        try:
-            c = ImageClip(img_array, duration=dur)
-            if direction == "left":
-                # crop window slides rightward → image appears to pan left
-                c = c.cropped(
-                    x1=lambda t, s=max_pan / dur: int(min(t * s, max_pan)),
-                    x2=lambda t, s=max_pan / dur: int(min(t * s + (w - max_pan), w)),
-                )
-            else:
-                # crop window slides leftward → image appears to pan right
-                c = c.cropped(
-                    x1=lambda t, s=max_pan / dur: int(max(max_pan - t * s, 0)),
-                    x2=lambda t, s=max_pan / dur: int(max(max_pan - t * s + (w - max_pan), w - max_pan)),
-                )
-            c = c.resized((w, h))
-            return c.with_effects([FadeIn(0.5), FadeOut(0.5)])
-        except Exception:
-            return _zoom_clip(lambda t: 1.04 + 0.015 * t)
+    def _zoom_fn(start_scale: float, end_scale: float, duration: float):
+        """Closure: returns a make_frame callable for one zoom clip."""
+        def make_frame(t):
+            rate = (end_scale - start_scale) / max(duration, 0.001)
+            scale = max(1.0, start_scale + rate * t)
+            # Round UP to even — libx264 requires even width & height
+            sw = int(TARGET_W * scale)
+            if sw % 2:
+                sw += 1
+            sh = int(TARGET_H * scale)
+            if sh % 2:
+                sh += 1
+            scaled = pil_base.resize((sw, sh), PILImage.LANCZOS)
+            # Center-crop back to exactly TARGET_W x TARGET_H
+            x = (sw - TARGET_W) // 2
+            y = (sh - TARGET_H) // 2
+            return np.array(scaled.crop((x, y, x + TARGET_W, y + TARGET_H)))
+        return make_frame
 
-    all_effects = [
-        lambda: _zoom_clip(lambda t: 1.00 + 0.020 * t),  # slow zoom in
-        lambda: _zoom_clip(lambda t: 1.12 - 0.020 * t),  # zoom out
-        lambda: _pan_clip("left"),                         # pan left
-        lambda: _pan_clip("right"),                        # pan right
+    # (start_scale, end_scale, duration_s) — scale always stays >= 1.0
+    specs = [
+        (1.00, 1.08, 8.0),   # zoom in
+        (1.08, 1.00, 8.0),   # zoom out  (1.08 → 1.00, never < 1.0)
+        (1.00, 1.06, 7.0),   # zoom in slow
+        (1.06, 1.00, 7.0),   # zoom out slow
     ]
 
-    return [fn() for fn in all_effects[:n_variations]]
+    clips = []
+    for start_s, end_s, dur in specs[:n_variations]:
+        fn = _zoom_fn(start_s, end_s, dur)
+        # MoviePy calls fn(0) in __init__ → shape (1920,1080,3) → size=(1080,1920)
+        clips.append(VideoClip(frame_function=fn, duration=dur))
 
-
-def _detect_font() -> str | None:
-    """Return the first usable font path/name for TextClip on this system."""
-    candidates = [
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
-        "C:/Windows/Fonts/arialbd.ttf",
-        "C:/Windows/Fonts/Arial.ttf",
-        "DejaVu-Sans-Bold",
-        "Arial-Bold",
-        "Arial",
-    ]
-    from moviepy import TextClip as _TC
-    for font in candidates:
-        try:
-            _TC(font=font, text="test", font_size=20).close()
-            return font
-        except Exception:
-            continue
-    return None
-
-
-def add_text_overlay(clip, text: str, position: str = "top"):
-    """Burn a text label onto a clip. Returns original clip on failure."""
-    try:
-        from moviepy import TextClip, CompositeVideoClip
-
-        font = _detect_font()
-        if font is None:
-            print("[Video] No usable font found — text overlay skipped")
-            return clip
-
-        txt = (
-            TextClip(
-                font=font,
-                text=text,
-                font_size=45,
-                color="white",
-                stroke_color="black",
-                stroke_width=2,
-                method="caption",
-                size=(clip.w - 80, None),
-            )
-            .with_duration(clip.duration)
-        )
-        y_pos = 50 if position == "top" else clip.h - 200
-        txt = txt.with_position(("center", y_pos))
-        return CompositeVideoClip([clip, txt])
-    except Exception as e:
-        print(f"[Video] Text overlay skipped: {e}")
-        return clip
+    return clips
 
 
 def assemble_video(audio_path: str, image_clips: list, output_filename: str) -> str:
     """Loop image clips to cover the full audio duration, mux, and export."""
+    import traceback
     from moviepy import AudioFileClip, concatenate_videoclips
 
+    output_path = os.path.join(FINAL_DIR, f"{output_filename}.mp4")
+    temp_audio  = os.path.join(FINAL_DIR, f"{output_filename}_tmp_audio.m4a")
+
+    # ── Load audio ────────────────────────────────────────────────────────────
     try:
         audio = AudioFileClip(audio_path)
         total_duration = audio.duration
+        print(f"[Video] Audio duration: {total_duration:.1f}s")
+    except Exception as e:
+        print(f"[Video] CRASH loading audio: {e}")
+        traceback.print_exc()
+        return ""
 
+    # ── Build looped clip list ────────────────────────────────────────────────
+    try:
         looped: list = []
         accumulated = 0.0
         idx = 0
@@ -589,12 +556,28 @@ def assemble_video(audio_path: str, image_clips: list, output_filename: str) -> 
             looped.append(clip)
             accumulated += clip.duration
             idx += 1
+        print(f"[Video] Looped {len(looped)} clips covering {accumulated:.1f}s")
+    except Exception as e:
+        print(f"[Video] CRASH building clip loop: {e}")
+        traceback.print_exc()
+        return ""
 
-        final = concatenate_videoclips(looped, method="compose")
+    # ── Concatenate ───────────────────────────────────────────────────────────
+    # method="chain": clips are identical 1080x1920 — faster and more reliable
+    # than "compose" which tries to composite varying-size clips.
+    try:
+        final = concatenate_videoclips(looped, method="chain")
         final = final.with_audio(audio)
+        print(f"[Video] Concatenated: {final.duration:.1f}s, size={final.size}")
+    except Exception as e:
+        print(f"[Video] CRASH at concatenation: {e}")
+        traceback.print_exc()
+        return ""
 
-        output_path = os.path.join(FINAL_DIR, f"{output_filename}.mp4")
-        temp_audio  = os.path.join(FINAL_DIR, f"{output_filename}_tmp_audio.m4a")
+    # ── Write video ───────────────────────────────────────────────────────────
+    # Removed -profile:v baseline and -level 3.0: these can conflict with
+    # libx264 on Ubuntu (GitHub Actions runner) and cause encoder init failures.
+    try:
         final.write_videofile(
             output_path,
             fps=30,
@@ -602,14 +585,17 @@ def assemble_video(audio_path: str, image_clips: list, output_filename: str) -> 
             audio_codec="aac",
             preset="ultrafast",
             ffmpeg_params=[
-                "-profile:v", "baseline",
-                "-level", "3.0",
                 "-pix_fmt", "yuv420p",
                 "-movflags", "+faststart",
             ],
             temp_audiofile=temp_audio,
             logger=None,
         )
+    except Exception as e:
+        print(f"[Video] CRASH at write_videofile: {e}")
+        traceback.print_exc()
+        return ""
+    finally:
         for _ in range(5):
             try:
                 if os.path.exists(temp_audio):
@@ -617,12 +603,17 @@ def assemble_video(audio_path: str, image_clips: list, output_filename: str) -> 
                 break
             except OSError:
                 time.sleep(0.5)
-        print(f"[Video] Final video: {output_path}")
-        return output_path
 
-    except Exception as e:
-        print(f"[Video] Assembly error: {e}")
+    # ── Verify output ─────────────────────────────────────────────────────────
+    if not os.path.exists(output_path):
+        print(f"[Video] ERROR: output file not created: {output_path}")
         return ""
+    file_size = os.path.getsize(output_path)
+    if file_size < 100_000:
+        print(f"[Video] ERROR: output file too small ({file_size} bytes) — likely corrupt")
+        return ""
+    print(f"[Video] Success: {output_path} ({file_size // 1024 // 1024}MB)")
+    return output_path
 
 
 # ── Voice enhancement (for user-recorded audio) ───────────────────────────────
@@ -708,8 +699,6 @@ def cut_short_clip(video_path: str, video_id: str, duration: int = 55) -> str:
             audio_codec="aac",
             preset="ultrafast",
             ffmpeg_params=[
-                "-profile:v", "baseline",
-                "-level", "3.0",
                 "-pix_fmt", "yuv420p",
                 "-movflags", "+faststart",
             ],
@@ -745,6 +734,7 @@ def cut_short_clip(video_path: str, video_id: str, duration: int = 55) -> str:
 # ── Main entry point ───────────────────────────────────────────────────────────
 
 def create_video(script_data: dict, video_id: str, custom_audio_path: str = "") -> str:
+    import traceback
     title    = script_data.get("title", "")
     niche    = script_data.get("niche", "")
     language = script_data.get("language", "english")
@@ -776,33 +766,46 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "") 
         except Exception:
             n_images = 10
 
-    print(f"[Video] Generating {n_images} images × {n_variations} variations ({'short' if is_short else 'long'})")
+    print(f"[Video] Generating {n_images} images x {n_variations} variations ({'short' if is_short else 'long'})")
 
-    prompts, seed = generate_image_prompts(title, niche, script_data.get("script", ""), language)
-    # Cycle the 6 structured prompts across all n_images;
-    # each image gets a unique seed offset so visuals always differ.
-    extended_prompts = [prompts[i % len(prompts)] for i in range(n_images)]
+    # ── Prompt generation ─────────────────────────────────────────────────────
+    try:
+        prompts, seed = generate_image_prompts(title, niche, script_data.get("script", ""), language)
+        extended_prompts = [prompts[i % len(prompts)] for i in range(n_images)]
+    except Exception as e:
+        print(f"[Video] CRASH at prompt generation: {e}")
+        traceback.print_exc()
+        return ""
 
+    # ── Image download + clip creation ────────────────────────────────────────
     all_clips: list = []
     for i, prompt in enumerate(extended_prompts):
         img_path = os.path.join(IMAGES_DIR, f"{video_id}_img_{i}.png")
-        result = generate_ai_image(prompt, img_path, seed=seed + i)
+        try:
+            result = generate_ai_image(prompt, img_path, seed=seed + i)
+        except Exception as e:
+            print(f"[Video] CRASH generating image {i}: {e}")
+            traceback.print_exc()
+            result = None
         if result:
-            variations = image_to_clips_varied(result, n_variations=n_variations)
-            for clip in variations:
-                clip = add_text_overlay(clip, "Dark Crime Decoded", "top")
-                all_clips.append(clip)
-            print(f"[Video] Image {i + 1}/{n_images}: {len(variations)} variations added")
+            try:
+                variations = image_to_clips(result, n_variations=n_variations)
+                all_clips.extend(variations)
+                print(f"[Video] Image {i + 1}/{n_images}: {len(variations)} clips added")
+            except Exception as e:
+                print(f"[Video] CRASH creating clips for image {i}: {e}")
+                traceback.print_exc()
         if i < len(extended_prompts) - 1:
-            time.sleep(5)  # respect Pollinations rate limit
+            time.sleep(5)
 
     if not all_clips:
-        print("[Video] No images generated, skipping")
+        print("[Video] No clips generated, aborting")
         return ""
 
     random.shuffle(all_clips)
     print(f"[Video] Total clip pool: {len(all_clips)} clips (shuffled)")
 
+    # ── Assembly ──────────────────────────────────────────────────────────────
     video_path = assemble_video(
         audio_path=audio_path,
         image_clips=all_clips,
