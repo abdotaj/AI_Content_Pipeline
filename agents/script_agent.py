@@ -134,48 +134,62 @@ Return ONLY this JSON with no extra text:
 
 def _write_darkcrimed_script(topic: dict) -> dict:
     """Investigative documentary script for Dark Crime Decoded."""
-    word_count = 900  # ~6-7 min voiceover; safe for Groq token limits
-
-    # Inject web-researched facts if available
     research = topic.get("research", {})
-    research_block = ""
-    if research and research.get("real_story"):
-        facts_right  = "\n".join(f"  - {f}" for f in research.get("what_show_got_right", []))
-        facts_wrong  = "\n".join(f"  - {f}" for f in research.get("what_show_got_wrong", []))
-        shocking     = "\n".join(f"  - {f}" for f in research.get("shocking_real_facts", []))
-        real_people  = "\n".join(
-            f"  - {k}: {v}" for k, v in research.get("real_people_behind_characters", {}).items()
-        )
-        research_block = f"""
-VERIFIED RESEARCH FACTS (use these — do not invent):
-Real story: {research['real_story']}
-What the show got right:
-{facts_right}
-What the show got wrong / dramatized:
-{facts_wrong}
-Shocking real facts to include:
-{shocking}
-Real people behind characters:
-{real_people}
-"""
+    series   = topic.get("series", topic.get("niche", ""))
 
-    # ── PART 1: Generate plain-text script (bulk content) ───────────────────
-    part1_prompt = f"""You are an expert faceless content creator specialising in true crime documentaries.
-Write a LONG investigative voiceover script in English for this topic.
+    # Use new structured fields if available, fall back to legacy fields
+    facts_list       = research.get("research_facts")        or research.get("what_show_got_right", [])
+    inaccuracy_list  = research.get("research_inaccuracies") or research.get("what_show_got_wrong", [])
+    shocking_list    = research.get("research_shocking")     or research.get("shocking_real_facts", [])
+
+    research_facts        = "\n".join(f"- {f}" for f in facts_list)       or "(research the real story)"
+    research_inaccuracies = "\n".join(f"- {i}" for i in inaccuracy_list)  or "(research what the show dramatized)"
+    research_shocking     = "\n".join(f"- {s}" for s in shocking_list)    or "(include surprising real details)"
+
+    # ── PART 1: Script body ───────────────────────────────────────────────────
+    part1_prompt = f"""You are a top true crime documentary writer for YouTube.
+Write a compelling 700-word script about: {topic['topic']}
+
+Use this EXACT structure:
+
+HOOK (30 words max):
+- Start with the most shocking fact about this case
+- Make it impossible to stop listening
+- Example: "In 1994, a man walked free after killing 33 people. This is how he did it."
+
+REAL STORY (500 words):
+- Tell the TRUE story chronologically
+- Use REAL names, REAL dates, REAL places
+- Include specific shocking details from research
+- Compare to the movie/series — what did they get right/wrong
+- Include quotes from real people involved if available
+- Use short sentences. Maximum 15 words per sentence.
+- New line for each sentence.
+- Use "..." for dramatic pauses
+
+CONCLUSION (100 words):
+- What happened after
+- What the real impact was
+- Tease next video with a question
+- End with a call to action: like, subscribe, comment
+
+IMPORTANT RULES:
+- NEVER use phrases like "delve into" or "it is worth noting"
+- NEVER repeat the same fact twice
+- Every sentence must add NEW information
+- Write like you are talking to a friend
+- Use "you" to address the viewer directly
+- Minimum 3 shocking facts the viewer probably doesn't know
+
+Research data to use:
+{research_facts}
+{research_inaccuracies}
+{research_shocking}
 
 Topic: {topic['topic']}
-Angle: {topic['angle']}
-Niche: {topic['niche']}
-{research_block}
-REQUIREMENTS:
-- Write EXACTLY {word_count} words or more — count every word before finishing
-- Continuous paragraphs only — NO bullet points, NO headers, NO emojis
-- Structure: opening hook (60w) → historical background (150w) → rise to power (200w) → key criminal events (200w) → downfall (150w) → aftermath & legacy (100w) → shocking real facts (80w) → call to action (60w)
-- Investigative documentary tone — build tension, cite real names, real dates, real events
-- End with a strong call to action asking viewers to like, subscribe and comment
-- IMPORTANT: Write in short punchy sentences, maximum 15 words each. No long complex sentences. Write like a podcast host speaking naturally. Each sentence on its own line. Use dramatic pauses with '...' between key facts. Example style: 'Pablo Escobar was not just a drug lord.\nHe was the most wanted man on earth.\nAt his peak... he controlled 80% of the world cocaine supply.\nThis is his real story.'
+Series/Movie: {series}
 
-Start the script immediately without preamble. Write every section fully. Do not stop until you have written {word_count} words."""
+Start the script immediately with the HOOK. Do not add labels like "HOOK:" — write the spoken words only."""
 
     r1 = _groq_call(
         messages=[{"role": "user", "content": part1_prompt}],
