@@ -82,6 +82,7 @@ REQUIREMENTS:
 - Structure: opening hook (60w) → historical background (150w) → rise to power (200w) → key criminal events (200w) → downfall (150w) → aftermath & legacy (100w) → shocking real facts (80w) → call to action (60w)
 - Investigative documentary tone — build tension, cite real names, real dates, real events
 - End with a strong call to action asking viewers to like, subscribe and comment
+- IMPORTANT: Write in short punchy sentences, maximum 15 words each. No long complex sentences. Write like a podcast host speaking naturally. Each sentence on its own line. Use dramatic pauses with '...' between key facts. Example style: 'Pablo Escobar was not just a drug lord.\nHe was the most wanted man on earth.\nAt his peak... he controlled 80% of the world cocaine supply.\nThis is his real story.'
 
 Start the script immediately without preamble. Write every section fully. Do not stop until you have written {word_count} words."""
 

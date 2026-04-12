@@ -89,7 +89,7 @@ def _merge_chunks_pydub(chunk_files: list[str], output_path: str) -> bool:
         return False
 
 
-def _split_text(text: str, max_chars: int = 2500) -> list[str]:
+def _split_text(text: str, max_chars: int = 1500) -> list[str]:
     """Split text on word boundaries into chunks no larger than max_chars."""
     chunks: list[str] = []
     words = text.split()
@@ -120,14 +120,15 @@ def _elevenlabs_chunk(chunk: str, voice_id: str, api_key: str, chunk_path: str) 
         "text": chunk,
         "model_id": "eleven_multilingual_v2",
         "voice_settings": {
-            "stability": 0.5,
-            "similarity_boost": 0.85,
-            "style": 0.4,
+            "stability": 0.35,
+            "similarity_boost": 0.90,
+            "style": 0.45,
             "use_speaker_boost": True,
         },
+        "output_format": "mp3_44100_192",
     }
     try:
-        response = requests.post(url, json=data, headers=headers, timeout=60)
+        response = requests.post(url, json=data, headers=headers, timeout=180)
         if response.status_code == 200:
             with open(chunk_path, "wb") as f:
                 f.write(response.content)
@@ -157,7 +158,7 @@ def generate_voiceover(script_text: str, filename: str, language: str = "english
         return generate_voiceover_edgetts(script_text, filename, language)
 
     audio_path = os.path.join(AUDIO_DIR, f"{filename}.mp3")
-    chunks = _split_text(script_text, max_chars=2500)
+    chunks = _split_text(script_text, max_chars=1500)
     print(f"[Voice] ElevenLabs: {len(chunks)} chunk(s) for {language}")
 
     chunk_files: list[str] = []
@@ -595,9 +596,19 @@ def assemble_video(audio_path: str, image_clips: list, output_filename: str) -> 
         output_path = os.path.join(FINAL_DIR, f"{output_filename}.mp4")
         temp_audio  = os.path.join(FINAL_DIR, f"{output_filename}_tmp_audio.m4a")
         final.write_videofile(
-            output_path, fps=24, codec="libx264",
-            audio_codec="aac", threads=4, preset="ultrafast",
-            temp_audiofile=temp_audio, logger=None,
+            output_path,
+            fps=30,
+            codec="libx264",
+            audio_codec="aac",
+            preset="ultrafast",
+            ffmpeg_params=[
+                "-profile:v", "baseline",
+                "-level", "3.0",
+                "-pix_fmt", "yuv420p",
+                "-movflags", "+faststart",
+            ],
+            temp_audiofile=temp_audio,
+            logger=None,
         )
         for _ in range(5):
             try:
@@ -691,9 +702,20 @@ def cut_short_clip(video_path: str, video_id: str, duration: int = 55) -> str:
         end = min(duration, clip.duration)
         short = clip.subclipped(0, end)
         short.write_videofile(
-            short_path, fps=24, codec="libx264",
-            audio_codec="aac", threads=4, preset="ultrafast",
-            temp_audiofile=temp_audio, remove_temp=True, logger=None,
+            short_path,
+            fps=30,
+            codec="libx264",
+            audio_codec="aac",
+            preset="ultrafast",
+            ffmpeg_params=[
+                "-profile:v", "baseline",
+                "-level", "3.0",
+                "-pix_fmt", "yuv420p",
+                "-movflags", "+faststart",
+            ],
+            temp_audiofile=temp_audio,
+            remove_temp=True,
+            logger=None,
         )
         # Verify output is a real video file
         size_kb = os.path.getsize(short_path) // 1024 if os.path.exists(short_path) else 0
