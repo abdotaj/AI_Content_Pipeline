@@ -38,7 +38,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y ffmpeg
+          sudo apt-get install -y ffmpeg fonts-dejavu-core
 
       - name: Cache pip packages
         uses: actions/cache@v4
@@ -64,6 +64,8 @@ jobs:
           GEMINI_API_KEY:                    ${{ secrets.GEMINI_API_KEY }}
           ELEVENLABS_API_KEY:                ${{ secrets.ELEVENLABS_API_KEY }}
           ELEVENLABS_VOICE_ID:               ${{ secrets.ELEVENLABS_VOICE_ID }}
+          ELEVENLABS_VOICE_ID_EN:            ${{ secrets.ELEVENLABS_VOICE_ID_EN }}
+          ELEVENLABS_VOICE_ID_AR:            ${{ secrets.ELEVENLABS_VOICE_ID_AR }}
           PEXELS_API_KEY:                    ${{ secrets.PEXELS_API_KEY }}
           TELEGRAM_BOT_TOKEN:                ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID:                  ${{ secrets.TELEGRAM_CHAT_ID }}

@@ -549,6 +549,8 @@ def image_to_clips_varied(image_path: str, n_variations: int = 4) -> list:
 def _detect_font() -> str | None:
     """Return the first usable font path/name for TextClip on this system."""
     candidates = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
         "C:/Windows/Fonts/arialbd.ttf",
         "C:/Windows/Fonts/Arial.ttf",
         "DejaVu-Sans-Bold",
