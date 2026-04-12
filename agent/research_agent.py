@@ -178,9 +178,32 @@ Return ONLY this JSON:
     return result
 
 
-def research_topics(count: int = 2) -> list[dict]:
-    """Discover fresh series, filter covered, pick best, generate angles."""
+def research_topics(count: int = 2, niches: list[str] | None = None) -> list[dict]:
+    """Discover fresh topics, filter covered, pick best, generate angles.
+
+    Args:
+        count:  Number of topics to return.
+        niches: Optional explicit niche list (overrides the config NICHES and
+                skips the Dark Crime series discovery flow entirely).  Pass
+                config_shopmart.NICHES when calling from run_shopmart.py.
+    """
     covered = _covered_series_set()
+
+    # ── Shopmart / non-crime path: pick directly from caller-supplied niches ──
+    if niches is not None:
+        available = [n for n in niches if n.lower() not in covered]
+        if not available:
+            available = list(niches)          # recycle if all covered
+        random.shuffle(available)
+        selected_niches = available[:count]
+        topics = []
+        for niche in selected_niches:
+            topic = get_trending_topic(niche, niche)
+            topics.append(topic)
+            print(f"[Research] Found topic: {topic['topic']} ({niche})")
+        return topics
+
+    # ── Dark Crime path: discover series via DuckDuckGo ──────────────────────
     fresh_series = discover_new_series()
 
     if not fresh_series:

@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 import config_shopmart
 sys.modules["config"] = config_shopmart
 
-from config_shopmart import VIDEOS_PER_DAY, FINAL_DIR, CONTENT_DIR, YOUTUBE_TOKEN_FILE
+from config_shopmart import VIDEOS_PER_DAY, FINAL_DIR, CONTENT_DIR, YOUTUBE_TOKEN_FILE, NICHES, OUTPUT_DIR
 
 # Write YouTube token from env secret (CI) or use existing file (local)
 _yt_token_json = os.getenv("YOUTUBE_TOKEN_JSON_SHOPMART")
@@ -58,7 +58,7 @@ def run_pipeline():
     else:
         print("[1/4] No content files found — researching trending topics...")
         try:
-            topics = research_topics(count=VIDEOS_PER_DAY)
+            topics = research_topics(count=VIDEOS_PER_DAY, niches=NICHES)
         except Exception as e:
             send_message(f"Research failed: {e}")
             print(f"[ERROR] Research: {e}")
@@ -138,8 +138,8 @@ def run_pipeline():
 
 
 def _save_log(entry: dict):
-    log_path = os.path.join("output", "shopmart", "publish_log.jsonl")
-    Path("output/shopmart").mkdir(parents=True, exist_ok=True)
+    log_path = os.path.join(OUTPUT_DIR, "publish_log.jsonl")
+    Path(OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
     with open(log_path, "a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 

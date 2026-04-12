@@ -42,7 +42,98 @@ def _groq_call(**kwargs):
 title_format = "Dark Crime Decoded: {series} — {curiosity_hook}"
 
 
+def _is_shopmart() -> bool:
+    """Return True when the pipeline is running for Shopmart Global."""
+    try:
+        import config as _cfg
+        return "shopmart" in getattr(_cfg, "CHANNEL", "").lower()
+    except Exception:
+        return False
+
+
 def write_script(topic: dict, language: str = "english") -> dict:
+    if _is_shopmart():
+        return _write_shopmart_script(topic)
+    return _write_darkcrimed_script(topic)
+
+
+def _write_shopmart_script(topic: dict) -> dict:
+    """Product review / top-list style script for Shopmart Global."""
+    word_count = 130  # ~55-second short video
+
+    part1_prompt = f"""You are a product review content creator for YouTube Shorts and TikTok.
+Write a punchy {word_count}-word voiceover script for the topic below.
+
+Topic: {topic['topic']}
+Niche: {topic['niche']}
+
+REQUIREMENTS:
+- Write EXACTLY {word_count} words — count every word before finishing
+- Opening: one attention-grabbing hook that stops the scroll (1-2 sentences)
+- Middle: 3-5 short punchy product benefits or reasons to buy — one per line
+- Closing: strong call to action ("Link in bio", "Buy now before it sells out", "Check the link below")
+- NO documentary tone, NO crime references, NO headers, NO bullet points
+- Write like an enthusiastic product reviewer speaking to camera
+- Short sentences, maximum 12 words each
+- Use '...' for natural spoken pauses
+
+Output ONLY the script text, nothing else."""
+
+    r1 = _groq_call(
+        messages=[{"role": "user", "content": part1_prompt}],
+        temperature=0.85,
+        max_tokens=400,
+    )
+    script_text = r1.choices[0].message.content.strip()
+
+    part2_prompt = f"""You are a content packaging assistant for an ecommerce channel called Shopmart.
+Based on this product review script, generate metadata.
+
+Topic: {topic['topic']}
+Script (first 200 chars): {script_text[:200]}...
+
+Return ONLY this JSON with no extra text:
+{{
+  "title": "Shopmart: [product/topic] — [short hook] (max 80 chars)",
+  "hook": "First spoken hook sentence (max 15 words)",
+  "on_screen_texts": [
+    "Bold text for second 0",
+    "Bold text for second 10",
+    "Bold text for second 25",
+    "Bold text for second 45"
+  ],
+  "caption": "2-3 sentence caption with product benefits and a buy link CTA",
+  "hashtags": "#tag1 #tag2 #tag3 #tag4 #tag5 #tag6 #tag7 #tag8 #tag9 #tag10",
+  "thumbnail_text": "4-word thumbnail text"
+}}"""
+
+    r2 = _groq_call(
+        messages=[{"role": "user", "content": part2_prompt}],
+        temperature=0.3,
+        max_tokens=600,
+        response_format={"type": "json_object"},
+    )
+    meta = json.loads(r2.choices[0].message.content.strip())
+    script_data = {
+        "title":           meta.get("title", f"Shopmart: {topic['topic']}"),
+        "hook":            meta.get("hook", ""),
+        "script":          script_text,
+        "on_screen_texts": meta.get("on_screen_texts", []),
+        "caption":         meta.get("caption", ""),
+        "hashtags":        meta.get("hashtags", ""),
+        "thumbnail_text":  meta.get("thumbnail_text", ""),
+        "topic":           topic["topic"],
+        "niche":           topic["niche"],
+        "search_query":    topic.get("search_query", ""),
+        "keywords":        topic.get("keywords", []),
+        "language":        "english",
+    }
+    print(f"[Script] Written (shopmart english): '{script_data['title']}'")
+    return script_data
+
+
+def _write_darkcrimed_script(topic: dict) -> dict:
+    """Investigative documentary script for Dark Crime Decoded."""
     word_count = 900  # ~6-7 min voiceover; safe for Groq token limits
 
     # Inject web-researched facts if available
@@ -94,7 +185,6 @@ Start the script immediately without preamble. Write every section fully. Do not
     script_text = r1.choices[0].message.content.strip()
 
     # ── PART 2: Generate metadata only (title, hook, captions, etc.) ────────
-    # Script body comes from Part 1; Part 2 only produces short fields
     part2_prompt = f"""You are a content packaging assistant.
 Based on this voiceover script about "{topic['topic']}", generate the metadata fields.
 

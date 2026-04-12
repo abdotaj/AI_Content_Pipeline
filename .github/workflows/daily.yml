@@ -146,6 +146,8 @@ jobs:
           GROQ_API_KEY:                     ${{ secrets.GROQ_API_KEY }}
           GEMINI_API_KEY:                   ${{ secrets.GEMINI_API_KEY }}
           ELEVENLABS_API_KEY:               ${{ secrets.ELEVENLABS_API_KEY }}
+          ELEVENLABS_VOICE_ID_EN:           ${{ secrets.ELEVENLABS_VOICE_ID_EN }}
+          ELEVENLABS_VOICE_ID_AR:           ${{ secrets.ELEVENLABS_VOICE_ID_AR }}
           ELEVENLABS_VOICE_ID_SHOPMART:     ${{ secrets.ELEVENLABS_VOICE_ID_SHOPMART }}
           PEXELS_API_KEY:                   ${{ secrets.PEXELS_API_KEY }}
           TELEGRAM_BOT_TOKEN:               ${{ secrets.TELEGRAM_BOT_TOKEN }}

@@ -12,6 +12,8 @@ GEMINI_API_KEY        = os.getenv("GEMINI_API_KEY", "YOUR_GEMINI_KEY")
 GROQ_API_KEY          = os.getenv("GROQ_API_KEY", "YOUR_GROQ_KEY")
 ELEVENLABS_API_KEY    = os.getenv("ELEVENLABS_API_KEY", "YOUR_ELEVENLABS_KEY")
 ELEVENLABS_VOICE_ID   = os.getenv("ELEVENLABS_VOICE_ID_SHOPMART", os.getenv("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM"))
+ELEVENLABS_VOICE_ID_EN = os.getenv("ELEVENLABS_VOICE_ID_EN", "245byKg3uV4vDjJ8fSV8")
+ELEVENLABS_VOICE_ID_AR = os.getenv("ELEVENLABS_VOICE_ID_AR", "NYC9WEgkq1u4jiqBseQ9")
 PEXELS_API_KEY        = os.getenv("PEXELS_API_KEY", "YOUR_PEXELS_KEY")
 TELEGRAM_BOT_TOKEN    = os.getenv("TELEGRAM_BOT_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID      = os.getenv("TELEGRAM_CHAT_ID", "YOUR_CHAT_ID")
@@ -43,14 +45,14 @@ CHANNEL = "Shopmart Global"
 
 # --- Content Settings ---
 NICHES = [
-    "ecommerce — best online shopping deals and product reviews",
-    "online shopping — top gadgets and electronics under budget",
-    "product reviews — best projectors and home theatre gadgets",
-    "ecommerce — skincare and beauty product recommendations",
-    "online shopping — toys and collectibles for kids",
-    "home decor — best lighting and interior products online",
-    "product reviews — top kitchen and household gadgets",
-    "ecommerce — exclusive deals and flash sales",
+    "Best Amazon products 2026",
+    "Top rated gadgets review",
+    "Must have home products",
+    "Best budget products online",
+    "Top selling products this week",
+    "Best tech gadgets under 100 dollars",
+    "Home organization products",
+    "Best kitchen gadgets review",
 ]
 
 NICHE_WEIGHTS = [0.20, 0.15, 0.15, 0.12, 0.12, 0.10, 0.08, 0.08]
