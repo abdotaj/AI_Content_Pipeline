@@ -623,6 +623,8 @@ def cut_short_clip(video_path: str, video_id: str, duration: int = 55) -> str:
 
     short_path = os.path.join(SHORTS_DIR, f"{video_id}_short.mp4")
     temp_audio  = os.path.join(SHORTS_DIR, f"{video_id}_short_tmp_audio.m4a")
+    clip = None
+    short = None
     try:
         clip = VideoFileClip(video_path)
         end = min(duration, clip.duration)
@@ -632,7 +634,22 @@ def cut_short_clip(video_path: str, video_id: str, duration: int = 55) -> str:
             audio_codec="aac", threads=4, preset="ultrafast",
             temp_audiofile=temp_audio, logger=None,
         )
-        clip.close()
+        # Verify output is a real video file
+        size_kb = os.path.getsize(short_path) // 1024 if os.path.exists(short_path) else 0
+        print(f"[Video] Short clip saved: {short_path} ({size_kb}KB)")
+        if size_kb < 10:
+            print(f"[Video] WARNING: short clip too small ({size_kb}KB) — may be corrupt")
+        return short_path
+    except Exception as e:
+        print(f"[Video] Short clip error: {e}")
+        return ""
+    finally:
+        if short:
+            try: short.close()
+            except Exception: pass
+        if clip:
+            try: clip.close()
+            except Exception: pass
         for _ in range(5):
             try:
                 if os.path.exists(temp_audio):
@@ -640,11 +657,6 @@ def cut_short_clip(video_path: str, video_id: str, duration: int = 55) -> str:
                 break
             except OSError:
                 time.sleep(0.5)
-        print(f"[Video] Short clip saved: {short_path}")
-        return short_path
-    except Exception as e:
-        print(f"[Video] Short clip error: {e}")
-        return ""
 
 
 # ── Main entry point ───────────────────────────────────────────────────────────
