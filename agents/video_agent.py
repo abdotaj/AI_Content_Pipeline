@@ -225,9 +225,8 @@ def generate_voiceover(script_text: str, filename: str, language: str = "english
 
 # ── AI Image generation (Pollinations — free, no key) ─────────────────────────
 
-# Subject lookup: key → portrait prompt
-_SUBJECTS = {
-    # Real criminals
+# Real criminal portraits — used for Image 1
+_SUBJECTS_REAL = {
     "escobar":        "Pablo Escobar Colombian drug lord portrait cinematic dramatic",
     "pablo":          "Pablo Escobar Colombian drug lord portrait cinematic dramatic",
     "al capone":      "Al Capone Chicago gangster portrait 1920s cinematic",
@@ -253,34 +252,69 @@ _SUBJECTS = {
     "leopold":        "Leopold and Loeb 1924 Chicago murder case portrait cinematic",
     "loeb":           "Leopold and Loeb 1924 Chicago murder case portrait cinematic",
     "ada":            "1999 Ada Oklahoma murder case portrait dark cinematic",
-    # Movies/Series actors
-    "scarface":       "Al Pacino Tony Montana Scarface portrait cinematic",
-    "tony montana":   "Al Pacino Tony Montana Scarface portrait cinematic",
-    "godfather":      "Marlon Brando Don Corleone Godfather portrait cinematic",
-    "corleone":       "Marlon Brando Don Corleone Godfather portrait cinematic",
-    "breaking bad":   "Bryan Cranston Walter White Breaking Bad portrait",
-    "walter white":   "Bryan Cranston Walter White Breaking Bad portrait",
-    "dexter":         "Michael C Hall Dexter Morgan portrait dark cinematic",
-    "peaky blinders": "Cillian Murphy Tommy Shelby portrait cinematic",
-    "tommy shelby":   "Cillian Murphy Tommy Shelby portrait cinematic",
-    "money heist":    "Alvaro Morte Professor Money Heist portrait",
-    "professor":      "Alvaro Morte Professor Money Heist portrait",
-    "ozark":          "Jason Bateman Laura Linney Ozark portrait cinematic",
-    "marty byrde":    "Jason Bateman Marty Byrde Ozark portrait cinematic",
-    "goodfellas":     "Ray Liotta Henry Hill Goodfellas portrait cinematic",
-    "henry hill":     "Ray Liotta Henry Hill Goodfellas portrait cinematic",
-    "casino":         "Robert De Niro Sam Rothstein Casino portrait",
-    "wolf of wall street": "Leonardo DiCaprio Jordan Belfort portrait cinematic",
-    "american gangster":   "Denzel Washington Frank Lucas portrait cinematic",
-    "narcos":         "Wagner Moura Pablo Escobar Narcos portrait cinematic",
-    "city of god":    "Alexandre Rodrigues Rocket City of God portrait",
-    "sicario":        "Emily Blunt Kate Macer Sicario portrait cinematic",
-    "griselda":       "Sofia Vergara Griselda Blanco portrait cinematic",
-    "cartel":         "cartel leader Mexico dangerous man portrait cinematic",
-    "popo":           "cartel leader Mexico dangerous man portrait cinematic",
-    "wentworth":      "Danielle Cormack Bea Smith Wentworth portrait",
-    "adolescence":    "Stephen Graham Adolescence Netflix portrait cinematic",
-    "nypd":           "NYPD detective 1990s New York police portrait cinematic",
+}
+
+# Actor / character portraits — used for Image 2 (distinct from real person)
+_SUBJECTS_ACTOR = {
+    # Scarface
+    "scarface":            "Al Pacino Tony Montana Scarface portrait cinematic",
+    "tony montana":        "Al Pacino Tony Montana Scarface portrait cinematic",
+    # Godfather
+    "godfather":           "Marlon Brando Don Corleone Godfather portrait cinematic",
+    "corleone":            "Marlon Brando Don Corleone Godfather portrait cinematic",
+    # Breaking Bad
+    "breaking bad":        "Bryan Cranston Walter White Breaking Bad portrait",
+    "walter white":        "Bryan Cranston Walter White Breaking Bad portrait",
+    # Dexter
+    "dexter":              "Michael C Hall Dexter Morgan portrait dark cinematic",
+    # Peaky Blinders
+    "peaky blinders":      "Cillian Murphy Tommy Shelby portrait cinematic",
+    "tommy shelby":        "Cillian Murphy Tommy Shelby portrait cinematic",
+    # Money Heist
+    "money heist":         "Alvaro Morte Professor Money Heist portrait",
+    "professor":           "Alvaro Morte Professor Money Heist portrait",
+    # Ozark
+    "ozark":               "Jason Bateman Laura Linney Ozark portrait cinematic",
+    "marty byrde":         "Jason Bateman Marty Byrde Ozark portrait cinematic",
+    # Goodfellas
+    "goodfellas":          "Ray Liotta Henry Hill Goodfellas portrait cinematic",
+    "henry hill":          "Ray Liotta Henry Hill Goodfellas portrait cinematic",
+    # Casino
+    "casino":              "Robert De Niro Sam Rothstein Casino portrait cinematic",
+    "sam rothstein":       "Robert De Niro Sam Rothstein Casino portrait cinematic",
+    # Wolf of Wall Street
+    "wolf of wall street": "Leonardo DiCaprio Jordan Belfort Wolf of Wall Street portrait cinematic",
+    # American Gangster
+    "american gangster":   "Denzel Washington Frank Lucas American Gangster portrait cinematic",
+    # Narcos — actor version of Escobar
+    "narcos":              "Wagner Moura Pablo Escobar Narcos portrait cinematic",
+    "escobar":             "Wagner Moura Pablo Escobar Narcos portrait cinematic",
+    "pablo":               "Wagner Moura Pablo Escobar Narcos portrait cinematic",
+    # City of God
+    "city of god":         "Alexandre Rodrigues Rocket City of God portrait",
+    # Sicario
+    "sicario":             "Emily Blunt Kate Macer Sicario portrait cinematic",
+    # Griselda series
+    "griselda":            "Sofia Vergara Griselda Blanco portrait cinematic",
+    # El Chapo series
+    "el chapo":            "Marco de la O El Chapo series portrait cinematic",
+    "guzman":              "Marco de la O El Chapo series portrait cinematic",
+    # Cartel/Rise
+    "cartel":              "cartel leader Mexico dangerous man portrait cinematic",
+    "popo":                "cartel leader Mexico dangerous man portrait cinematic",
+    "rise":                "cartel leader Mexico dangerous man portrait cinematic",
+    # BTK series
+    "btk":                 "Rainn Wilson BTK killer portrait dark cinematic",
+    "dennis rader":        "Rainn Wilson BTK killer portrait dark cinematic",
+    # Dahmer series
+    "dahmer":              "Evan Peters Jeffrey Dahmer portrait dark cinematic",
+    "jeffrey dahmer":      "Evan Peters Jeffrey Dahmer portrait dark cinematic",
+    # Wentworth
+    "wentworth":           "Danielle Cormack Bea Smith Wentworth portrait",
+    # Adolescence
+    "adolescence":         "Stephen Graham Adolescence Netflix portrait cinematic",
+    # NYPD / misc
+    "nypd":                "NYPD detective 1990s New York police portrait cinematic",
 }
 
 _LOCATIONS = {
@@ -322,43 +356,70 @@ _THEMES = {
 
 
 def generate_image_prompts(title: str, niche: str, script: str = "", language: str = "english") -> tuple[list[str], int]:
-    """Return (list_of_6_prompts, seed) for Pollinations."""
+    """Return (list_of_6_prompts, seed) for Pollinations.
+
+    Fixed 6-slot structure — every slot is semantically distinct so images
+    never duplicate subjects across the same video or across different stories
+    featuring the same actor/actress:
+      1. Portrait of real person / character (from _SUBJECTS_REAL)
+      2. Portrait of main actor / actress   (from _SUBJECTS_ACTOR — always
+         different from slot 1; falls back to a shadow/closeup variant)
+      3. Real location from the story
+      4. Era / time-period cinematic scene
+      5. Crime / theme specific scene
+      6. Justice / conclusion scene
+
+    Each image also receives a unique seed (seed + index) so even when
+    prompts cycle across a longer video, Pollinations renders a fresh image.
+    """
     t = (title + " " + niche).lower()
     s = script.lower()[:500]
     suffix = "vertical 9:16 cinematic portrait dramatic lighting dark background professional 4k photography style"
 
-    # Portrait
-    portrait = next(
-        (v for k, v in _SUBJECTS.items() if k in t or k in s),
+    # Image 1 — Real person / character portrait
+    portrait_real = next(
+        (v for k, v in _SUBJECTS_REAL.items() if k in t or k in s),
         "true crime documentary mysterious person dark portrait cinematic",
     )
 
-    # Location
+    # Image 2 — Actor / actress portrait (must differ from slot 1)
+    portrait_actor = next(
+        (v for k, v in _SUBJECTS_ACTOR.items() if k in t or k in s),
+        None,
+    )
+    if portrait_actor is None or portrait_actor == portrait_real:
+        # Variation: dramatic shadows closeup so it visually differs
+        portrait_actor = portrait_real.replace("portrait", "closeup dramatic shadows intense").strip()
+
+    # Image 3 — Real location
     location = next(
         (v for k, v in _LOCATIONS.items() if k in t or k in s),
         "dark city night street dramatic cinematic",
     )
 
-    # Era
+    # Image 4 — Era / time period
     era = next(
         (v for k, v in _ERAS.items() if k in s),
         "modern dark cinematic atmospheric",
     )
 
-    # Theme
+    # Image 5 — Crime / theme scene
     theme = next(
         (v for k, v in _THEMES.items() if k in t or k in s),
         "crime investigation evidence board detective cinematic",
     )
 
+    # Image 6 — Justice / conclusion
+    justice = "courtroom trial verdict judge gavel dramatic justice cinematic"
+
     seed = random.randint(1, 99999)
     prompts = [
-        f"{portrait}, {suffix}",
+        f"{portrait_real}, {suffix}",
+        f"{portrait_actor}, {suffix}",
         f"{location}, {suffix}",
         f"{era}, {suffix}",
         f"{theme}, {suffix}",
-        f"vintage newspaper headline {portrait}, {suffix}",
-        f"courtroom justice verdict dramatic cinematic dark, {suffix}",
+        f"{justice}, {suffix}",
     ]
     return prompts, seed
 
@@ -676,13 +737,28 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "") 
         audio_path = generate_voiceover(script_data["script"], video_id, language)
 
     # Decide image count and variations based on video type
-    is_short    = "short" in video_id
-    n_images    = 6  if is_short else 10
+    is_short     = "short" in video_id
     n_variations = 2 if is_short else 4
+
+    if is_short:
+        # Short clips always get exactly 6 structured images (one per slot)
+        n_images = 6
+    else:
+        # Long videos: 6 images per minute of audio (minimum 10)
+        try:
+            from moviepy import AudioFileClip as _AFC
+            _tmp = _AFC(audio_path)
+            _dur = _tmp.duration
+            _tmp.close()
+            n_images = max(10, int(_dur / 60 * 6))
+        except Exception:
+            n_images = 10
+
     print(f"[Video] Generating {n_images} images × {n_variations} variations ({'short' if is_short else 'long'})")
 
     prompts, seed = generate_image_prompts(title, niche, script_data.get("script", ""), language)
-    # Extend prompts to n_images by cycling if needed
+    # Cycle the 6 structured prompts across all n_images;
+    # each image gets a unique seed offset so visuals always differ.
     extended_prompts = [prompts[i % len(prompts)] for i in range(n_images)]
 
     all_clips: list = []
