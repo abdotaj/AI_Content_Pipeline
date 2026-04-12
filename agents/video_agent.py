@@ -693,7 +693,7 @@ def cut_short_clip(video_path: str, video_id: str, duration: int = 55) -> str:
         short.write_videofile(
             short_path, fps=24, codec="libx264",
             audio_codec="aac", threads=4, preset="ultrafast",
-            temp_audiofile=temp_audio, logger=None,
+            temp_audiofile=temp_audio, remove_temp=True, logger=None,
         )
         # Verify output is a real video file
         size_kb = os.path.getsize(short_path) // 1024 if os.path.exists(short_path) else 0

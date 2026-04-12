@@ -88,6 +88,8 @@ def send_video_preview(video_path: str, script_data: dict, video_id: str) -> str
                             "chat_id": TELEGRAM_CHAT_ID,
                             "caption": short_caption[:1024],
                             "supports_streaming": "true",
+                            "width": 1080,
+                            "height": 1920,
                         },
                         files={"video": sf}
                     )
@@ -234,6 +236,8 @@ def send_for_manual_posting(video_path: str, script_data: dict, platforms: str) 
                     "chat_id": TELEGRAM_CHAT_ID,
                     "caption": caption_text[:1024],
                     "supports_streaming": "true",
+                    "width": 1080,
+                    "height": 1920,
                 },
                 files={"video": video_file}
             )

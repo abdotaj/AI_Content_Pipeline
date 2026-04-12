@@ -75,18 +75,25 @@ def send_video_preview(video_path: str, script_data: dict, video_id: str) -> str
         import os
         from pathlib import Path
         if Path(short_path).exists():
-            short_caption = f"SHORT VERSION — post this to TikTok, Instagram Reels and YouTube Shorts\n\n{hashtags}"
-            with open(short_path, "rb") as sf:
-                requests.post(
-                    f"{BASE_URL}/sendVideo",
-                    data={
-                        "chat_id": TELEGRAM_CHAT_ID,
-                        "caption": short_caption[:1024],
-                        "supports_streaming": "true",
-                    },
-                    files={"video": sf}
-                )
-            print(f"[Notify] Short clip sent for {video_id}")
+            size_kb = os.path.getsize(short_path) // 1024
+            print(f"[Notify] Sending short clip: {short_path} ({size_kb}KB)")
+            if size_kb < 10:
+                print(f"[Notify] WARNING: short clip too small ({size_kb}KB) — skipping send")
+            else:
+                short_caption = f"SHORT VERSION — post this to TikTok, Instagram Reels and YouTube Shorts\n\n{hashtags}"
+                with open(short_path, "rb") as sf:
+                    requests.post(
+                        f"{BASE_URL}/sendVideo",
+                        data={
+                            "chat_id": TELEGRAM_CHAT_ID,
+                            "caption": short_caption[:1024],
+                            "supports_streaming": "true",
+                            "width": 1080,
+                            "height": 1920,
+                        },
+                        files={"video": sf}
+                    )
+                print(f"[Notify] Short clip sent for {video_id}")
 
     return wait_for_decision(video_id)
 
@@ -217,6 +224,11 @@ def send_for_manual_posting(video_path: str, script_data: dict, platforms: str) 
     )
 
     try:
+        import os
+        size_kb = os.path.getsize(video_path) // 1024
+        print(f"[Notify] Sending video: {video_path} ({size_kb}KB)")
+        if size_kb < 10:
+            print(f"[Notify] WARNING: video file too small ({size_kb}KB) — may be corrupt")
         with open(video_path, "rb") as video_file:
             r = requests.post(
                 f"{BASE_URL}/sendVideo",
@@ -224,6 +236,8 @@ def send_for_manual_posting(video_path: str, script_data: dict, platforms: str) 
                     "chat_id": TELEGRAM_CHAT_ID,
                     "caption": caption_text[:1024],
                     "supports_streaming": "true",
+                    "width": 1080,
+                    "height": 1920,
                 },
                 files={"video": video_file}
             )
