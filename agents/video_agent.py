@@ -225,269 +225,179 @@ def generate_voiceover(script_text: str, filename: str, language: str = "english
 
 # ── AI Image generation (Pollinations — free, no key) ─────────────────────────
 
-def generate_image_prompts(title: str, niche: str, script: str = "") -> list[str]:
-    """
-    Build exactly 6 cinematic image prompts for a video:
-      1. Real criminal portrait
-      2. Actor / character portrait
-      3. Real location
-      4. Era / time-period scene
-      5. Crime / theme scene
-      6. Justice / conclusion scene
-    """
+# Subject lookup: key → portrait prompt
+_SUBJECTS = {
+    # Real criminals
+    "escobar":        "Pablo Escobar Colombian drug lord portrait cinematic dramatic",
+    "pablo":          "Pablo Escobar Colombian drug lord portrait cinematic dramatic",
+    "al capone":      "Al Capone Chicago gangster portrait 1920s cinematic",
+    "capone":         "Al Capone Chicago gangster portrait 1920s cinematic",
+    "lucky luciano":  "Lucky Luciano New York mafia portrait cinematic",
+    "luciano":        "Lucky Luciano New York mafia portrait cinematic",
+    "frank lucas":    "Frank Lucas Harlem drug lord portrait cinematic",
+    "griselda blanco":"Griselda Blanco cocaine godmother portrait cinematic",
+    "btk":            "BTK killer Dennis Rader portrait dark cinematic",
+    "dennis rader":   "BTK killer Dennis Rader portrait dark cinematic",
+    "dahmer":         "Jeffrey Dahmer serial killer portrait cinematic",
+    "jeffrey dahmer": "Jeffrey Dahmer serial killer portrait cinematic",
+    "ed gein":        "Ed Gein Wisconsin criminal portrait dark cinematic",
+    "ted bundy":      "Ted Bundy serial killer portrait cinematic",
+    "jordan belfort": "Jordan Belfort Wall Street trader portrait cinematic",
+    "lindbergh":      "Charles Lindbergh baby kidnapping 1932 historical portrait",
+    "el chapo":       "El Chapo Sinaloa cartel leader portrait cinematic",
+    "guzman":         "El Chapo Sinaloa cartel leader portrait cinematic",
+    "charles manson": "Charles Manson cult leader portrait cinematic",
+    "manson":         "Charles Manson cult leader portrait cinematic",
+    "john gotti":     "John Gotti New York mafia boss portrait cinematic",
+    "gotti":          "John Gotti New York mafia boss portrait cinematic",
+    "leopold":        "Leopold and Loeb 1924 Chicago murder case portrait cinematic",
+    "loeb":           "Leopold and Loeb 1924 Chicago murder case portrait cinematic",
+    "ada":            "1999 Ada Oklahoma murder case portrait dark cinematic",
+    # Movies/Series actors
+    "scarface":       "Al Pacino Tony Montana Scarface portrait cinematic",
+    "tony montana":   "Al Pacino Tony Montana Scarface portrait cinematic",
+    "godfather":      "Marlon Brando Don Corleone Godfather portrait cinematic",
+    "corleone":       "Marlon Brando Don Corleone Godfather portrait cinematic",
+    "breaking bad":   "Bryan Cranston Walter White Breaking Bad portrait",
+    "walter white":   "Bryan Cranston Walter White Breaking Bad portrait",
+    "dexter":         "Michael C Hall Dexter Morgan portrait dark cinematic",
+    "peaky blinders": "Cillian Murphy Tommy Shelby portrait cinematic",
+    "tommy shelby":   "Cillian Murphy Tommy Shelby portrait cinematic",
+    "money heist":    "Alvaro Morte Professor Money Heist portrait",
+    "professor":      "Alvaro Morte Professor Money Heist portrait",
+    "ozark":          "Jason Bateman Laura Linney Ozark portrait cinematic",
+    "marty byrde":    "Jason Bateman Marty Byrde Ozark portrait cinematic",
+    "goodfellas":     "Ray Liotta Henry Hill Goodfellas portrait cinematic",
+    "henry hill":     "Ray Liotta Henry Hill Goodfellas portrait cinematic",
+    "casino":         "Robert De Niro Sam Rothstein Casino portrait",
+    "wolf of wall street": "Leonardo DiCaprio Jordan Belfort portrait cinematic",
+    "american gangster":   "Denzel Washington Frank Lucas portrait cinematic",
+    "narcos":         "Wagner Moura Pablo Escobar Narcos portrait cinematic",
+    "city of god":    "Alexandre Rodrigues Rocket City of God portrait",
+    "sicario":        "Emily Blunt Kate Macer Sicario portrait cinematic",
+    "griselda":       "Sofia Vergara Griselda Blanco portrait cinematic",
+    "cartel":         "cartel leader Mexico dangerous man portrait cinematic",
+    "popo":           "cartel leader Mexico dangerous man portrait cinematic",
+    "wentworth":      "Danielle Cormack Bea Smith Wentworth portrait",
+    "adolescence":    "Stephen Graham Adolescence Netflix portrait cinematic",
+    "nypd":           "NYPD detective 1990s New York police portrait cinematic",
+}
+
+_LOCATIONS = {
+    "colombia":    "Medellin Colombia 1980s barrio street cinematic",
+    "brazil":      "Rio de Janeiro Brazil favela cinematic",
+    "miami":       "Miami 1980s neon night skyline cinematic",
+    "new york":    "New York City 1970s dark street cinematic",
+    "chicago":     "Chicago 1920s prohibition era street cinematic",
+    "mexico":      "Mexico cartel desert border town cinematic",
+    "italy":       "Sicily Italy mafia village cinematic",
+    "baltimore":   "Baltimore city street night urban cinematic",
+    "oklahoma":    "Oklahoma 1990s rural town cinematic",
+    "wisconsin":   "Wisconsin rural dark forest cinematic",
+    "harlem":      "Harlem New York 1970s street cinematic",
+    "wall street": "Wall Street New York financial district cinematic",
+}
+
+_ERAS = {
+    "1920": "1920s prohibition era sepia cinematic",
+    "1930": "1930s depression era dark cinematic",
+    "1950": "1950s vintage americana cinematic",
+    "1960": "1960s vintage documentary cinematic",
+    "1970": "1970s gritty film grain cinematic",
+    "1980": "1980s neon dark cinematic",
+    "1990": "1990s gritty urban crime cinematic",
+    "2000": "2000s modern crime thriller cinematic",
+}
+
+_THEMES = {
+    "drug":    "cocaine drug operation laboratory bales cinematic",
+    "cartel":  "cartel operation weapons money cinematic",
+    "murder":  "crime scene detective investigation dark cinematic",
+    "serial":  "psychological thriller dark room evidence cinematic",
+    "mafia":   "mafia meeting dark restaurant suits cinematic",
+    "heist":   "bank vault robbery masked figures cinematic",
+    "fraud":   "financial documents money greed cinematic",
+    "kidnap":  "dark room captive dramatic cinematic",
+}
+
+
+def generate_image_prompts(title: str, niche: str, script: str = "", language: str = "english") -> tuple[list[str], int]:
+    """Return (list_of_6_prompts, seed) for Pollinations."""
     t = (title + " " + niche).lower()
-    style = "vertical 9:16 cinematic dramatic lighting dark background professional 4k photography style"
+    s = script.lower()[:500]
+    suffix = "vertical 9:16 cinematic portrait dramatic lighting dark background professional 4k photography style"
 
-    # ── Image 1: Real criminal portrait ───────────────────────────────────────
-    if "escobar" in t or "pablo" in t:
-        real_person = "Pablo Escobar Colombian drug lord portrait cinematic dramatic"
-    elif "al capone" in t or "capone" in t:
-        real_person = "Al Capone Chicago gangster portrait 1920s cinematic"
-    elif "lucky luciano" in t or "luciano" in t:
-        real_person = "Lucky Luciano New York mafia portrait cinematic"
-    elif "frank lucas" in t:
-        real_person = "Frank Lucas Harlem drug lord portrait cinematic"
-    elif "griselda blanco" in t or ("griselda" in t and "vergara" not in t):
-        real_person = "Griselda Blanco cocaine godmother portrait cinematic"
-    elif "btk" in t or "dennis rader" in t:
-        real_person = "BTK killer Dennis Rader portrait dark cinematic"
-    elif "dahmer" in t or "jeffrey dahmer" in t:
-        real_person = "Jeffrey Dahmer serial killer portrait cinematic"
-    elif "ed gein" in t:
-        real_person = "Ed Gein Wisconsin criminal portrait dark cinematic"
-    elif "ted bundy" in t:
-        real_person = "Ted Bundy serial killer portrait cinematic"
-    elif "jordan belfort" in t:
-        real_person = "Jordan Belfort Wall Street trader portrait cinematic"
-    elif "lindbergh" in t:
-        real_person = "Charles Lindbergh baby kidnapping 1932 historical portrait"
-    elif "el chapo" in t or "guzman" in t:
-        real_person = "El Chapo Sinaloa cartel leader portrait cinematic"
-    elif "charles manson" in t or "manson" in t:
-        real_person = "Charles Manson cult leader portrait cinematic"
-    elif "john gotti" in t or "gotti" in t:
-        real_person = "John Gotti New York mafia boss portrait cinematic"
-    elif "narcos" in t:
-        real_person = "Pablo Escobar Colombian drug lord portrait cinematic dramatic"
-    elif "scarface" in t or "tony montana" in t:
-        real_person = "1980s Miami drug lord dangerous man portrait cinematic"
-    elif "godfather" in t or "corleone" in t:
-        real_person = "1970s New York Italian mafia boss portrait cinematic"
-    elif "breaking bad" in t or "walter white" in t:
-        real_person = "methamphetamine manufacturer dangerous man New Mexico portrait cinematic"
-    elif "peaky blinders" in t or "tommy shelby" in t:
-        real_person = "1920s Birmingham gang leader dangerous man portrait cinematic"
-    elif "money heist" in t:
-        real_person = "masked heist mastermind mysterious man portrait cinematic"
-    elif "ozark" in t:
-        real_person = "money launderer dangerous man Missouri portrait cinematic"
-    elif "goodfellas" in t or "henry hill" in t:
-        real_person = "1970s New York Italian American mobster portrait cinematic"
-    elif "casino" in t or "sam rothstein" in t:
-        real_person = "1970s Las Vegas casino operator mob portrait cinematic"
-    elif "the wire" in t or "baltimore" in t:
-        real_person = "Baltimore drug kingpin street crime portrait cinematic"
-    elif "city of god" in t:
-        real_person = "1980s Rio de Janeiro favela gang leader portrait cinematic"
-    elif "sicario" in t:
-        real_person = "Mexican cartel enforcer dangerous man portrait cinematic"
-    elif "american gangster" in t:
-        real_person = "1970s Harlem drug lord dangerous man portrait cinematic"
-    elif "wolf of wall street" in t:
-        real_person = "Jordan Belfort Wall Street trader portrait cinematic"
-    elif "dexter" in t:
-        real_person = "forensic blood spatter analyst dark secret portrait cinematic"
-    else:
-        real_person = "true crime documentary mysterious person dark portrait cinematic"
+    # Portrait
+    portrait = next(
+        (v for k, v in _SUBJECTS.items() if k in t or k in s),
+        "true crime documentary mysterious person dark portrait cinematic",
+    )
 
-    # ── Image 2: Actor / character portrait ───────────────────────────────────
-    if "narcos" in t or "escobar" in t:
-        actor = "Wagner Moura Pablo Escobar Narcos portrait cinematic"
-    elif "scarface" in t or "tony montana" in t:
-        actor = "Al Pacino Tony Montana Scarface portrait cinematic"
-    elif "godfather" in t or "corleone" in t:
-        actor = "Marlon Brando Don Corleone Godfather portrait cinematic"
-    elif "breaking bad" in t or "walter white" in t:
-        actor = "Bryan Cranston Walter White Breaking Bad portrait cinematic"
-    elif "dexter" in t:
-        actor = "Michael C Hall Dexter Morgan portrait dark cinematic"
-    elif "peaky blinders" in t or "tommy shelby" in t:
-        actor = "Cillian Murphy Tommy Shelby Peaky Blinders portrait cinematic"
-    elif "money heist" in t:
-        actor = "Alvaro Morte Professor Money Heist portrait cinematic"
-    elif "ozark" in t:
-        actor = "Jason Bateman Marty Byrde Ozark portrait cinematic"
-    elif "goodfellas" in t or "henry hill" in t:
-        actor = "Ray Liotta Henry Hill Goodfellas portrait cinematic"
-    elif "casino" in t or "sam rothstein" in t:
-        actor = "Robert De Niro Sam Rothstein Casino portrait cinematic"
-    elif "wolf of wall street" in t:
-        actor = "Leonardo DiCaprio Jordan Belfort Wolf of Wall Street portrait cinematic"
-    elif "american gangster" in t:
-        actor = "Denzel Washington Frank Lucas American Gangster portrait cinematic"
-    elif "city of god" in t:
-        actor = "Alexandre Rodrigues Rocket City of God portrait cinematic"
-    elif "sicario" in t:
-        actor = "Emily Blunt Kate Macer Sicario portrait cinematic"
-    elif "griselda" in t:
-        actor = "Sofia Vergara Griselda Blanco portrait cinematic"
-    elif "el chapo" in t:
-        actor = "Marco de la O El Chapo series portrait cinematic"
-    elif "btk" in t:
-        actor = "Rainn Wilson BTK killer portrait dark cinematic"
-    elif "dahmer" in t:
-        actor = "Evan Peters Jeffrey Dahmer Monster portrait dark cinematic"
-    elif "the wire" in t or "baltimore" in t:
-        actor = "Idris Elba Stringer Bell The Wire portrait cinematic"
-    elif "capone" in t:
-        actor = "Tom Hardy Al Capone Capone portrait cinematic"
-    else:
-        actor = "crime drama lead actor intense portrait dark cinematic"
+    # Location
+    location = next(
+        (v for k, v in _LOCATIONS.items() if k in t or k in s),
+        "dark city night street dramatic cinematic",
+    )
 
-    # ── Image 3: Real location ─────────────────────────────────────────────────
-    if "escobar" in t or "narcos" in t or "colombia" in t:
-        location = "Medellín Colombia 1980s city street barrio cinematic"
-    elif "scarface" in t or "griselda" in t or "miami" in t:
-        location = "Miami Florida 1980s waterfront mansion aerial cinematic"
-    elif "godfather" in t or "goodfellas" in t or "gotti" in t or "luciano" in t:
-        location = "New York City Little Italy 1970s street cinematic"
-    elif "breaking bad" in t or "walter white" in t:
-        location = "Albuquerque New Mexico desert highway cinematic"
-    elif "peaky blinders" in t:
-        location = "Birmingham England 1920s industrial street fog cinematic"
-    elif "money heist" in t:
-        location = "Madrid Spain Royal Mint building exterior cinematic"
-    elif "ozark" in t:
-        location = "Lake of the Ozarks Missouri night dark water cinematic"
-    elif "the wire" in t or "baltimore" in t:
-        location = "Baltimore Maryland city street night cinematic"
-    elif "casino" in t:
-        location = "Las Vegas Nevada 1970s casino strip night cinematic"
-    elif "el chapo" in t or "guzman" in t or "sinaloa" in t:
-        location = "Sinaloa Mexico mountain tunnel hideout cinematic"
-    elif "city of god" in t:
-        location = "Rio de Janeiro favela Cidade de Deus Brazil cinematic"
-    elif "sicario" in t:
-        location = "US Mexico border Juarez desert cinematic"
-    elif "american gangster" in t or "frank lucas" in t:
-        location = "Harlem New York 1970s street night cinematic"
-    elif "capone" in t:
-        location = "Chicago 1920s city street prohibition era cinematic"
-    elif "dexter" in t:
-        location = "Miami Florida night bayfront cinematic"
-    elif "wolf of wall street" in t or "belfort" in t:
-        location = "Wall Street New York financial district 1990s cinematic"
-    elif "dahmer" in t:
-        location = "Milwaukee Wisconsin apartment building night cinematic"
-    elif "ted bundy" in t:
-        location = "1970s Pacific Northwest forest road night cinematic"
-    elif "manson" in t:
-        location = "Los Angeles California 1969 Spahn Ranch desert cinematic"
-    else:
-        location = "crime city night street dramatic lighting cinematic"
+    # Era
+    era = next(
+        (v for k, v in _ERAS.items() if k in s),
+        "modern dark cinematic atmospheric",
+    )
 
-    # ── Image 4: Era / time-period scene ──────────────────────────────────────
-    if "capone" in t or "luciano" in t or "peaky blinders" in t:
-        era = "1920s prohibition era speakeasy jazz club smoke cinematic"
-    elif "godfather" in t or "goodfellas" in t or "casino" in t or "gotti" in t:
-        era = "1970s New York Italian American neighborhood life cinematic"
-    elif "narcos" in t or "escobar" in t or "griselda" in t or "scarface" in t:
-        era = "1980s cocaine era Miami nightclub neon lights cinematic"
-    elif "breaking bad" in t or "ozark" in t or "dexter" in t:
-        era = "2000s American suburban tension crime drama cinematic"
-    elif "money heist" in t or "el chapo" in t or "sicario" in t:
-        era = "modern day high-stakes criminal operation cinematic"
-    elif "city of god" in t:
-        era = "1980s Brazil shantytown poverty crime cinematic"
-    elif "wolf of wall street" in t or "belfort" in t:
-        era = "1990s Wall Street excess luxury party cinematic"
-    elif "dahmer" in t or "bundy" in t or "manson" in t or "gein" in t:
-        era = "1970s American suburban darkness serial killer era cinematic"
-    elif "american gangster" in t or "frank lucas" in t:
-        era = "1970s Harlem drug trade street scene cinematic"
-    elif "btk" in t:
-        era = "1970s Kansas suburban neighbourhood dark secret cinematic"
-    elif "the wire" in t:
-        era = "2000s Baltimore inner city drug trade documentary style"
-    else:
-        era = "true crime era atmospheric dramatic scene cinematic"
+    # Theme
+    theme = next(
+        (v for k, v in _THEMES.items() if k in t or k in s),
+        "crime investigation evidence board detective cinematic",
+    )
 
-    # ── Image 5: Crime / theme scene ──────────────────────────────────────────
-    if "escobar" in t or "narcos" in t or "el chapo" in t or "griselda blanco" in t:
-        crime = "cocaine drug operation cartel laboratory bales cinematic"
-    elif "scarface" in t or "goodfellas" in t or "casino" in t:
-        crime = "organized crime money counting bags briefcase dark cinematic"
-    elif "godfather" in t or "gotti" in t or "luciano" in t or "capone" in t:
-        crime = "mafia meeting round table dimly lit room cinematic"
-    elif "breaking bad" in t:
-        crime = "methamphetamine laboratory blue crystals cooking cinematic"
-    elif "money heist" in t:
-        crime = "bank vault gold bars cash heist robbery cinematic"
-    elif "peaky blinders" in t:
-        crime = "1920s illegal betting operation warehouse Birmingham cinematic"
-    elif "ozark" in t:
-        crime = "money laundering cash bags lakeside night cinematic"
-    elif "dexter" in t:
-        crime = "forensic crime scene blood spatter investigation dark cinematic"
-    elif "the wire" in t:
-        crime = "street drug trade corner dealers Baltimore night cinematic"
-    elif "sicario" in t or "cartel" in t:
-        crime = "cartel ambush tactical operation border crossing cinematic"
-    elif "city of god" in t:
-        crime = "favela gang war street violence Brazil cinematic"
-    elif "wolf of wall street" in t or "belfort" in t:
-        crime = "financial fraud stock market manipulation trading floor cinematic"
-    elif "dahmer" in t or "bundy" in t or "gein" in t or "manson" in t or "btk" in t:
-        crime = "serial killer investigation evidence board detective dark cinematic"
-    elif "american gangster" in t or "frank lucas" in t:
-        crime = "heroin drug distribution network Harlem 1970s cinematic"
-    else:
-        crime = "crime investigation evidence detective dark dramatic cinematic"
-
-    # ── Image 6: Justice / conclusion scene ───────────────────────────────────
-    conclusion = "courtroom trial verdict gavel judge jury dramatic cinematic dark"
-
-    return [
-        f"{real_person}, {style}",
-        f"{actor}, {style}",
-        f"{location}, {style}",
-        f"{era}, {style}",
-        f"{crime}, {style}",
-        f"{conclusion}, {style}",
+    seed = random.randint(1, 99999)
+    prompts = [
+        f"{portrait}, {suffix}",
+        f"{location}, {suffix}",
+        f"{era}, {suffix}",
+        f"{theme}, {suffix}",
+        f"vintage newspaper headline {portrait}, {suffix}",
+        f"courtroom justice verdict dramatic cinematic dark, {suffix}",
     ]
+    return prompts, seed
 
 
-def generate_ai_image(prompt: str, output_path: str, width: int = 1080, height: int = 1920, retries: int = 3) -> str:
+def generate_ai_image(prompt: str, output_path: str, seed: int = None) -> str:
     """Fetch an AI-generated image from Pollinations with retry + dark fallback."""
-    encoded = requests.utils.quote(prompt)
-    url = f"https://image.pollinations.ai/prompt/{encoded}?width={width}&height={height}&nologo=true"
+    import io
+    from PIL import Image as PILImage
 
-    # Always save as PNG — avoids imageio backend issues on Linux/CI
     output_path = output_path.replace(".jpg", ".png")
+    encoded = requests.utils.quote(prompt)
+    _seed = seed if seed is not None else random.randint(1, 99999)
+    url = (
+        f"https://image.pollinations.ai/prompt/{encoded}"
+        f"?width=1080&height=1920&nologo=true&seed={_seed}"
+    )
 
-    for attempt in range(retries):
+    for attempt in range(3):
         try:
             response = requests.get(url, timeout=120)
             if response.status_code == 200:
-                import io
-                from PIL import Image as PILImage
                 img = PILImage.open(io.BytesIO(response.content)).convert("RGB")
+                img = img.resize((1080, 1920), PILImage.LANCZOS)
                 img.save(output_path, "PNG")
                 print(f"[Image] Generated: {prompt[:60]}")
+                time.sleep(5)
                 return output_path
             elif response.status_code == 429:
-                print(f"[Image] Rate limited, waiting 30s... (attempt {attempt + 1}/{retries})")
+                print(f"[Image] Rate limited, waiting 30s... (attempt {attempt + 1}/3)")
                 time.sleep(30)
             else:
-                print(f"[Image] Pollinations returned {response.status_code} (attempt {attempt + 1}/{retries})")
+                print(f"[Image] Pollinations returned {response.status_code} (attempt {attempt + 1}/3)")
                 time.sleep(10)
         except Exception as e:
             print(f"[Image] Attempt {attempt + 1} failed: {e}")
             time.sleep(15)
 
     # Fallback: solid dark background so assembly never crashes
-    from PIL import Image as PILImage
-    img = PILImage.new("RGB", (width, height), color=(13, 13, 26))
+    img = PILImage.new("RGB", (1080, 1920), color=(13, 13, 26))
     img.save(output_path, "PNG")
     print(f"[Image] Using dark background fallback for: {prompt[:60]}")
     return output_path
@@ -759,14 +669,14 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "") 
     n_variations = 2 if is_short else 4
     print(f"[Video] Generating {n_images} images × {n_variations} variations ({'short' if is_short else 'long'})")
 
-    prompts = generate_image_prompts(title, niche, script_data.get("script", ""))
+    prompts, seed = generate_image_prompts(title, niche, script_data.get("script", ""), language)
     # Extend prompts to n_images by cycling if needed
     extended_prompts = [prompts[i % len(prompts)] for i in range(n_images)]
 
     all_clips: list = []
     for i, prompt in enumerate(extended_prompts):
         img_path = os.path.join(IMAGES_DIR, f"{video_id}_img_{i}.png")
-        result = generate_ai_image(prompt, img_path)
+        result = generate_ai_image(prompt, img_path, seed=seed + i)
         if result:
             variations = image_to_clips_varied(result, n_variations=n_variations)
             for clip in variations:
