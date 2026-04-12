@@ -3,6 +3,7 @@
 # ============================================================
 import os
 import time
+import random
 import asyncio
 import requests
 from pathlib import Path
@@ -494,9 +495,10 @@ def generate_ai_image(prompt: str, output_path: str, width: int = 1080, height: 
 
 # ── MoviePy clip helpers ───────────────────────────────────────────────────────
 
-def image_to_clip(image_path: str, duration: int = 4):
-    """Still image → video clip with Ken Burns zoom + fade in/out.
-    Uses PIL+numpy to bypass imageio backend requirements on Linux/CI."""
+def image_to_clips_varied(image_path: str, n_variations: int = 4) -> list:
+    """Return up to n_variations clips from one image with zoom and pan effects.
+    Uses PIL+numpy to bypass imageio backend on Linux/CI.
+    Effects: zoom-in, zoom-out, pan-left, pan-right."""
     import numpy as np
     from PIL import Image as PILImage
     from moviepy import ImageClip
@@ -504,10 +506,44 @@ def image_to_clip(image_path: str, duration: int = 4):
 
     pil_img = PILImage.open(image_path).convert("RGB")
     img_array = np.array(pil_img)
-    clip = ImageClip(img_array, duration=duration)
-    clip = clip.resized(lambda t: 1 + 0.03 * t)
-    clip = clip.with_effects([FadeIn(0.5), FadeOut(0.5)])
-    return clip
+    h, w = img_array.shape[:2]
+    max_pan = max(80, int(w * 0.08))
+
+    def _zoom_clip(scale_fn):
+        dur = random.uniform(6, 9)
+        c = ImageClip(img_array, duration=dur).resized(scale_fn)
+        return c.with_effects([FadeIn(0.5), FadeOut(0.5)])
+
+    def _pan_clip(direction: str):
+        """Pan left or right via crop. Falls back to zoom on any error."""
+        dur = random.uniform(6, 9)
+        try:
+            c = ImageClip(img_array, duration=dur)
+            if direction == "left":
+                # crop window slides rightward → image appears to pan left
+                c = c.cropped(
+                    x1=lambda t, s=max_pan / dur: int(min(t * s, max_pan)),
+                    x2=lambda t, s=max_pan / dur: int(min(t * s + (w - max_pan), w)),
+                )
+            else:
+                # crop window slides leftward → image appears to pan right
+                c = c.cropped(
+                    x1=lambda t, s=max_pan / dur: int(max(max_pan - t * s, 0)),
+                    x2=lambda t, s=max_pan / dur: int(max(max_pan - t * s + (w - max_pan), w - max_pan)),
+                )
+            c = c.resized((w, h))
+            return c.with_effects([FadeIn(0.5), FadeOut(0.5)])
+        except Exception:
+            return _zoom_clip(lambda t: 1.04 + 0.015 * t)
+
+    all_effects = [
+        lambda: _zoom_clip(lambda t: 1.00 + 0.020 * t),  # slow zoom in
+        lambda: _zoom_clip(lambda t: 1.12 - 0.020 * t),  # zoom out
+        lambda: _pan_clip("left"),                         # pan left
+        lambda: _pan_clip("right"),                        # pan right
+    ]
+
+    return [fn() for fn in all_effects[:n_variations]]
 
 
 def _detect_font() -> str | None:
@@ -715,25 +751,39 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "") 
     else:
         audio_path = generate_voiceover(script_data["script"], video_id, language)
 
-    # Generate AI images via Pollinations
+    # Decide image count and variations based on video type
+    is_short     = "short" in video_id
+    n_images     = 6  if is_short else 10
+    n_variations = 2  if is_short else 4
+    print(f"[Video] Generating {n_images} images × {n_variations} variations ({'short' if is_short else 'long'})")
+
     prompts = generate_image_prompts(title, niche, script_data.get("script", ""))
-    image_clips = []
-    for i, prompt in enumerate(prompts):
-        img_path = os.path.join(IMAGES_DIR, f"{video_id}_img_{i}.jpg")
+    # Extend prompts to n_images by cycling if needed
+    extended_prompts = [prompts[i % len(prompts)] for i in range(n_images)]
+
+    all_clips: list = []
+    for i, prompt in enumerate(extended_prompts):
+        img_path = os.path.join(IMAGES_DIR, f"{video_id}_img_{i}.png")
         result = generate_ai_image(prompt, img_path)
         if result:
-            clip = image_to_clip(result, duration=4)
-            clip = add_text_overlay(clip, "Dark Crime Decoded", "top")
-            image_clips.append(clip)
-        time.sleep(5)  # respect Pollinations rate limit
+            variations = image_to_clips_varied(result, n_variations=n_variations)
+            for clip in variations:
+                clip = add_text_overlay(clip, "Dark Crime Decoded", "top")
+                all_clips.append(clip)
+            print(f"[Video] Image {i + 1}/{n_images}: {len(variations)} variations added")
+        if i < len(extended_prompts) - 1:
+            time.sleep(5)  # respect Pollinations rate limit
 
-    if not image_clips:
+    if not all_clips:
         print("[Video] No images generated, skipping")
         return ""
 
+    random.shuffle(all_clips)
+    print(f"[Video] Total clip pool: {len(all_clips)} clips (shuffled)")
+
     video_path = assemble_video(
         audio_path=audio_path,
-        image_clips=image_clips,
+        image_clips=all_clips,
         output_filename=video_id,
     )
     if video_path:
