@@ -158,7 +158,7 @@ def generate_voiceover(script_text: str, filename: str, language: str = "english
         return generate_voiceover_edgetts(script_text, filename, language)
 
     audio_path = os.path.join(AUDIO_DIR, f"{filename}.mp3")
-    chunks = _split_text(script_text, max_chars=1500)
+    chunks = _split_text(script_text, max_chars=2000)
     print(f"[Voice] ElevenLabs: {len(chunks)} chunk(s) for {language}")
 
     chunk_files: list[str] = []

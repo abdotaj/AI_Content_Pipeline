@@ -391,6 +391,49 @@ def listen_for_voice_message(language: str, timeout: int = 600) -> str:
     return ""
 
 
+def check_telegram_for_script(timeout: int = 30) -> str | None:
+    """
+    Poll Telegram for any text messages sent to the bot.
+    Returns:
+      - A long string (>200 chars) if a full script is found.
+      - A short string (<50 chars) if a topic name is found.
+      - None if no relevant message is found.
+    """
+    try:
+        r = requests.get(
+            f"{BASE_URL}/getUpdates",
+            params={"timeout": timeout, "allowed_updates": ["message"]},
+            timeout=timeout + 5,
+        )
+        updates = r.json().get("result", [])
+    except Exception as e:
+        print(f"[Notify] check_telegram_for_script failed: {e}")
+        return None
+
+    for update in updates:
+        message = update.get("message", {})
+        text = message.get("text", "").strip()
+
+        if not text or text.startswith("/"):
+            continue
+
+        # Long text → treat as full script
+        if len(text) > 200 and any(
+            word in text.lower()
+            for word in ["hook", "intro", "story", "conclusion", "script",
+                         "مقدمة", "القصة", "الخاتمة"]
+        ):
+            print(f"[Notify] Found full script in Telegram: {text[:100]}...")
+            return text
+
+        # Short text → treat as topic name
+        if len(text) < 50:
+            print(f"[Notify] Found topic name in Telegram: {text!r}")
+            return text
+
+    return None
+
+
 def send_daily_report(stats: dict) -> None:
     msg = (
         f"Daily Report\n\n"

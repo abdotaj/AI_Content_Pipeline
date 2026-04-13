@@ -53,6 +53,7 @@ from agent.video_agent    import create_video
 from agent.notify_agent   import (
     send_message, send_for_manual_posting, send_daily_report,
     listen_for_content, send_arabic_script_preview, send_english_script_preview,
+    check_telegram_for_script,
 )
 from agent.publish_agent  import upload_to_youtube
 from agents.content_agent import ingest_content_files
@@ -68,44 +69,83 @@ def run_pipeline():
 
     send_message(f"Dark Crime Decoded — Pipeline starting {today}")
 
-    listen_for_content(timeout=30)
+    # ── STEP 1: Determine content source (priority order) ─────
+    print("[1/5] Checking for user-provided content...")
 
-    # ── STEP 1: Research 1 topic ───────────────────────────────
-    print("[1/5] Checking content files...")
+    # Priority 1: content/dark_crime/ JSON files
     ingested = ingest_content_files(content_dir=CONTENT_DIR)
+
+    telegram_input = None
+    topic = None
 
     if ingested:
         print("[1/5] Using script from content files.")
         en_long = next((s for s in ingested if s.get("language") == "english"), ingested[0])
+
     else:
-        print("[1/5] No content files — researching trending topic...")
-        try:
-            topics = research_topics(count=1)
-        except Exception as e:
-            send_message(f"Research failed: {e}")
-            print(f"[ERROR] Research: {e}")
-            return
+        # Priority 2: Telegram inbox (text messages sent to bot)
+        print("[1/5] Checking Telegram for user-provided script or topic...")
+        telegram_input = check_telegram_for_script(timeout=15)
 
-        topic = topics[0]
+        if telegram_input and len(telegram_input) < 50:
+            # Short message → treat as topic name, research it
+            print(f"[1/5] Topic from Telegram: {telegram_input!r}")
+            topic = {
+                "topic":        telegram_input,
+                "niche":        telegram_input,
+                "angle":        "",
+                "keywords":     [telegram_input],
+                "search_query": telegram_input,
+            }
 
-        print("[1b] Web-researching real facts...")
-        niche  = topic.get("niche", "")
-        series = niche.split("behind")[-1].strip() if "behind" in niche else topic.get("topic", "")
-        try:
-            topic["research"] = research_series(series)
-        except Exception as e:
-            print(f"  [WARN] Web research failed for '{series}': {e}")
-            topic["research"] = {}
+        elif telegram_input:
+            # Long message → full script provided; wrap in script_data shape
+            print("[1/5] Full script received from Telegram.")
+            en_long = {
+                "title":    telegram_input.splitlines()[0][:100],
+                "script":   telegram_input,
+                "language": "english",
+                "niche":    "",
+                "topic":    telegram_input.splitlines()[0][:100],
+                "caption":  "",
+                "hashtags": "",
+            }
 
-        # ── STEP 2: Generate 4 scripts ─────────────────────────
-        print("\n[2/5] Writing scripts...")
-        try:
-            en_long = write_script(topic, language="english")
-            print("  [2/5] English long script done")
-        except Exception as e:
-            send_message(f"Script writing failed: {e}")
-            print(f"[ERROR] Script: {e}")
-            return
+        else:
+            # Priority 3: auto research
+            print("[1/5] No content found — researching trending topic...")
+            listen_for_content(timeout=30)
+
+        if not ingested and not telegram_input:
+            # Auto research path
+            try:
+                topics = research_topics(count=1)
+            except Exception as e:
+                send_message(f"Research failed: {e}")
+                print(f"[ERROR] Research: {e}")
+                return
+            topic = topics[0]
+
+        if topic:
+            # Research real facts for topic (content files and full-script paths skip this)
+            print("[1b] Web-researching real facts...")
+            niche  = topic.get("niche", "")
+            series = niche.split("behind")[-1].strip() if "behind" in niche else topic.get("topic", "")
+            try:
+                topic["research"] = research_series(series)
+            except Exception as e:
+                print(f"  [WARN] Web research failed for '{series}': {e}")
+                topic["research"] = {}
+
+            # ── STEP 2: Generate 4 scripts ─────────────────────
+            print("\n[2/5] Writing scripts...")
+            try:
+                en_long = write_script(topic, language="english")
+                print("  [2/5] English long script done")
+            except Exception as e:
+                send_message(f"Script writing failed: {e}")
+                print(f"[ERROR] Script: {e}")
+                return
 
     try:
         en_short = write_short_script(en_long)

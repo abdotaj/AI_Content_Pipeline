@@ -148,30 +148,41 @@ def _write_darkcrimed_script(topic: dict) -> dict:
 
     # ── PART 1: Script body ───────────────────────────────────────────────────
     part1_prompt = f"""You are a top true crime documentary writer for YouTube.
-Write a compelling 700-word script about: {topic['topic']}
+Write a compelling 1500-word minimum script about: {topic['topic']}
 
 Use this EXACT structure:
 
-HOOK (30 words max):
-- Start with the most shocking fact about this case
-- Make it impossible to stop listening
+HOOK (50 words):
+- Most shocking fact to open with
+- Make viewer unable to stop listening
 - Example: "In 1994, a man walked free after killing 33 people. This is how he did it."
 
-REAL STORY (500 words):
-- Tell the TRUE story chronologically
-- Use REAL names, REAL dates, REAL places
-- Include specific shocking details from research
-- Compare to the movie/series — what did they get right/wrong
-- Include quotes from real people involved if available
-- Use short sentences. Maximum 15 words per sentence.
-- New line for each sentence.
-- Use "..." for dramatic pauses
+BACKGROUND (300 words):
+- Who is the real person/case
+- Where and when it happened
+- What was life like before the crime
 
-CONCLUSION (100 words):
+MAIN STORY (700 words):
+- Full chronological story with real facts
+- Key events in detail
+- What the movie/series got right
+- What the movie/series changed or exaggerated
+- Real quotes from people involved
+- Specific dates, names, places
+
+SHOCKING REVELATIONS (300 words):
+- 3-5 facts most people don't know
+- The darkest details
+- What happened behind the scenes
+
+CONCLUSION (150 words):
 - What happened after
-- What the real impact was
+- Where are they now
+- Legacy and impact
 - Tease next video with a question
-- End with a call to action: like, subscribe, comment
+- End with: like, subscribe, comment
+
+TOTAL TARGET: 1500 words minimum, 1800 words maximum.
 
 IMPORTANT RULES:
 - NEVER use phrases like "delve into" or "it is worth noting"
@@ -179,7 +190,9 @@ IMPORTANT RULES:
 - Every sentence must add NEW information
 - Write like you are talking to a friend
 - Use "you" to address the viewer directly
-- Minimum 3 shocking facts the viewer probably doesn't know
+- Use short sentences. Maximum 15 words per sentence.
+- New line for each sentence.
+- Use "..." for dramatic pauses
 
 Research data to use:
 {research_facts}
@@ -189,12 +202,12 @@ Research data to use:
 Topic: {topic['topic']}
 Series/Movie: {series}
 
-Start the script immediately with the HOOK. Do not add labels like "HOOK:" — write the spoken words only."""
+Start the script immediately with the HOOK. Do not add any section labels — write the spoken words only."""
 
     r1 = _groq_call(
         messages=[{"role": "user", "content": part1_prompt}],
         temperature=0.85,
-        max_tokens=2000,
+        max_tokens=4000,
     )
     script_text = r1.choices[0].message.content.strip()
 

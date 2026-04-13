@@ -67,7 +67,7 @@ NICHE_WEIGHTS = [0.10, 0.10, 0.10, 0.08, 0.08,
                  0.06, 0.05, 0.04, 0.01, 0.01]
 
 VIDEOS_PER_DAY = 1
-VIDEO_DURATION_SECONDS = 720       # 12 minutes
+VIDEO_DURATION_SECONDS = 600       # 10 minutes target
 SHORT_CLIP_DURATION    = 55        # seconds — cut from long video for TikTok/Reels/Shorts
 VIDEO_WIDTH  = 1080
 VIDEO_HEIGHT = 1920
