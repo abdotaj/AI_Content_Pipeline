@@ -216,76 +216,69 @@ def _write_darkcrimed_script(topic: dict) -> dict:
     research_shocking     = "\n".join(f"- {s}" for s in shocking_list)    or "(include surprising real details)"
 
     # ── PART 1: Script body ───────────────────────────────────────────────────
-    part1_prompt = f"""You are a top true crime documentary writer for YouTube.
-Write a compelling 1500-word minimum script about: {topic['topic']}
+    _si_long     = get_series_for_person(topic["topic"])
+    series_label = f"{_si_long[0]} {_si_long[1]}" if _si_long else series
 
-Use this EXACT structure:
+    part1_prompt = f"""You are a top true crime documentary writer for YouTube.
+Write a 1500-1800 word 10-minute documentary script about: {topic['topic']}
+The related series/movie is: {series_label}
+
+Use this EXACT structure (no section labels in the output — spoken words only):
 
 HOOK (50 words):
-- Most shocking fact to open with
-- Make viewer unable to stop listening
-- Example: "In 1994, a man walked free after killing 33 people. This is how he did it."
+- Most shocking single fact about this case
+- Something that stops the viewer immediately
+- Example: "Netflix spent 50 million dollars making {series_label}. But they changed one key detail that changes everything."
 
-BACKGROUND (300 words):
-- Who is the real person/case
-- Where and when it happened
-- What was life like before the crime
+SERIES INTRO (150 words):
+- What {series_label} showed the world
+- Why millions of people watched it
+- Set up the question: but what really happened?
+- Name {series_label} directly and what it got famous for
 
-MAIN STORY (700 words):
-- Full chronological story with real facts
-- Key events in detail
-- What the movie/series got right
-- What the movie/series changed or exaggerated
+REAL BACKGROUND (300 words):
+- Real person's early life with specific facts
+- Family, childhood, first crimes — real dates, real places, real names
+- What shaped them BEFORE the series begins
+
+MAIN STORY (500 words):
+- Full chronological real story
+- Key events the series covered — what {series_label} got RIGHT with evidence
+- What {series_label} CHANGED and why Hollywood altered it
 - Real quotes from people involved
-- Specific dates, names, places
+- Specific dates and facts throughout
 
 SHOCKING REVELATIONS (300 words):
-- 3-5 facts most people don't know
-- The darkest details
-- What happened behind the scenes
+- 4-5 facts {series_label} completely left out
+- The darkest real details
+- Things that would shock even fans of the show
+- Real impact on real people
 
-CONCLUSION (150 words):
-- What happened after
-- Where are they now
-- Legacy and impact
-- Tease next video with a question
-- End with: like, subscribe, comment
+SERIES VS REALITY (200 words):
+- Direct comparisons: "In {series_label}, they showed X. In reality, Y happened."
+- 3 specific scene or character comparisons
+- What Hollywood changed purely for drama
 
-TOTAL TARGET: 1500 words minimum, 1800 words maximum.
+CONCLUSION (100 words):
+- What happened after the events {series_label} depicted
+- Where the real people are now
+- One question to tease the next video
+- End with: "Follow Dark Crime Decoded for more real stories behind your favourite crime series"
 
 STRICT WRITING RULES:
 1. NEVER start two consecutive sentences with the same word
 2. NEVER use "He was" more than once per paragraph
-3. Use varied sentence starters — rotate through these styles:
-   - Year: "In 1993..."
-   - Place: "In Medellín..."
-   - Number: "30 billion dollars..."
-   - Action subject: "Colombian police..." / "The cartel..."
-   - Age: "By age 25..." / "At just 12 years old..."
-   - Reveal: "Nobody knew..." / "What the show never revealed..."
-   - Contrast: "The truth is..." / "What Netflix changed..."
-   - Address viewer: "What you probably don't know..."
+3. Use varied sentence starters: year ("In 1993..."), place, number, action subject, age, reveal, contrast, viewer address
 4. Each sentence must contain exactly ONE specific fact (name, number, date, or place)
 5. Mix sentence lengths — short punchy sentences after long ones
-6. Use "..." for dramatic pauses between shocking revelations
+6. Name {series_label} at least 8 times throughout the script
+7. Include at least 10 real dates or numbers
+8. Use "..." for dramatic pauses
 
-BANNED PHRASES — never use these, replace with specific facts:
-- "shaped by his experiences" → use the actual experience
-- "complex figure" → describe one specific contradiction
-- "product of his environment" → name the environment and what happened there
-- "rose to infamy" → use "By 1989, he was earning 420 million dollars per week"
-- "criminal mastermind" → describe one specific scheme
-- "hero to some" → "He built 84 football fields for poor children in Medellín"
-- "delve into" / "it is worth noting" / "fascinating" → cut entirely
+BANNED PHRASES — replace with specific facts:
+- "delve into" / "complex figure" / "shaped by" / "rose to infamy" / "criminal mastermind"
+- "hero to some" → use the actual act (e.g. "He built 84 football fields for the poor")
 - NEVER repeat the same fact twice
-
-EXAMPLE OF GOOD WRITING STYLE (copy this rhythm):
-"In 1975, a 26-year-old nobody from Medellín made his first cocaine shipment to the United States.
-The package was hidden inside a spare tire.
-It earned him 100,000 dollars in one week.
-Three years later, he controlled 80 percent of the cocaine entering America.
-The Medellín Cartel was born.
-What Narcos never showed you is what happened next..."
 
 Research data to use:
 {research_facts}
@@ -293,9 +286,9 @@ Research data to use:
 {research_shocking}
 
 Topic: {topic['topic']}
-Series/Movie: {series}
+Series/Movie: {series_label}
 
-Start the script immediately with the HOOK. Do not add any section labels — write the spoken words only."""
+Start immediately with the HOOK. Write spoken words only — no labels, no headers."""
 
     r1 = _groq_call(
         messages=[{"role": "user", "content": part1_prompt}],
@@ -404,26 +397,43 @@ def translate_script(en_script: dict) -> dict:
 
 
 def write_short_script(en_long_script: dict) -> dict:
-    """Generate a ~130-word hook script for a 55-second short video."""
-    prompt = f"""You are creating a 55-second short video for TikTok and YouTube Shorts.
-Write a punchy 130-word voiceover script based on the topic below.
+    """Generate a ~130-word two-part script for a 55-second short video."""
+    topic  = en_long_script.get("topic", "")
+    _si    = get_series_for_person(topic)
+    series = f"{_si[0]} {_si[1]}" if _si else en_long_script.get("niche", "the series")
 
-Topic: {en_long_script['topic']}
-Full script opening (for context): {en_long_script['script'][:600]}
+    prompt = f"""Write a 55-second true crime short script about: {topic}
+Related series/movie: {series}
 
-REQUIREMENTS:
-- Write EXACTLY 130 words — count every word
-- Opening: one shocking hook sentence to stop the scroll
-- Middle: 2-3 most explosive real facts from the story
-- End: "Follow Dark Crime Decoded for the full story"
-- No headers, no bullet points — continuous spoken text only
+STRUCTURE (follow exactly):
 
-Output ONLY the script text, nothing else."""
+PART 1 — THE REAL PERSON (35 seconds, 80-90 words):
+- Start with the most shocking real fact about this person
+- Include 3-4 specific facts with real numbers, dates, or places
+- Short punchy sentences — maximum 12 words each
+- No vague phrases like "rose to infamy" or "criminal mastermind"
+
+PART 2 — THE SERIES CONNECTION (20 seconds, 45-55 words):
+- Name the series/movie directly: "{series}"
+- State ONE key thing the show got wrong or left out
+- Compare fiction vs reality with one specific fact
+- End with exactly: "Follow Dark Crime Decoded for the full story"
+
+RULES:
+- Total 130-145 words only — count before finishing
+- Every sentence must contain ONE specific fact (name, number, date, or place)
+- Never start two consecutive sentences with the same word
+- Write naturally like speaking to a friend — no headers, no bullet points
+
+Use this context from the full script:
+{en_long_script.get('script', '')[:500]}
+
+Output ONLY the spoken script text, nothing else."""
 
     r = _groq_call(
         messages=[{"role": "user", "content": prompt}],
         temperature=0.85,
-        max_tokens=400,
+        max_tokens=450,
     )
     script_text = r.choices[0].message.content.strip()
 
