@@ -465,6 +465,99 @@ def generate_ai_image(prompt: str, output_path: str, seed: int = None) -> str:
     return output_path
 
 
+# ── Title card helpers ────────────────────────────────────────────────────────
+
+def _detect_font() -> str | None:
+    """Find a usable bold TTF font on the system."""
+    candidates = [
+        # Windows
+        r"C:\Windows\Fonts\arialbd.ttf",
+        r"C:\Windows\Fonts\arial.ttf",
+        r"C:\Windows\Fonts\calibrib.ttf",
+        r"C:\Windows\Fonts\verdanab.ttf",
+        # Linux (GitHub Actions)
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+        "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
+        "/usr/share/fonts/truetype/ubuntu/Ubuntu-B.ttf",
+    ]
+    for p in candidates:
+        if os.path.exists(p):
+            return p
+    return None
+
+
+def _extract_series_from_title(title: str) -> str | None:
+    """
+    Extract 'Narcos Series' or 'Wolf of Wall Street Movie' from a title like
+    'Dark Crime Decoded: Pablo Escobar & Narcos Series — Hook Text'.
+    Returns the text between ' & ' and ' — ', or None.
+    """
+    if " & " in title and " — " in title:
+        after_amp  = title.split(" & ", 1)[1]
+        before_dash = after_amp.split(" — ", 1)[0].strip()
+        return before_dash
+    return None
+
+
+def create_title_card(main_line: str, sub_line: str, duration: float = 7.0):
+    """
+    Return a 1080x1920 VideoClip with a branded title card.
+    Uses the same make_frame pattern as image_to_clips for MoviePy compatibility.
+    Fades in over 0.5 s and out over 0.5 s.
+    """
+    import numpy as np
+    from PIL import Image as PILImage, ImageDraw, ImageFont
+    from moviepy import VideoClip
+
+    TARGET_W, TARGET_H = 1080, 1920
+    TEAL  = (29, 158, 117)
+    AMBER = (239, 159, 39)
+    WHITE = (255, 255, 255)
+    BG    = (13, 13, 26)
+
+    img  = PILImage.new("RGB", (TARGET_W, TARGET_H), color=BG)
+    draw = ImageDraw.Draw(img)
+
+    font_path = _detect_font()
+    try:
+        if font_path:
+            font_brand = ImageFont.truetype(font_path, 48)
+            font_main  = ImageFont.truetype(font_path, 72)
+            font_sub   = ImageFont.truetype(font_path, 48)
+        else:
+            font_brand = font_main = font_sub = ImageFont.load_default()
+    except Exception:
+        font_brand = font_main = font_sub = ImageFont.load_default()
+
+    cx = TARGET_W // 2
+    cy = TARGET_H // 2
+
+    # Brand name at top
+    draw.text((cx, 200), "Dark Crime Decoded", fill=TEAL, font=font_brand, anchor="mm")
+    # Top amber bar
+    draw.rectangle([140, 280, 940, 285], fill=AMBER)
+    # Main line (series + type)
+    draw.text((cx, cy - 80), main_line, fill=TEAL,  font=font_main, anchor="mm")
+    # Sub line
+    draw.text((cx, cy + 80), sub_line,  fill=WHITE, font=font_sub,  anchor="mm")
+    # Bottom amber bar
+    draw.rectangle([140, cy + 160, 940, cy + 165], fill=AMBER)
+
+    frame = np.array(img)
+
+    def make_frame(t: float):
+        alpha = 1.0
+        if t < 0.5:
+            alpha = t / 0.5
+        elif t > duration - 0.5:
+            alpha = (duration - t) / 0.5
+        alpha = max(0.0, min(1.0, alpha))
+        return (frame * alpha).astype("uint8")
+
+    return VideoClip(frame_function=make_frame, duration=duration)
+
+
 # ── MoviePy clip helpers ───────────────────────────────────────────────────────
 
 def image_to_clips(image_path: str, n_variations: int = 4) -> list:
@@ -525,8 +618,17 @@ def image_to_clips(image_path: str, n_variations: int = 4) -> list:
     return clips
 
 
-def assemble_video(audio_path: str, image_clips: list, output_filename: str) -> str:
-    """Loop image clips to cover the full audio duration, mux, and export."""
+def assemble_video(
+    audio_path: str,
+    image_clips: list,
+    output_filename: str,
+    before_clips: list | None = None,
+    after_clips:  list | None = None,
+) -> str:
+    """
+    Loop image_clips to cover the full audio duration, mux, and export.
+    before_clips/after_clips are prepended/appended once (not looped).
+    """
     import traceback
     from moviepy import AudioFileClip, concatenate_videoclips
 
@@ -543,14 +645,18 @@ def assemble_video(audio_path: str, image_clips: list, output_filename: str) -> 
         traceback.print_exc()
         return ""
 
-    # ── Build looped clip list ────────────────────────────────────────────────
+    # ── Build looped clip list (image portion only) ───────────────────────────
+    fixed_before = sum(c.duration for c in (before_clips or []))
+    fixed_after  = sum(c.duration for c in (after_clips  or []))
+    image_target = max(1.0, total_duration - fixed_before - fixed_after)
+
     try:
         looped: list = []
         accumulated = 0.0
         idx = 0
-        while accumulated < total_duration:
+        while accumulated < image_target:
             clip = image_clips[idx % len(image_clips)]
-            remaining = total_duration - accumulated
+            remaining = image_target - accumulated
             if clip.duration > remaining:
                 clip = clip.subclipped(0, remaining)
             looped.append(clip)
@@ -566,7 +672,8 @@ def assemble_video(audio_path: str, image_clips: list, output_filename: str) -> 
     # method="chain": clips are identical 1080x1920 — faster and more reliable
     # than "compose" which tries to composite varying-size clips.
     try:
-        final = concatenate_videoclips(looped, method="chain")
+        all_video_clips = (before_clips or []) + looped + (after_clips or [])
+        final = concatenate_videoclips(all_video_clips, method="chain")
         final = final.with_audio(audio)
         print(f"[Video] Concatenated: {final.duration:.1f}s, size={final.size}")
     except Exception as e:
@@ -809,11 +916,26 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "") 
     random.shuffle(all_clips)
     print(f"[Video] Total clip pool: {len(all_clips)} clips (shuffled)")
 
+    # ── Title cards (long-form only) ──────────────────────────────────────────
+    before_clips: list = []
+    after_clips:  list = []
+    if not is_short:
+        series_label = _extract_series_from_title(title)
+        if series_label:
+            try:
+                before_clips = [create_title_card(series_label, "The Real Story", duration=7.0)]
+                after_clips  = [create_title_card("Follow for More", "Dark Crime Decoded", duration=3.0)]
+                print(f"[Video] Title cards created: '{series_label}'")
+            except Exception as e:
+                print(f"[Video] Title card skipped: {e}")
+
     # ── Assembly ──────────────────────────────────────────────────────────────
     video_path = assemble_video(
         audio_path=audio_path,
         image_clips=all_clips,
         output_filename=video_id,
+        before_clips=before_clips or None,
+        after_clips=after_clips or None,
     )
     if video_path:
         script_data["short_clip_path"] = cut_short_clip(video_path, video_id)

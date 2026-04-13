@@ -41,40 +41,41 @@ def _groq_call(**kwargs):
 
 title_format = "Dark Crime Decoded: {person} & {series} — {curiosity_hook}"
 
-PERSON_TO_SERIES = {
-    "pablo escobar":   "Narcos",
-    "escobar":         "Narcos",
-    "al capone":       "Boardwalk Empire",
-    "capone":          "Boardwalk Empire",
-    "jeffrey dahmer":  "Monster",
-    "dahmer":          "Monster",
-    "el chapo":        "Narcos Mexico",
-    "griselda blanco": "Griselda",
-    "jordan belfort":  "Wolf of Wall Street",
-    "john gotti":      "Gotti",
-    "btk":             "Mindhunter",
-    "ted bundy":       "Extremely Wicked",
-    "ed gein":         "Psycho",
-    "lucky luciano":   "The Godfather",
-    "frank lucas":     "American Gangster",
-    "henry hill":      "Goodfellas",
-    "whitey bulger":   "Black Mass",
-    "richard ramirez": "Night Stalker",
-    "charles manson":  "Mindhunter",
-    "leopold":         "Rope",
-    "loeb":            "Rope",
-    "kitty genovese":  "Kitty",
-    "wm3":             "Devil's Knot",
-    "amanda knox":     "Stillwater",
-    "west memphis":    "Devil's Knot",
+PERSON_TO_SERIES: dict[str, tuple[str, str]] = {
+    "pablo escobar":   ("Narcos",                "Series"),
+    "escobar":         ("Narcos",                "Series"),
+    "al capone":       ("Boardwalk Empire",       "Series"),
+    "capone":          ("Boardwalk Empire",       "Series"),
+    "jeffrey dahmer":  ("Monster",               "Series"),
+    "dahmer":          ("Monster",               "Series"),
+    "el chapo":        ("Narcos Mexico",          "Series"),
+    "griselda blanco": ("Griselda",              "Series"),
+    "jordan belfort":  ("Wolf of Wall Street",   "Movie"),
+    "john gotti":      ("Gotti",                 "Movie"),
+    "btk":             ("Mindhunter",            "Series"),
+    "ted bundy":       ("Extremely Wicked",      "Movie"),
+    "ed gein":         ("Psycho",                "Movie"),
+    "lucky luciano":   ("The Godfather",         "Movie"),
+    "frank lucas":     ("American Gangster",     "Movie"),
+    "henry hill":      ("Goodfellas",            "Movie"),
+    "whitey bulger":   ("Black Mass",            "Movie"),
+    "richard ramirez": ("Night Stalker",         "Series"),
+    "charles manson":  ("Mindhunter",            "Series"),
+    "amanda knox":     ("Stillwater",            "Movie"),
+    "leopold":         ("Rope",                  "Movie"),
+    "loeb":            ("Rope",                  "Movie"),
+    "kitty genovese":  ("Kitty",                 "Movie"),
+    "wm3":             ("Devil's Knot",          "Movie"),
+    "west memphis":    ("Devil's Knot",          "Movie"),
 }
 
 
-def get_series_for_person(topic_text: str) -> str | None:
+def get_series_for_person(topic_text: str) -> tuple[str, str] | None:
+    """Return (series_name, type) tuple or None if no match."""
     topic_lower = topic_text.lower()
-    for person, series in PERSON_TO_SERIES.items():
+    for person, info in PERSON_TO_SERIES.items():
         if person in topic_lower:
-            return series
+            return info
     return None
 
 
@@ -272,23 +273,25 @@ Start the script immediately with the HOOK. Do not add any section labels — wr
     script_text = r1.choices[0].message.content.strip()
 
     # ── PART 2: Generate metadata only (title, hook, captions, etc.) ────────
-    _related_series = get_series_for_person(topic["topic"]) or series
+    _series_info    = get_series_for_person(topic["topic"])
+    _related_series = f"{_series_info[0]} {_series_info[1]}" if _series_info else series
     part2_prompt = f"""You are a content packaging assistant.
 Based on this voiceover script about "{topic['topic']}", generate the metadata fields.
 
 Script summary (first 300 chars): {script_text[:300]}...
 
 TITLE FORMAT (mandatory):
-"Dark Crime Decoded: [Real Person] & [Movie/Series] — [Shocking Hook]"
-Example: "Dark Crime Decoded: Pablo Escobar & Narcos — The Truth Netflix Never Showed"
+"Dark Crime Decoded: [Real Person] & [Movie/Series Type] — [Shocking Hook]"
+Example: "Dark Crime Decoded: Pablo Escobar & Narcos Series — The Truth Netflix Never Showed"
+Example: "Dark Crime Decoded: Jordan Belfort & Wolf of Wall Street Movie — The Real Greed"
 The real person for this topic is extracted from: {topic['topic']}
-The related movie/series is: {_related_series}
+The related movie/series with type label is: {_related_series}
 If no series is known, use: "Dark Crime Decoded: [Real Person] — [Shocking Hook]"
 Max 90 chars total.
 
 Return ONLY this JSON with no extra text:
 {{
-  "title": "Dark Crime Decoded: [Real Person] & [Movie/Series] — [hook]",
+  "title": "Dark Crime Decoded: [Real Person] & [Movie/Series Type] — [hook]",
   "hook": "First 3-second spoken hook sentence",
   "on_screen_texts": [
     "Short bold text for second 0",
@@ -310,7 +313,7 @@ Return ONLY this JSON with no extra text:
     meta = json.loads(r2.choices[0].message.content.strip())
     _fallback_title = (
         f"Dark Crime Decoded: {topic['topic']} & {_related_series} — True Story"
-        if _related_series else f"Dark Crime Decoded: {topic['topic']} — True Story"
+        if _series_info else f"Dark Crime Decoded: {topic['topic']} — True Story"
     )
     script_data = {
         "title":          meta.get("title", _fallback_title),
