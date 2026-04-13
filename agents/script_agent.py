@@ -220,15 +220,39 @@ CONCLUSION (150 words):
 
 TOTAL TARGET: 1500 words minimum, 1800 words maximum.
 
-IMPORTANT RULES:
-- NEVER use phrases like "delve into" or "it is worth noting"
+STRICT WRITING RULES:
+1. NEVER start two consecutive sentences with the same word
+2. NEVER use "He was" more than once per paragraph
+3. Use varied sentence starters — rotate through these styles:
+   - Year: "In 1993..."
+   - Place: "In Medellín..."
+   - Number: "30 billion dollars..."
+   - Action subject: "Colombian police..." / "The cartel..."
+   - Age: "By age 25..." / "At just 12 years old..."
+   - Reveal: "Nobody knew..." / "What the show never revealed..."
+   - Contrast: "The truth is..." / "What Netflix changed..."
+   - Address viewer: "What you probably don't know..."
+4. Each sentence must contain exactly ONE specific fact (name, number, date, or place)
+5. Mix sentence lengths — short punchy sentences after long ones
+6. Use "..." for dramatic pauses between shocking revelations
+
+BANNED PHRASES — never use these, replace with specific facts:
+- "shaped by his experiences" → use the actual experience
+- "complex figure" → describe one specific contradiction
+- "product of his environment" → name the environment and what happened there
+- "rose to infamy" → use "By 1989, he was earning 420 million dollars per week"
+- "criminal mastermind" → describe one specific scheme
+- "hero to some" → "He built 84 football fields for poor children in Medellín"
+- "delve into" / "it is worth noting" / "fascinating" → cut entirely
 - NEVER repeat the same fact twice
-- Every sentence must add NEW information
-- Write like you are talking to a friend
-- Use "you" to address the viewer directly
-- Use short sentences. Maximum 15 words per sentence.
-- New line for each sentence.
-- Use "..." for dramatic pauses
+
+EXAMPLE OF GOOD WRITING STYLE (copy this rhythm):
+"In 1975, a 26-year-old nobody from Medellín made his first cocaine shipment to the United States.
+The package was hidden inside a spare tire.
+It earned him 100,000 dollars in one week.
+Three years later, he controlled 80 percent of the cocaine entering America.
+The Medellín Cartel was born.
+What Narcos never showed you is what happened next..."
 
 Research data to use:
 {research_facts}
