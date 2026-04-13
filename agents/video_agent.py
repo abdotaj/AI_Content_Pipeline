@@ -133,6 +133,9 @@ def _elevenlabs_chunk(chunk: str, voice_id: str, api_key: str, chunk_path: str) 
             with open(chunk_path, "wb") as f:
                 f.write(response.content)
             return True
+        if response.status_code == 401:
+            print(f"[Voice] ElevenLabs 401 Unauthorized — voice ID may be invalid or inaccessible")
+            return "401"
         print(f"[Voice] ElevenLabs chunk failed: {response.status_code}")
     except Exception as e:
         print(f"[Voice] ElevenLabs chunk error: {e}")
@@ -164,7 +167,15 @@ def generate_voiceover(script_text: str, filename: str, language: str = "english
     chunk_files: list[str] = []
     for i, chunk in enumerate(chunks):
         chunk_path = os.path.join(AUDIO_DIR, f"{filename}_chunk_{i}.mp3")
-        if _elevenlabs_chunk(chunk, voice_id, api_key, chunk_path):
+        result = _elevenlabs_chunk(chunk, voice_id, api_key, chunk_path)
+        if result == "401":
+            # 401 will never succeed — skip retries, go straight to edge-tts
+            for f in chunk_files:
+                try: os.remove(f)
+                except OSError: pass
+            print(f"[Voice] 401 Unauthorized — falling back to edge-tts immediately")
+            return generate_voiceover_edgetts(script_text, filename, language)
+        elif result:
             chunk_files.append(chunk_path)
             print(f"[Voice] Chunk {i + 1}/{len(chunks)} done")
             if i < len(chunks) - 1:
