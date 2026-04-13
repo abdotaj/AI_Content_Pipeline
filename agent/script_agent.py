@@ -39,7 +39,43 @@ def _groq_call(**kwargs):
     raise last_err
 
 
-title_format = "Dark Crime Decoded: {series} — {curiosity_hook}"
+title_format = "Dark Crime Decoded: {person} & {series} — {curiosity_hook}"
+
+PERSON_TO_SERIES = {
+    "pablo escobar":   "Narcos",
+    "escobar":         "Narcos",
+    "al capone":       "Boardwalk Empire",
+    "capone":          "Boardwalk Empire",
+    "jeffrey dahmer":  "Monster",
+    "dahmer":          "Monster",
+    "el chapo":        "Narcos Mexico",
+    "griselda blanco": "Griselda",
+    "jordan belfort":  "Wolf of Wall Street",
+    "john gotti":      "Gotti",
+    "btk":             "Mindhunter",
+    "ted bundy":       "Extremely Wicked",
+    "ed gein":         "Psycho",
+    "lucky luciano":   "The Godfather",
+    "frank lucas":     "American Gangster",
+    "henry hill":      "Goodfellas",
+    "whitey bulger":   "Black Mass",
+    "richard ramirez": "Night Stalker",
+    "charles manson":  "Mindhunter",
+    "leopold":         "Rope",
+    "loeb":            "Rope",
+    "kitty genovese":  "Kitty",
+    "wm3":             "Devil's Knot",
+    "amanda knox":     "Stillwater",
+    "west memphis":    "Devil's Knot",
+}
+
+
+def get_series_for_person(topic_text: str) -> str | None:
+    topic_lower = topic_text.lower()
+    for person, series in PERSON_TO_SERIES.items():
+        if person in topic_lower:
+            return series
+    return None
 
 
 def _is_shopmart() -> bool:
@@ -212,14 +248,23 @@ Start the script immediately with the HOOK. Do not add any section labels — wr
     script_text = r1.choices[0].message.content.strip()
 
     # ── PART 2: Generate metadata only (title, hook, captions, etc.) ────────
+    _related_series = get_series_for_person(topic["topic"]) or series
     part2_prompt = f"""You are a content packaging assistant.
 Based on this voiceover script about "{topic['topic']}", generate the metadata fields.
 
 Script summary (first 300 chars): {script_text[:300]}...
 
+TITLE FORMAT (mandatory):
+"Dark Crime Decoded: [Real Person] & [Movie/Series] — [Shocking Hook]"
+Example: "Dark Crime Decoded: Pablo Escobar & Narcos — The Truth Netflix Never Showed"
+The real person for this topic is extracted from: {topic['topic']}
+The related movie/series is: {_related_series}
+If no series is known, use: "Dark Crime Decoded: [Real Person] — [Shocking Hook]"
+Max 90 chars total.
+
 Return ONLY this JSON with no extra text:
 {{
-  "title": "Dark Crime Decoded: [series name] — [curiosity hook]  (max 80 chars)",
+  "title": "Dark Crime Decoded: [Real Person] & [Movie/Series] — [hook]",
   "hook": "First 3-second spoken hook sentence",
   "on_screen_texts": [
     "Short bold text for second 0",
@@ -239,8 +284,12 @@ Return ONLY this JSON with no extra text:
         response_format={"type": "json_object"},
     )
     meta = json.loads(r2.choices[0].message.content.strip())
+    _fallback_title = (
+        f"Dark Crime Decoded: {topic['topic']} & {_related_series} — True Story"
+        if _related_series else f"Dark Crime Decoded: {topic['topic']} — True Story"
+    )
     script_data = {
-        "title":          meta.get("title", f"Dark Crime Decoded: {topic['topic']}"),
+        "title":          meta.get("title", _fallback_title),
         "hook":           meta.get("hook", ""),
         "script":         script_text,
         "on_screen_texts": meta.get("on_screen_texts", []),
