@@ -79,6 +79,38 @@ def get_series_for_person(topic_text: str) -> tuple[str, str] | None:
     return None
 
 
+_DARKCRIMED_BASE_HASHTAGS = [
+    "#DarkCrimeDecoded", "#TrueCrime", "#RealStory", "#CrimeDocumentary",
+]
+_DARKCRIMED_BASE_AR_HASHTAGS = [
+    "#جريمة_حقيقية", "#وثائقي_جريمة", "#دارك_كرايم_ديكودد",
+]
+
+
+def _build_darkcrimed_hashtags(raw: str, series_info: tuple[str, str] | None) -> str:
+    """
+    Prepend series/movie tags and guarantee base tags are present.
+    raw: space-separated hashtag string from Groq (may include Arabic tags).
+    """
+    tags = raw.split() if raw else []
+
+    prefix: list[str] = []
+    if series_info:
+        series_name, series_type = series_info
+        series_tag = "#" + series_name.replace(" ", "")   # e.g. #Narcos
+        type_tag   = "#" + series_type                     # e.g. #Series
+        if series_tag not in tags:
+            prefix.append(series_tag)
+        if type_tag not in tags:
+            prefix.append(type_tag)
+
+    for tag in _DARKCRIMED_BASE_HASHTAGS + _DARKCRIMED_BASE_AR_HASHTAGS:
+        if tag not in tags:
+            tags.append(tag)
+
+    return " ".join(prefix + tags)
+
+
 def _is_shopmart() -> bool:
     """Return True when the pipeline is running for Shopmart Global."""
     try:
@@ -321,7 +353,7 @@ Return ONLY this JSON with no extra text:
         "script":         script_text,
         "on_screen_texts": meta.get("on_screen_texts", []),
         "caption":        meta.get("caption", ""),
-        "hashtags":       meta.get("hashtags", ""),
+        "hashtags":       _build_darkcrimed_hashtags(meta.get("hashtags", ""), _series_info),
         "thumbnail_text": meta.get("thumbnail_text", ""),
     }
     script_data["topic"] = topic["topic"]
