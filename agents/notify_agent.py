@@ -393,47 +393,63 @@ def listen_for_voice_message(language: str, timeout: int = 600) -> str:
     return ""
 
 
-def check_telegram_for_script(timeout: int = 30) -> str | None:
+def check_telegram_for_script(timeout: int = 15) -> dict | None:
     """
-    Poll Telegram for any text messages sent to the bot.
+    Check Telegram for messages sent in the last 10 minutes from the owner chat.
+    Marks ALL pending updates as read regardless of outcome.
+
     Returns:
-      - A long string (>200 chars) if a full script is found.
-      - A short string (<50 chars) if a topic name is found.
-      - None if no relevant message is found.
+      {"type": "topic", "content": <text>}  — short message treated as topic name
+      None                                   — nothing recent found
     """
+    import time
+
+    current_time = time.time()
+
     try:
-        r = requests.get(
-            f"{BASE_URL}/getUpdates",
-            params={"timeout": timeout, "allowed_updates": ["message"]},
-            timeout=timeout + 5,
-        )
+        r = requests.get(f"{BASE_URL}/getUpdates", params={"limit": 100}, timeout=20)
         updates = r.json().get("result", [])
     except Exception as e:
         print(f"[Notify] check_telegram_for_script failed: {e}")
         return None
 
-    for update in updates:
+    if not updates:
+        return None
+
+    # Always mark all pending messages as read
+    last_update_id = updates[-1]["update_id"]
+    try:
+        requests.get(f"{BASE_URL}/getUpdates", params={"offset": last_update_id + 1}, timeout=10)
+    except Exception:
+        pass
+
+    topic_found = None
+
+    for update in reversed(updates):  # newest first
         message = update.get("message", {})
         text = message.get("text", "").strip()
+        chat_id = str(message.get("chat", {}).get("id", ""))
+        msg_time = message.get("date", 0)
 
-        if not text or text.startswith("/"):
+        # Only accept messages from the owner chat
+        if chat_id != str(TELEGRAM_CHAT_ID):
             continue
 
-        # Long text → treat as full script
-        if len(text) > 200 and any(
-            word in text.lower()
-            for word in ["hook", "intro", "story", "conclusion", "script",
-                         "مقدمة", "القصة", "الخاتمة"]
-        ):
-            print(f"[Notify] Found full script in Telegram: {text[:100]}...")
-            return text
+        # Only accept messages from the last 10 minutes
+        if current_time - msg_time > 600:
+            continue
 
-        # Short text → treat as topic name
-        if len(text) < 50:
-            print(f"[Notify] Found topic name in Telegram: {text!r}")
-            return text
+        # Ignore commands and empty messages
+        if not text or text.startswith("/") or text.startswith("[") or text.startswith("*"):
+            continue
 
-    return None
+        # Short topic name (2–100 chars)
+        if 2 < len(text) < 100:
+            print(f"[Notify] Topic from Telegram: {text!r}")
+            topic_found = {"type": "topic", "content": text}
+            break
+
+    return topic_found
 
 
 def send_daily_report(stats: dict) -> None:

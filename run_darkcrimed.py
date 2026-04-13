@@ -83,37 +83,24 @@ def run_pipeline():
         en_long = next((s for s in ingested if s.get("language") == "english"), ingested[0])
 
     else:
-        # Priority 2: Telegram inbox (text messages sent to bot)
-        print("[1/5] Checking Telegram for user-provided script or topic...")
+        # Priority 2: Telegram inbox — only messages from the last 10 minutes
+        print("[1/5] Checking Telegram for user-provided topic...")
         telegram_input = check_telegram_for_script(timeout=15)
 
-        if telegram_input and len(telegram_input) < 50:
-            # Short message → treat as topic name, research it
-            print(f"[1/5] Topic from Telegram: {telegram_input!r}")
+        if telegram_input and telegram_input.get("type") == "topic":
+            topic_name = telegram_input["content"]
+            print(f"[1/5] Topic from Telegram: {topic_name!r}")
             topic = {
-                "topic":        telegram_input,
-                "niche":        telegram_input,
+                "topic":        topic_name,
+                "niche":        topic_name,
                 "angle":        "",
-                "keywords":     [telegram_input],
-                "search_query": telegram_input,
-            }
-
-        elif telegram_input:
-            # Long message → full script provided; wrap in script_data shape
-            print("[1/5] Full script received from Telegram.")
-            en_long = {
-                "title":    telegram_input.splitlines()[0][:100],
-                "script":   telegram_input,
-                "language": "english",
-                "niche":    "",
-                "topic":    telegram_input.splitlines()[0][:100],
-                "caption":  "",
-                "hashtags": "",
+                "keywords":     [topic_name],
+                "search_query": topic_name,
             }
 
         else:
             # Priority 3: auto research
-            print("[1/5] No content found — researching trending topic...")
+            print("[1/5] No recent Telegram message — researching trending topic...")
             listen_for_content(timeout=30)
 
         if not ingested and not telegram_input:

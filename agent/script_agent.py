@@ -278,8 +278,8 @@ def translate_to_arabic(text: str) -> str:
 def translate_script(en_script: dict) -> dict:
     """Translate an English script_data dict into Arabic using Google Translate."""
     ar_data = {
-        "title":          translate_to_arabic(en_script["title"]),
-        "hook":           translate_to_arabic(en_script["hook"]),
+        "title":          translate_to_arabic(en_script.get("title", "")),
+        "hook":           translate_to_arabic(en_script.get("hook", "")),
         "script":         translate_to_arabic(en_script["script"]),
         "on_screen_texts": [translate_to_arabic(t) for t in en_script["on_screen_texts"]],
         "caption":        translate_to_arabic(en_script["caption"]),
@@ -320,8 +320,8 @@ Output ONLY the script text, nothing else."""
     script_text = r.choices[0].message.content.strip()
 
     short_data = {
-        "title":           en_long_script["title"],
-        "hook":            en_long_script["hook"],
+        "title":           en_long_script.get("title", ""),
+        "hook":            en_long_script.get("hook", script_text[:100]),
         "script":          script_text,
         "on_screen_texts": en_long_script.get("on_screen_texts", [])[:2],
         "caption":         en_long_script["caption"],
