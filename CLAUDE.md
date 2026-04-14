@@ -33,8 +33,8 @@ Local: C:\Users\abdot\content_pipeline
 
 ## Voice Configuration
 ELEVENLABS_API_KEY — in .env and GitHub Secrets
-ELEVENLABS_VOICE_ID_EN = N9TsukcdD70Szel2tENB (ATMAK English 10min)
-ELEVENLABS_VOICE_ID_AR = LxkCGaUUZnFiowXFTxJq (ATMA Arabic 8-9min)
+ELEVENLABS_VOICE_ID_EN = oHXsMWwdWLsNE9IdmbuT
+ELEVENLABS_VOICE_ID_AR = kVE76Ng0Z4kGR7oebETP
 Model: eleven_multilingual_v2
 Chunking: scripts split into 2500 char chunks, merged with ffmpeg/pydub
 
