@@ -3,20 +3,19 @@ name: Daily Content Pipeline
 on:
   schedule:
     - cron: '0 4 * * *'   # Dark Crime: 7:00 AM Riyadh (UTC+3 = 04:00 UTC)
-    - cron: '0 6 * * *'   # Shopmart:   9:00 AM Riyadh (UTC+3 = 06:00 UTC)
   workflow_dispatch:
     inputs:
       channel:
-        description: 'Which channel to run (darkcrimed | shopmart | both)'
+        description: 'Which channel to run (darkcrimed)'
         required: false
-        default: 'both'
+        default: 'darkcrimed'
 
 jobs:
   # ── Job 1: Dark Crime Decoded ────────────────────────────────────────────
   dark-crime-pipeline:
     if: >
-      github.event_name == 'workflow_dispatch' && (github.event.inputs.channel == 'darkcrimed' || github.event.inputs.channel == 'both') ||
-      github.event_name == 'schedule' && startsWith(github.event.schedule, '0 4')
+      github.event_name == 'workflow_dispatch' && github.event.inputs.channel == 'darkcrimed' ||
+      github.event_name == 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 480
 
@@ -92,85 +91,87 @@ jobs:
           path: output/dark_crime/
           retention-days: 7
 
-  # ── Job 2: Shopmart Global ────────────────────────────────────────────────
-  shopmart-pipeline:
-    needs: dark-crime-pipeline
-    if: >
-      always() && (
-        github.event_name == 'workflow_dispatch' && (github.event.inputs.channel == 'shopmart' || github.event.inputs.channel == 'both') ||
-        github.event_name == 'schedule' && startsWith(github.event.schedule, '0 6')
-      )
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Cache apt packages
-        uses: actions/cache@v4
-        with:
-          path: /var/cache/apt/archives
-          key: apt-ffmpeg-${{ runner.os }}-v1
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y ffmpeg
-
-      - name: Cache pip packages
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: pip-${{ hashFiles('requirements.txt') }}
-          restore-keys: pip-
-
-      - name: Install Python dependencies
-        run: |
-          pip install --upgrade pip
-          pip install moviepy==1.0.3
-          pip install -r requirements.txt
-          pip install "imageio[ffmpeg]" opencv-python-headless
-
-      - name: Write YouTube token (Shopmart)
-        run: echo '${{ secrets.YOUTUBE_TOKEN_JSON_SHOPMART }}' > youtube_token_shopmart.json
-
-      - name: Run Shopmart pipeline
-        env:
-          VIDEOS_PER_DAY:                   "1"
-          GROQ_API_KEY:                     ${{ secrets.GROQ_API_KEY }}
-          GEMINI_API_KEY:                   ${{ secrets.GEMINI_API_KEY }}
-          ELEVENLABS_API_KEY:               ${{ secrets.ELEVENLABS_API_KEY }}
-          ELEVENLABS_VOICE_ID_EN:           ${{ secrets.ELEVENLABS_VOICE_ID_EN }}
-          ELEVENLABS_VOICE_ID_AR:           ${{ secrets.ELEVENLABS_VOICE_ID_AR }}
-          ELEVENLABS_VOICE_ID_SHOPMART:     ${{ secrets.ELEVENLABS_VOICE_ID_SHOPMART }}
-          PEXELS_API_KEY:                   ${{ secrets.PEXELS_API_KEY }}
-          TELEGRAM_BOT_TOKEN:               ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID:                 ${{ secrets.TELEGRAM_CHAT_ID }}
-          YOUTUBE_CLIENT_ID_SHOPMART:       ${{ secrets.YOUTUBE_CLIENT_ID_SHOPMART }}
-          YOUTUBE_CLIENT_SECRET_SHOPMART:   ${{ secrets.YOUTUBE_CLIENT_SECRET_SHOPMART }}
-          YOUTUBE_TOKEN_JSON_SHOPMART:      ${{ secrets.YOUTUBE_TOKEN_JSON_SHOPMART }}
-          TIKTOK_SESSION_ID_SHOPMART:       ${{ secrets.TIKTOK_SESSION_ID_SHOPMART }}
-          FACEBOOK_ACCESS_TOKEN_SHOPMART:   ${{ secrets.FACEBOOK_ACCESS_TOKEN_SHOPMART }}
-          FACEBOOK_PAGE_ID_SHOPMART:        ${{ secrets.FACEBOOK_PAGE_ID_SHOPMART }}
-          INSTAGRAM_ACCESS_TOKEN_SHOPMART:  ${{ secrets.INSTAGRAM_ACCESS_TOKEN_SHOPMART }}
-          INSTAGRAM_BUSINESS_ID_SHOPMART:   ${{ secrets.INSTAGRAM_BUSINESS_ID_SHOPMART }}
-          X_API_KEY:                        ${{ secrets.X_API_KEY }}
-          X_API_SECRET:                     ${{ secrets.X_API_SECRET }}
-          X_ACCESS_TOKEN:                   ${{ secrets.X_ACCESS_TOKEN }}
-          X_ACCESS_TOKEN_SECRET:            ${{ secrets.X_ACCESS_TOKEN_SECRET }}
-          X_BEARER_TOKEN:                   ${{ secrets.X_BEARER_TOKEN }}
-        run: python run_shopmart.py
-
-      - name: Upload logs on failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: shopmart-error-logs
-          path: output/shopmart/
-          retention-days: 7
+  # shopmart-pipeline job disabled temporarily
+  # Focusing on Dark Crime Decoded only
+  #
+  # shopmart-pipeline:
+  #   needs: dark-crime-pipeline
+  #   if: >
+  #     always() && (
+  #       github.event_name == 'workflow_dispatch' && (github.event.inputs.channel == 'shopmart' || github.event.inputs.channel == 'both') ||
+  #       github.event_name == 'schedule' && startsWith(github.event.schedule, '0 6')
+  #     )
+  #   runs-on: ubuntu-latest
+  #   timeout-minutes: 20
+  #
+  #   steps:
+  #     - name: Checkout code
+  #       uses: actions/checkout@v4
+  #
+  #     - name: Set up Python
+  #       uses: actions/setup-python@v5
+  #       with:
+  #         python-version: '3.11'
+  #
+  #     - name: Cache apt packages
+  #       uses: actions/cache@v4
+  #       with:
+  #         path: /var/cache/apt/archives
+  #         key: apt-ffmpeg-${{ runner.os }}-v1
+  #
+  #     - name: Install system dependencies
+  #       run: |
+  #         sudo apt-get update -qq
+  #         sudo apt-get install -y ffmpeg
+  #
+  #     - name: Cache pip packages
+  #       uses: actions/cache@v4
+  #       with:
+  #         path: ~/.cache/pip
+  #         key: pip-${{ hashFiles('requirements.txt') }}
+  #         restore-keys: pip-
+  #
+  #     - name: Install Python dependencies
+  #       run: |
+  #         pip install --upgrade pip
+  #         pip install moviepy==1.0.3
+  #         pip install -r requirements.txt
+  #         pip install "imageio[ffmpeg]" opencv-python-headless
+  #
+  #     - name: Write YouTube token (Shopmart)
+  #       run: echo '${{ secrets.YOUTUBE_TOKEN_JSON_SHOPMART }}' > youtube_token_shopmart.json
+  #
+  #     - name: Run Shopmart pipeline
+  #       env:
+  #         VIDEOS_PER_DAY:                   "1"
+  #         GROQ_API_KEY:                     ${{ secrets.GROQ_API_KEY }}
+  #         GEMINI_API_KEY:                   ${{ secrets.GEMINI_API_KEY }}
+  #         ELEVENLABS_API_KEY:               ${{ secrets.ELEVENLABS_API_KEY }}
+  #         ELEVENLABS_VOICE_ID_EN:           ${{ secrets.ELEVENLABS_VOICE_ID_EN }}
+  #         ELEVENLABS_VOICE_ID_AR:           ${{ secrets.ELEVENLABS_VOICE_ID_AR }}
+  #         ELEVENLABS_VOICE_ID_SHOPMART:     ${{ secrets.ELEVENLABS_VOICE_ID_SHOPMART }}
+  #         PEXELS_API_KEY:                   ${{ secrets.PEXELS_API_KEY }}
+  #         TELEGRAM_BOT_TOKEN:               ${{ secrets.TELEGRAM_BOT_TOKEN }}
+  #         TELEGRAM_CHAT_ID:                 ${{ secrets.TELEGRAM_CHAT_ID }}
+  #         YOUTUBE_CLIENT_ID_SHOPMART:       ${{ secrets.YOUTUBE_CLIENT_ID_SHOPMART }}
+  #         YOUTUBE_CLIENT_SECRET_SHOPMART:   ${{ secrets.YOUTUBE_CLIENT_SECRET_SHOPMART }}
+  #         YOUTUBE_TOKEN_JSON_SHOPMART:      ${{ secrets.YOUTUBE_TOKEN_JSON_SHOPMART }}
+  #         TIKTOK_SESSION_ID_SHOPMART:       ${{ secrets.TIKTOK_SESSION_ID_SHOPMART }}
+  #         FACEBOOK_ACCESS_TOKEN_SHOPMART:   ${{ secrets.FACEBOOK_ACCESS_TOKEN_SHOPMART }}
+  #         FACEBOOK_PAGE_ID_SHOPMART:        ${{ secrets.FACEBOOK_PAGE_ID_SHOPMART }}
+  #         INSTAGRAM_ACCESS_TOKEN_SHOPMART:  ${{ secrets.INSTAGRAM_ACCESS_TOKEN_SHOPMART }}
+  #         INSTAGRAM_BUSINESS_ID_SHOPMART:   ${{ secrets.INSTAGRAM_BUSINESS_ID_SHOPMART }}
+  #         X_API_KEY:                        ${{ secrets.X_API_KEY }}
+  #         X_API_SECRET:                     ${{ secrets.X_API_SECRET }}
+  #         X_ACCESS_TOKEN:                   ${{ secrets.X_ACCESS_TOKEN }}
+  #         X_ACCESS_TOKEN_SECRET:            ${{ secrets.X_ACCESS_TOKEN_SECRET }}
+  #         X_BEARER_TOKEN:                   ${{ secrets.X_BEARER_TOKEN }}
+  #       run: python run_shopmart.py
+  #
+  #     - name: Upload logs on failure
+  #       if: failure()
+  #       uses: actions/upload-artifact@v4
+  #       with:
+  #         name: shopmart-error-logs
+  #         path: output/shopmart/
+  #         retention-days: 7
