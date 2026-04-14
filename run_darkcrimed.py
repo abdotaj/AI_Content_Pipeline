@@ -195,12 +195,14 @@ def run_pipeline():
     print("\n[5/5] Publishing...")
 
     yt_en_url = yt_ar_url = ""
+    yt_en_ok  = yt_ar_ok  = False
 
     if en_long_path:
         try:
             yt_en_url = upload_to_youtube(en_long_path, en_long)
+            yt_en_ok  = True
             stats["posted"] += 1
-            print(f"  YouTube (English): {yt_en_url}")
+            print(f"  YouTube (English): {yt_en_url or 'uploaded (no URL)'}")
         except Exception as e:
             print(f"  [ERROR] YouTube English upload: {e}")
             send_message(f"YouTube English upload failed: {e}")
@@ -209,8 +211,9 @@ def run_pipeline():
     if ar_long_path:
         try:
             yt_ar_url = upload_to_youtube(ar_long_path, ar_long)
+            yt_ar_ok  = True
             stats["posted"] += 1
-            print(f"  YouTube (Arabic): {yt_ar_url}")
+            print(f"  YouTube (Arabic): {yt_ar_url or 'uploaded (no URL)'}")
         except Exception as e:
             print(f"  [ERROR] YouTube Arabic upload: {e}")
             send_message(f"YouTube Arabic upload failed: {e}")
@@ -250,10 +253,12 @@ def run_pipeline():
     }
     _save_log(log_entry)
 
+    en_status = yt_en_url if yt_en_url else ("uploaded (no URL)" if yt_en_ok else "failed")
+    ar_status = yt_ar_url if yt_ar_url else ("uploaded (no URL)" if yt_ar_ok else "failed")
     send_message(
         f"Dark Crime Decoded — {en_long.get('title', en_long_id)}\n"
-        f"OUTPUT 1 — YouTube English (long): {yt_en_url or 'failed'}\n"
-        f"OUTPUT 2 — YouTube Arabic (long): {yt_ar_url or 'failed'}\n"
+        f"OUTPUT 1 — YouTube English (long): {en_status}\n"
+        f"OUTPUT 2 — YouTube Arabic (long): {ar_status}\n"
         f"OUTPUT 3 — English short sent to Telegram\n"
         f"OUTPUT 4 — Arabic short sent to Telegram"
     )
