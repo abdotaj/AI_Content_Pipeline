@@ -91,6 +91,60 @@ _DARKCRIMED_BASE_AR_HASHTAGS = [
 ]
 
 
+def generate_chapters(script, total_duration_seconds=600):
+    """Return YouTube chapter timestamps for a 10-minute documentary."""
+    chapters = [
+        (0,   "🎬 Introduction"),
+        (30,  "📺 What The Series Showed"),
+        (90,  "🔍 The Real Story"),
+        (210, "😱 What Netflix Changed"),
+        (360, "💀 Shocking Facts They Left Out"),
+        (480, "⚖️ Series vs Reality"),
+        (570, "🎯 The Truth"),
+    ]
+    chapter_text = ""
+    for seconds, title in chapters:
+        mins = seconds // 60
+        secs = seconds % 60
+        chapter_text += f"{mins:02d}:{secs:02d} {title}\n"
+    return chapter_text
+
+
+def add_short_title(script_data: dict) -> str:
+    """Generate a clickable short video title with emoji via Groq."""
+    topic = script_data.get("topic", "")
+    _si   = get_series_for_person(topic)
+    series = _si[0] if _si else script_data.get("niche", "")
+    series_tag = f"#{series.replace(' ', '')}" if series else ""
+
+    prompt = f"""Generate ONE punchy YouTube Shorts / TikTok title for a true crime short video.
+
+Topic: {topic}
+Related series/movie: {series}
+
+RULES:
+- Max 60 characters total
+- CAPITALISE one shocking word: LIED, REAL, NEVER, HIDDEN, WORSE, DARKER, CHANGED
+- End with ONE relevant emoji chosen from: 🔴 😱 🔍 💀 🎬
+- Add the series hashtag ({series_tag}) if a series is known
+- NO "Dark Crime Decoded:" prefix — this is for Shorts/TikTok
+
+EXAMPLES:
+"Netflix LIED about Pablo Escobar #Narcos 🔴"
+"The REAL Dexter Morgan was 10x worse #Dexter 😱"
+"What Narcos NEVER showed you 🔍"
+"Al Capone's secret Netflix hid 💀"
+
+Output ONLY the title text, nothing else."""
+
+    r = _groq_call(
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.85,
+        max_tokens=80,
+    )
+    return r.choices[0].message.content.strip().strip('"\'')
+
+
 def _build_darkcrimed_hashtags(raw: str, series_info: tuple[str, str] | None) -> str:
     """
     Prepend series/movie tags and guarantee base tags are present.
@@ -307,15 +361,14 @@ Start immediately with the HOOK. Write spoken words only — no labels, no heade
     part2_prompt = f"""You are a content packaging assistant.
 Based on this voiceover script about "{topic['topic']}", generate the metadata fields.
 
-Script summary (first 300 chars): {script_text[:300]}...
-
 TITLE FORMAT (mandatory):
-"Dark Crime Decoded: [Real Person] & [Movie/Series Type] — [Shocking Hook]"
-Example: "Dark Crime Decoded: Pablo Escobar & Narcos Series — The Truth Netflix Never Showed"
-Example: "Dark Crime Decoded: Jordan Belfort & Wolf of Wall Street Movie — The Real Greed"
+"The REAL [Real Person]: What [Series] Got Wrong | Dark Crime Decoded"
+Example: "The REAL Pablo Escobar: What Narcos Got Wrong | Dark Crime Decoded"
+Example: "The REAL Jordan Belfort: What Wolf of Wall Street Got Wrong | Dark Crime Decoded"
+Example: "The REAL Al Capone: What Boardwalk Empire Got Wrong | Dark Crime Decoded"
 The real person for this topic is extracted from: {topic['topic']}
-The related movie/series with type label is: {_related_series}
-If no series is known, use: "Dark Crime Decoded: [Real Person] — [Shocking Hook]"
+The related series/movie is: {_related_series}
+If no series is known, use: "The REAL [Real Person]: The True Story | Dark Crime Decoded"
 Max 90 chars total.
 
 Return ONLY this JSON with no extra text:
@@ -340,9 +393,10 @@ Return ONLY this JSON with no extra text:
         response_format={"type": "json_object"},
     )
     meta = json.loads(r2.choices[0].message.content.strip())
+    _series_name = _series_info[0] if _series_info else _related_series
     _fallback_title = (
-        f"Dark Crime Decoded: {topic['topic']} & {_related_series} — True Story"
-        if _series_info else f"Dark Crime Decoded: {topic['topic']} — True Story"
+        f"The REAL {topic['topic']}: What {_series_name} Got Wrong | Dark Crime Decoded"
+        if _series_info else f"The REAL {topic['topic']}: The True Story | Dark Crime Decoded"
     )
     script_data = {
         "title":          meta.get("title", _fallback_title),
@@ -352,6 +406,7 @@ Return ONLY this JSON with no extra text:
         "caption":        meta.get("caption", ""),
         "hashtags":       _build_darkcrimed_hashtags(meta.get("hashtags", ""), _series_info),
         "thumbnail_text": meta.get("thumbnail_text", ""),
+        "chapters":       generate_chapters(script_text),
     }
     script_data["topic"] = topic["topic"]
     script_data["niche"] = topic["niche"]
@@ -390,6 +445,7 @@ def translate_script(en_script: dict) -> dict:
         "caption":        translate_to_arabic(en_script["caption"]),
         "hashtags":       translate_to_arabic(en_script["hashtags"]),
         "thumbnail_text": translate_to_arabic(en_script["thumbnail_text"]),
+        "chapters":       en_script.get("chapters", ""),  # keep English timestamps
     }
     ar_data["topic"]        = en_script["topic"]
     ar_data["niche"]        = en_script["niche"]
@@ -442,7 +498,7 @@ Output ONLY the spoken script text, nothing else."""
     script_text = r.choices[0].message.content.strip()
 
     short_data = {
-        "title":           en_long_script.get("title", ""),
+        "title":           en_long_script.get("title", ""),  # overwritten below
         "hook":            en_long_script.get("hook", script_text[:100]),
         "script":          script_text,
         "on_screen_texts": en_long_script.get("on_screen_texts", [])[:2],
@@ -455,6 +511,9 @@ Output ONLY the spoken script text, nothing else."""
         "keywords":        en_long_script["keywords"],
         "language":        "english",
     }
+    _short_title = add_short_title(short_data)
+    short_data["title"]       = _short_title
+    short_data["short_title"] = _short_title
     print(f"[Script] Written (english short): '{short_data['title']}'")
     return short_data
 

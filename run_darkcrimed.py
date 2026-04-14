@@ -183,13 +183,13 @@ def run_pipeline():
     ar_long_id   = f"{today}_{uuid.uuid4().hex[:8]}_arabic_long"
     ar_long_path = _make_video(ar_long, ar_long_id, stats)
 
-    # OUTPUT 3 — English short → Telegram
-    en_short_id   = f"{today}_{uuid.uuid4().hex[:8]}_english_short"
-    en_short_path = _make_video(en_short, en_short_id, stats)
-
-    # OUTPUT 4 — Arabic short → Telegram
+    # OUTPUT 3 — Arabic short → Telegram (first: gets 2-3x more views)
     ar_short_id   = f"{today}_{uuid.uuid4().hex[:8]}_arabic_short"
     ar_short_path = _make_video(ar_short, ar_short_id, stats)
+
+    # OUTPUT 4 — English short → Telegram
+    en_short_id   = f"{today}_{uuid.uuid4().hex[:8]}_english_short"
+    en_short_path = _make_video(en_short, en_short_id, stats)
 
     # ── STEP 5: Publish ────────────────────────────────────────
     print("\n[5/5] Publishing...")
@@ -219,17 +219,23 @@ def run_pipeline():
             send_message(f"YouTube Arabic upload failed: {e}")
             stats["errors"] += 1
 
-    if en_short_path:
-        try:
-            send_for_manual_posting(en_short_path, en_short, "TikTok + Instagram + YouTube Shorts")
-        except Exception as e:
-            print(f"  [WARN] Telegram English short send failed: {e}")
+    # Inject long-video URL into short scripts so descriptions link back
+    if yt_en_url:
+        en_short["long_video_url"] = yt_en_url
+        ar_short["long_video_url"] = yt_en_url
 
+    # Arabic short first — gets 2-3x more views, post immediately
     if ar_short_path:
         try:
             send_for_manual_posting(ar_short_path, ar_short, "TikTok Arabic + Instagram Arabic")
         except Exception as e:
             print(f"  [WARN] Telegram Arabic short send failed: {e}")
+
+    if en_short_path:
+        try:
+            send_for_manual_posting(en_short_path, en_short, "TikTok + Instagram + YouTube Shorts")
+        except Exception as e:
+            print(f"  [WARN] Telegram English short send failed: {e}")
 
     # ── Mark covered + log ─────────────────────────────────────
     series = en_long.get("series") or en_long.get("niche", "").split("behind")[-1].strip()

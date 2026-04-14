@@ -16,6 +16,29 @@ _YOUTUBE_TOKEN_FILE = getattr(_cfg, "YOUTUBE_TOKEN_FILE", "youtube_token.json")
 
 # ── YOUTUBE ─────────────────────────────────────────────────
 
+def build_youtube_description(script_data: dict, chapters: str) -> str:
+    """Build a rich YouTube description with chapter markers and social links."""
+    caption  = script_data.get("caption", script_data.get("title", ""))
+    hashtags = script_data.get("hashtags", "")
+    if isinstance(hashtags, list):
+        hashtags = " ".join(hashtags)
+
+    return (
+        f"{caption}\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"⏱️ CHAPTERS\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"{chapters.strip()}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🔔 Subscribe for daily true crime documentaries\n"
+        f"📱 TikTok: @DarkCrimeDecoded\n"
+        f"📸 Instagram: @DarkCrimeDecoded\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"{hashtags}\n\n"
+        f"#DarkCrimeDecoded #TrueCrime #Documentary"
+    ).strip()
+
+
 def _get_video_duration(video_path: str) -> float:
     """Return video duration in seconds, or 999 on error."""
     try:
@@ -77,20 +100,47 @@ def upload_to_youtube(video_path: str, script_data: dict) -> str:
         print(f"[Publish] Video duration: {duration:.1f}s → {'Shorts' if is_short else 'long-form'}")
 
         title    = script_data.get("title", "Untitled")
-        caption  = script_data.get("caption", script_data.get("title", ""))
         hashtags = script_data.get("hashtags", "")
         keywords = script_data.get("keywords", [])
 
-        # Add #Shorts tag to description for short videos so YouTube classifies them
+        # Add #Shorts tag for short videos so YouTube classifies them
         if is_short and "#Shorts" not in hashtags:
             hashtags = f"#Shorts {hashtags}".strip()
+
+        # SEO tags: base keywords + standard true crime terms
+        topic_str  = script_data.get("topic", "")
+        niche_str  = script_data.get("niche", "")
+        seo_tags = list(keywords) + [
+            topic_str, niche_str,
+            "true crime", "documentary", "dark crime decoded",
+            "real story", "netflix", "crime series",
+            "what really happened", "based on true story",
+        ]
+        seo_tags = [t for t in seo_tags if t]  # drop empty strings
+
+        # Build description
+        if is_short:
+            caption   = script_data.get("caption", title)
+            long_url  = script_data.get("long_video_url", "")
+            link_line = (
+                f"Full story → {long_url}\nWatch the full documentary on our channel"
+                if long_url else "Watch the full documentary on our channel"
+            )
+            description = f"{caption}\n\n{link_line}\n\n{hashtags}".strip()
+        else:
+            chapters    = script_data.get("chapters", "")
+            description = (
+                build_youtube_description(script_data, chapters)
+                if chapters
+                else f"{script_data.get('caption', title)}\n\n{hashtags}".strip()
+            )
 
         body = {
             "snippet": {
                 "title": title,
-                "description": f"{caption}\n\n{hashtags}".strip(),
-                "tags": keywords,
-                "categoryId": "22"
+                "description": description,
+                "tags": seo_tags,
+                "categoryId": "25"
             },
             "status": {
                 "privacyStatus": "public",
