@@ -237,97 +237,192 @@ def generate_voiceover(script_text: str, filename: str, language: str = "english
 
 # ── AI Image generation (Pollinations — free, no key) ─────────────────────────
 
-# Real criminal portraits — used for Image 1
-_SUBJECTS_REAL = {
-    "escobar":        "Pablo Escobar Colombian drug lord portrait cinematic dramatic",
-    "pablo":          "Pablo Escobar Colombian drug lord portrait cinematic dramatic",
-    "al capone":      "Al Capone Chicago gangster portrait 1920s cinematic",
-    "capone":         "Al Capone Chicago gangster portrait 1920s cinematic",
-    "lucky luciano":  "Lucky Luciano New York mafia portrait cinematic",
-    "luciano":        "Lucky Luciano New York mafia portrait cinematic",
-    "frank lucas":    "Frank Lucas Harlem drug lord portrait cinematic",
-    "griselda blanco":"Griselda Blanco cocaine godmother portrait cinematic",
-    "btk":            "BTK killer Dennis Rader portrait dark cinematic",
-    "dennis rader":   "BTK killer Dennis Rader portrait dark cinematic",
-    "dahmer":         "Jeffrey Dahmer serial killer portrait cinematic",
-    "jeffrey dahmer": "Jeffrey Dahmer serial killer portrait cinematic",
-    "ed gein":        "Ed Gein Wisconsin criminal portrait dark cinematic",
-    "ted bundy":      "Ted Bundy serial killer portrait cinematic",
-    "jordan belfort": "Jordan Belfort Wall Street trader portrait cinematic",
-    "lindbergh":      "Charles Lindbergh baby kidnapping 1932 historical portrait",
-    "el chapo":       "El Chapo Sinaloa cartel leader portrait cinematic",
-    "guzman":         "El Chapo Sinaloa cartel leader portrait cinematic",
-    "charles manson": "Charles Manson cult leader portrait cinematic",
-    "manson":         "Charles Manson cult leader portrait cinematic",
-    "john gotti":     "John Gotti New York mafia boss portrait cinematic",
-    "gotti":          "John Gotti New York mafia boss portrait cinematic",
-    "leopold":        "Leopold and Loeb 1924 Chicago murder case portrait cinematic",
-    "loeb":           "Leopold and Loeb 1924 Chicago murder case portrait cinematic",
-    "ada":            "1999 Ada Oklahoma murder case portrait dark cinematic",
-}
+# Combined subject lookup — real criminals AND actor/character portraits.
+# extract_main_subject() returns up to 2 entries (longest key match first)
+# so Image 1 = real criminal, Image 2 = actor who played them.
+SUBJECTS = {
+    # ── Real criminals ──────────────────────────────────────────────────────────
+    "pablo escobar":    "Pablo Escobar real Colombian drug lord portrait cinematic",
+    "escobar":          "Pablo Escobar real Colombian drug lord portrait cinematic",
+    "al capone":        "Al Capone 1920s Chicago gangster portrait historical cinematic",
+    "capone":           "Al Capone 1920s Chicago gangster portrait historical cinematic",
+    "jeffrey dahmer":   "Jeffrey Dahmer serial killer portrait dark cinematic",
+    "dahmer":           "Jeffrey Dahmer serial killer portrait dark cinematic",
+    "el chapo":         "El Chapo Sinaloa Mexican cartel boss portrait cinematic",
+    "chapo":            "El Chapo Sinaloa Mexican cartel boss portrait cinematic",
+    "griselda blanco":  "Griselda Blanco cocaine godmother portrait cinematic",
+    "ted bundy":        "Ted Bundy serial killer portrait dark cinematic",
+    "bundy":            "Ted Bundy serial killer portrait dark cinematic",
+    "ed gein":          "Ed Gein Wisconsin killer portrait dark cinematic",
+    "gein":             "Ed Gein Wisconsin killer portrait dark cinematic",
+    "btk":              "Dennis Rader BTK killer portrait dark cinematic",
+    "dennis rader":     "Dennis Rader BTK killer portrait dark cinematic",
+    "jordan belfort":   "Jordan Belfort Wall Street trader portrait cinematic",
+    "belfort":          "Jordan Belfort Wall Street trader portrait cinematic",
+    "john gotti":       "John Gotti New York mafia boss portrait cinematic",
+    "gotti":            "John Gotti New York mafia boss portrait cinematic",
+    "charles manson":   "Charles Manson cult leader portrait dark cinematic",
+    "manson":           "Charles Manson cult leader portrait dark cinematic",
+    "lucky luciano":    "Lucky Luciano New York mafia boss portrait cinematic",
+    "luciano":          "Lucky Luciano New York mafia portrait cinematic",
+    "frank lucas":      "Frank Lucas Harlem drug lord portrait cinematic",
+    "whitey bulger":    "Whitey Bulger Boston Irish mob portrait cinematic",
+    "bulger":           "Whitey Bulger Boston mob boss portrait cinematic",
+    "richard ramirez":  "Richard Ramirez Night Stalker killer portrait cinematic",
+    "ramirez":          "Richard Ramirez Night Stalker portrait dark cinematic",
+    "leopold":          "Leopold and Loeb 1924 murder case portrait cinematic",
+    "loeb":             "Leopold and Loeb 1924 murder case portrait cinematic",
+    "kitty genovese":   "Kitty Genovese 1964 New York victim portrait cinematic",
+    "genovese":         "Kitty Genovese New York portrait cinematic",
+    "amanda knox":      "Amanda Knox Italy murder case portrait cinematic",
+    "knox":             "Amanda Knox portrait cinematic dramatic",
 
-# Actor / character portraits — used for Image 2 (distinct from real person)
-_SUBJECTS_ACTOR = {
-    # Scarface
-    "scarface":            "Al Pacino Tony Montana Scarface portrait cinematic",
-    "tony montana":        "Al Pacino Tony Montana Scarface portrait cinematic",
-    # Godfather
-    "godfather":           "Marlon Brando Don Corleone Godfather portrait cinematic",
-    "corleone":            "Marlon Brando Don Corleone Godfather portrait cinematic",
-    # Breaking Bad
-    "breaking bad":        "Bryan Cranston Walter White Breaking Bad portrait",
-    "walter white":        "Bryan Cranston Walter White Breaking Bad portrait",
+    # ── Series / movie actors ────────────────────────────────────────────────────
+    # Narcos — Wagner Moura + Pedro Pascal
+    "narcos":              "Wagner Moura as Pablo Escobar Narcos Netflix portrait cinematic",
+    "javier pena":         "Pedro Pascal as Javier Pena Narcos portrait cinematic",
+
+    # Scarface — Al Pacino
+    "scarface":            "Al Pacino as Tony Montana Scarface portrait cinematic dramatic",
+    "tony montana":        "Al Pacino as Tony Montana Scarface portrait cinematic",
+
+    # Godfather — longest keys first ensures specific matches win
+    "michael corleone":    "Al Pacino as Michael Corleone Godfather portrait cinematic",
+    "vito corleone":       "Marlon Brando as Vito Corleone Godfather portrait cinematic",
+    "don corleone":        "Marlon Brando as Don Vito Corleone portrait dramatic cinematic",
+    "godfather":           "Marlon Brando Al Pacino Godfather Corleone family portrait cinematic",
+    "corleone":            "Marlon Brando as Vito Corleone Godfather portrait cinematic",
+
+    # Breaking Bad — Cranston + Aaron Paul
+    "breaking bad":        "Bryan Cranston Aaron Paul Breaking Bad portrait cinematic",
+    "walter white":        "Bryan Cranston as Walter White portrait cinematic",
+    "jesse pinkman":       "Aaron Paul as Jesse Pinkman portrait cinematic",
+
     # Dexter
-    "dexter":              "Michael C Hall Dexter Morgan portrait dark cinematic",
-    # Peaky Blinders
-    "peaky blinders":      "Cillian Murphy Tommy Shelby portrait cinematic",
-    "tommy shelby":        "Cillian Murphy Tommy Shelby portrait cinematic",
+    "dexter morgan":       "Michael C Hall as Dexter Morgan portrait dark cinematic",
+    "dexter":              "Michael C Hall as Dexter Morgan portrait dark cinematic",
+
+    # Peaky Blinders — Murphy + Hardy
+    "peaky blinders":      "Cillian Murphy Tom Hardy Peaky Blinders portrait cinematic",
+    "tommy shelby":        "Cillian Murphy as Tommy Shelby portrait dramatic cinematic",
+    "alfie solomons":      "Tom Hardy as Alfie Solomons portrait cinematic",
+
     # Money Heist
-    "money heist":         "Alvaro Morte Professor Money Heist portrait",
-    "professor":           "Alvaro Morte Professor Money Heist portrait",
-    # Ozark
+    "la casa de papel":    "Alvaro Morte Ursula Corbero Money Heist portrait cinematic",
+    "money heist":         "Alvaro Morte as The Professor Money Heist portrait cinematic",
+
+    # Ozark — Bateman + Linney
     "ozark":               "Jason Bateman Laura Linney Ozark portrait cinematic",
-    "marty byrde":         "Jason Bateman Marty Byrde Ozark portrait cinematic",
-    # Goodfellas
-    "goodfellas":          "Ray Liotta Henry Hill Goodfellas portrait cinematic",
-    "henry hill":          "Ray Liotta Henry Hill Goodfellas portrait cinematic",
-    # Casino
-    "casino":              "Robert De Niro Sam Rothstein Casino portrait cinematic",
-    "sam rothstein":       "Robert De Niro Sam Rothstein Casino portrait cinematic",
-    # Wolf of Wall Street
-    "wolf of wall street": "Leonardo DiCaprio Jordan Belfort Wolf of Wall Street portrait cinematic",
-    # American Gangster
-    "american gangster":   "Denzel Washington Frank Lucas American Gangster portrait cinematic",
-    # Narcos — actor version of Escobar
-    "narcos":              "Wagner Moura Pablo Escobar Narcos portrait cinematic",
-    "escobar":             "Wagner Moura Pablo Escobar Narcos portrait cinematic",
-    "pablo":               "Wagner Moura Pablo Escobar Narcos portrait cinematic",
+
+    # Goodfellas — Liotta + De Niro + Pesci
+    "goodfellas":          "Ray Liotta Robert De Niro Joe Pesci Goodfellas portrait cinematic",
+    "henry hill":          "Ray Liotta as Henry Hill Goodfellas portrait cinematic",
+    "jimmy conway":        "Robert De Niro as Jimmy Conway Goodfellas portrait",
+
+    # Casino — De Niro + Stone
+    "casino":              "Robert De Niro Sharon Stone Casino portrait cinematic dramatic",
+
+    # Wolf of Wall Street — DiCaprio + Robbie
+    "wolf of wall street": "Leonardo DiCaprio Margot Robbie Wolf of Wall Street portrait",
+
+    # American Gangster — Denzel + Crowe
+    "american gangster":   "Denzel Washington Russell Crowe American Gangster portrait",
+
     # City of God
-    "city of god":         "Alexandre Rodrigues Rocket City of God portrait",
-    # Sicario
-    "sicario":             "Emily Blunt Kate Macer Sicario portrait cinematic",
-    # Griselda series
-    "griselda":            "Sofia Vergara Griselda Blanco portrait cinematic",
+    "city of god":         "Alexandre Rodrigues City of God Brazil portrait cinematic",
+
+    # Sicario — Blunt + del Toro
+    "sicario":             "Emily Blunt Benicio del Toro Sicario portrait cinematic",
+
+    # Boardwalk Empire
+    "boardwalk empire":    "Steve Buscemi as Nucky Thompson Boardwalk Empire portrait",
+    "nucky thompson":      "Steve Buscemi as Nucky Thompson portrait cinematic",
+    "nucky":               "Steve Buscemi as Nucky Thompson portrait cinematic",
+
+    # Griselda — Sofia Vergara
+    "griselda":            "Sofia Vergara as Griselda Blanco portrait cinematic dramatic",
+
+    # Night Stalker
+    "night stalker":       "Richard Ramirez Night Stalker documentary portrait cinematic",
+
+    # Mindhunter
+    "mindhunter":          "Jonathan Groff Mindhunter FBI agent portrait cinematic",
+
+    # Black Mass — Johnny Depp
+    "black mass":          "Johnny Depp as Whitey Bulger Black Mass portrait cinematic",
+
+    # Extremely Wicked — Zac Efron
+    "extremely wicked":    "Zac Efron as Ted Bundy portrait cinematic dramatic",
+
+    # The Wire — Idris Elba
+    "stringer bell":       "Idris Elba as Stringer Bell portrait cinematic dramatic",
+    "the wire":            "Idris Elba as Stringer Bell The Wire portrait cinematic",
+
+    # Monster / Dahmer series — Evan Peters
+    "dahmer series":       "Evan Peters as Jeffrey Dahmer portrait dark cinematic",
+    "monster":             "Evan Peters as Jeffrey Dahmer Monster Netflix portrait",
+
     # El Chapo series
-    "el chapo":            "Marco de la O El Chapo series portrait cinematic",
-    "guzman":              "Marco de la O El Chapo series portrait cinematic",
-    # Cartel/Rise
-    "cartel":              "cartel leader Mexico dangerous man portrait cinematic",
-    "popo":                "cartel leader Mexico dangerous man portrait cinematic",
-    "rise":                "cartel leader Mexico dangerous man portrait cinematic",
-    # BTK series
-    "btk":                 "Rainn Wilson BTK killer portrait dark cinematic",
-    "dennis rader":        "Rainn Wilson BTK killer portrait dark cinematic",
-    # Dahmer series
-    "dahmer":              "Evan Peters Jeffrey Dahmer portrait dark cinematic",
-    "jeffrey dahmer":      "Evan Peters Jeffrey Dahmer portrait dark cinematic",
+    "el chapo series":     "Marco de la O as El Chapo portrait cinematic",
+
+    # BTK series — Rainn Wilson
+    "btk series":          "Rainn Wilson as BTK killer portrait dark cinematic",
+
     # Wentworth
-    "wentworth":           "Danielle Cormack Bea Smith Wentworth portrait",
+    "wentworth":           "Danielle Cormack as Bea Smith Wentworth portrait",
+
     # Adolescence
     "adolescence":         "Stephen Graham Adolescence Netflix portrait cinematic",
-    # NYPD / misc
-    "nypd":                "NYPD detective 1990s New York police portrait cinematic",
+
+    # Stillwater
+    "stillwater":          "Matt Damon Stillwater movie portrait cinematic",
+
+    # Devil's Knot / West Memphis
+    "devil's knot":        "West Memphis Three documentary portrait cinematic",
 }
+
+# Keys sorted longest-first — computed once at import time
+_SUBJECTS_SORTED = sorted(SUBJECTS.items(), key=lambda x: len(x[0]), reverse=True)
+
+
+def extract_main_subject(title: str, script: str) -> list[str]:
+    """Return up to 2 portrait prompts for a video.
+
+    Searches title first (most reliable), then first 800 chars of script.
+    Keys are matched longest-first so "pablo escobar" wins over "escobar".
+    Always returns at least 1 entry (fallback generic portrait).
+    """
+    title_lower  = title.lower()
+    script_lower = script.lower()[:800]
+
+    # Special case: Godfather always returns both Brando + Pacino
+    if "godfather" in title_lower:
+        return [
+            "Marlon Brando as Vito Corleone Godfather portrait cinematic",
+            "Al Pacino as Michael Corleone portrait cinematic",
+        ]
+
+    portraits: list[str] = []
+
+    # Pass 1 — title
+    for key, prompt in _SUBJECTS_SORTED:
+        if key in title_lower and prompt not in portraits:
+            portraits.append(prompt)
+            if len(portraits) >= 2:
+                break
+
+    # Pass 2 — script (if we still need more)
+    if len(portraits) < 2:
+        for key, prompt in _SUBJECTS_SORTED:
+            if key in script_lower and prompt not in portraits:
+                portraits.append(prompt)
+                if len(portraits) >= 2:
+                    break
+
+    if not portraits:
+        portraits = ["true crime documentary person dark portrait cinematic"]
+
+    return portraits
 
 _LOCATIONS = {
     "colombia":    "Medellin Colombia 1980s barrio street cinematic",
@@ -370,38 +465,26 @@ _THEMES = {
 def generate_image_prompts(title: str, niche: str, script: str = "", language: str = "english") -> tuple[list[str], int]:
     """Return (list_of_6_prompts, seed) for Pollinations.
 
-    Fixed 6-slot structure — every slot is semantically distinct so images
-    never duplicate subjects across the same video or across different stories
-    featuring the same actor/actress:
-      1. Portrait of real person / character (from _SUBJECTS_REAL)
-      2. Portrait of main actor / actress   (from _SUBJECTS_ACTOR — always
-         different from slot 1; falls back to a shadow/closeup variant)
+    Fixed 6-slot structure:
+      1. Real criminal portrait        (extract_main_subject slot 0)
+      2. Actor / series portrait       (extract_main_subject slot 1, or closeup variant)
       3. Real location from the story
-      4. Era / time-period cinematic scene
-      5. Crime / theme specific scene
+      4. Era / time-period scene
+      5. Crime / theme scene
       6. Justice / conclusion scene
-
-    Each image also receives a unique seed (seed + index) so even when
-    prompts cycle across a longer video, Pollinations renders a fresh image.
     """
-    t = (title + " " + niche).lower()
-    s = script.lower()[:500]
+    t      = (title + " " + niche).lower()
+    s      = script.lower()[:800]
     suffix = "vertical 9:16 cinematic portrait dramatic lighting dark background professional 4k photography style"
 
-    # Image 1 — Real person / character portrait
-    portrait_real = next(
-        (v for k, v in _SUBJECTS_REAL.items() if k in t or k in s),
-        "true crime documentary mysterious person dark portrait cinematic",
-    )
-
-    # Image 2 — Actor / actress portrait (must differ from slot 1)
-    portrait_actor = next(
-        (v for k, v in _SUBJECTS_ACTOR.items() if k in t or k in s),
-        None,
-    )
-    if portrait_actor is None or portrait_actor == portrait_real:
-        # Variation: dramatic shadows closeup so it visually differs
-        portrait_actor = portrait_real.replace("portrait", "closeup dramatic shadows intense").strip()
+    # Images 1 & 2 — portraits (real criminal + actor)
+    portraits = extract_main_subject(title, script)
+    portrait_1 = portraits[0]
+    if len(portraits) >= 2:
+        portrait_2 = portraits[1]
+    else:
+        # Fallback: closeup variant so the two frames look visually different
+        portrait_2 = portrait_1.replace("portrait", "closeup dramatic shadows intense").strip()
 
     # Image 3 — Real location
     location = next(
@@ -426,8 +509,8 @@ def generate_image_prompts(title: str, niche: str, script: str = "", language: s
 
     seed = random.randint(1, 99999)
     prompts = [
-        f"{portrait_real}, {suffix}",
-        f"{portrait_actor}, {suffix}",
+        f"{portrait_1}, {suffix}",
+        f"{portrait_2}, {suffix}",
         f"{location}, {suffix}",
         f"{era}, {suffix}",
         f"{theme}, {suffix}",
