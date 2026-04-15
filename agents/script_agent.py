@@ -91,16 +91,16 @@ _DARKCRIMED_BASE_AR_HASHTAGS = [
 ]
 
 
-def generate_chapters(script, total_duration_seconds=1200):
-    """Return YouTube chapter timestamps for a 20-minute documentary."""
+def generate_chapters(script, total_duration_seconds=660):
+    """Return YouTube chapter timestamps for an 11-minute documentary."""
     chapters = [
-        (0,    "🎬 Introduction"),
-        (60,   "📺 What The Series Showed"),
-        (180,  "🔍 The Real Story"),
-        (420,  "🎥 How History Inspired The Story"),
-        (660,  "💀 Shocking Facts They Left Out"),
-        (900,  "⚖️ Real Story vs Screen Story"),
-        (1100, "🎯 The Truth & Conclusion"),
+        (0,   "🎬 Introduction"),
+        (23,  "📺 What The Series Showed"),
+        (83,  "🔍 The Real Story"),
+        (221, "🎥 How History Inspired The Story"),
+        (451, "💀 Shocking Facts They Left Out"),
+        (591, "⚖️ Real Story vs Screen Story"),
+        (637, "🎯 The Truth & Conclusion"),
     ]
     chapter_text = ""
     for seconds, title in chapters:
@@ -284,7 +284,7 @@ def _write_darkcrimed_script(topic: dict) -> dict:
     series_label = f"{_si_long[0]} {_si_long[1]}" if _si_long else series
 
     part1_prompt = f"""You are a top true crime documentary writer for YouTube.
-Write a 3000-3500 word 20-minute documentary script about: {topic['topic']}
+Write a 1400-1600 word 11-minute documentary script about: {topic['topic']}
 The related series/movie is: {series_label}
 
 CRITICAL: Use ONLY these verified Wikipedia facts. Do NOT invent any information.
@@ -308,47 +308,47 @@ TONE: Celebrate BOTH the real story AND the show. The show is great entertainmen
 
 Use this EXACT structure (no section labels in the output — spoken words only):
 
-HOOK (80 words):
+HOOK (50 words = ~23 seconds):
 - Most fascinating single fact about this real story
 - Something that makes the viewer want to know more
 - Example: "{series_label} introduced millions of people to this incredible true story. But the real events were even more extraordinary than anything the show could portray."
 
-SERIES INTRO (250 words):
+SERIES INTRO (150 words = ~1 minute):
 - Celebrate what {series_label} showed the world — it is great television
 - Why millions of people loved it and why it matters
 - Build excitement: the real story that inspired it is even more incredible
 - Name {series_label} directly and what made it famous
 
-REAL BACKGROUND (600 words):
+REAL BACKGROUND (300 words = ~2.3 minutes):
 - Real person's early life with specific facts
 - Family, childhood, origins — real dates, real places, real names
 - The fascinating true events BEFORE the series timeline begins
 
-MAIN STORY (1200 words):
+MAIN STORY (500 words = ~3.8 minutes):
 - Full chronological real story
 - Key events the series captured — what {series_label} got RIGHT with evidence
 - How history inspired {series_label} and why filmmakers made their creative choices
 - Real quotes from people involved
 - Specific dates and facts throughout
 
-SHOCKING REVELATIONS (500 words):
-- 4-5 fascinating real facts that make the true story even more incredible than {series_label}
+SHOCKING REVELATIONS (300 words = ~2.3 minutes):
+- 3-4 fascinating real facts that make the true story even more incredible than {series_label}
 - Remarkable real details the show's runtime couldn't fully capture
 - Things that would amaze even the biggest fans of the show
 - Real impact on real people and real history
 
-REAL STORY VS SCREEN STORY (400 words):
+REAL STORY VS SCREEN STORY (150 words = ~1 minute):
 - Informative comparisons: "In {series_label}, they depicted X. In reality, Y happened — and here is why that is fascinating."
-- 3 specific scene or character comparisons — explain the creative choices, not judge them
+- 2 specific scene or character comparisons — explain the creative choices, not judge them
 - How Hollywood adapted history to tell the story on screen
 
-CONCLUSION (200 words):
+CONCLUSION (100 words = ~46 seconds):
 - What happened after the events {series_label} depicted
 - Where the real people are now
 - One question to tease the next video
 - End with: "Follow Dark Crime Decoded for more real stories behind your favourite crime series"
 
-TOTAL TARGET: 3000 words minimum, 3500 words maximum.
+TOTAL TARGET: 1400 words minimum, 1600 words maximum.
 
 STRICT WRITING RULES:
 1. NEVER start two consecutive sentences with the same word
@@ -356,8 +356,8 @@ STRICT WRITING RULES:
 3. Use varied sentence starters: year ("In 1993..."), place, number, action subject, age, reveal, contrast, viewer address
 4. Each sentence must contain exactly ONE specific fact (name, number, date, or place)
 5. Mix sentence lengths — short punchy sentences after long ones
-6. Name {series_label} at least 8 times throughout the script
-7. Include at least 10 real dates or numbers
+6. Name {series_label} at least 5 times throughout the script
+7. Include at least 6 real dates or numbers
 8. Use "..." for dramatic pauses
 
 BANNED PHRASES — never use these:
@@ -382,9 +382,12 @@ Start immediately with the HOOK. Write spoken words only — no labels, no heade
     r1 = _groq_call(
         messages=[{"role": "user", "content": part1_prompt}],
         temperature=0.85,
-        max_tokens=6000,
+        max_tokens=3000,
     )
     script_text = r1.choices[0].message.content.strip()
+    words = len(script_text.split())
+    minutes = words / 130
+    print(f"[Script] {words} words = ~{minutes:.1f} minutes")
 
     # ── PART 2: Generate metadata only (title, hook, captions, etc.) ────────
     _series_info    = get_series_for_person(topic["topic"])
