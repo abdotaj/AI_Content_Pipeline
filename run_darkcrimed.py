@@ -39,7 +39,7 @@ import config_darkcrimed
 sys.modules["config"] = config_darkcrimed
 
 from config_darkcrimed import (
-    FINAL_DIR, CONTENT_DIR, YOUTUBE_TOKEN_FILE, SHORT_CLIP_DURATION,
+    FINAL_DIR, CONTENT_DIR, YOUTUBE_TOKEN_FILE, SHORT_VIDEO_DURATION,
 )
 
 # Write YouTube token from env secret (CI) or use existing file (local)

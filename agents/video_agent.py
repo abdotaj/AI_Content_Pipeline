@@ -9,7 +9,9 @@ import requests
 from pathlib import Path
 from config import (
     AUDIO_DIR, VIDEO_DIR, FINAL_DIR,
-    VIDEO_WIDTH, VIDEO_HEIGHT
+    VIDEO_WIDTH, VIDEO_HEIGHT,
+    SHORT_VIDEO_DURATION, LONG_VIDEO_DURATION,
+    EDGETTS_RATE,
 )
 
 IMAGES_DIR = "output/images"
@@ -39,7 +41,7 @@ def generate_voiceover_edgetts(script_text: str, filename: str, language: str = 
     audio_path = os.path.join(AUDIO_DIR, f"{filename}.mp3")
 
     async def _generate():
-        communicate = edge_tts.Communicate(script_text, voice)
+        communicate = edge_tts.Communicate(script_text, voice, rate=EDGETTS_RATE)
         await communicate.save(audio_path)
 
     asyncio.run(_generate())
@@ -878,7 +880,7 @@ SHORTS_DIR = "output/shorts"
 Path(SHORTS_DIR).mkdir(parents=True, exist_ok=True)
 
 
-def cut_short_clip(video_path: str, video_id: str, duration: int = 55) -> str:
+def cut_short_clip(video_path: str, video_id: str, duration: int = SHORT_VIDEO_DURATION) -> str:
     """Cut the first `duration` seconds of a video and save to output/shorts/."""
     try:
         from moviepy import VideoFileClip

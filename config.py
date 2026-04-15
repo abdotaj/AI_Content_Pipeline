@@ -48,7 +48,10 @@ NICHES = [
 NICHE_WEIGHTS = [0.20, 0.20, 0.15, 0.15, 0.10, 0.10, 0.05, 0.05]
 
 VIDEOS_PER_DAY = 2                 # how many videos to generate daily
-VIDEO_DURATION_SECONDS = 720       # 12 minutes — builds watch hours fast
+LONG_VIDEO_DURATION    = 660   # 11 minutes target (10-12 min = 600-720 s); audio drives actual length
+SHORT_VIDEO_DURATION   = 55    # 55 seconds; audio drives actual length
+EDGETTS_RATE           = "-10%"  # edge-tts speaking rate for fallback TTS (-10% = slightly slower)
+VIDEO_DURATION_SECONDS = LONG_VIDEO_DURATION  # legacy alias
 VIDEO_WIDTH  = 1080
 VIDEO_HEIGHT = 1920                # vertical 9:16 for TikTok/Shorts
 

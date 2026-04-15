@@ -67,8 +67,12 @@ NICHE_WEIGHTS = [0.10, 0.10, 0.10, 0.08, 0.08,
                  0.06, 0.05, 0.04, 0.01, 0.01]
 
 VIDEOS_PER_DAY = 1
-VIDEO_DURATION_SECONDS = 660        # 11 minutes target (range: 600-720 s = 10-12 min)
-SHORT_CLIP_DURATION    = 55        # seconds — cut from long video for TikTok/Reels/Shorts
+LONG_VIDEO_DURATION  = 660   # 11 minutes target (10-12 min = 600-720 s); audio drives actual length
+SHORT_VIDEO_DURATION = 55    # 55 seconds; audio drives actual length
+EDGETTS_RATE         = "-10%"  # edge-tts speaking rate for fallback TTS (-10% = slightly slower)
+# Legacy aliases — kept for backward compatibility
+VIDEO_DURATION_SECONDS = LONG_VIDEO_DURATION
+SHORT_CLIP_DURATION    = SHORT_VIDEO_DURATION
 VIDEO_WIDTH  = 1080
 VIDEO_HEIGHT = 1920
 

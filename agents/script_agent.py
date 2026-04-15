@@ -5,7 +5,7 @@
 import json
 import groq as groq_lib
 from groq import Groq
-from config import GROQ_API_KEY
+from config import GROQ_API_KEY, LONG_VIDEO_DURATION
 
 _groq = Groq(api_key=GROQ_API_KEY)
 
@@ -91,8 +91,8 @@ _DARKCRIMED_BASE_AR_HASHTAGS = [
 ]
 
 
-def generate_chapters(script, total_duration_seconds=660):
-    """Return YouTube chapter timestamps for an 11-minute documentary."""
+def generate_chapters(script, total_duration_seconds=LONG_VIDEO_DURATION):
+    """Return YouTube chapter timestamps for a long-form documentary."""
     chapters = [
         (0,   "🎬 Introduction"),
         (23,  "📺 What The Series Showed"),
