@@ -97,9 +97,9 @@ def generate_chapters(script, total_duration_seconds=1200):
         (0,    "🎬 Introduction"),
         (60,   "📺 What The Series Showed"),
         (180,  "🔍 The Real Story"),
-        (420,  "😱 What Netflix Changed"),
+        (420,  "🎥 How History Inspired The Story"),
         (660,  "💀 Shocking Facts They Left Out"),
-        (900,  "⚖️ Series vs Reality"),
+        (900,  "⚖️ Real Story vs Screen Story"),
         (1100, "🎯 The Truth & Conclusion"),
     ]
     chapter_text = ""
@@ -124,16 +124,17 @@ Related series/movie: {series}
 
 RULES:
 - Max 60 characters total
-- CAPITALISE one shocking word: LIED, REAL, NEVER, HIDDEN, WORSE, DARKER, CHANGED
-- End with ONE relevant emoji chosen from: 🔴 😱 🔍 💀 🎬
+- CAPITALISE one exciting word: REAL, INCREDIBLE, MORE, BEFORE, INSPIRED, TRUE, NEVER
+- End with ONE relevant emoji chosen from: 🎬 😱 🔍 💀 🔴
 - Add the series hashtag ({series_tag}) if a series is known
 - NO "Dark Crime Decoded:" prefix — this is for Shorts/TikTok
+- Celebrate both the real story AND the show — informative, not accusatory tone
 
 EXAMPLES:
-"Netflix LIED about Pablo Escobar #Narcos 🔴"
-"The REAL Dexter Morgan was 10x worse #Dexter 😱"
-"What Narcos NEVER showed you 🔍"
-"Al Capone's secret Netflix hid 💀"
+"The REAL Al Capone was more incredible than Boardwalk Empire showed 🎬"
+"The TRUE story that inspired Narcos is even wilder #Narcos 😱"
+"What REALLY happened before Breaking Bad 🔍"
+"The REAL Pablo Escobar was more extraordinary than Narcos showed 🎬"
 
 Output ONLY the title text, nothing else."""
 
@@ -294,50 +295,52 @@ Real person: {wiki_real_person}
 VERIFIED FACTS (from Wikipedia):
 {research_facts}
 
-WHAT THE SHOW CHANGED (from Wikipedia):
+HOW HISTORY INSPIRED THE SHOW (from Wikipedia):
 {research_inaccuracies}
 
-SHOCKING FACTS (from Wikipedia):
+SHOCKING REAL FACTS (from Wikipedia):
 {research_shocking}
 
 If you are not 100% sure about a fact — do not include it.
 Always say "{wiki_network}" not "Netflix" unless the network IS Netflix.
 
+TONE: Celebrate BOTH the real story AND the show. The show is great entertainment. The real story is even more fascinating. Never attack or accuse the show — explain and celebrate.
+
 Use this EXACT structure (no section labels in the output — spoken words only):
 
 HOOK (80 words):
-- Most shocking single fact about this case
-- Something that stops the viewer immediately
-- Example: "Netflix spent 50 million dollars making {series_label}. But they changed one key detail that changes everything."
+- Most fascinating single fact about this real story
+- Something that makes the viewer want to know more
+- Example: "{series_label} introduced millions of people to this incredible true story. But the real events were even more extraordinary than anything the show could portray."
 
 SERIES INTRO (250 words):
-- What {series_label} showed the world
-- Why millions of people watched it
-- Set up the question: but what really happened?
-- Name {series_label} directly and what it got famous for
+- Celebrate what {series_label} showed the world — it is great television
+- Why millions of people loved it and why it matters
+- Build excitement: the real story that inspired it is even more incredible
+- Name {series_label} directly and what made it famous
 
 REAL BACKGROUND (600 words):
 - Real person's early life with specific facts
-- Family, childhood, first crimes — real dates, real places, real names
-- What shaped them BEFORE the series begins
+- Family, childhood, origins — real dates, real places, real names
+- The fascinating true events BEFORE the series timeline begins
 
 MAIN STORY (1200 words):
 - Full chronological real story
-- Key events the series covered — what {series_label} got RIGHT with evidence
-- What {series_label} CHANGED and why Hollywood altered it
+- Key events the series captured — what {series_label} got RIGHT with evidence
+- How history inspired {series_label} and why filmmakers made their creative choices
 - Real quotes from people involved
 - Specific dates and facts throughout
 
 SHOCKING REVELATIONS (500 words):
-- 4-5 facts {series_label} completely left out
-- The darkest real details
-- Things that would shock even fans of the show
-- Real impact on real people
+- 4-5 fascinating real facts that make the true story even more incredible than {series_label}
+- Remarkable real details the show's runtime couldn't fully capture
+- Things that would amaze even the biggest fans of the show
+- Real impact on real people and real history
 
-SERIES VS REALITY (400 words):
-- Direct comparisons: "In {series_label}, they showed X. In reality, Y happened."
-- 3 specific scene or character comparisons
-- What Hollywood changed purely for drama
+REAL STORY VS SCREEN STORY (400 words):
+- Informative comparisons: "In {series_label}, they depicted X. In reality, Y happened — and here is why that is fascinating."
+- 3 specific scene or character comparisons — explain the creative choices, not judge them
+- How Hollywood adapted history to tell the story on screen
 
 CONCLUSION (200 words):
 - What happened after the events {series_label} depicted
@@ -357,10 +360,19 @@ STRICT WRITING RULES:
 7. Include at least 10 real dates or numbers
 8. Use "..." for dramatic pauses
 
-BANNED PHRASES — replace with specific facts:
+BANNED PHRASES — never use these:
+- "what the show got wrong" / "what Netflix lied about" / "what Hollywood changed" / "inaccuracies in the show"
 - "delve into" / "complex figure" / "shaped by" / "rose to infamy" / "criminal mastermind"
 - "hero to some" → use the actual act (e.g. "He built 84 football fields for the poor")
 - NEVER repeat the same fact twice
+
+CORRECT PHRASES TO USE INSTEAD:
+- "the real story that inspired the show"
+- "what really happened in history"
+- "the fascinating true events behind the series"
+- "the real person who inspired the character"
+- "what happened before/after the show's timeline"
+- "historical facts that make the story even more incredible"
 
 Topic: {topic['topic']}
 Series/Movie: {series_label}
@@ -381,13 +393,16 @@ Start immediately with the HOOK. Write spoken words only — no labels, no heade
 Based on this voiceover script about "{topic['topic']}", generate the metadata fields.
 
 TITLE FORMAT (mandatory):
-"The REAL [Real Person]: What [Series] Got Wrong | Dark Crime Decoded"
-Example: "The REAL Pablo Escobar: What Narcos Got Wrong | Dark Crime Decoded"
-Example: "The REAL Jordan Belfort: What Wolf of Wall Street Got Wrong | Dark Crime Decoded"
-Example: "The REAL Al Capone: What Boardwalk Empire Got Wrong | Dark Crime Decoded"
+"The Real Story Behind [Series]: [Real Person]'s True Life | Dark Crime Decoded"
+Example: "The Real Story Behind Boardwalk Empire: Al Capone's True Life | Dark Crime Decoded"
+Example: "The True Story That Inspired Narcos: Pablo Escobar's Real Life | Dark Crime Decoded"
+Example: "Before Breaking Bad: The Real Chemistry Teacher Who Inspired Walter White | Dark Crime Decoded"
+Example: "The Real Godfather: The True Story Behind The Greatest Crime Movie | Dark Crime Decoded"
+Example: "Who Was The Real Al Capone? The Story Behind Boardwalk Empire | Dark Crime Decoded"
 The real person for this topic is extracted from: {topic['topic']}
 The related series/movie is: {_related_series}
-If no series is known, use: "The REAL [Real Person]: The True Story | Dark Crime Decoded"
+If no series is known, use: "The True Story of [Real Person]: The Real Events Behind The Legend | Dark Crime Decoded"
+TONE: Informative and celebratory — never accusatory. Celebrate both the show and the real story.
 Max 90 chars total.
 
 Return ONLY this JSON with no extra text:
@@ -414,8 +429,8 @@ Return ONLY this JSON with no extra text:
     meta = json.loads(r2.choices[0].message.content.strip())
     _series_name = _series_info[0] if _series_info else _related_series
     _fallback_title = (
-        f"The REAL {topic['topic']}: What {_series_name} Got Wrong | Dark Crime Decoded"
-        if _series_info else f"The REAL {topic['topic']}: The True Story | Dark Crime Decoded"
+        f"The Real Story Behind {_series_name}: {topic['topic']}'s True Life | Dark Crime Decoded"
+        if _series_info else f"The True Story of {topic['topic']}: The Real Events Behind The Legend | Dark Crime Decoded"
     )
     script_data = {
         "title":          meta.get("title", _fallback_title),
@@ -494,8 +509,8 @@ PART 1 — THE REAL PERSON (35 seconds, 80-90 words):
 
 PART 2 — THE SERIES CONNECTION (20 seconds, 45-55 words):
 - Name the series/movie directly: "{series}"
-- State ONE key thing the show got wrong or left out
-- Compare fiction vs reality with one specific fact
+- Share ONE fascinating real fact the show couldn't fully capture
+- Compare the real events to the screen story — celebrate both
 - End with exactly: "Follow Dark Crime Decoded for the full story"
 
 RULES:
