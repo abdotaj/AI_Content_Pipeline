@@ -1,16 +1,19 @@
 # ============================================================
-#  agents/research_agent.py  —  No Anthropic API required
-#  Uses DuckDuckGo search + Groq only
+#  agents/research_agent.py
+#  Wikipedia (primary) + DuckDuckGo (fallback) + Groq
 # ============================================================
 import random
 import json
 import time
 import datetime
+import requests
 from pathlib import Path
+
 try:
     from ddgs import DDGS
 except ImportError:
     from duckduckgo_search import DDGS
+
 import groq as groq_lib
 from groq import Groq
 from config import GROQ_API_KEY, NICHES, NICHE_WEIGHTS
@@ -45,10 +48,104 @@ def _groq_call(**kwargs):
                 break
     raise last_err
 
+
 COVERED_TOPICS_PATH = Path("output/covered_topics.json")
 
 
-# ── DuckDuckGo search helper ────────────────────────────────
+# ── Wikipedia fetchers ──────────────────────────────────────
+
+def fetch_wikipedia(query: str, lang: str = "en") -> str | None:
+    """Fetch Wikipedia article content (English by default)."""
+    base_url = f"https://{lang}.wikipedia.org/w/api.php"
+
+    search_params = {
+        "action": "query",
+        "format": "json",
+        "list": "search",
+        "srsearch": query,
+        "srlimit": 1,
+    }
+
+    try:
+        search_resp = requests.get(base_url, params=search_params, timeout=15)
+        search_data = search_resp.json()
+        results = search_data["query"]["search"]
+
+        if not results:
+            print(f"[Research] Wikipedia: no results for '{query}'")
+            return None
+
+        page_title = results[0]["title"]
+
+        content_params = {
+            "action": "query",
+            "format": "json",
+            "titles": page_title,
+            "prop": "extracts",
+            "explaintext": True,
+            "exsectionformat": "plain",
+        }
+
+        content_resp = requests.get(base_url, params=content_params, timeout=15)
+        content_data = content_resp.json()
+        pages = content_data["query"]["pages"]
+        page = next(iter(pages.values()))
+
+        content = page.get("extract", "")
+        if not content:
+            return None
+
+        print(f"[Research] Wikipedia found: {page_title}")
+        return content[:5000]
+
+    except Exception as e:
+        print(f"[Research] Wikipedia fetch failed: {e}")
+        return None
+
+
+def fetch_wikipedia_arabic(query: str) -> str | None:
+    """Fetch Arabic Wikipedia content."""
+    base_url = "https://ar.wikipedia.org/w/api.php"
+
+    search_params = {
+        "action": "query",
+        "format": "json",
+        "list": "search",
+        "srsearch": query,
+        "srlimit": 1,
+    }
+
+    try:
+        search_resp = requests.get(base_url, params=search_params, timeout=15)
+        search_data = search_resp.json()
+        results = search_data["query"]["search"]
+
+        if not results:
+            return None
+
+        page_title = results[0]["title"]
+
+        content_params = {
+            "action": "query",
+            "format": "json",
+            "titles": page_title,
+            "prop": "extracts",
+            "explaintext": True,
+        }
+
+        content_resp = requests.get(base_url, params=content_params, timeout=15)
+        content_data = content_resp.json()
+        pages = content_data["query"]["pages"]
+        page = next(iter(pages.values()))
+
+        return page.get("extract", "")[:3000]
+
+    except Exception as e:
+        print(f"[Research] Arabic Wikipedia failed: {e}")
+        return None
+
+
+# ── DuckDuckGo search helper (fallback) ────────────────────
 
 def web_search(query: str, max_results: int = 5) -> str:
     """Search DuckDuckGo and return concatenated snippet text."""
@@ -238,36 +335,79 @@ def research_topics(count: int = 2, niches: list[str] | None = None) -> list[dic
     return topics
 
 
-# ── Deep research on a specific series ─────────────────────
+# ── Wikipedia structured extraction ────────────────────────
 
-def research_series(series_name: str) -> dict:
-    """Search DuckDuckGo then use Groq to extract structured facts for the script."""
-    print(f"[Research] Searching web for: {series_name}")
+def extract_from_wikipedia(person_wiki: str | None, series_wiki: str | None = None) -> dict | None:
+    """Use Groq to extract structured facts from Wikipedia content.
 
-    def _search(query: str, max_results: int = 5) -> str:
-        try:
-            with DDGS() as ddgs:
-                results = list(ddgs.text(query, max_results=max_results))
-            return " ".join(r.get("body", "") for r in results if r.get("body"))[:2000]
-        except Exception as e:
-            print(f"[Research] DDG error: {e}")
-            return ""
+    Args:
+        person_wiki: Wikipedia text about the real person.
+        series_wiki: Wikipedia text about the TV series / movie (optional).
+    """
+    combined = f"PERSON INFO:\n{person_wiki or 'Not found'}\n\n"
+    if series_wiki:
+        combined += f"SERIES/MOVIE INFO:\n{series_wiki}\n\n"
 
-    raw_facts    = _search(f"{series_name} real true story historical facts", 5)
-    raw_wrong    = _search(f"{series_name} what show got wrong inaccurate dramatized", 3)
-    raw_shocking = _search(f"{series_name} most shocking real facts untold story", 3)
+    prompt = f"""Based ONLY on this Wikipedia content, extract accurate information.
+Do NOT add anything not in the Wikipedia text.
+Do NOT guess or assume anything.
+
+Wikipedia content:
+{combined}
+
+Extract and return JSON:
+{{
+    "real_person": "full name or null",
+    "birth_date": "date if mentioned or null",
+    "death_date": "date if mentioned, 'alive' if mentioned as alive, or null",
+    "nationality": "country or null",
+    "crimes": ["specific crime 1", "specific crime 2"],
+    "real_facts": ["verified fact 1", "verified fact 2", "verified fact 3", "verified fact 4", "verified fact 5"],
+    "series_name": "exact series/movie name",
+    "network": "HBO/Netflix/Amazon/etc - exact from Wikipedia or null",
+    "premiere_year": "year or null",
+    "what_show_changed": ["verified change 1", "verified change 2", "verified change 3"],
+    "shocking_real_facts": ["shocking verified fact 1", "shocking verified fact 2", "shocking verified fact 3"],
+    "real_people_in_show": {{"character name": "real person name"}},
+    "sources": ["Wikipedia - Person", "Wikipedia - Series"]
+}}
+
+Return ONLY valid JSON. If info is not in Wikipedia, use null for strings or [] for arrays."""
+
+    try:
+        response = _groq_call(
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=2000,
+            response_format={"type": "json_object"},
+            temperature=0.1,
+        )
+        return json.loads(response.choices[0].message.content)
+    except Exception as e:
+        print(f"[Research] Wikipedia extraction failed: {e}")
+        return None
+
+
+# ── DuckDuckGo fallback research ───────────────────────────
+
+def research_series_duckduckgo(topic: str) -> dict:
+    """Fallback: search DuckDuckGo then use Groq to extract structured facts."""
+    print(f"[Research] DuckDuckGo fallback for: {topic}")
+
+    raw_facts    = web_search(f"{topic} real true story historical facts", 5)
+    raw_wrong    = web_search(f"{topic} what show got wrong inaccurate dramatized", 3)
+    raw_shocking = web_search(f"{topic} most shocking real facts untold story", 3)
 
     prompt = f"""You are a fact-checker for a true crime documentary channel.
-Based on the search results below about "{series_name}", extract verified facts.
+Based on the search results below about "{topic}", extract verified facts.
 
 Facts about the real story:
-{raw_facts}
+{raw_facts[:2500]}
 
 What the show got wrong:
-{raw_wrong}
+{raw_wrong[:1500]}
 
 Shocking real details:
-{raw_shocking}
+{raw_shocking[:1500]}
 
 Return ONLY this JSON:
 {{
@@ -301,7 +441,7 @@ Return ONLY this JSON:
         facts_out    = data.get("research_facts", [])
         wrong_out    = data.get("research_inaccuracies", [])
         shocking_out = data.get("research_shocking", [])
-        print(f"[Research] Extracted {len(facts_out)} facts, {len(wrong_out)} inaccuracies, {len(shocking_out)} shocking — {series_name}")
+        print(f"[Research] DuckDuckGo: {len(facts_out)} facts, {len(wrong_out)} inaccuracies, {len(shocking_out)} shocking")
     except Exception as e:
         print(f"[Research] Groq extraction failed: {e} — using raw snippets")
         facts_out    = [raw_facts[:400]]    if raw_facts    else []
@@ -309,15 +449,91 @@ Return ONLY this JSON:
         shocking_out = [raw_shocking[:400]] if raw_shocking else []
 
     return {
-        "series":                        series_name,
-        # Primary fields used by the new script prompt
+        "series":                        topic,
         "research_facts":                facts_out,
         "research_inaccuracies":         wrong_out,
         "research_shocking":             shocking_out,
-        # Legacy fields kept for backward compatibility
+        # Legacy fields for backward compatibility
         "real_story":                    raw_facts,
         "what_show_got_right":           facts_out[:3],
         "what_show_got_wrong":           wrong_out,
         "shocking_real_facts":           shocking_out,
         "real_people_behind_characters": {},
+    }
+
+
+# ── Deep research on a specific series ─────────────────────
+
+def research_series(topic: str, series_name: str | None = None) -> dict:
+    """Fetch Wikipedia (primary) then DuckDuckGo (fallback) and extract structured facts.
+
+    Args:
+        topic:       The real person or subject (e.g. "Pablo Escobar").
+        series_name: The TV series or movie title (e.g. "Narcos"). Optional.
+    """
+    print(f"[Research] Fetching Wikipedia for: {topic}")
+
+    # ── STEP 1: Wikipedia fetch ─────────────────────────────
+    person_wiki = fetch_wikipedia(topic)
+
+    series_wiki = None
+    if series_name:
+        series_wiki = fetch_wikipedia(f"{series_name} TV series")
+
+    if not person_wiki and not series_wiki:
+        print(f"[Research] Wikipedia not found — using DuckDuckGo fallback")
+        return research_series_duckduckgo(topic)
+
+    # ── STEP 2: Extract structured data from Wikipedia ──────
+    info = extract_from_wikipedia(person_wiki, series_wiki)
+
+    if not info:
+        print(f"[Research] Wikipedia extraction returned nothing — using DuckDuckGo fallback")
+        return research_series_duckduckgo(topic)
+
+    print(f"[Research] Wikipedia research complete: {topic}")
+    print(f"[Research] Network: {info.get('network', 'unknown')}")
+    print(f"[Research] Series: {info.get('series_name', series_name or 'unknown')}")
+
+    # ── STEP 3: Map to standard result shape ────────────────
+    facts_out    = info.get("real_facts") or []
+    wrong_out    = info.get("what_show_changed") or []
+    shocking_out = info.get("shocking_real_facts") or []
+
+    # If Wikipedia gave us very thin facts, supplement with DuckDuckGo
+    if len(facts_out) < 3:
+        print(f"[Research] Wikipedia thin ({len(facts_out)} facts) — supplementing with DuckDuckGo")
+        ddg = research_series_duckduckgo(topic)
+        facts_out    = facts_out    or ddg["research_facts"]
+        wrong_out    = wrong_out    or ddg["research_inaccuracies"]
+        shocking_out = shocking_out or ddg["research_shocking"]
+
+    return {
+        "series":                        series_name or topic,
+        # Primary fields used by the script prompt
+        "research_facts":                facts_out,
+        "research_inaccuracies":         wrong_out,
+        "research_shocking":             shocking_out,
+        # Structured Wikipedia data passed through to script_agent
+        "network":                       info.get("network"),
+        "premiere_year":                 info.get("premiere_year"),
+        "real_person":                   info.get("real_person"),
+        # Legacy fields for backward compatibility
+        "real_story":                    person_wiki or "",
+        "what_show_got_right":           facts_out[:3],
+        "what_show_got_wrong":           wrong_out,
+        "shocking_real_facts":           shocking_out,
+        "real_people_behind_characters": info.get("real_people_in_show", {}),
+        # Full Wikipedia-sourced structured block
+        "wiki": {
+            "real_person":         info.get("real_person"),
+            "birth_date":          info.get("birth_date"),
+            "death_date":          info.get("death_date"),
+            "nationality":         info.get("nationality"),
+            "crimes":              info.get("crimes", []),
+            "network":             info.get("network"),
+            "premiere_year":       info.get("premiere_year"),
+            "real_people_in_show": info.get("real_people_in_show", {}),
+            "sources":             info.get("sources", []),
+        },
     }

@@ -273,6 +273,11 @@ def _write_darkcrimed_script(topic: dict) -> dict:
     research_inaccuracies = "\n".join(f"- {i}" for i in inaccuracy_list)  or "(research what the show dramatized)"
     research_shocking     = "\n".join(f"- {s}" for s in shocking_list)    or "(include surprising real details)"
 
+    # Wikipedia-sourced verified data (may be None if DDG fallback was used)
+    wiki_network      = research.get("network") or "the network"
+    wiki_year         = research.get("premiere_year") or "unknown year"
+    wiki_real_person  = research.get("real_person") or topic.get("topic", "")
+
     # ── PART 1: Script body ───────────────────────────────────────────────────
     _si_long     = get_series_for_person(topic["topic"])
     series_label = f"{_si_long[0]} {_si_long[1]}" if _si_long else series
@@ -280,6 +285,23 @@ def _write_darkcrimed_script(topic: dict) -> dict:
     part1_prompt = f"""You are a top true crime documentary writer for YouTube.
 Write a 1500-1800 word 10-minute documentary script about: {topic['topic']}
 The related series/movie is: {series_label}
+
+CRITICAL: Use ONLY these verified Wikipedia facts. Do NOT invent any information.
+Network: {wiki_network}
+Series premiered: {wiki_year}
+Real person: {wiki_real_person}
+
+VERIFIED FACTS (from Wikipedia):
+{research_facts}
+
+WHAT THE SHOW CHANGED (from Wikipedia):
+{research_inaccuracies}
+
+SHOCKING FACTS (from Wikipedia):
+{research_shocking}
+
+If you are not 100% sure about a fact — do not include it.
+Always say "{wiki_network}" not "Netflix" unless the network IS Netflix.
 
 Use this EXACT structure (no section labels in the output — spoken words only):
 
@@ -337,11 +359,6 @@ BANNED PHRASES — replace with specific facts:
 - "delve into" / "complex figure" / "shaped by" / "rose to infamy" / "criminal mastermind"
 - "hero to some" → use the actual act (e.g. "He built 84 football fields for the poor")
 - NEVER repeat the same fact twice
-
-Research data to use:
-{research_facts}
-{research_inaccuracies}
-{research_shocking}
 
 Topic: {topic['topic']}
 Series/Movie: {series_label}
