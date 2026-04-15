@@ -91,16 +91,16 @@ _DARKCRIMED_BASE_AR_HASHTAGS = [
 ]
 
 
-def generate_chapters(script, total_duration_seconds=600):
-    """Return YouTube chapter timestamps for a 10-minute documentary."""
+def generate_chapters(script, total_duration_seconds=1200):
+    """Return YouTube chapter timestamps for a 20-minute documentary."""
     chapters = [
-        (0,   "🎬 Introduction"),
-        (30,  "📺 What The Series Showed"),
-        (90,  "🔍 The Real Story"),
-        (210, "😱 What Netflix Changed"),
-        (360, "💀 Shocking Facts They Left Out"),
-        (480, "⚖️ Series vs Reality"),
-        (570, "🎯 The Truth"),
+        (0,    "🎬 Introduction"),
+        (60,   "📺 What The Series Showed"),
+        (180,  "🔍 The Real Story"),
+        (420,  "😱 What Netflix Changed"),
+        (660,  "💀 Shocking Facts They Left Out"),
+        (900,  "⚖️ Series vs Reality"),
+        (1100, "🎯 The Truth & Conclusion"),
     ]
     chapter_text = ""
     for seconds, title in chapters:
@@ -283,7 +283,7 @@ def _write_darkcrimed_script(topic: dict) -> dict:
     series_label = f"{_si_long[0]} {_si_long[1]}" if _si_long else series
 
     part1_prompt = f"""You are a top true crime documentary writer for YouTube.
-Write a 1500-1800 word 10-minute documentary script about: {topic['topic']}
+Write a 3000-3500 word 20-minute documentary script about: {topic['topic']}
 The related series/movie is: {series_label}
 
 CRITICAL: Use ONLY these verified Wikipedia facts. Do NOT invent any information.
@@ -305,45 +305,47 @@ Always say "{wiki_network}" not "Netflix" unless the network IS Netflix.
 
 Use this EXACT structure (no section labels in the output — spoken words only):
 
-HOOK (50 words):
+HOOK (80 words):
 - Most shocking single fact about this case
 - Something that stops the viewer immediately
 - Example: "Netflix spent 50 million dollars making {series_label}. But they changed one key detail that changes everything."
 
-SERIES INTRO (150 words):
+SERIES INTRO (250 words):
 - What {series_label} showed the world
 - Why millions of people watched it
 - Set up the question: but what really happened?
 - Name {series_label} directly and what it got famous for
 
-REAL BACKGROUND (300 words):
+REAL BACKGROUND (600 words):
 - Real person's early life with specific facts
 - Family, childhood, first crimes — real dates, real places, real names
 - What shaped them BEFORE the series begins
 
-MAIN STORY (500 words):
+MAIN STORY (1200 words):
 - Full chronological real story
 - Key events the series covered — what {series_label} got RIGHT with evidence
 - What {series_label} CHANGED and why Hollywood altered it
 - Real quotes from people involved
 - Specific dates and facts throughout
 
-SHOCKING REVELATIONS (300 words):
+SHOCKING REVELATIONS (500 words):
 - 4-5 facts {series_label} completely left out
 - The darkest real details
 - Things that would shock even fans of the show
 - Real impact on real people
 
-SERIES VS REALITY (200 words):
+SERIES VS REALITY (400 words):
 - Direct comparisons: "In {series_label}, they showed X. In reality, Y happened."
 - 3 specific scene or character comparisons
 - What Hollywood changed purely for drama
 
-CONCLUSION (100 words):
+CONCLUSION (200 words):
 - What happened after the events {series_label} depicted
 - Where the real people are now
 - One question to tease the next video
 - End with: "Follow Dark Crime Decoded for more real stories behind your favourite crime series"
+
+TOTAL TARGET: 3000 words minimum, 3500 words maximum.
 
 STRICT WRITING RULES:
 1. NEVER start two consecutive sentences with the same word
@@ -368,7 +370,7 @@ Start immediately with the HOOK. Write spoken words only — no labels, no heade
     r1 = _groq_call(
         messages=[{"role": "user", "content": part1_prompt}],
         temperature=0.85,
-        max_tokens=4000,
+        max_tokens=6000,
     )
     script_text = r1.choices[0].message.content.strip()
 
