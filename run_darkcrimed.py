@@ -47,7 +47,7 @@ _yt_token_json = os.getenv("YOUTUBE_TOKEN_JSON_DARKCRIMED")
 if _yt_token_json:
     Path(YOUTUBE_TOKEN_FILE).write_text(_yt_token_json, encoding="utf-8")
 
-from agent.research_agent import research_topics, research_series, mark_covered
+from agent.research_agent import research_topics, research_series, mark_covered, is_fictional
 from agent.script_agent   import write_script, write_short_script, translate_script
 from agent.video_agent    import create_video
 from agent.notify_agent   import (
@@ -143,13 +143,30 @@ def run_pipeline():
             topic = topics[0]
 
         if topic:
+            # FIX 5 — Reject fictional shows before wasting research time
+            topic_text  = topic.get("topic", "")
+            topic_niche = topic.get("niche", "")
+            if is_fictional(topic_text, topic_niche):
+                print(f"[Pipeline] Fictional topic detected: '{topic_text}' — aborting run")
+                send_message(
+                    f"\u26a0\ufe0f Fictional topic blocked: '{topic_text}'\n\n"
+                    f"Dark Crime Decoded only covers REAL true crime stories.\n"
+                    f"Send a real person or real-story show name to continue."
+                )
+                return
+
             # Research real facts for topic (content files and full-script paths skip this)
             print("[1b] Web-researching real facts...")
-            niche  = topic.get("niche", "")
-            series = niche.split("behind")[-1].strip() if "behind" in niche else topic.get("topic", "")
+            niche  = topic_niche
+            series = niche.split("behind")[-1].strip() if "behind" in niche else topic_text
             try:
                 user_note = topic.get("user_note")
-                topic["research"] = research_series(series, user_note=user_note)
+                research_result = research_series(series, user_note=user_note)
+                if research_result is None:
+                    # research_series() already sent a Telegram warning
+                    print("[Pipeline] research_series returned None (fictional) — aborting")
+                    return
+                topic["research"] = research_result
             except Exception as e:
                 print(f"  [WARN] Web research failed for '{series}': {e}")
                 topic["research"] = {}

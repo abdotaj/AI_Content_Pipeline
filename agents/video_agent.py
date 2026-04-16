@@ -267,7 +267,7 @@ SUBJECTS = {
     "manson":           "Charles Manson cult leader portrait dark cinematic",
     "lucky luciano":    "Lucky Luciano New York mafia boss portrait cinematic",
     "luciano":          "Lucky Luciano New York mafia portrait cinematic",
-    "frank lucas":      "Frank Lucas Harlem drug lord portrait cinematic",
+    "frank lucas":      "Frank Lucas real Harlem drug lord portrait cinematic dramatic dark",
     "whitey bulger":    "Whitey Bulger Boston Irish mob portrait cinematic",
     "bulger":           "Whitey Bulger Boston mob boss portrait cinematic",
     "richard ramirez":  "Richard Ramirez Night Stalker killer portrait cinematic",
@@ -328,7 +328,7 @@ SUBJECTS = {
     "wolf of wall street": "Leonardo DiCaprio Margot Robbie Wolf of Wall Street portrait",
 
     # American Gangster — Denzel + Crowe
-    "american gangster":   "Denzel Washington Russell Crowe American Gangster portrait",
+    "american gangster":   "Denzel Washington and Russell Crowe American Gangster portrait cinematic",
 
     # City of God
     "city of god":         "Alexandre Rodrigues City of God Brazil portrait cinematic",
@@ -737,13 +737,25 @@ def generate_image_prompts(title: str, niche: str, script: str = "", language: s
     return prompts, seed
 
 
+def clean_prompt(prompt: str) -> str:
+    """Remove special characters that break Pollinations URLs."""
+    import re
+    prompt = prompt.replace("(", "").replace(")", "")
+    prompt = prompt.replace(",", " ").replace("_", " ")
+    prompt = prompt.replace("&", "and")
+    prompt = prompt.replace("/", " ")
+    prompt = prompt.replace('"', "").replace("'", "")
+    prompt = re.sub(r'\s+', ' ', prompt).strip()
+    return prompt[:200]
+
+
 def generate_ai_image(prompt: str, output_path: str, seed: int = None) -> str:
     """Fetch an AI-generated image from Pollinations with retry + dark fallback."""
     import io
     from PIL import Image as PILImage
 
     output_path = output_path.replace(".jpg", ".png")
-    encoded = requests.utils.quote(prompt)
+    encoded = requests.utils.quote(clean_prompt(prompt))
     _seed = seed if seed is not None else random.randint(1, 99999)
     url = (
         f"https://image.pollinations.ai/prompt/{encoded}"

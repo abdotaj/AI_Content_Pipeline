@@ -52,6 +52,69 @@ def _groq_call(**kwargs):
 COVERED_TOPICS_PATH = Path("output/covered_topics.json")
 
 
+# ── Fictional vs real-story show detection ──────────────────
+
+FICTIONAL_SHOWS = [
+    "pieces of her",
+    "jane queller",
+    "john wick",
+    "jack reacher",
+    "yellowstone",
+    "suits",
+    "house of cards",
+    "game of thrones",
+    "stranger things",
+    "the crown",        # dramatized, not documentary
+    "breaking bad",     # walter white is fictional
+    "dexter",           # dexter morgan is fictional
+    "money heist",      # fictional heist
+    "ozark",            # fictional family
+    "squid game",
+]
+
+REAL_STORY_SHOWS = [
+    "narcos",
+    "boardwalk empire",
+    "american gangster",
+    "goodfellas",
+    "casino",
+    "the godfather",
+    "scarface",
+    "griselda",
+    "el chapo",
+    "dahmer",
+    "monster",
+    "mindhunter",
+    "night stalker",
+    "black mass",
+    "extremely wicked",
+    "wolf of wall street",
+    "city of god",
+    "blow",
+    "donnie brasco",
+]
+
+
+def is_fictional(topic: str, series_name: str | None = None) -> bool:
+    """Return True if the topic appears to be a purely fictional show/character."""
+    topic_lower  = topic.lower()
+    series_lower = (series_name or "").lower()
+    for show in FICTIONAL_SHOWS:
+        if show in topic_lower or show in series_lower:
+            return True
+    return False
+
+
+def is_real_story(topic: str, series_name: str | None = None) -> bool:
+    """Return True if the topic is a known real-story show or person."""
+    topic_lower  = topic.lower()
+    series_lower = (series_name or "").lower()
+    for show in REAL_STORY_SHOWS:
+        if show in topic_lower or show in series_lower:
+            return True
+    return False
+
+
 # ── Wikipedia fetchers ──────────────────────────────────────
 
 def fetch_wikipedia(query: str, lang: str = "en") -> str | None:
@@ -465,7 +528,7 @@ Return ONLY this JSON:
 
 # ── Deep research on a specific series ─────────────────────
 
-def research_series(topic: str, series_name: str | None = None, user_note: str | None = None) -> dict:
+def research_series(topic: str, series_name: str | None = None, user_note: str | None = None) -> dict | None:
     """Combine Wikipedia (primary) + DuckDuckGo (additional) via Groq extraction.
 
     Args:
@@ -473,7 +536,35 @@ def research_series(topic: str, series_name: str | None = None, user_note: str |
         series_name: The TV series or movie title (e.g. "Narcos"). Optional.
         user_note:   Raw text from the channel host (e.g. "Al Capone inspired Nucky
                      Thompson in Boardwalk Empire"). Used as extra research seed.
+
+    Returns None if the topic is detected as a purely fictional show/character.
     """
+    # ── Fictional show guard ────────────────────────────────
+    if is_fictional(topic, series_name):
+        print(f"[Research] WARNING: '{topic}' appears to be fictional — aborting")
+        try:
+            from agent.notify_agent import send_message as _sm
+        except ImportError:
+            try:
+                from agents.notify_agent import send_message as _sm
+            except ImportError:
+                _sm = lambda msg: None
+        _sm(
+            f"\u26a0\ufe0f WARNING: Fictional Content Detected\n\n"
+            f'"{topic}" appears to be a fictional character/story.\n'
+            f"Dark Crime Decoded covers REAL true crime stories only.\n\n"
+            f"Options:\n"
+            f"1. Send a REAL person's name instead\n"
+            f"2. Send the real inspiration behind the show\n\n"
+            f"Real story shows we cover:\n"
+            f"- Narcos \u2192 Pablo Escobar (real)\n"
+            f"- American Gangster \u2192 Frank Lucas (real)\n"
+            f"- Boardwalk Empire \u2192 Nucky Johnson (real)\n"
+            f"- Goodfellas \u2192 Henry Hill (real)\n\n"
+            f"Send a new topic to continue."
+        )
+        return None
+
     print(f"[Research] Starting research: {topic}")
     if user_note:
         print(f"[Research] User note: {user_note[:100]}")
