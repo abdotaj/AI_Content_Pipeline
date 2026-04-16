@@ -464,59 +464,196 @@ _THEMES = {
 }
 
 
-def generate_image_prompts(title: str, niche: str, script: str = "", language: str = "english") -> tuple[list[str], int]:
-    """Return (list_of_6_prompts, seed) for Pollinations.
+# ── Wikipedia public-domain image fetcher ─────────────────────────────────────
 
-    Fixed 6-slot structure:
-      1. Real criminal portrait        (extract_main_subject slot 0)
-      2. Actor / series portrait       (extract_main_subject slot 1, or closeup variant)
-      3. Real location from the story
-      4. Era / time-period scene
-      5. Crime / theme scene
-      6. Justice / conclusion scene
+def fetch_wikimedia_image(person_name: str) -> str | None:
+    """Query Wikipedia API for the person's thumbnail. All results are public domain or CC."""
+    params = {
+        "action": "query",
+        "format": "json",
+        "titles": person_name.replace(" ", "_"),
+        "prop": "pageimages",
+        "pithumbsize": 1200,
+        "piprop": "thumbnail|name",
+    }
+    try:
+        r = requests.get(
+            "https://en.wikipedia.org/w/api.php",
+            params=params, timeout=15,
+            headers={"User-Agent": "DarkCrimeDecoded/1.0"},
+        )
+        pages = r.json()["query"]["pages"]
+        page = next(iter(pages.values()))
+        image_url = page.get("thumbnail", {}).get("source", "")
+        if image_url:
+            print(f"[Image] Wikipedia photo found: {person_name}")
+            return image_url
+        return None
+    except Exception as e:
+        print(f"[Image] Wikipedia fetch failed for '{person_name}': {e}")
+        return None
+
+
+def download_wikipedia_image(image_url: str, output_path: str) -> str | None:
+    """Download a Wikipedia image, smart-crop portrait/landscape → 1080x1920."""
+    import io
+    from PIL import Image as PILImage
+
+    try:
+        r = requests.get(image_url, timeout=30,
+                         headers={"User-Agent": "DarkCrimeDecoded/1.0"})
+        if r.status_code != 200:
+            return None
+        img = PILImage.open(io.BytesIO(r.content)).convert("RGB")
+        w, h = img.size
+        # Landscape → center-crop to square, then scale up
+        if w > h:
+            left = (w - h) // 2
+            img = img.crop((left, 0, left + h, h))
+        img = img.resize((1080, 1920), PILImage.LANCZOS)
+        output_path = output_path.replace(".jpg", ".png")
+        img.save(output_path, "PNG")
+        print(f"[Image] Wikipedia image saved: {output_path}")
+        return output_path
+    except Exception as e:
+        print(f"[Image] Wikipedia download failed: {e}")
+        return None
+
+
+def _extract_person_name_from_topic(title: str, topic: str) -> str:
+    """Return the best Wikipedia-searchable name for a topic.
+
+    Checks title + topic against the SUBJECTS lookup (longest key first).
+    Falls back to the raw topic string (stripped of angle dashes).
+    """
+    combined = (title + " " + topic).lower()
+    for key, _ in _SUBJECTS_SORTED:
+        if key in combined:
+            return key.title()   # e.g. "pablo escobar" → "Pablo Escobar"
+    # Fallback: first segment before an em-dash
+    return topic.split("—")[0].strip() if topic else ""
+
+
+def get_person_images(
+    person_name: str,
+    video_id: str,
+    user_images: list[dict] | None = None,
+) -> list[dict]:
+    """
+    Build the priority image list for a real person.
+
+    Priority order (highest first):
+      1. User-uploaded images (via Telegram)
+      2. Wikipedia real photo (public domain, position 0 = opening shot)
+
+    Returns list of {"path", "tags", "caption"} dicts compatible with
+    _build_clip_pool_with_user_images().  AI portraits fill the rest of
+    the slots separately through the normal generate_image_prompts flow.
+    """
+    images: list[dict] = []
+
+    # 1 — User uploads
+    for img in (user_images or []):
+        if img.get("path") and os.path.exists(img["path"]):
+            images.append(img)
+            print(f"[Image] Priority 1 (user upload): {img['path']}")
+
+    # 2 — Wikipedia real photo
+    if person_name:
+        wiki_url = fetch_wikimedia_image(person_name)
+        if wiki_url:
+            wiki_path = os.path.join(IMAGES_DIR, f"{video_id}_wiki_real.png")
+            downloaded = download_wikipedia_image(wiki_url, wiki_path)
+            if downloaded:
+                images.append({
+                    "path": downloaded,
+                    "tags": ["real", "photo", "portrait", *person_name.lower().split()],
+                    "caption": f"{person_name} real historical photo",
+                })
+                print(f"[Image] Priority 2 (Wikipedia): {downloaded}")
+
+    return images
+
+
+def generate_image_prompts(title: str, niche: str, script: str = "", language: str = "english") -> tuple[list[str], int]:
+    """Return (list_of_12_prompts, seed) for Pollinations.
+
+    12-slot structure:
+      1.  Real criminal portrait (AI — Wikipedia real photo handled separately)
+      2.  Actor / series portrait
+      3.  Real location from the story
+      4.  Era / time-period scene
+      5.  Crime / theme scene
+      6.  Justice / conclusion scene
+      7.  Alternate portrait (extreme closeup, different angle)
+      8.  Vintage newspaper / historical archive
+      9.  Investigation board / evidence room
+      10. Second atmospheric location
+      11. Actor alternate (dramatic intensity)
+      12. Final courtroom / verdict scene
     """
     t      = (title + " " + niche).lower()
     s      = script.lower()[:800]
     suffix = "vertical 9:16 cinematic portrait dramatic lighting dark background professional 4k photography style"
 
-    # Images 1 & 2 — portraits (real criminal + actor)
-    portraits = extract_main_subject(title, script)
+    # Slots 1 & 2 — portraits
+    portraits  = extract_main_subject(title, script)
     portrait_1 = portraits[0]
-    if len(portraits) >= 2:
-        portrait_2 = portraits[1]
-    else:
-        # Fallback: closeup variant so the two frames look visually different
-        portrait_2 = portrait_1.replace("portrait", "closeup dramatic shadows intense").strip()
+    portrait_2 = portraits[1] if len(portraits) >= 2 else portrait_1.replace("portrait", "closeup dramatic shadows intense").strip()
 
-    # Image 3 — Real location
+    # Slot 3 — Real location
     location = next(
         (v for k, v in _LOCATIONS.items() if k in t or k in s),
         "dark city night street dramatic cinematic",
     )
 
-    # Image 4 — Era / time period
+    # Slot 4 — Era / time period
     era = next(
         (v for k, v in _ERAS.items() if k in s),
         "modern dark cinematic atmospheric",
     )
 
-    # Image 5 — Crime / theme scene
+    # Slot 5 — Crime / theme scene
     theme = next(
         (v for k, v in _THEMES.items() if k in t or k in s),
         "crime investigation evidence board detective cinematic",
     )
 
-    # Image 6 — Justice / conclusion
+    # Slot 6 — Justice
     justice = "courtroom trial verdict judge gavel dramatic justice cinematic"
+
+    # Slot 7 — Alternate portrait (extreme closeup)
+    portrait_alt = portrait_1.replace("portrait", "extreme closeup dramatic shadows intense gaze").strip()
+
+    # Slot 8 — Historical archive / newspaper
+    newspaper = "vintage newspaper front page crime headline archive 1920s sepia dramatic cinematic"
+
+    # Slot 9 — Investigation / evidence board
+    evidence = "crime investigation evidence board detective newspaper clippings red string dark cinematic"
+
+    # Slot 10 — Second atmospheric location
+    second_location = "dark alley night rain atmospheric crime city street cinematic"
+
+    # Slot 11 — Actor alternate angle
+    actor_alt = portrait_2.replace("portrait", "dramatic intensity extreme closeup").strip()
+
+    # Slot 12 — Final verdict
+    verdict = "court verdict guilty judge gavel justice served historic dramatic cinematic"
 
     seed = random.randint(1, 99999)
     prompts = [
-        f"{portrait_1}, {suffix}",
-        f"{portrait_2}, {suffix}",
-        f"{location}, {suffix}",
-        f"{era}, {suffix}",
-        f"{theme}, {suffix}",
-        f"{justice}, {suffix}",
+        f"{portrait_1}, {suffix}",     # 1
+        f"{portrait_2}, {suffix}",     # 2
+        f"{location}, {suffix}",       # 3
+        f"{era}, {suffix}",            # 4
+        f"{theme}, {suffix}",          # 5
+        f"{justice}, {suffix}",        # 6
+        f"{portrait_alt}, {suffix}",   # 7
+        f"{newspaper}, {suffix}",      # 8
+        f"{evidence}, {suffix}",       # 9
+        f"{second_location}, {suffix}",# 10
+        f"{actor_alt}, {suffix}",      # 11
+        f"{verdict}, {suffix}",        # 12
     ]
     return prompts, seed
 
@@ -1094,10 +1231,16 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
         print("[Video] No clips generated, aborting")
         return ""
 
-    # Merge user images into clip pool at script-matched positions
+    # ── Wikipedia real photo + user uploads (priority images) ────────────────
+    # Fetch Wikipedia photo for the real person; combine with user uploads.
+    # get_person_images() returns dicts compatible with _build_clip_pool_with_user_images.
+    person_name = _extract_person_name_from_topic(title, script_data.get("topic", ""))
+    priority_images = get_person_images(person_name, video_id, user_images)
+
+    # Merge priority images into clip pool at script-matched positions
     script_text = script_data.get("script", "")
     all_clips = _build_clip_pool_with_user_images(
-        user_images or [], all_clips, script_text, n_variations
+        priority_images, all_clips, script_text, n_variations
     )
     print(f"[Video] Total clip pool: {len(all_clips)} clips")
 
