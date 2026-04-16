@@ -1303,19 +1303,36 @@ def assemble_video_with_hook(
         )
         return np.array(pil)
 
-    def _zoom_clip(frame, dur: float, start_scale: float, end_scale: float):
+    def _zoom_clip(
+        frame, dur: float,
+        start_scale: float, end_scale: float,
+        fade_in: float = 0.0, fade_out: float = 0.0,
+    ):
+        """VideoClip with zoom + fade-in/out baked into make_frame.
+
+        Uses VideoClip(make_frame) so output is always exactly TARGET_W×TARGET_H
+        — avoids the libx264 "odd dimension" crash that ImageClip.resize() causes.
+        """
         def make_frame(t):
-            rate = (end_scale - start_scale) / max(dur, 0.001)
+            rate  = (end_scale - start_scale) / max(dur, 0.001)
             scale = max(1.0, start_scale + rate * t)
             sw = int(TARGET_W * scale); sw += sw % 2
             sh = int(TARGET_H * scale); sh += sh % 2
             pil = PILImage.fromarray(frame).resize((sw, sh), PILImage.LANCZOS)
             x = (sw - TARGET_W) // 2
             y = (sh - TARGET_H) // 2
-            return np.array(pil.crop((x, y, x + TARGET_W, y + TARGET_H)))
+            rgb = np.array(pil.crop((x, y, x + TARGET_W, y + TARGET_H)), dtype=np.float32)
+            # Fade-in
+            if fade_in > 0 and t < fade_in:
+                rgb *= t / fade_in
+            # Fade-out
+            if fade_out > 0 and t > dur - fade_out:
+                rgb *= (dur - t) / fade_out
+            return np.clip(rgb, 0, 255).astype("uint8")
         return VideoClip(frame_function=make_frame, duration=dur)
 
-    # ── Hook section: fast cuts every 3-5 s, cycle all images ────────────────
+    # ── HOOK SECTION (0:00 to 1:30): fast cuts every 3-5 s ───────────────────
+    # Cycle through ALL images repeatedly — movie-trailer energy
     hook_clips = []
     hook_total = 0.0
     img_index  = 0
@@ -1323,14 +1340,14 @@ def assemble_video_with_hook(
     while hook_total < hook_duration:
         img_path = image_paths[img_index % len(image_paths)]
         try:
-            frame    = _load_frame(img_path)
-            cut_dur  = random.uniform(3, 5)
+            frame     = _load_frame(img_path)
+            cut_dur   = random.uniform(3, 5)
             remaining = hook_duration - hook_total
-            cut_dur  = min(cut_dur, remaining)
+            cut_dur   = min(cut_dur, remaining)
             if img_index % 2 == 0:
-                clip = _zoom_clip(frame, cut_dur, 1.00, 1.08)
+                clip = _zoom_clip(frame, cut_dur, 1.00, 1.08, fade_in=0.2, fade_out=0.2)
             else:
-                clip = _zoom_clip(frame, cut_dur, 1.08, 1.00)
+                clip = _zoom_clip(frame, cut_dur, 1.08, 1.00, fade_in=0.2, fade_out=0.2)
             hook_clips.append(clip)
             hook_total += cut_dur
         except Exception as e:
@@ -1339,24 +1356,26 @@ def assemble_video_with_hook(
 
     print(f"[Video] Hook: {len(hook_clips)} fast cuts in {hook_total:.1f}s")
 
-    # ── Main section: slow cuts 8-12 s, shuffle ───────────────────────────────
+    # ── MAIN CONTENT (1:30 to end): slow cuts every 8-12 s ───────────────────
+    # Each image gets a zoom-in clip + zoom-out clip; then shuffled
     main_clips = []
     for img_path in image_paths:
         try:
             frame = _load_frame(img_path)
             dur1  = random.uniform(8, 12)
-            main_clips.append(_zoom_clip(frame, dur1, 1.00, 1.06))
+            main_clips.append(_zoom_clip(frame, dur1, 1.00, 1.06, fade_in=0.5, fade_out=0.5))
             dur2  = random.uniform(8, 12)
-            main_clips.append(_zoom_clip(frame, dur2, 1.06, 1.00))
+            main_clips.append(_zoom_clip(frame, dur2, 1.06, 1.00, fade_in=0.5, fade_out=0.5))
         except Exception as e:
             print(f"[Video] Main clip error: {e}")
 
     random.shuffle(main_clips)
 
-    # Loop main clips until they cover main_duration
+    # Loop main clips until they cover main_duration + buffer
     while sum(c.duration for c in main_clips) < main_duration + 20:
-        extra = random.choice(main_clips[:max(1, len(main_clips) // 2)])
-        main_clips.append(_zoom_clip(_load_frame(image_paths[0]), extra.duration, 1.00, 1.06))
+        src = image_paths[random.randint(0, len(image_paths) - 1)]
+        dur = random.uniform(8, 12)
+        main_clips.append(_zoom_clip(_load_frame(src), dur, 1.00, 1.06, fade_in=0.5, fade_out=0.5))
 
     # Trim to main_duration
     accumulated = 0.0
