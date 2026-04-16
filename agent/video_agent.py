@@ -37,11 +37,22 @@ def generate_voiceover_edgetts(script_text: str, filename: str, language: str = 
         os.system("pip install edge-tts -q")
         import edge_tts
 
-    voice = get_voice(language)
+    if language.lower() == "arabic":
+        voice = "ar-SA-ZariyahNeural"    # Arabic female
+        rate  = "+0%"                     # Normal speed
+    else:
+        voice = "en-US-ChristopherNeural"  # English male deep
+        rate  = "+0%"                      # Normal speed
+
     audio_path = os.path.join(AUDIO_DIR, f"{filename}.mp3")
 
     async def _generate():
-        communicate = edge_tts.Communicate(script_text, voice, rate=EDGETTS_RATE)
+        communicate = edge_tts.Communicate(
+            text=script_text,
+            voice=voice,
+            rate=rate,
+            volume="+0%",
+        )
         await communicate.save(audio_path)
 
     asyncio.run(_generate())
@@ -91,7 +102,7 @@ def _merge_chunks_pydub(chunk_files: list[str], output_path: str) -> bool:
         return False
 
 
-def _split_text(text: str, max_chars: int = 2000) -> list[str]:
+def _split_text(text: str, max_chars: int = 1500) -> list[str]:
     """Split text on word boundaries into chunks no larger than max_chars."""
     chunks: list[str] = []
     words = text.split()
@@ -122,10 +133,11 @@ def _elevenlabs_chunk(chunk: str, voice_id: str, api_key: str, chunk_path: str) 
         "text": chunk,
         "model_id": "eleven_multilingual_v2",
         "voice_settings": {
-            "stability": 0.35,
-            "similarity_boost": 0.90,
-            "style": 0.45,
+            "stability": 0.5,
+            "similarity_boost": 0.85,
+            "style": 0.4,
             "use_speaker_boost": True,
+            "speed": 1.0,
         },
         "output_format": "mp3_44100_192",
     }
@@ -818,7 +830,7 @@ def _extract_series_from_title(title: str) -> str | None:
     Returns the text between ' & ' and ' — ', or None.
     """
     if " & " in title and " — " in title:
-        after_amp   = title.split(" & ", 1)[1]
+        after_amp  = title.split(" & ", 1)[1]
         before_dash = after_amp.split(" — ", 1)[0].strip()
         return before_dash
     return None
@@ -1108,23 +1120,26 @@ SHORTS_DIR = "output/shorts"
 Path(SHORTS_DIR).mkdir(parents=True, exist_ok=True)
 
 
-def cut_short_clip(video_path: str, video_id: str, duration: int = SHORT_VIDEO_DURATION) -> str:
-    """Cut the first `duration` seconds of a video and save to output/shorts/."""
+def cut_short_clip(video_path: str, output_path: str, duration: int = 55) -> str:
+    """Cut the first `duration` seconds of a video and save to output_path.
+
+    Always produces exactly `duration` seconds (or the video length if shorter).
+    """
     try:
         from moviepy import VideoFileClip
     except ImportError:
         return ""
 
-    short_path = os.path.join(SHORTS_DIR, f"{video_id}_short.mp4")
-    temp_audio  = os.path.join(SHORTS_DIR, f"{video_id}_short_tmp_audio.m4a")
+    temp_audio = output_path.replace(".mp4", "_tmp.m4a")
     clip = None
     short = None
     try:
         clip = VideoFileClip(video_path)
-        end = min(duration, clip.duration)
-        short = clip.subclipped(0, end)
+        # Always cut exactly 55 seconds
+        actual_duration = min(duration, clip.duration)
+        short = clip.subclipped(0, actual_duration)
         short.write_videofile(
-            short_path,
+            output_path,
             fps=30,
             codec="libx264",
             audio_codec="aac",
@@ -1137,12 +1152,11 @@ def cut_short_clip(video_path: str, video_id: str, duration: int = SHORT_VIDEO_D
             remove_temp=True,
             logger=None,
         )
-        # Verify output is a real video file
-        size_kb = os.path.getsize(short_path) // 1024 if os.path.exists(short_path) else 0
-        print(f"[Video] Short clip saved: {short_path} ({size_kb}KB)")
+        size_kb = os.path.getsize(output_path) // 1024 if os.path.exists(output_path) else 0
+        print(f"[Video] Short clip saved: {output_path} ({size_kb}KB)")
         if size_kb < 10:
             print(f"[Video] WARNING: short clip too small ({size_kb}KB) — may be corrupt")
-        return short_path
+        return output_path
     except Exception as e:
         print(f"[Video] Short clip error: {e}")
         return ""
@@ -1260,23 +1274,29 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
     language = script_data.get("language", "english")
     print(f"[Video] Starting: {title} ({language})")
 
-    # Voiceover
-    if custom_audio_path and Path(custom_audio_path).exists():
-        enhanced_path = os.path.join(AUDIO_DIR, f"{video_id}_enhanced.mp3")
-        audio_path = clean_voice(custom_audio_path, enhanced_path)
-        print(f"[Video] Using custom audio: {audio_path}")
-    else:
-        audio_path = generate_voiceover(script_data["script"], video_id, language)
+    # ── Voiceover ─────────────────────────────────────────────────────────────
+    try:
+        if custom_audio_path and Path(custom_audio_path).exists():
+            enhanced_path = os.path.join(AUDIO_DIR, f"{video_id}_enhanced.mp3")
+            audio_path = clean_voice(custom_audio_path, enhanced_path)
+            print(f"[Video] Using custom audio: {audio_path}")
+        else:
+            audio_path = generate_voiceover(script_data["script"], video_id, language)
+        print(f"[Video] Audio ready: {audio_path}")
+    except Exception as e:
+        print(f"[Video] CRASH at voiceover: {e}")
+        traceback.print_exc()
+        return ""
 
-    # Decide image count and variations based on video type
+    # ── Image / clip counts ───────────────────────────────────────────────────
     is_short     = "short" in video_id
     n_variations = 2 if is_short else 4
 
     if is_short:
-        # Short clips always get exactly 6 structured images (one per slot)
-        n_images = 6
+        n_images        = 6
+        clip_duration   = 9.0   # seconds per image → 6 × 9 = 54 s
+        target_duration = 55    # seconds
     else:
-        # Long videos: 6 images per minute of audio (minimum 10)
         try:
             from moviepy import AudioFileClip as _AFC
             _tmp = _AFC(audio_path)
@@ -1357,5 +1377,6 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
         after_clips=after_clips or None,
     )
     if video_path:
-        script_data["short_clip_path"] = cut_short_clip(video_path, video_id)
+        short_out = os.path.join(SHORTS_DIR, f"{video_id}_short.mp4")
+        script_data["short_clip_path"] = cut_short_clip(video_path, short_out)
     return video_path

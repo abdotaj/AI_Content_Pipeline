@@ -524,20 +524,20 @@ Related series/movie: {series}
 
 STRUCTURE (follow exactly):
 
-PART 1 — THE REAL PERSON (35 seconds, 80-90 words):
+PART 1 — THE REAL PERSON (35 seconds, 70-80 words):
 - Start with the most shocking real fact about this person
 - Include 3-4 specific facts with real numbers, dates, or places
 - Short punchy sentences — maximum 12 words each
 - No vague phrases like "rose to infamy" or "criminal mastermind"
 
-PART 2 — THE SERIES CONNECTION (20 seconds, 45-55 words):
+PART 2 — THE SERIES CONNECTION (20 seconds, 40-50 words):
 - Name the series/movie directly: "{series}"
 - Share ONE fascinating real fact the show couldn't fully capture
 - Compare the real events to the screen story — celebrate both
 - End with exactly: "Follow Dark Crime Decoded for the full story"
 
 RULES:
-- Total 130-145 words only — count before finishing
+- TOTAL: 110-130 words for 55 seconds — count every word before finishing
 - Every sentence must contain ONE specific fact (name, number, date, or place)
 - Never start two consecutive sentences with the same word
 - Write naturally like speaking to a friend — no headers, no bullet points
@@ -550,7 +550,7 @@ Output ONLY the spoken script text, nothing else."""
     r = _groq_call(
         messages=[{"role": "user", "content": prompt}],
         temperature=0.85,
-        max_tokens=450,
+        max_tokens=300,
     )
     script_text = r.choices[0].message.content.strip()
 

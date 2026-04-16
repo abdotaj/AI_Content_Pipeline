@@ -69,7 +69,7 @@ NICHE_WEIGHTS = [0.10, 0.10, 0.10, 0.08, 0.08,
 VIDEOS_PER_DAY = 1
 LONG_VIDEO_DURATION  = 660   # 11 minutes target (10-12 min = 600-720 s); audio drives actual length
 SHORT_VIDEO_DURATION = 55    # 55 seconds; audio drives actual length
-EDGETTS_RATE         = "-10%"  # edge-tts speaking rate for fallback TTS (-10% = slightly slower)
+EDGETTS_RATE         = "+0%"   # edge-tts speaking rate for fallback TTS (+0% = normal speed)
 # Legacy aliases — kept for backward compatibility
 VIDEO_DURATION_SECONDS = LONG_VIDEO_DURATION
 SHORT_CLIP_DURATION    = SHORT_VIDEO_DURATION
