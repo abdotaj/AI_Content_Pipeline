@@ -1120,11 +1120,8 @@ SHORTS_DIR = "output/shorts"
 Path(SHORTS_DIR).mkdir(parents=True, exist_ok=True)
 
 
-def cut_short_clip(video_path: str, output_path: str, duration: int = 55) -> str:
-    """Cut the first `duration` seconds of a video and save to output_path.
-
-    Always produces exactly `duration` seconds (or the video length if shorter).
-    """
+def cut_short_clip(video_path: str, output_path: str, duration: int = 90) -> str:
+    """Cut the first 60-90 seconds (random) of a video and save to output_path."""
     try:
         from moviepy import VideoFileClip
     except ImportError:
@@ -1135,8 +1132,9 @@ def cut_short_clip(video_path: str, output_path: str, duration: int = 55) -> str
     short = None
     try:
         clip = VideoFileClip(video_path)
-        # Always cut exactly 55 seconds
-        actual_duration = min(duration, clip.duration)
+        # Random duration between 60-90 seconds
+        actual_duration = random.randint(60, 90)
+        actual_duration = min(actual_duration, clip.duration)
         short = clip.subclipped(0, actual_duration)
         short.write_videofile(
             output_path,
@@ -1265,6 +1263,157 @@ def _build_clip_pool_with_user_images(
     return merged
 
 
+# ── Hook-aware assembly (long videos only) ────────────────────────────────────
+
+def assemble_video_with_hook(
+    audio_path: str,
+    image_paths: list[str],
+    output_path: str,
+    video_id: str,
+) -> str:
+    """Assemble long video with fast-cut hook (0-90 s) and slow main section.
+
+    Hook: all images cycle every 3-5 s — movie-trailer energy.
+    Main: each image shown for 8-12 s — calm documentary pace.
+    """
+    import traceback
+    import numpy as np
+    from PIL import Image as PILImage
+    from moviepy import AudioFileClip, VideoClip, concatenate_videoclips
+
+    TARGET_W, TARGET_H = 1080, 1920
+    hook_duration = 90  # first 90 seconds
+
+    temp_audio = output_path.replace(".mp4", "_tmp.m4a")
+
+    try:
+        audio = AudioFileClip(audio_path)
+        total_duration = audio.duration
+        print(f"[Video] Hook assembly — audio: {total_duration:.1f}s")
+    except Exception as e:
+        print(f"[Video] CRASH loading audio: {e}")
+        traceback.print_exc()
+        return ""
+
+    main_duration = max(1.0, total_duration - hook_duration)
+
+    def _load_frame(img_path: str):
+        pil = PILImage.open(img_path).convert("RGB").resize(
+            (TARGET_W, TARGET_H), PILImage.LANCZOS
+        )
+        return np.array(pil)
+
+    def _zoom_clip(frame, dur: float, start_scale: float, end_scale: float):
+        def make_frame(t):
+            rate = (end_scale - start_scale) / max(dur, 0.001)
+            scale = max(1.0, start_scale + rate * t)
+            sw = int(TARGET_W * scale); sw += sw % 2
+            sh = int(TARGET_H * scale); sh += sh % 2
+            pil = PILImage.fromarray(frame).resize((sw, sh), PILImage.LANCZOS)
+            x = (sw - TARGET_W) // 2
+            y = (sh - TARGET_H) // 2
+            return np.array(pil.crop((x, y, x + TARGET_W, y + TARGET_H)))
+        return VideoClip(frame_function=make_frame, duration=dur)
+
+    # ── Hook section: fast cuts every 3-5 s, cycle all images ────────────────
+    hook_clips = []
+    hook_total = 0.0
+    img_index  = 0
+
+    while hook_total < hook_duration:
+        img_path = image_paths[img_index % len(image_paths)]
+        try:
+            frame    = _load_frame(img_path)
+            cut_dur  = random.uniform(3, 5)
+            remaining = hook_duration - hook_total
+            cut_dur  = min(cut_dur, remaining)
+            if img_index % 2 == 0:
+                clip = _zoom_clip(frame, cut_dur, 1.00, 1.08)
+            else:
+                clip = _zoom_clip(frame, cut_dur, 1.08, 1.00)
+            hook_clips.append(clip)
+            hook_total += cut_dur
+        except Exception as e:
+            print(f"[Video] Hook clip error: {e}")
+        img_index += 1
+
+    print(f"[Video] Hook: {len(hook_clips)} fast cuts in {hook_total:.1f}s")
+
+    # ── Main section: slow cuts 8-12 s, shuffle ───────────────────────────────
+    main_clips = []
+    for img_path in image_paths:
+        try:
+            frame = _load_frame(img_path)
+            dur1  = random.uniform(8, 12)
+            main_clips.append(_zoom_clip(frame, dur1, 1.00, 1.06))
+            dur2  = random.uniform(8, 12)
+            main_clips.append(_zoom_clip(frame, dur2, 1.06, 1.00))
+        except Exception as e:
+            print(f"[Video] Main clip error: {e}")
+
+    random.shuffle(main_clips)
+
+    # Loop main clips until they cover main_duration
+    while sum(c.duration for c in main_clips) < main_duration + 20:
+        extra = random.choice(main_clips[:max(1, len(main_clips) // 2)])
+        main_clips.append(_zoom_clip(_load_frame(image_paths[0]), extra.duration, 1.00, 1.06))
+
+    # Trim to main_duration
+    accumulated = 0.0
+    final_main  = []
+    for clip in main_clips:
+        if accumulated >= main_duration:
+            break
+        remaining = main_duration - accumulated
+        if clip.duration > remaining:
+            clip = clip.subclipped(0, remaining)
+        final_main.append(clip)
+        accumulated += clip.duration
+
+    print(f"[Video] Main: {len(final_main)} slow cuts in {accumulated:.1f}s")
+
+    try:
+        all_clips = hook_clips + final_main
+        final = concatenate_videoclips(all_clips, method="chain")
+        if final.duration > total_duration:
+            final = final.subclipped(0, total_duration)
+        final = final.with_audio(audio)
+
+        final.write_videofile(
+            output_path,
+            fps=24,
+            codec="libx264",
+            audio_codec="aac",
+            preset="ultrafast",
+            ffmpeg_params=[
+                "-pix_fmt", "yuv420p",
+                "-movflags", "+faststart",
+            ],
+            temp_audiofile=temp_audio,
+            remove_temp=True,
+            logger=None,
+        )
+    except Exception as e:
+        print(f"[Video] CRASH assembling hook video: {e}")
+        traceback.print_exc()
+        return ""
+    finally:
+        for _ in range(5):
+            try:
+                if os.path.exists(temp_audio):
+                    os.remove(temp_audio)
+                break
+            except OSError:
+                time.sleep(0.5)
+
+    if not os.path.exists(output_path):
+        print(f"[Video] ERROR: output not created: {output_path}")
+        return ""
+    size_mb = os.path.getsize(output_path) // 1024 // 1024
+    print(f"[Video] Hook video success: {output_path} ({size_mb}MB)")
+    return output_path
+
+
 # ── Main entry point ───────────────────────────────────────────────────────────
 
 def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", user_images: list | None = None) -> str:
@@ -1293,18 +1442,11 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
     n_variations = 2 if is_short else 4
 
     if is_short:
-        n_images        = 6
-        clip_duration   = 9.0   # seconds per image → 6 × 9 = 54 s
-        target_duration = 55    # seconds
+        n_images        = 8
+        clip_duration   = 9.0
+        target_duration = 90    # seconds
     else:
-        try:
-            from moviepy import AudioFileClip as _AFC
-            _tmp = _AFC(audio_path)
-            _dur = _tmp.duration
-            _tmp.close()
-            n_images = max(10, int(_dur / 60 * 6))
-        except Exception:
-            n_images = 10
+        n_images = 12
 
     print(f"[Video] Generating {n_images} images x {n_variations} variations ({'short' if is_short else 'long'})")
 
@@ -1317,8 +1459,9 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
         traceback.print_exc()
         return ""
 
-    # ── Image download + clip creation ────────────────────────────────────────
-    all_clips: list = []
+    # ── Image download ────────────────────────────────────────────────────────
+    all_clips:   list = []
+    image_paths: list[str] = []
     for i, prompt in enumerate(extended_prompts):
         img_path = os.path.join(IMAGES_DIR, f"{video_id}_img_{i}.png")
         try:
@@ -1328,54 +1471,55 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
             traceback.print_exc()
             result = None
         if result:
-            try:
-                variations = image_to_clips(result, n_variations=n_variations)
-                all_clips.extend(variations)
-                print(f"[Video] Image {i + 1}/{n_images}: {len(variations)} clips added")
-            except Exception as e:
-                print(f"[Video] CRASH creating clips for image {i}: {e}")
-                traceback.print_exc()
+            image_paths.append(result)
+            if is_short:
+                try:
+                    variations = image_to_clips(result, n_variations=n_variations)
+                    all_clips.extend(variations)
+                    print(f"[Video] Image {i + 1}/{n_images}: {len(variations)} clips added")
+                except Exception as e:
+                    print(f"[Video] CRASH creating clips for image {i}: {e}")
+                    traceback.print_exc()
         if i < len(extended_prompts) - 1:
             time.sleep(5)
 
-    if not all_clips:
-        print("[Video] No clips generated, aborting")
+    if not image_paths:
+        print("[Video] No images generated, aborting")
         return ""
 
     # ── Wikipedia real photo + user uploads (priority images) ────────────────
-    # Fetch Wikipedia photo for the real person; combine with user uploads.
-    # get_person_images() returns dicts compatible with _build_clip_pool_with_user_images.
     person_name = _extract_person_name_from_topic(title, script_data.get("topic", ""))
     priority_images = get_person_images(person_name, video_id, user_images)
-
-    # Merge priority images into clip pool at script-matched positions
     script_text = script_data.get("script", "")
-    all_clips = _build_clip_pool_with_user_images(
-        priority_images, all_clips, script_text, n_variations
-    )
-    print(f"[Video] Total clip pool: {len(all_clips)} clips")
-
-    # ── Title cards (long-form only) ──────────────────────────────────────────
-    before_clips: list = []
-    after_clips:  list = []
-    if not is_short:
-        series_label = _extract_series_from_title(title)
-        if series_label:
-            try:
-                before_clips = [create_title_card(series_label, "The Real Story", duration=7.0)]
-                after_clips  = [create_title_card("Follow for More", "Dark Crime Decoded", duration=3.0)]
-                print(f"[Video] Title cards created: '{series_label}'")
-            except Exception as e:
-                print(f"[Video] Title card skipped: {e}")
 
     # ── Assembly ──────────────────────────────────────────────────────────────
-    video_path = assemble_video(
-        audio_path=audio_path,
-        image_clips=all_clips,
-        output_filename=video_id,
-        before_clips=before_clips or None,
-        after_clips=after_clips or None,
-    )
+    output_path = os.path.join(FINAL_DIR, f"{video_id}.mp4")
+
+    if not is_short:
+        # Long video: hook-aware assembly (fast cuts 0-90s, slow cuts after)
+        # Prepend Wikipedia/user priority image paths
+        priority_paths = [img["path"] for img in priority_images if os.path.exists(img.get("path", ""))]
+        long_image_paths = priority_paths + image_paths
+        video_path = assemble_video_with_hook(
+            audio_path=audio_path,
+            image_paths=long_image_paths,
+            output_path=output_path,
+            video_id=video_id,
+        )
+    else:
+        # Short video: standard looped assembly
+        if not all_clips:
+            print("[Video] No clips generated for short, aborting")
+            return ""
+        all_clips = _build_clip_pool_with_user_images(
+            priority_images, all_clips, script_text, n_variations
+        )
+        print(f"[Video] Total clip pool: {len(all_clips)} clips")
+        video_path = assemble_video(
+            audio_path=audio_path,
+            image_clips=all_clips,
+            output_filename=video_id,
+        )
     if video_path:
         short_out = os.path.join(SHORTS_DIR, f"{video_id}_short.mp4")
         script_data["short_clip_path"] = cut_short_clip(video_path, short_out)

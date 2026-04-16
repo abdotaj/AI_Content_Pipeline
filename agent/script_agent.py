@@ -92,15 +92,15 @@ _DARKCRIMED_BASE_AR_HASHTAGS = [
 
 
 def generate_chapters(script, total_duration_seconds=LONG_VIDEO_DURATION):
-    """Return YouTube chapter timestamps for a long-form documentary."""
+    """Return YouTube chapter timestamps for an 18-minute documentary."""
     chapters = [
-        (0,   "🎬 Introduction"),
-        (23,  "📺 What The Series Showed"),
-        (83,  "🔍 The Real Story"),
-        (221, "🎥 How History Inspired The Story"),
-        (451, "💀 Shocking Facts They Left Out"),
-        (591, "⚖️ Real Story vs Screen Story"),
-        (637, "🎯 The Truth & Conclusion"),
+        (0,    "🎬 Introduction"),
+        (90,   "📺 What The Series Showed"),
+        (210,  "🔍 The Real Background"),
+        (420,  "😱 The Real Story"),
+        (780,  "💀 Shocking Facts"),
+        (960,  "⚖️ Real Story vs Screen"),
+        (1050, "🎯 Conclusion"),
     ]
     chapter_text = ""
     for seconds, title in chapters:
@@ -301,7 +301,7 @@ The host found something most viewers don't know — celebrate that discovery.
 """
 
     part1_prompt = f"""You are a top true crime documentary writer for YouTube.
-Write a 1400-1600 word 11-minute documentary script about: {topic['topic']}
+Write a 2000-2500 word 16-18 minute documentary script about: {topic['topic']}
 The related series/movie is: {series_label}
 
 CRITICAL: Use ONLY these verified Wikipedia facts. Do NOT invent any information.
@@ -325,47 +325,47 @@ TONE: Celebrate BOTH the real story AND the show. The show is great entertainmen
 
 Use this EXACT structure (no section labels in the output — spoken words only):
 
-HOOK (50 words = ~23 seconds):
+HOOK (80 words = ~37 seconds):
 - Most fascinating single fact about this real story
 - Something that makes the viewer want to know more
 - Example: "{series_label} introduced millions of people to this incredible true story. But the real events were even more extraordinary than anything the show could portray."
 
-SERIES INTRO (150 words = ~1 minute):
+SERIES INTRO (200 words = ~1.5 minutes):
 - Celebrate what {series_label} showed the world — it is great television
 - Why millions of people loved it and why it matters
 - Build excitement: the real story that inspired it is even more incredible
 - Name {series_label} directly and what made it famous
 
-REAL BACKGROUND (300 words = ~2.3 minutes):
+REAL BACKGROUND (400 words = ~3 minutes):
 - Real person's early life with specific facts
 - Family, childhood, origins — real dates, real places, real names
 - The fascinating true events BEFORE the series timeline begins
 
-MAIN STORY (500 words = ~3.8 minutes):
+MAIN STORY (800 words = ~6 minutes):
 - Full chronological real story
 - Key events the series captured — what {series_label} got RIGHT with evidence
 - How history inspired {series_label} and why filmmakers made their creative choices
 - Real quotes from people involved
 - Specific dates and facts throughout
 
-SHOCKING REVELATIONS (300 words = ~2.3 minutes):
+SHOCKING REVELATIONS (400 words = ~3 minutes):
 - 3-4 fascinating real facts that make the true story even more incredible than {series_label}
 - Remarkable real details the show's runtime couldn't fully capture
 - Things that would amaze even the biggest fans of the show
 - Real impact on real people and real history
 
-REAL STORY VS SCREEN STORY (150 words = ~1 minute):
+REAL STORY VS SCREEN STORY (300 words = ~2.3 minutes):
 - Informative comparisons: "In {series_label}, they depicted X. In reality, Y happened — and here is why that is fascinating."
-- 2 specific scene or character comparisons — explain the creative choices, not judge them
+- 3 specific scene or character comparisons — explain the creative choices, not judge them
 - How Hollywood adapted history to tell the story on screen
 
-CONCLUSION (100 words = ~46 seconds):
+CONCLUSION (150 words = ~1.2 minutes):
 - What happened after the events {series_label} depicted
 - Where the real people are now
 - One question to tease the next video
 - End with: "Follow Dark Crime Decoded for more real stories behind your favourite crime series"
 
-TOTAL TARGET: 1400 words minimum, 1600 words maximum.
+TOTAL TARGET: 2000 words minimum, 2500 words maximum.
 
 STRICT WRITING RULES:
 1. NEVER start two consecutive sentences with the same word
@@ -399,7 +399,7 @@ Start immediately with the HOOK. Write spoken words only — no labels, no heade
     r1 = _groq_call(
         messages=[{"role": "user", "content": part1_prompt}],
         temperature=0.85,
-        max_tokens=3000,
+        max_tokens=5000,
     )
     script_text = r1.choices[0].message.content.strip()
     words = len(script_text.split())
@@ -519,25 +519,24 @@ def write_short_script(en_long_script: dict) -> dict:
     _si    = get_series_for_person(topic)
     series = f"{_si[0]} {_si[1]}" if _si else en_long_script.get("niche", "the series")
 
-    prompt = f"""Write a 55-second true crime short script about: {topic}
+    prompt = f"""Write a 60-90 second true crime short script about: {topic}
 Related series/movie: {series}
 
 STRUCTURE (follow exactly):
 
-PART 1 — THE REAL PERSON (35 seconds, 70-80 words):
+PART 1 — THE REAL PERSON (40 seconds, 90 words):
 - Start with the most shocking real fact about this person
 - Include 3-4 specific facts with real numbers, dates, or places
 - Short punchy sentences — maximum 12 words each
 - No vague phrases like "rose to infamy" or "criminal mastermind"
 
-PART 2 — THE SERIES CONNECTION (20 seconds, 40-50 words):
+PART 2 — SERIES CONNECTION (30 seconds, 60 words):
 - Name the series/movie directly: "{series}"
-- Share ONE fascinating real fact the show couldn't fully capture
-- Compare the real events to the screen story — celebrate both
+- ONE key difference between real events and what the show depicted
 - End with exactly: "Follow Dark Crime Decoded for the full story"
 
 RULES:
-- TOTAL: 110-130 words for 55 seconds — count every word before finishing
+- TOTAL: 150-180 words for 60-90 seconds — count every word before finishing
 - Every sentence must contain ONE specific fact (name, number, date, or place)
 - Never start two consecutive sentences with the same word
 - Write naturally like speaking to a friend — no headers, no bullet points
@@ -550,7 +549,7 @@ Output ONLY the spoken script text, nothing else."""
     r = _groq_call(
         messages=[{"role": "user", "content": prompt}],
         temperature=0.85,
-        max_tokens=300,
+        max_tokens=400,
     )
     script_text = r.choices[0].message.content.strip()
 
