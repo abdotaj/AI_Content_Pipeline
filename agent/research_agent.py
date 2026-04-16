@@ -465,14 +465,18 @@ Return ONLY this JSON:
 
 # ── Deep research on a specific series ─────────────────────
 
-def research_series(topic: str, series_name: str | None = None) -> dict:
+def research_series(topic: str, series_name: str | None = None, user_note: str | None = None) -> dict:
     """Combine Wikipedia (primary) + DuckDuckGo (additional) via Groq extraction.
 
     Args:
         topic:       The real person or subject (e.g. "Pablo Escobar").
         series_name: The TV series or movie title (e.g. "Narcos"). Optional.
+        user_note:   Raw text from the channel host (e.g. "Al Capone inspired Nucky
+                     Thompson in Boardwalk Empire"). Used as extra research seed.
     """
     print(f"[Research] Starting research: {topic}")
+    if user_note:
+        print(f"[Research] User note: {user_note[:100]}")
 
     # ── STEP 1: Wikipedia (accurate facts) ─────────────────
     person_wiki = fetch_wikipedia(topic)
@@ -498,28 +502,44 @@ def research_series(topic: str, series_name: str | None = None) -> dict:
                 f"{topic} what really happened real life story",
                 max_results=3
             ))
+            # If the host gave a specific connection, search that too
+            if user_note:
+                ddg_note = list(ddgs.text(user_note[:100], max_results=3))
+            else:
+                ddg_note = []
         ddg_combined = {
             "real_story":   " ".join(r.get("body", "") for r in ddg_real),
             "inspiration":  " ".join(r.get("body", "") for r in ddg_inspiration),
             "shocking":     " ".join(r.get("body", "") for r in ddg_shocking),
             "real_life":    " ".join(r.get("body", "") for r in ddg_real_life),
+            "user_note":    " ".join(r.get("body", "") for r in ddg_note),
         }
         print(f"[Research] DuckDuckGo: {len(ddg_real)} results found")
     except Exception as e:
         print(f"[Research] DuckDuckGo failed: {e}")
-        ddg_combined = {"real_story": "", "inspiration": "", "shocking": "", "real_life": ""}
+        ddg_combined = {"real_story": "", "inspiration": "", "shocking": "", "real_life": "", "user_note": ""}
 
     if not person_wiki and not series_wiki and not any(ddg_combined.values()):
         print(f"[Research] All sources failed — using DuckDuckGo fallback")
         return research_series_duckduckgo(topic)
 
     # ── STEP 3: Combine both sources with Groq ──────────────
+    user_note_section = ""
+    if user_note:
+        user_note_section = f"""
+HOST DISCOVERY (research this specific connection deeper):
+"{user_note}"
+
+ADDITIONAL RESEARCH ON HOST DISCOVERY:
+{ddg_combined['user_note'][:800]}
+"""
+
     prompt = f"""You are a true crime documentary researcher.
 Combine Wikipedia facts with web research to create accurate research data.
 The goal is to tell the REAL story that inspired {series_name or topic}.
 Not to criticize the show — it is great entertainment. But the real story is
 even more fascinating and needs to be told.
-
+{user_note_section}
 WIKIPEDIA (primary - most accurate):
 Person: {(person_wiki or "Not found")[:2000]}
 Series: {(series_wiki or "Not found")[:1500]}
@@ -537,6 +557,7 @@ RULES:
 4. Network/channel info MUST come from Wikipedia only
 5. Dates and names MUST come from Wikipedia only
 6. Use educational, celebratory tone — not accusatory
+7. If a HOST DISCOVERY is given above, make it the central angle of the research
 
 Extract and return JSON:
 {{
@@ -547,6 +568,12 @@ Extract and return JSON:
     "network": "exact network from Wikipedia - HBO/Netflix/etc or null",
     "premiere_year": "from Wikipedia or null",
     "series_name": "exact name from Wikipedia or null",
+    "user_discovery": "{user_note or ''}",
+    "user_discovery_expanded": [
+        "deeper fact about the host's discovery",
+        "more connections found via research",
+        "historical context that validates or extends the discovery"
+    ],
     "real_facts": [
         "verified fact 1 with date/number",
         "verified fact 2 with date/number",
@@ -604,6 +631,9 @@ Return ONLY valid JSON."""
         "research_facts":                facts_out,
         "research_inaccuracies":         inspired_out,   # "HOW HISTORY INSPIRED THE SHOW"
         "research_shocking":             shocking_out,
+        # Host discovery — central hook when user sent a research note
+        "user_discovery":                info.get("user_discovery") or user_note or "",
+        "user_discovery_expanded":       info.get("user_discovery_expanded") or [],
         # Structured data passed through to script_agent
         "network":                       info.get("network"),
         "premiere_year":                 info.get("premiere_year"),

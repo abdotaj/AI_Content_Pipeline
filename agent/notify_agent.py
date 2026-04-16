@@ -300,10 +300,21 @@ def send_english_script_preview(script: dict, label: str = "ENGLISH SCRIPT") -> 
         script.get("script", ""),
         intro_label="INTRO", main_label="MAIN STORY", conclusion_label="CONCLUSION",
     )
+    discovery_block = ""
+    user_discovery = script.get("user_discovery", "")
+    discovery_expanded = script.get("user_discovery_expanded", [])
+    if user_discovery:
+        expanded_lines = "\n".join(f"  - {d}" for d in (discovery_expanded or []))
+        discovery_block = (
+            f"─────────────────\n"
+            f"YOUR DISCOVERY:\n{user_discovery}\n\n"
+            f"WHAT WE FOUND:\n{expanded_lines or '(see script above)'}\n"
+        )
     msg = (
         f"{label}\n\n"
         f"Title: {script.get('title', '')}\n"
         f"─────────────────\n"
+        f"{discovery_block}"
         f"{body}\n"
         f"─────────────────\n"
         f"Generating video automatically..."
@@ -397,8 +408,11 @@ def check_telegram_for_script(timeout: int = 15) -> dict | None:
     Marks ALL pending updates as read regardless of outcome.
 
     Returns:
-      {"type": "topic", "content": <text>}  — short message treated as topic name
-      None                                   — nothing recent found
+      {"type": "research_note", "content": <text>, "is_detailed": bool}
+        — any text message used as a research seed.
+        Short messages (≤50 chars) = simple topic name.
+        Long messages (>50 chars)  = detailed research note with connections.
+      None — nothing recent found
     """
     import time
 
@@ -421,7 +435,7 @@ def check_telegram_for_script(timeout: int = 15) -> dict | None:
     except Exception:
         pass
 
-    topic_found = None
+    note_found = None
 
     for update in reversed(updates):  # newest first
         message = update.get("message", {})
@@ -437,17 +451,21 @@ def check_telegram_for_script(timeout: int = 15) -> dict | None:
         if current_time - msg_time > 600:
             continue
 
-        # Ignore commands and empty messages
+        # Ignore commands, approve/reject/skip control words, and empty messages
         if not text or text.startswith("/") or text.startswith("[") or text.startswith("*"):
             continue
+        if text.lower() in ["approve", "reject", "skip"]:
+            continue
 
-        # Short topic name (2–100 chars)
-        if 2 < len(text) < 100:
-            print(f"[Notify] Topic from Telegram: {text!r}")
-            topic_found = {"type": "topic", "content": text}
+        # Accept ANY text as research input
+        # Short (≤50 chars) = topic name, Long (>50 chars) = detailed research note
+        if len(text) > 2:
+            is_detailed = len(text) > 50
+            print(f"[Notify] Research note from Telegram ({'detailed' if is_detailed else 'topic'}): {text[:80]!r}")
+            note_found = {"type": "research_note", "content": text, "is_detailed": is_detailed}
             break
 
-    return topic_found
+    return note_found
 
 
 def send_daily_report(stats: dict) -> None:

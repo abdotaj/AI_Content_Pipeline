@@ -283,6 +283,23 @@ def _write_darkcrimed_script(topic: dict) -> dict:
     _si_long     = get_series_for_person(topic["topic"])
     series_label = f"{_si_long[0]} {_si_long[1]}" if _si_long else series
 
+    user_discovery     = research.get("user_discovery", "")
+    discovery_expanded = research.get("user_discovery_expanded", [])
+    discovery_section  = ""
+    if user_discovery:
+        expanded_text = "\n".join(f"- {d}" for d in discovery_expanded) if discovery_expanded else ""
+        discovery_section = f"""
+IMPORTANT — HOST DISCOVERY (make this the central hook of the video):
+The channel host found this specific connection/fact:
+"{user_discovery}"
+
+WHAT WE FOUND WHEN WE RESEARCHED THIS DEEPER:
+{expanded_text or "(use the facts above to expand on this discovery)"}
+
+Build the story AROUND this discovery. Open the video with it as the hook.
+The host found something most viewers don't know — celebrate that discovery.
+"""
+
     part1_prompt = f"""You are a top true crime documentary writer for YouTube.
 Write a 1400-1600 word 11-minute documentary script about: {topic['topic']}
 The related series/movie is: {series_label}
@@ -291,7 +308,7 @@ CRITICAL: Use ONLY these verified Wikipedia facts. Do NOT invent any information
 Network: {wiki_network}
 Series premiered: {wiki_year}
 Real person: {wiki_real_person}
-
+{discovery_section}
 VERIFIED FACTS (from Wikipedia):
 {research_facts}
 
@@ -445,11 +462,14 @@ Return ONLY this JSON with no extra text:
         "thumbnail_text": meta.get("thumbnail_text", ""),
         "chapters":       generate_chapters(script_text),
     }
-    script_data["topic"] = topic["topic"]
-    script_data["niche"] = topic["niche"]
-    script_data["search_query"] = topic["search_query"]
-    script_data["keywords"] = topic["keywords"]
-    script_data["language"] = "english"
+    script_data["topic"]              = topic["topic"]
+    script_data["niche"]              = topic["niche"]
+    script_data["search_query"]       = topic["search_query"]
+    script_data["keywords"]           = topic["keywords"]
+    script_data["language"]           = "english"
+    # Carry discovery fields so Telegram preview can show them
+    script_data["user_discovery"]          = user_discovery
+    script_data["user_discovery_expanded"] = discovery_expanded
     print(f"[Script] Written (english): '{script_data['title']}'")
     return script_data
 

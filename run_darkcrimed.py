@@ -87,15 +87,26 @@ def run_pipeline():
         print("[1/5] Checking Telegram for user-provided topic...")
         telegram_input = check_telegram_for_script(timeout=15)
 
-        if telegram_input and telegram_input.get("type") == "topic":
-            topic_name = telegram_input["content"]
-            print(f"[1/5] Topic from Telegram: {topic_name!r}")
+        if telegram_input and telegram_input.get("type") == "research_note":
+            content     = telegram_input["content"]
+            is_detailed = telegram_input.get("is_detailed", False)
+
+            if is_detailed:
+                print(f"[1/5] Research note from Telegram: {content[:100]}...")
+                send_message(f"Got your research note!\nResearching deeper: {content[:100]}...")
+                topic_name = content  # full note used as research seed
+            else:
+                print(f"[1/5] Topic from Telegram: {content!r}")
+                send_message(f"Researching: {content}")
+                topic_name = content
+
             topic = {
                 "topic":        topic_name,
                 "niche":        topic_name,
                 "angle":        "",
                 "keywords":     [topic_name],
                 "search_query": topic_name,
+                "user_note":    content,      # always carry the original note
             }
 
         else:
@@ -119,7 +130,8 @@ def run_pipeline():
             niche  = topic.get("niche", "")
             series = niche.split("behind")[-1].strip() if "behind" in niche else topic.get("topic", "")
             try:
-                topic["research"] = research_series(series)
+                user_note = topic.get("user_note")
+                topic["research"] = research_series(series, user_note=user_note)
             except Exception as e:
                 print(f"  [WARN] Web research failed for '{series}': {e}")
                 topic["research"] = {}
