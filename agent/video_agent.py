@@ -534,6 +534,85 @@ def _extract_person_name_from_topic(title: str, topic: str) -> str:
     return topic.split("—")[0].strip() if topic else ""
 
 
+def transform_user_image(
+    user_image_path: str,
+    caption: str,
+    video_id: str,
+    index: int,
+) -> str | None:
+    """
+    Generate a cinematic AI version of a user image using its caption as the prompt.
+
+    Pollinations is a text-to-image API so we use the caption as the seed text,
+    with a hash-derived seed for reproducibility (same caption → same image).
+    The result is 100% original AI art — no copyright concerns.
+    Returns the saved output path or None on failure.
+    """
+    import hashlib
+
+    caption_clean = (caption or "cinematic dark portrait").strip()
+    prompt = (
+        f"{caption_clean} cinematic portrait dramatic lighting "
+        f"dark background professional 4k photography "
+        f"documentary style vertical"
+    )
+    seed = int(hashlib.md5(caption_clean.encode()).hexdigest()[:8], 16) % 99999
+    output_path = os.path.join(IMAGES_DIR, f"{video_id}_transformed_{index}.png")
+
+    print(f"[Image] Transforming → AI cinematic: '{caption_clean[:60]}'")
+    result = generate_ai_image(prompt, output_path, seed=seed)
+    if result and os.path.exists(result):
+        return result
+    return None
+
+
+def process_user_images(user_images: list[dict], video_id: str) -> list[dict]:
+    """
+    For each user image: generate an AI-cinematic version from its caption,
+    then include the original.
+
+    Returns expanded list in this order per image:
+      1. AI-transformed version (caption → Pollinations; tags include "portrait")
+      2. Original user image               (tags include "real", "photo")
+
+    The AI version is listed first so _build_clip_pool_with_user_images places
+    it at the very opening of the video (portrait tag → position 0).
+    """
+    processed: list[dict] = []
+
+    for i, img_info in enumerate(user_images):
+        path    = img_info.get("path", "")
+        caption = (img_info.get("caption") or "cinematic dark portrait").strip()
+        tags    = img_info.get("tags", [])
+
+        if not path or not os.path.exists(path):
+            continue
+
+        print(f"[Image] Processing user image {i + 1}: '{caption[:60]}'")
+
+        # AI-transformed version (portrait tags → forces to opening position)
+        transformed = transform_user_image(path, caption, video_id, i)
+        if transformed:
+            processed.append({
+                "path":    transformed,
+                "tags":    ["portrait", "cinematic"] + [t for t in tags if t not in {"portrait", "cinematic"}],
+                "caption": f"cinematic {caption}",
+                "type":    "ai_transformed",
+            })
+
+        # Original user image (real/photo tags → also at/near position 0)
+        processed.append({
+            "path":    path,
+            "tags":    ["real", "photo"] + [t for t in tags if t not in {"real", "photo"}],
+            "caption": caption,
+            "type":    "user_original",
+        })
+
+        print(f"[Image] User image {i + 1}: AI transform + original queued")
+
+    return processed
+
+
 def get_person_images(
     person_name: str,
     video_id: str,
@@ -543,7 +622,7 @@ def get_person_images(
     Build the priority image list for a real person.
 
     Priority order (highest first):
-      1. User-uploaded images (via Telegram)
+      1. User-uploaded images — each expanded to AI-transformed + original
       2. Wikipedia real photo (public domain, position 0 = opening shot)
 
     Returns list of {"path", "tags", "caption"} dicts compatible with
@@ -552,11 +631,11 @@ def get_person_images(
     """
     images: list[dict] = []
 
-    # 1 — User uploads
-    for img in (user_images or []):
-        if img.get("path") and os.path.exists(img["path"]):
-            images.append(img)
-            print(f"[Image] Priority 1 (user upload): {img['path']}")
+    # 1 — User uploads → AI transform + original for each
+    raw_uploads = [img for img in (user_images or []) if img.get("path") and os.path.exists(img["path"])]
+    if raw_uploads:
+        images.extend(process_user_images(raw_uploads, video_id))
+        print(f"[Image] Priority 1: {len(raw_uploads)} user image(s) → {len(images)} processed")
 
     # 2 — Wikipedia real photo
     if person_name:
