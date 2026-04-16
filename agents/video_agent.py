@@ -934,9 +934,98 @@ def cut_short_clip(video_path: str, video_id: str, duration: int = SHORT_VIDEO_D
                 time.sleep(0.5)
 
 
+# ── User image helpers ─────────────────────────────────────────────────────────
+
+def _find_keyword_position(script_text: str, tags: list[str]) -> float:
+    """Return 0.0–1.0 relative position where the first tag appears in the script.
+    Returns 0.0 when no tags are provided (opening shot).
+    """
+    if not tags or not script_text:
+        return 0.0
+    script_lower = script_text.lower()
+    n_chars = len(script_lower)
+    if n_chars == 0:
+        return 0.0
+    best = 1.0
+    for tag in tags:
+        idx = script_lower.find(tag)
+        if 0 <= idx < n_chars:
+            pos = idx / n_chars
+            if pos < best:
+                best = pos
+    return best
+
+
+def _build_clip_pool_with_user_images(
+    user_images: list[dict],
+    ai_clips: list,
+    script_text: str,
+    n_variations: int,
+) -> list:
+    """
+    Merge user image clips into the AI clip pool at script-matched positions.
+
+    - User images with face/portrait tags (real, photo, portrait, face) → position 0 (opening).
+    - Other user images → positioned proportionally where their tags appear in the script.
+    - AI clips fill the rest (shuffled).
+    """
+    if not user_images:
+        random.shuffle(ai_clips)
+        return ai_clips
+
+    # Convert user image dicts to (position, clips) tuples
+    user_clip_groups: list[tuple[float, list]] = []
+    _PORTRAIT_TAGS = {"real", "photo", "portrait", "face", "image", "picture"}
+
+    for img_info in user_images:
+        path  = img_info.get("path", "")
+        tags  = img_info.get("tags", [])
+        if not path or not os.path.exists(path):
+            continue
+        try:
+            clips = image_to_clips(path, n_variations=n_variations)
+        except Exception as e:
+            print(f"[Video] User image clip failed ({path}): {e}")
+            continue
+
+        # Portrait/face tags → force to opening position
+        if any(t in _PORTRAIT_TAGS for t in tags):
+            pos = 0.0
+        else:
+            pos = _find_keyword_position(script_text, tags)
+
+        user_clip_groups.append((pos, clips))
+        cap = img_info.get("caption", "")[:40]
+        print(f"[Video] User image: {len(clips)} clips @ script pos {pos:.2f}  caption='{cap}'")
+
+    if not user_clip_groups:
+        random.shuffle(ai_clips)
+        return ai_clips
+
+    # Sort by position — opening shots come first
+    user_clip_groups.sort(key=lambda x: x[0])
+
+    # Shuffle AI clips so they're varied
+    random.shuffle(ai_clips)
+    n_ai = len(ai_clips)
+
+    # Insert each user group at its proportional position in the AI clip list
+    merged: list = list(ai_clips)
+    inserted = 0
+    for pos, clips in user_clip_groups:
+        insert_at = min(int(pos * n_ai) + inserted, len(merged))
+        for j, clip in enumerate(clips):
+            merged.insert(insert_at + j, clip)
+        inserted += len(clips)
+
+    total_user = sum(len(c) for _, c in user_clip_groups)
+    print(f"[Video] Clip pool: {len(merged)} total ({total_user} user + {n_ai} AI)")
+    return merged
+
+
 # ── Main entry point ───────────────────────────────────────────────────────────
 
-def create_video(script_data: dict, video_id: str, custom_audio_path: str = "") -> str:
+def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", user_images: list | None = None) -> str:
     import traceback
     title    = script_data.get("title", "")
     niche    = script_data.get("niche", "")
@@ -1009,8 +1098,12 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "") 
         print("[Video] No clips generated, aborting")
         return ""
 
-    random.shuffle(all_clips)
-    print(f"[Video] Total clip pool: {len(all_clips)} clips (shuffled)")
+    # Merge user images into clip pool at script-matched positions
+    script_text = script_data.get("script", "")
+    all_clips = _build_clip_pool_with_user_images(
+        user_images or [], all_clips, script_text, n_variations
+    )
+    print(f"[Video] Total clip pool: {len(all_clips)} clips")
 
     # ── Title cards (long-form only) ──────────────────────────────────────────
     before_clips: list = []

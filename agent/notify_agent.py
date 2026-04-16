@@ -468,6 +468,104 @@ def check_telegram_for_script(timeout: int = 15) -> dict | None:
     return note_found
 
 
+def download_telegram_photo(file_id: str, caption: str | None = None) -> dict | None:
+    """
+    Download a photo from Telegram, resize to 1080x1920, and extract tags from caption.
+
+    Returns {"path": local_path, "tags": [...], "caption": ...} or None on failure.
+    Tags are words from the caption (>3 chars) used to match images to script sections.
+    """
+    from pathlib import Path as _Path
+
+    # Get file path
+    try:
+        r = requests.get(f"{BASE_URL}/getFile", params={"file_id": file_id}, timeout=10)
+        info = r.json()
+        if not info.get("ok"):
+            return None
+        file_path = info["result"]["file_path"]
+    except Exception as e:
+        print(f"[Notify] getFile failed: {e}")
+        return None
+
+    # Download raw bytes
+    try:
+        dl_r = requests.get(
+            f"https://api.telegram.org/file/bot{TELEGRAM_BOT_TOKEN}/{file_path}",
+            timeout=60,
+        )
+        if dl_r.status_code != 200:
+            return None
+    except Exception as e:
+        print(f"[Notify] Photo download failed: {e}")
+        return None
+
+    # Save + resize to 1080x1920
+    _Path("output/user_images").mkdir(parents=True, exist_ok=True)
+    local_path = f"output/user_images/user_{int(time.time())}_{file_id[:8]}.jpg"
+    with open(local_path, "wb") as f:
+        f.write(dl_r.content)
+
+    try:
+        from PIL import Image as PILImage
+        img = PILImage.open(local_path).convert("RGB")
+        img = img.resize((1080, 1920), PILImage.LANCZOS)
+        img.save(local_path)
+    except Exception as e:
+        print(f"[Notify] Resize failed for {local_path}: {e}")
+
+    # Extract tags from caption (words >3 chars, lowercased)
+    tags: list[str] = []
+    if caption:
+        tags = [w.lower() for w in caption.split() if len(w) > 3]
+
+    return {"path": local_path, "tags": tags, "caption": caption or ""}
+
+
+def check_telegram_for_images() -> list[dict]:
+    """
+    Check for photos sent to the bot in the last 10 minutes from the owner chat.
+    Does NOT mark updates as read — call this BEFORE check_telegram_for_script().
+
+    Returns list of {"path": ..., "tags": [...], "caption": ...} dicts,
+    newest-first (so the most recent photo is at index 0).
+    """
+    current_time = time.time()
+
+    try:
+        r = requests.get(f"{BASE_URL}/getUpdates", params={"limit": 100}, timeout=20)
+        updates = r.json().get("result", [])
+    except Exception as e:
+        print(f"[Notify] check_telegram_for_images failed: {e}")
+        return []
+
+    user_images: list[dict] = []
+
+    for update in reversed(updates):  # newest first
+        message = update.get("message", {})
+        chat_id = str(message.get("chat", {}).get("id", ""))
+        msg_time = message.get("date", 0)
+        caption = message.get("caption", "") or ""
+
+        if chat_id != str(TELEGRAM_CHAT_ID):
+            continue
+        if current_time - msg_time > 600:
+            continue
+
+        photos = message.get("photo", [])
+        if not photos:
+            continue
+
+        # Use highest quality photo
+        best = max(photos, key=lambda p: p.get("file_size", 0))
+        img_info = download_telegram_photo(best["file_id"], caption=caption)
+        if img_info:
+            user_images.append(img_info)
+            print(f"[Notify] User image downloaded: {img_info['path']} (tags: {img_info['tags'][:4]})")
+
+    return user_images
+
+
 def send_daily_report(stats: dict) -> None:
     msg = (
         f"Daily Report\n\n"

@@ -15,5 +15,6 @@ youtube_token*.json
 .claude/worktrees/
 .claude/worktrees/**
 content/pending/
+output/user_images/
 agent/*.txt
 agents/*.txt

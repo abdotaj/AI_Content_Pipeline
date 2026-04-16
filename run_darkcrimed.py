@@ -53,7 +53,7 @@ from agent.video_agent    import create_video
 from agent.notify_agent   import (
     send_message, send_for_manual_posting, send_daily_report,
     listen_for_content, send_arabic_script_preview, send_english_script_preview,
-    check_telegram_for_script,
+    check_telegram_for_script, check_telegram_for_images,
 )
 from agent.publish_agent  import upload_to_youtube
 from agents.content_agent import ingest_content_files
@@ -67,7 +67,15 @@ def run_pipeline():
     print(f"  Dark Crime Decoded Pipeline — {today}")
     print(f"{'='*50}\n")
 
-    send_message(f"Dark Crime Decoded — Pipeline starting {today}")
+    send_message(
+        f"Dark Crime Decoded — Pipeline starting {today}\n\n"
+        f"Send photos to use in the video (within 10 min):\n"
+        f"  Photo + caption 'Al Capone real photo 1931'\n"
+        f"  Photo + caption 'Boardwalk Empire poster'\n"
+        f"  Photo + caption 'Chicago 1920s street scene'\n\n"
+        f"Photos matched to script automatically.\n"
+        f"No photos needed — AI images used if none sent."
+    )
 
     # ── STEP 1: Determine content source (priority order) ─────
     print("[1/5] Checking for user-provided content...")
@@ -77,13 +85,23 @@ def run_pipeline():
 
     telegram_input = None
     topic = None
+    user_images: list = []
 
     if ingested:
         print("[1/5] Using script from content files.")
         en_long = next((s for s in ingested if s.get("language") == "english"), ingested[0])
 
     else:
-        # Priority 2: Telegram inbox — only messages from the last 10 minutes
+        # Priority 2a: Telegram photos — check BEFORE clearing the queue
+        print("[1/5] Checking Telegram for user images...")
+        user_images = check_telegram_for_images()
+        if user_images:
+            print(f"[1/5] Found {len(user_images)} user image(s)")
+            send_message(f"Found {len(user_images)} image(s) — will use in video")
+        else:
+            print("[1/5] No user images — AI images will be generated")
+
+        # Priority 2b: Telegram text — marks all updates as read
         print("[1/5] Checking Telegram for user-provided topic...")
         telegram_input = check_telegram_for_script(timeout=15)
 
@@ -189,19 +207,19 @@ def run_pipeline():
 
     # OUTPUT 1 — English long-form → YouTube
     en_long_id   = f"{today}_{uuid.uuid4().hex[:8]}_english_long"
-    en_long_path = _make_video(en_long, en_long_id, stats)
+    en_long_path = _make_video(en_long, en_long_id, stats, user_images=user_images)
 
     # OUTPUT 2 — Arabic long-form → YouTube
     ar_long_id   = f"{today}_{uuid.uuid4().hex[:8]}_arabic_long"
-    ar_long_path = _make_video(ar_long, ar_long_id, stats)
+    ar_long_path = _make_video(ar_long, ar_long_id, stats, user_images=user_images)
 
     # OUTPUT 3 — Arabic short → Telegram (first: gets 2-3x more views)
     ar_short_id   = f"{today}_{uuid.uuid4().hex[:8]}_arabic_short"
-    ar_short_path = _make_video(ar_short, ar_short_id, stats)
+    ar_short_path = _make_video(ar_short, ar_short_id, stats, user_images=user_images)
 
     # OUTPUT 4 — English short → Telegram
     en_short_id   = f"{today}_{uuid.uuid4().hex[:8]}_english_short"
-    en_short_path = _make_video(en_short, en_short_id, stats)
+    en_short_path = _make_video(en_short, en_short_id, stats, user_images=user_images)
 
     # ── STEP 5: Publish ────────────────────────────────────────
     print("\n[5/5] Publishing...")
@@ -285,10 +303,10 @@ def run_pipeline():
     print(f"\nDone. Generated: {stats['generated']} | Posted: {stats['posted']} | Errors: {stats['errors']}\n")
 
 
-def _make_video(script_data: dict, video_id: str, stats: dict) -> str:
+def _make_video(script_data: dict, video_id: str, stats: dict, user_images: list | None = None) -> str:
     """Create a video using ElevenLabs + Pollinations, update stats, return path."""
     try:
-        path = create_video(script_data, video_id)
+        path = create_video(script_data, video_id, user_images=user_images)
         if path and Path(path).exists():
             stats["generated"] += 1
             print(f"  Video ready: {path}")
