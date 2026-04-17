@@ -373,9 +373,16 @@ STRICT WRITING RULES:
 3. Use varied sentence starters: year ("In 1993..."), place, number, action subject, age, reveal, contrast, viewer address
 4. Each sentence must contain exactly ONE specific fact (name, number, date, or place)
 5. Mix sentence lengths — short punchy sentences after long ones
-6. Name {series_label} at least 5 times throughout the script
+6. Name {series_label} at most 8 times total across the entire script
 7. Include at least 6 real dates or numbers
 8. Use "..." for dramatic pauses
+
+ANTI-REPETITION RULES:
+- Never use the series/movie name more than once per paragraph (max 8 times total)
+- Replace repeated series name with: "the film", "the movie", "it", "the show", "the series"
+- Each paragraph must introduce NEW information not already stated
+- Never repeat a fact already stated earlier in the script
+- If you catch yourself writing "{series_label}" twice in a row, stop and use a pronoun instead
 
 BANNED PHRASES — never use these:
 - "what the show got wrong" / "what Netflix lied about" / "what Hollywood changed" / "inaccuracies in the show"
@@ -522,24 +529,42 @@ def write_short_script(en_long_script: dict) -> dict:
     prompt = f"""Write a 60-90 second true crime short script about: {topic}
 Related series/movie: {series}
 
-STRUCTURE (follow exactly):
+MUST BE 150-180 WORDS TOTAL. Count every single word before finishing.
 
-PART 1 — THE REAL PERSON (40 seconds, 90 words):
-- Start with the most shocking real fact about this person
-- Include 3-4 specific facts with real numbers, dates, or places
-- Short punchy sentences — maximum 12 words each
+PART 1 — REAL PERSON (90 words):
+- Open with most shocking fact + specific number
+- 4-5 facts with real dates and dollar amounts
+- Short sentences — maximum 12 words each
 - No vague phrases like "rose to infamy" or "criminal mastermind"
 
-PART 2 — SERIES CONNECTION (30 seconds, 60 words):
-- Name the series/movie directly: "{series}"
-- ONE key difference between real events and what the show depicted
+PART 2 — SERIES CONNECTION (70 words):
+- Name "{series}" directly
+- One specific difference real events vs screen
+- What the movie/show got right
 - End with exactly: "Follow Dark Crime Decoded for the full story"
 
-RULES:
-- TOTAL: 150-180 words for 60-90 seconds — count every word before finishing
-- Every sentence must contain ONE specific fact (name, number, date, or place)
+EXAMPLE (Jordan Belfort):
+Jordan Belfort was born July 9, 1962 in Queens.
+By age 26 he made 49 million dollars in one year.
+He ran Stratton Oakmont with 1,000 employees.
+The FBI estimated he defrauded investors of 200 million dollars.
+He served only 14 months in Otisville Prison.
+He drove a Ferrari and owned a 167-foot yacht.
+His wife left him while he was in prison.
+
+Wolf of Wall Street showed Leonardo DiCaprio as Belfort.
+The film said he served 22 months — actually it was 14.
+Margot Robbie played his real wife Nadine Caridi.
+The film captured his excess perfectly.
+But the real story has even more shocking twists.
+Follow Dark Crime Decoded for the full story.
+
+STRICT RULES:
+- Count words — output must be 150-180 words total
+- Every sentence = one specific fact (name, number, date, or place)
 - Never start two consecutive sentences with the same word
-- Write naturally like speaking to a friend — no headers, no bullet points
+- No headers, no bullet points — spoken words only
+- Series name stays in English
 
 Use this context from the full script:
 {en_long_script.get('script', '')[:500]}
@@ -549,7 +574,7 @@ Output ONLY the spoken script text, nothing else."""
     r = _groq_call(
         messages=[{"role": "user", "content": prompt}],
         temperature=0.85,
-        max_tokens=400,
+        max_tokens=600,
     )
     script_text = r.choices[0].message.content.strip()
 

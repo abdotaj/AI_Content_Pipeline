@@ -1,6 +1,6 @@
 # ============================================================
 #  agents/research_agent.py
-#  Wikipedia (primary) + DuckDuckGo (additional) + Groq
+#  Wikipedia (primary) + DuckDuckGo (fallback) + Groq
 # ============================================================
 import random
 import json
@@ -118,52 +118,83 @@ def is_real_story(topic: str, series_name: str | None = None) -> bool:
 # ── Wikipedia fetchers ──────────────────────────────────────
 
 def fetch_wikipedia(query: str, lang: str = "en") -> str | None:
-    """Fetch Wikipedia article content (English by default)."""
+    """Fetch Wikipedia article content with retry, empty-response guard, and User-Agent."""
+    import time as _time
+
+    # Clean query — remove URL fragments and trailing commas
+    clean_query = query.split("=")[0].split(",")[0].strip()
+
     base_url = f"https://{lang}.wikipedia.org/w/api.php"
+    headers  = {"User-Agent": "DarkCrimeDecoded/1.0 (abdotajelsir@gmail.com)"}
 
-    search_params = {
-        "action": "query",
-        "format": "json",
-        "list": "search",
-        "srsearch": query,
-        "srlimit": 1,
-    }
+    for attempt in range(3):
+        try:
+            search_resp = requests.get(
+                base_url,
+                params={
+                    "action":   "query",
+                    "format":   "json",
+                    "list":     "search",
+                    "srsearch": clean_query,
+                    "srlimit":  3,
+                    "utf8":     1,
+                },
+                headers=headers,
+                timeout=15,
+            )
 
-    try:
-        search_resp = requests.get(base_url, params=search_params, timeout=15)
-        search_data = search_resp.json()
-        results = search_data["query"]["search"]
+            if not search_resp.content:
+                print(f"[Research] Wikipedia empty response (attempt {attempt + 1})")
+                _time.sleep(2)
+                continue
 
-        if not results:
-            print(f"[Research] Wikipedia: no results for '{query}'")
+            if search_resp.status_code != 200:
+                print(f"[Research] Wikipedia status {search_resp.status_code} (attempt {attempt + 1})")
+                _time.sleep(2)
+                continue
+
+            results = search_resp.json().get("query", {}).get("search", [])
+            if not results:
+                print(f"[Research] Wikipedia no results for '{clean_query}'")
+                return None
+
+            page_title = results[0]["title"]
+
+            content_resp = requests.get(
+                base_url,
+                params={
+                    "action":           "query",
+                    "format":           "json",
+                    "titles":           page_title,
+                    "prop":             "extracts",
+                    "explaintext":      True,
+                    "exsectionformat":  "plain",
+                    "exlimit":          1,
+                    "utf8":             1,
+                },
+                headers=headers,
+                timeout=15,
+            )
+
+            if not content_resp.content:
+                return None
+
+            pages = content_resp.json().get("query", {}).get("pages", {})
+            if not pages:
+                return None
+
+            content = next(iter(pages.values())).get("extract", "")
+            if content:
+                print(f"[Research] Wikipedia found: {page_title}")
+                return content[:5000]
+
             return None
 
-        page_title = results[0]["title"]
+        except Exception as e:
+            print(f"[Research] Wikipedia attempt {attempt + 1} failed: {e}")
+            _time.sleep(3)
 
-        content_params = {
-            "action": "query",
-            "format": "json",
-            "titles": page_title,
-            "prop": "extracts",
-            "explaintext": True,
-            "exsectionformat": "plain",
-        }
-
-        content_resp = requests.get(base_url, params=content_params, timeout=15)
-        content_data = content_resp.json()
-        pages = content_data["query"]["pages"]
-        page = next(iter(pages.values()))
-
-        content = page.get("extract", "")
-        if not content:
-            return None
-
-        print(f"[Research] Wikipedia found: {page_title}")
-        return content[:5000]
-
-    except Exception as e:
-        print(f"[Research] Wikipedia fetch failed: {e}")
-        return None
+    return None
 
 
 def fetch_wikipedia_arabic(query: str) -> str | None:
@@ -208,7 +239,7 @@ def fetch_wikipedia_arabic(query: str) -> str | None:
         return None
 
 
-# ── DuckDuckGo search helper ────────────────────────────────
+# ── DuckDuckGo search helper (fallback) ────────────────────
 
 def web_search(query: str, max_results: int = 5) -> str:
     """Search DuckDuckGo and return concatenated snippet text."""
@@ -708,7 +739,7 @@ Return ONLY valid JSON."""
     inspired_out = info.get("how_show_inspired") or []
     shocking_out = info.get("shocking_real_facts") or []
 
-    # Supplement with DuckDuckGo fallback if results are thin
+    # Supplement with DuckDuckGo fallback if Wikipedia gave very thin results
     if len(facts_out) < 3:
         print(f"[Research] Thin results ({len(facts_out)} facts) — supplementing with DuckDuckGo fallback")
         ddg = research_series_duckduckgo(topic)
