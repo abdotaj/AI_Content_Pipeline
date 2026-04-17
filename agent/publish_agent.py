@@ -64,6 +64,15 @@ def upload_to_youtube(video_path: str, script_data: dict) -> str:
         print("[Publish] YouTube token not found. Skipping.")
         return ""
 
+    # Select client credentials based on which token file is in use
+    if "ar" in os.path.basename(TOKEN_FILE):
+        client_id     = os.getenv("YOUTUBE_CLIENT_ID_AR", YOUTUBE_CLIENT_ID)
+        client_secret = os.getenv("YOUTUBE_CLIENT_SECRET_AR", YOUTUBE_CLIENT_SECRET)
+    else:
+        client_id     = os.getenv("YOUTUBE_CLIENT_ID_EN", YOUTUBE_CLIENT_ID)
+        client_secret = os.getenv("YOUTUBE_CLIENT_SECRET_EN", YOUTUBE_CLIENT_SECRET)
+    print(f"[Publish] YouTube credentials: {'AR' if 'ar' in os.path.basename(TOKEN_FILE) else 'EN'} channel")
+
     try:
         import json as _json
 
