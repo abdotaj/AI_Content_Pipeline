@@ -416,20 +416,23 @@ _SYSTEM_SKIP_WORDS = [
 ]
 
 
-def check_telegram_for_script(timeout: int = 15) -> dict | None:
+def check_telegram_for_script(timeout: int = 30) -> dict | None:
     """
-    Check Telegram for a user-sent topic in the last 10 minutes.
+    Check Telegram for a user-sent topic from the last 4 hours.
 
-    Marks ALL pending updates as read first, then scans newest-first for
-    a short human topic string — skips any message that looks like a bot
-    status report (pipeline updates, YouTube URLs, emoji markers, etc.).
+    Marks ALL pending updates as read first, then scans newest-first.
+    Skips any message that looks like a bot status report.
+    4-hour window so users can send a topic hours before the pipeline runs.
 
     Returns {"type": "research_note", "content": text, "is_detailed": bool}
-    or None if nothing fresh found.
+    or None if nothing found.
     """
     import time
 
     current_time = time.time()
+    MAX_AGE = 4 * 60 * 60  # 4 hours — user may send topic before pipeline starts
+
+    print(f"[Notify] Checking Telegram messages (window: 4 hours)...")
 
     try:
         r = requests.get(f"{BASE_URL}/getUpdates", params={"limit": 100}, timeout=20)
@@ -438,28 +441,42 @@ def check_telegram_for_script(timeout: int = 15) -> dict | None:
         print(f"[Notify] check_telegram_for_script failed: {e}")
         return None
 
+    print(f"[Notify] Found {len(updates)} pending updates")
+
+    # Debug: show last 5 messages with age
+    for upd in updates[-5:]:
+        msg      = upd.get("message", {})
+        msg_time = msg.get("date", 0)
+        msg_text = msg.get("text", "")[:60]
+        age      = current_time - msg_time
+        print(f"[Notify] Message age: {age:.0f}s  text: {msg_text!r}")
+
     if not updates:
+        print(f"[Notify] No pending updates")
         return None
 
-    # Mark ALL as read FIRST — prevents stale messages from leaking into next run
+    # Mark ALL as read FIRST — prevents leaking into next run
     last_update_id = updates[-1]["update_id"]
     try:
         requests.get(f"{BASE_URL}/getUpdates", params={"offset": last_update_id + 1}, timeout=10)
+        print(f"[Notify] Marked {len(updates)} updates as read")
     except Exception:
         pass
 
     for update in reversed(updates):  # newest first
-        message = update.get("message", {})
+        message  = update.get("message", {})
         text     = message.get("text", "").strip()
         chat_id  = str(message.get("chat", {}).get("id", ""))
         msg_time = message.get("date", 0)
+        age      = current_time - msg_time
 
         # Only owner chat
         if chat_id != str(TELEGRAM_CHAT_ID):
             continue
 
-        # Only last 10 minutes
-        if current_time - msg_time > 600:
+        # 4-hour window
+        if age > MAX_AGE:
+            print(f"[Notify] Message too old ({age/3600:.1f}h): {text[:40]!r}")
             continue
 
         # Skip bot commands and empty text
@@ -469,15 +486,16 @@ def check_telegram_for_script(timeout: int = 15) -> dict | None:
         # Skip messages that look like bot status reports
         text_lower = text.lower()
         if any(word in text_lower for word in _SYSTEM_SKIP_WORDS):
-            print(f"[Notify] Skipping system message: {text[:60]!r}")
+            print(f"[Notify] Skipping system message ({age:.0f}s old): {text[:60]!r}")
             continue
 
-        # Must be a plausible topic length
+        # Valid topic
         if 2 < len(text) < 200:
             is_detailed = len(text) > 50
-            print(f"[Notify] Topic from Telegram ({'detailed' if is_detailed else 'topic'}): {text[:80]!r}")
+            print(f"[Notify] FOUND topic ({age:.0f}s old): {text[:80]!r}")
             return {"type": "research_note", "content": text, "is_detailed": is_detailed}
 
+    print(f"[Notify] No valid topic found in {len(updates)} updates")
     return None
 
 

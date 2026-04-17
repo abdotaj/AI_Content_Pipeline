@@ -60,23 +60,12 @@ def run_pipeline():
     print(f"  Dark Crime Decoded Pipeline — {today}")
     print(f"{'='*50}\n")
 
-    send_message(
-        f"Dark Crime Decoded — Pipeline starting {today}\n\n"
-        f"Send photos to use in the video (within 10 min):\n"
-        f"  Photo + caption 'Al Capone real photo 1931'\n"
-        f"  Photo + caption 'Boardwalk Empire poster'\n"
-        f"  Photo + caption 'Chicago 1920s street scene'\n\n"
-        f"Photos matched to script automatically.\n"
-        f"No photos needed — AI images used if none sent."
-    )
-
-    # ── STEP 1: Determine content source (priority order) ─────
-    print("[1/5] Checking for user-provided content...")
+    # ── STEP 1: Determine topic ────────────────────────────────
+    print("[1/5] Checking Telegram for topic...")
 
     # Priority 1: content/dark_crime/ JSON files
     ingested = ingest_content_files(content_dir=CONTENT_DIR)
 
-    telegram_input = None
     topic = None
     user_images: list = []
 
@@ -85,61 +74,90 @@ def run_pipeline():
         en_long = next((s for s in ingested if s.get("language") == "english"), ingested[0])
 
     else:
-        # Check Telegram photos BEFORE clearing the update queue
-        print("[1/5] Checking Telegram for user images...")
-        user_images = check_telegram_for_images()
-        if user_images:
-            print(f"[1/5] Found {len(user_images)} user image(s)")
-            send_message(f"Found {len(user_images)} image(s) — will use in video")
-        else:
-            print("[1/5] No user images — AI images will be generated")
+        # ── Check Telegram for topic FIRST (4-hour window) ────────────────────
+        telegram_result = check_telegram_for_script(timeout=30)
 
-        # Check Telegram text topic (marks all updates as read)
-        print("[1/5] Checking Telegram for user-provided topic...")
-        telegram_input = check_telegram_for_script(timeout=15)
+        if telegram_result:
+            raw_input  = telegram_result["content"]
+            print(f"[Pipeline] TELEGRAM TOPIC: '{raw_input}'")
 
-        if telegram_input and telegram_input.get("type") == "research_note":
-            # ── USER SENT A TOPIC — use it exclusively, skip auto-discovery ──
-            user_topic = telegram_input["content"]
-            print(f"[Pipeline] USER TOPIC: '{user_topic}'")
-            print(f"[Pipeline] Using EXACTLY this topic — skipping auto-discovery")
-            send_message(f"Got it! Researching: {user_topic}")
+            # Parse formats: "frank lucas = American Gangster"
+            #                "frank lucas, American Gangster"
+            #                "frank lucas"
+            topic_text = raw_input
+            if "=" in topic_text:
+                topic_text = topic_text.split("=")[0].strip()
+            if "," in topic_text:
+                topic_text = topic_text.split(",")[0].strip()
+            topic_text = topic_text.strip()
+            print(f"[Pipeline] Clean topic: '{topic_text}'")
 
             from agent.script_agent import get_series_for_person as _gsfp
-            series_info = _gsfp(user_topic)
+            series_info = _gsfp(topic_text)
             series_name = series_info[0] if series_info else None
-            print(f"[Pipeline] Series detected: {series_name or 'none'}")
+            series_type = series_info[1] if series_info else None
+            print(f"[Pipeline] Series: {series_name} ({series_type})")
 
+            # Check Telegram photos now (after topic is confirmed)
+            print("[1/5] Checking Telegram for user images...")
+            user_images = check_telegram_for_images()
+            if user_images:
+                print(f"[1/5] Found {len(user_images)} user image(s) for {topic_text}")
+                send_message(f"Found {len(user_images)} image(s) for {topic_text}")
+            else:
+                print("[1/5] No user images — AI images will be generated")
+
+            # Send startup message with actual topic
+            send_message(
+                f"Pipeline starting: {topic_text}\n\n"
+                f"Send photos for: {topic_text}\n"
+                f"  Example: '{topic_text} real photo'\n"
+                f"  Example: '{series_name or topic_text} movie poster'\n\n"
+                f"No photos = AI generates automatically"
+            )
+
+            # Research the exact topic
+            print(f"[Research] Researching: {topic_text}")
             try:
-                research_result = research_series(user_topic, series_name)
-                if research_result is None:
+                research = research_series(topic_text, series_name, user_note=raw_input)
+                if research is None:
                     print("[Pipeline] research_series returned None — aborting")
                     return
             except Exception as e:
-                print(f"  [WARN] Web research failed for '{user_topic}': {e}")
-                research_result = {}
+                print(f"  [WARN] Web research failed for '{topic_text}': {e}")
+                research = {}
 
-            # Verify research is for the right person; fix if not
-            research_person = research_result.get("real_person", "")
-            print(f"[Pipeline] Research person: {research_person!r}")
-            if research_person and user_topic.lower() not in research_person.lower():
-                print(f"[Pipeline] WARNING: research returned '{research_person}' — forcing '{user_topic}'")
-                research_result["real_person"] = user_topic
-                research_result["main_topic"]  = user_topic
+            # Always force correct person — never trust research to self-correct
+            if research is not None:
+                research["real_person"] = topic_text
+                research["series_name"] = series_name or topic_text
+            print(f"[Pipeline] Research person forced to: '{topic_text}'")
 
             topic = {
-                "topic":        user_topic,
-                "niche":        f"Real story behind {user_topic}",
+                "topic":        topic_text,
+                "niche":        f"Real story behind {series_name or topic_text}",
                 "angle":        "",
-                "keywords":     [user_topic],
-                "search_query": user_topic,
-                "research":     research_result,
+                "keywords":     [topic_text],
+                "search_query": topic_text,
+                "series_name":  series_name,
+                "research":     research,
             }
 
         else:
-            # ── NO TELEGRAM INPUT — auto-discover topic ───────────────────────
-            print("[1/5] No recent Telegram message — researching trending topic...")
-            listen_for_content(timeout=30)
+            # ── No Telegram input — auto-discover ─────────────────────────────
+            print("[Pipeline] No Telegram topic — auto researching...")
+
+            # Check photos before auto-discovery
+            user_images = check_telegram_for_images()
+            if user_images:
+                print(f"[1/5] Found {len(user_images)} user image(s)")
+
+            send_message(
+                f"Dark Crime Decoded — Pipeline starting {today}\n\n"
+                f"No topic received — auto-selecting...\n"
+                f"Send a name next time to choose the topic."
+            )
+
             try:
                 auto_topics = research_topics(count=1)
             except Exception as e:
@@ -158,9 +176,8 @@ def run_pipeline():
                 )
                 return
 
-            print(f"[Pipeline] TOPIC CONFIRMED: {topic_text}")
-            niche  = topic_niche
-            series = niche.split("behind")[-1].strip() if "behind" in niche else topic_text
+            print(f"[Pipeline] Auto topic: '{topic_text}'")
+            series = topic_niche.split("behind")[-1].strip() if "behind" in topic_niche else topic_text
             try:
                 research_result = research_series(series, user_note=topic.get("user_note"))
                 if research_result is None:
@@ -170,6 +187,9 @@ def run_pipeline():
             except Exception as e:
                 print(f"  [WARN] Web research failed for '{series}': {e}")
                 topic["research"] = {}
+
+        print(f"[Pipeline] FINAL TOPIC: {topic.get('topic', '?')}")
+        print(f"[Pipeline] Starting pipeline for: {topic.get('topic', '?')}")
 
         # ── STEP 2: Generate 4 scripts ─────────────────────────
         print("\n[2/5] Writing scripts...")
