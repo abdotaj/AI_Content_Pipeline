@@ -1439,6 +1439,158 @@ def assemble_video_with_hook(
     return output_path
 
 
+# ── Image count helpers ───────────────────────────────────────────────────────
+
+def calculate_unique_images(is_short: bool = False) -> int:
+    """Return number of unique AI images to generate (8 short / 12 long)."""
+    return 8 if is_short else 12
+
+
+def calculate_total_images(user_images=None) -> int:
+    """Return 12 AI + however many user images were sent."""
+    ai_images  = 12
+    user_count = len(user_images) if user_images else 0
+    total      = ai_images + user_count
+    print(f"[Video] Images: {ai_images} AI + {user_count} user = {total} total")
+    return total
+
+
+def build_image_list(user_images: list, ai_images: list[str]) -> list[str]:
+    """Return image path list: user photos first, then AI-generated images."""
+    final: list[str] = []
+    for img in user_images:
+        path = img if isinstance(img, str) else img.get("path", "")
+        if path and os.path.exists(path):
+            final.append(path)
+            print(f"[Video] User image: {path}")
+    for path in ai_images:
+        if path and os.path.exists(path):
+            final.append(path)
+    print(f"[Video] Total images: {len(final)}")
+    return final
+
+
+# ── Short video assembler ─────────────────────────────────────────────────────
+
+def assemble_short_video(audio_path: str, image_paths: list[str], output_path: str) -> str:
+    """Assemble short video: 2 zoom variations per image, loop to fill 60-90 s."""
+    import traceback
+    import numpy as np
+    from PIL import Image as PILImage
+    from moviepy import AudioFileClip, VideoClip, concatenate_videoclips
+
+    TARGET_W, TARGET_H = 1080, 1920
+    temp_audio = output_path.replace(".mp4", "_tmp.m4a")
+
+    try:
+        audio          = AudioFileClip(audio_path)
+        total_duration = max(audio.duration, 60.0)
+        print(f"[Video] Short assembly — audio: {audio.duration:.1f}s (target: {total_duration:.1f}s)")
+    except Exception as e:
+        print(f"[Video] CRASH loading audio: {e}")
+        traceback.print_exc()
+        return ""
+
+    def _load_frame(img_path: str):
+        pil = PILImage.open(img_path).convert("RGB").resize(
+            (TARGET_W, TARGET_H), PILImage.LANCZOS
+        )
+        return np.array(pil)
+
+    def _zoom_clip(frame, start_scale: float, end_scale: float, dur: float):
+        def make_frame(t):
+            rate  = (end_scale - start_scale) / max(dur, 0.001)
+            scale = max(1.0, start_scale + rate * t)
+            sw = int(TARGET_W * scale); sw += sw % 2
+            sh = int(TARGET_H * scale); sh += sh % 2
+            pil = PILImage.fromarray(frame).resize((sw, sh), PILImage.LANCZOS)
+            x   = (sw - TARGET_W) // 2
+            y   = (sh - TARGET_H) // 2
+            rgb = np.array(pil.crop((x, y, x + TARGET_W, y + TARGET_H)), dtype=np.float32)
+            fade = 1.0
+            if t < 0.2:            fade = t / 0.2
+            elif t > dur - 0.2:    fade = (dur - t) / 0.2
+            return np.clip(rgb * max(0.0, min(1.0, fade)), 0, 255).astype("uint8")
+        return VideoClip(frame_function=make_frame, duration=dur)
+
+    # Pre-load frames
+    frames = []
+    for img_path in image_paths:
+        try:
+            frames.append(_load_frame(img_path))
+        except Exception as e:
+            print(f"[Video] Short image load error: {e}")
+
+    if not frames:
+        print("[Video] No frames for short video, aborting")
+        return ""
+
+    # 2 variations per image: zoom in (5-7 s) + zoom out (5-7 s)
+    all_clips = []
+    for frame in frames:
+        all_clips.append(_zoom_clip(frame, 1.00, 1.08, random.uniform(5, 7)))
+        all_clips.append(_zoom_clip(frame, 1.08, 1.00, random.uniform(5, 7)))
+
+    random.shuffle(all_clips)
+
+    # Loop by regenerating new clips from random frames until we have enough
+    while sum(c.duration for c in all_clips) < total_duration + 5:
+        frame = frames[random.randint(0, len(frames) - 1)]
+        all_clips.append(_zoom_clip(frame, 1.00, 1.08, random.uniform(5, 7)))
+
+    # Trim to total_duration
+    final_clips: list = []
+    accumulated = 0.0
+    for clip in all_clips:
+        if accumulated >= total_duration:
+            break
+        remaining = total_duration - accumulated
+        if clip.duration > remaining:
+            clip = clip.subclipped(0, remaining)
+        final_clips.append(clip)
+        accumulated += clip.duration
+
+    print(f"[Video] Short: {len(final_clips)} clips covering {accumulated:.1f}s")
+
+    try:
+        final = concatenate_videoclips(final_clips, method="chain")
+        if final.duration > total_duration:
+            final = final.subclipped(0, total_duration)
+        final = final.with_audio(
+            audio.subclipped(0, min(audio.duration, total_duration))
+        )
+        final.write_videofile(
+            output_path,
+            fps=30,
+            codec="libx264",
+            audio_codec="aac",
+            preset="ultrafast",
+            ffmpeg_params=["-pix_fmt", "yuv420p", "-movflags", "+faststart"],
+            temp_audiofile=temp_audio,
+            remove_temp=True,
+            logger=None,
+        )
+    except Exception as e:
+        print(f"[Video] CRASH assembling short video: {e}")
+        traceback.print_exc()
+        return ""
+    finally:
+        for _ in range(5):
+            try:
+                if os.path.exists(temp_audio):
+                    os.remove(temp_audio)
+                break
+            except OSError:
+                time.sleep(0.5)
+
+    if not os.path.exists(output_path):
+        print(f"[Video] ERROR: short output not created: {output_path}")
+        return ""
+    size_mb = os.path.getsize(output_path) // 1024 // 1024
+    print(f"[Video] Short video success: {output_path} ({size_mb}MB)")
+    return output_path
+
+
 # ── Main entry point ───────────────────────────────────────────────────────────
 
 def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", user_images: list | None = None) -> str:
@@ -1463,17 +1615,10 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
         return ""
 
     # ── Image / clip counts ───────────────────────────────────────────────────
-    is_short     = "short" in video_id
-    n_variations = 2 if is_short else 4
-
-    if is_short:
-        n_images        = 8
-        clip_duration   = 9.0
-        target_duration = 90    # seconds
-    else:
-        n_images = 12
-
-    print(f"[Video] Generating {n_images} images x {n_variations} variations ({'short' if is_short else 'long'})")
+    is_short = "short" in video_id
+    n_images = calculate_unique_images(is_short=is_short)
+    calculate_total_images(user_images)
+    print(f"[Video] Generating {n_images} AI images ({'short' if is_short else 'long'})")
 
     # ── Prompt generation ─────────────────────────────────────────────────────
     try:
@@ -1485,7 +1630,6 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
         return ""
 
     # ── Image download ────────────────────────────────────────────────────────
-    all_clips:   list = []
     image_paths: list[str] = []
     for i, prompt in enumerate(extended_prompts):
         img_path = os.path.join(IMAGES_DIR, f"{video_id}_img_{i}.png")
@@ -1497,14 +1641,6 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
             result = None
         if result:
             image_paths.append(result)
-            if is_short:
-                try:
-                    variations = image_to_clips(result, n_variations=n_variations)
-                    all_clips.extend(variations)
-                    print(f"[Video] Image {i + 1}/{n_images}: {len(variations)} clips added")
-                except Exception as e:
-                    print(f"[Video] CRASH creating clips for image {i}: {e}")
-                    traceback.print_exc()
         if i < len(extended_prompts) - 1:
             time.sleep(5)
 
@@ -1515,36 +1651,27 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
     # ── Wikipedia real photo + user uploads (priority images) ────────────────
     person_name = _extract_person_name_from_topic(title, script_data.get("topic", ""))
     priority_images = get_person_images(person_name, video_id, user_images)
-    script_text = script_data.get("script", "")
 
     # ── Assembly ──────────────────────────────────────────────────────────────
     output_path = os.path.join(FINAL_DIR, f"{video_id}.mp4")
+    all_image_paths = build_image_list(priority_images, image_paths)
 
-    if not is_short:
-        # Long video: hook-aware assembly (fast cuts 0-90s, slow cuts after)
-        # Prepend Wikipedia/user priority image paths
-        priority_paths = [img["path"] for img in priority_images if os.path.exists(img.get("path", ""))]
-        long_image_paths = priority_paths + image_paths
+    if is_short:
+        # Short: 8 AI images × 2 variations = 16 clips, loop to 60-90s
+        video_path = assemble_short_video(
+            audio_path=audio_path,
+            image_paths=all_image_paths,
+            output_path=output_path,
+        )
+    else:
+        # Long: 12 AI images, hook-aware assembly (fast cuts 0-90s, slow after)
         video_path = assemble_video_with_hook(
             audio_path=audio_path,
-            image_paths=long_image_paths,
+            image_paths=all_image_paths,
             output_path=output_path,
             video_id=video_id,
         )
-    else:
-        # Short video: standard looped assembly
-        if not all_clips:
-            print("[Video] No clips generated for short, aborting")
-            return ""
-        all_clips = _build_clip_pool_with_user_images(
-            priority_images, all_clips, script_text, n_variations
-        )
-        print(f"[Video] Total clip pool: {len(all_clips)} clips")
-        video_path = assemble_video(
-            audio_path=audio_path,
-            image_clips=all_clips,
-            output_filename=video_id,
-        )
+
     if video_path:
         short_out = os.path.join(SHORTS_DIR, f"{video_id}_short.mp4")
         script_data["short_clip_path"] = cut_short_clip(video_path, short_out)
