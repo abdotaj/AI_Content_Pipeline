@@ -3,10 +3,10 @@
 #
 #  Daily output (1 topic, 4 videos):
 #
-#  Daily output (1 topic, 4 videos) — ALL sent to Telegram:
+#  Daily output (1 topic, 4 videos):
 #
-#    OUTPUT 1 — English long-form (12-20 min) → Telegram → post to YouTube manually
-#    OUTPUT 2 — Arabic long-form  (12-20 min) → Telegram → post to YouTube manually
+#    OUTPUT 1 — English long-form (12-20 min) → auto YouTube upload → YouTube link to Telegram
+#    OUTPUT 2 — Arabic long-form  (12-20 min) → auto YouTube upload → YouTube link to Telegram
 #    OUTPUT 3 — English short (60-90 sec)     → Telegram → post to TikTok / Instagram / Shorts
 #    OUTPUT 4 — Arabic short  (60-90 sec)     → Telegram → post to TikTok Arabic / Instagram
 # ============================================================
@@ -47,8 +47,7 @@ from agent.notify_agent   import (
     listen_for_content, send_arabic_script_preview, send_english_script_preview,
     check_telegram_for_script, check_telegram_for_images,
 )
-# upload_to_youtube import kept for future use
-# from agent.publish_agent  import upload_to_youtube
+from agent.publish_agent  import upload_to_youtube
 from agents.content_agent import ingest_content_files
 
 
@@ -279,38 +278,40 @@ def run_pipeline():
         os.makedirs(_img_dir)
         print("[Pipeline] User images cleared for next run")
 
-    # ── STEP 5: Send ALL 4 videos to Telegram ─────────────────
-    print("\n[5/5] Sending all 4 videos to Telegram...")
+    # ── STEP 5: Upload long videos to YouTube, then send shorts to Telegram ──
+    print("\n[5/5] Publishing videos...")
 
+    yt_en_url = None
     if en_long_path:
         try:
-            send_video_to_telegram(
-                en_long_path,
-                caption=(
-                    f"ENGLISH LONG VIDEO\n"
-                    f"{en_long.get('title', '')}\n\n"
-                    f"Duration: ~{get_duration(en_long_path)}\n"
-                    f"Post to: YouTube"
-                ),
-                label="English Long",
+            print("[Publish] Uploading English long to YouTube...")
+            yt_en_url = upload_to_youtube(en_long_path, en_long)
+            send_message(
+                f"✅ English Video Published on YouTube!\n\n"
+                f"🎬 {en_long.get('title', '')}\n"
+                f"🔗 {yt_en_url}\n\n"
+                f"Duration: {get_duration(en_long_path)}"
             )
+            print(f"  [Publish] English YouTube URL: {yt_en_url}")
         except Exception as e:
-            print(f"  [WARN] Telegram English long send failed: {e}")
+            print(f"  [ERROR] English YouTube upload failed: {e}")
+            send_message(f"❌ English YouTube upload failed: {e}")
 
+    yt_ar_url = None
     if ar_long_path:
         try:
-            send_video_to_telegram(
-                ar_long_path,
-                caption=(
-                    f"ARABIC LONG VIDEO\n"
-                    f"{ar_long.get('title', '')}\n\n"
-                    f"Duration: ~{get_duration(ar_long_path)}\n"
-                    f"Post to: YouTube"
-                ),
-                label="Arabic Long",
+            print("[Publish] Uploading Arabic long to YouTube...")
+            yt_ar_url = upload_to_youtube(ar_long_path, ar_long)
+            send_message(
+                f"✅ تم نشر الفيديو العربي على يوتيوب!\n\n"
+                f"🎬 {ar_long.get('title', '')}\n"
+                f"🔗 {yt_ar_url}\n\n"
+                f"المدة: {get_duration(ar_long_path)}"
             )
+            print(f"  [Publish] Arabic YouTube URL: {yt_ar_url}")
         except Exception as e:
-            print(f"  [WARN] Telegram Arabic long send failed: {e}")
+            print(f"  [ERROR] Arabic YouTube upload failed: {e}")
+            send_message(f"❌ Arabic YouTube upload failed: {e}")
 
     if en_short_path:
         try:
@@ -332,14 +333,16 @@ def run_pipeline():
 
     # ── Daily summary ──────────────────────────────────────────
     send_message(
-        f"Daily Report — Dark Crime Decoded\n\n"
-        f"Videos Generated: 4\n"
-        f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"English Long → Telegram (upload to YouTube manually)\n"
-        f"Arabic Long  → Telegram (upload to YouTube manually)\n"
-        f"English Short → Post to: TikTok + Instagram + YouTube Shorts\n"
-        f"Arabic Short  → Post to: TikTok Arabic + Instagram Arabic\n"
-        f"━━━━━━━━━━━━━━━━━━━━━"
+        f"📊 Daily Report — Dark Crime Decoded\n\n"
+        f"✅ Generated: 4 videos\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🎬 English Long → YouTube\n"
+        f"{yt_en_url or '❌ Upload failed'}\n\n"
+        f"🎬 Arabic Long → YouTube\n"
+        f"{yt_ar_url or '❌ Upload failed'}\n\n"
+        f"📱 English Short → Telegram ✅\n"
+        f"📱 Arabic Short → Telegram ✅\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━"
     )
 
     # ── Mark covered + log ─────────────────────────────────────
@@ -359,8 +362,8 @@ def run_pipeline():
         "ar_short_id": ar_short_id,
         "title":       en_long.get("title", ""),
         "niche":       en_long.get("niche", ""),
-        "youtube_en":  "",
-        "youtube_ar":  "",
+        "youtube_en":  yt_en_url or "",
+        "youtube_ar":  yt_ar_url or "",
     }
     _save_log(log_entry)
 
