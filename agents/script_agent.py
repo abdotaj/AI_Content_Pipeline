@@ -90,6 +90,63 @@ _DARKCRIMED_BASE_AR_HASHTAGS = [
     "#جريمة_حقيقية", "#وثائقي_جريمة", "#دارك_كرايم_ديكودد",
 ]
 
+# Arabic series names + content type (فيلم / مسلسل)
+SERIES_ARABIC: dict[str, tuple[str, str]] = {
+    "Narcos":              ("ناركوس",            "مسلسل"),
+    "Narcos Mexico":       ("ناركوس المكسيك",    "مسلسل"),
+    "Boardwalk Empire":    ("بوردووك إمباير",     "مسلسل"),
+    "American Gangster":   ("أمريكان غانغستر",   "فيلم"),
+    "Goodfellas":          ("غودفيلاز",          "فيلم"),
+    "The Godfather":       ("العراب",            "فيلم"),
+    "Scarface":            ("سكارفيس",           "فيلم"),
+    "Casino":              ("كازينو",            "فيلم"),
+    "Griselda":            ("غريزيلدا",          "مسلسل"),
+    "Monster":             ("مونستر",            "مسلسل"),
+    "Wolf of Wall Street": ("ذئب وول ستريت",     "فيلم"),
+    "Black Mass":          ("بلاك ماس",          "فيلم"),
+    "Donnie Brasco":       ("دوني براسكو",        "فيلم"),
+    "City of God":         ("مدينة الله",         "فيلم"),
+    "Mindhunter":          ("مايندهانتر",         "مسلسل"),
+    "Night Stalker":       ("نايت ستوكر",         "مسلسل"),
+    "Extremely Wicked":    ("إكستريملي ويكد",     "فيلم"),
+    "Gotti":               ("غوتي",              "فيلم"),
+    "Blow":                ("بلو",               "فيلم"),
+    "Peaky Blinders":      ("بيكي بلايندرز",      "مسلسل"),
+}
+
+
+def validate_script(text: str) -> str:
+    """Remove false comparisons where the same number appears on both sides of 'actually'."""
+    import re
+    lines = text.split('\n')
+    cleaned = []
+    for line in lines:
+        m = re.search(
+            r'(\d+)\s*(?:years?|months?|days?)?[^.—]*[—-]+\s*actually[^.]*?(\d+)',
+            line, re.IGNORECASE
+        )
+        if m and m.group(1) == m.group(2):
+            # Same number on both sides — strip the "— actually ..." part
+            before = re.split(r'\s*[—-]+\s*actually', line, flags=re.IGNORECASE)[0]
+            cleaned.append(before.rstrip('.').strip() + '.')
+        else:
+            cleaned.append(line)
+    return '\n'.join(cleaned)
+
+
+def _build_arabic_title(en_title: str, series_name: str | None, series_type: str | None) -> str:
+    """Return Arabic title with فيلم/مسلسل label, falling back to Google Translate."""
+    ar_entry = SERIES_ARABIC.get(series_name or "")
+    if ar_entry:
+        ar_series, ar_type = ar_entry
+        return f"القصة الحقيقية وراء {ar_type} {ar_series} | داركرايم ديكودد"
+    # No dict entry — use type word with original English series name
+    if series_name:
+        ar_type = "فيلم" if series_type == "Movie" else "مسلسل" if series_type == "Series" else ""
+        if ar_type:
+            return f"القصة الحقيقية وراء {ar_type} {series_name} | داركرايم ديكودد"
+    return translate_to_arabic(en_title)
+
 
 def generate_chapters(script, total_duration_seconds=LONG_VIDEO_DURATION):
     """Return YouTube chapter timestamps for an 18-minute documentary."""
@@ -280,8 +337,21 @@ def _write_darkcrimed_script(topic: dict) -> dict:
     wiki_real_person  = research.get("real_person") or topic.get("topic", "")
 
     # ── PART 1: Script body ───────────────────────────────────────────────────
-    _si_long     = get_series_for_person(topic["topic"])
-    series_label = f"{_si_long[0]} {_si_long[1]}" if _si_long else series
+    _si_long = get_series_for_person(topic["topic"])
+    # Prefer series_type from research, then PERSON_TO_SERIES lookup, then default
+    _series_name_raw = research.get("series_name") or (topic.get("series_name")) or (_si_long[0] if _si_long else series)
+    _series_type_raw = research.get("series_type") or (_si_long[1] if _si_long else "Movie")
+
+    if _series_type_raw == "Movie":
+        series_label    = f"{_series_name_raw} Movie"
+        content_type    = "film"
+        platform_word   = "filmmakers"
+        content_word    = "the film"
+    else:
+        series_label    = f"{_series_name_raw} Series"
+        content_type    = "series"
+        platform_word   = "showrunners"
+        content_word    = "the show"
 
     user_discovery     = research.get("user_discovery", "")
     discovery_expanded = research.get("user_discovery_expanded", [])
@@ -354,10 +424,19 @@ SHOCKING REVELATIONS (400 words = ~3 minutes):
 - Things that would amaze even the biggest fans of the show
 - Real impact on real people and real history
 
-REAL STORY VS SCREEN STORY (300 words = ~2.3 minutes):
-- Informative comparisons: "In {series_label}, they depicted X. In reality, Y happened — and here is why that is fascinating."
-- 3 specific scene or character comparisons — explain the creative choices, not judge them
-- How Hollywood adapted history to tell the story on screen
+REAL STORY VS SCREEN STORY (200 words = ~1.5 minutes):
+ONLY write a comparison if you have a VERIFIED, SPECIFIC difference with different facts or numbers.
+Format: "In {series_label}, they showed X. In reality, Y happened."
+NEVER write the same number or fact twice as if they are different.
+NEVER invent a difference that does not exist.
+
+If no specific verified difference exists, use ONE of these universal film truths instead:
+- Timeline compression: "{series_label} compressed events spanning [X] years into [runtime]. Many real moments were left out to fit the story."
+- Character composites: "Some characters in {series_label} are composites of multiple real people. {platform_word} combined characters to simplify complex real-world relationships."
+- Dialogue invention: "All dialogue in {series_label} was written by screenwriters — the real {wiki_real_person} never said those exact words, but the spirit was captured accurately."
+- Ending dramatisation: "{series_label} dramatised the ending for emotional impact. The real events were less cinematic but equally powerful."
+
+End this section with: "{series_label} may have taken creative liberties, but it captures the spirit of the real story. The real {wiki_real_person} was just as fascinating — if not more so — than the screen version."
 
 CONCLUSION (150 words = ~1.2 minutes):
 - What happened after the events {series_label} depicted
@@ -408,7 +487,7 @@ Start immediately with the HOOK. Write spoken words only — no labels, no heade
         temperature=0.85,
         max_tokens=5000,
     )
-    script_text = r1.choices[0].message.content.strip()
+    script_text = validate_script(r1.choices[0].message.content.strip())
     words = len(script_text.split())
     minutes = words / 130
     print(f"[Script] {words} words = ~{minutes:.1f} minutes")
@@ -474,6 +553,8 @@ Return ONLY this JSON with no extra text:
     script_data["search_query"]       = topic["search_query"]
     script_data["keywords"]           = topic["keywords"]
     script_data["language"]           = "english"
+    script_data["series_name"]        = _series_name_raw
+    script_data["series_type"]        = _series_type_raw
     # Carry discovery fields so Telegram preview can show them
     script_data["user_discovery"]          = user_discovery
     script_data["user_discovery_expanded"] = discovery_expanded
@@ -502,7 +583,11 @@ def translate_to_arabic(text: str) -> str:
 def translate_script(en_script: dict) -> dict:
     """Translate an English script_data dict into Arabic using Google Translate."""
     ar_data = {
-        "title":          translate_to_arabic(en_script.get("title", "")),
+        "title":          _build_arabic_title(
+                              en_script.get("title", ""),
+                              en_script.get("series_name"),
+                              en_script.get("series_type"),
+                          ),
         "hook":           translate_to_arabic(en_script.get("hook", "")),
         "script":         translate_to_arabic(en_script["script"]),
         "on_screen_texts": [translate_to_arabic(t) for t in en_script["on_screen_texts"]],
@@ -516,6 +601,8 @@ def translate_script(en_script: dict) -> dict:
     ar_data["search_query"] = en_script["search_query"]
     ar_data["keywords"]     = en_script["keywords"]
     ar_data["language"]     = "arabic"
+    ar_data["series_name"]  = en_script.get("series_name", "")
+    ar_data["series_type"]  = en_script.get("series_type", "")
     print(f"[Script] Translated (arabic): '{ar_data['title']}'")
     return ar_data
 

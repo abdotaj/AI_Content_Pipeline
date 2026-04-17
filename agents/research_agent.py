@@ -690,6 +690,7 @@ Extract and return JSON:
     "network": "exact network from Wikipedia - HBO/Netflix/etc or null",
     "premiere_year": "from Wikipedia or null",
     "series_name": "exact name from Wikipedia or null",
+    "series_type": "Movie or Series or Documentary — based on Wikipedia content",
     "user_discovery": "{user_note or ''}",
     "user_discovery_expanded": [
         "deeper fact about the host's discovery",
@@ -759,6 +760,7 @@ Return ONLY valid JSON."""
         # Structured data passed through to script_agent
         "network":                       info.get("network"),
         "premiere_year":                 info.get("premiere_year"),
+        "series_type":                   info.get("series_type"),
         "real_person":                   info.get("real_person"),
         "what_happened_after":           info.get("what_happened_after"),
         "historical_context":            info.get("historical_context"),
@@ -777,6 +779,7 @@ Return ONLY valid JSON."""
             "network":             info.get("network"),
             "premiere_year":       info.get("premiere_year"),
             "series_name":         info.get("series_name"),
+            "series_type":         info.get("series_type"),
             "real_people_in_show": info.get("real_people_in_show", {}),
             "what_happened_after": info.get("what_happened_after"),
             "historical_context":  info.get("historical_context"),
