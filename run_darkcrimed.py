@@ -43,7 +43,7 @@ from agent.script_agent   import write_script, write_short_script, translate_scr
 from agent.video_agent    import create_video
 from agent.notify_agent   import (
     send_message, send_for_manual_posting, send_daily_report,
-    send_video_to_telegram,
+    send_video_to_telegram, clear_telegram_queue,
     listen_for_content, send_arabic_script_preview, send_english_script_preview,
     check_telegram_for_script, check_telegram_for_images,
 )
@@ -60,10 +60,11 @@ def run_pipeline():
     print(f"  Dark Crime Decoded Pipeline — {today}")
     print(f"{'='*50}\n")
 
-    # ── STEP 1: Determine topic ────────────────────────────────
-    print("[1/5] Checking Telegram for topic...")
+    # ── STEP 1: Topic + images ────────────────────────────────
+    import time as _time
+    pipeline_start_time = _time.time()
 
-    # Priority 1: content/dark_crime/ JSON files
+    # Priority 1: content/dark_crime/ JSON files (skip Telegram flow)
     ingested = ingest_content_files(content_dir=CONTENT_DIR)
 
     topic = None
@@ -74,16 +75,31 @@ def run_pipeline():
         en_long = next((s for s in ingested if s.get("language") == "english"), ingested[0])
 
     else:
-        # ── Check Telegram for topic FIRST (4-hour window) ────────────────────
+        # ── 1A: Clear ALL old messages so only new ones are read ──────────────
+        print("[1/5] Clearing old Telegram messages...")
+        clear_telegram_queue()
+
+        # ── 1B: Tell user pipeline is ready and wait 60s for topic ───────────
+        send_message(
+            f"Pipeline ready — send your topic now!\n\n"
+            f"Examples:\n"
+            f"  Frank Lucas\n"
+            f"  Al Capone\n"
+            f"  Pablo Escobar\n\n"
+            f"Waiting 60 seconds..."
+        )
+        print("[1/5] Waiting 60 seconds for topic...")
+        _time.sleep(60)
+
+        # ── 1C: Read ONLY messages sent after the clear ───────────────────────
+        print("[1/5] Checking for topic sent in last 60 seconds...")
         telegram_result = check_telegram_for_script(timeout=30)
 
         if telegram_result:
             raw_input  = telegram_result["content"]
             print(f"[Pipeline] TELEGRAM TOPIC: '{raw_input}'")
 
-            # Parse formats: "frank lucas = American Gangster"
-            #                "frank lucas, American Gangster"
-            #                "frank lucas"
+            # Parse "frank lucas = American Gangster" or "frank lucas, ..."
             topic_text = raw_input
             if "=" in topic_text:
                 topic_text = topic_text.split("=")[0].strip()
@@ -98,25 +114,26 @@ def run_pipeline():
             series_type = series_info[1] if series_info else None
             print(f"[Pipeline] Series: {series_name} ({series_type})")
 
-            # Check Telegram photos now (after topic is confirmed)
-            print("[1/5] Checking Telegram for user images...")
-            user_images = check_telegram_for_images()
-            if user_images:
-                print(f"[1/5] Found {len(user_images)} user image(s) for {topic_text}")
-                send_message(f"Found {len(user_images)} image(s) for {topic_text}")
-            else:
-                print("[1/5] No user images — AI images will be generated")
-
-            # Send startup message with actual topic
+            # ── 1D: Ask for photos now that topic is confirmed ────────────────
             send_message(
-                f"Pipeline starting: {topic_text}\n\n"
-                f"Send photos for: {topic_text}\n"
-                f"  Example: '{topic_text} real photo'\n"
-                f"  Example: '{series_name or topic_text} movie poster'\n\n"
+                f"Topic confirmed: {topic_text}\n\n"
+                f"Send photos now (3 minutes):\n"
+                f"  Photo + caption '{topic_text} real photo'\n"
+                f"  Photo + caption '{series_name or topic_text} poster'\n\n"
                 f"No photos = AI generates automatically"
             )
+            print("[1/5] Waiting 3 minutes for photos...")
+            _time.sleep(180)
 
-            # Research the exact topic
+            # ── 1E: Collect images sent AFTER pipeline start ──────────────────
+            user_images = check_telegram_for_images(after_timestamp=pipeline_start_time)
+            if user_images:
+                print(f"[1/5] Found {len(user_images)} image(s) for '{topic_text}'")
+                send_message(f"Got {len(user_images)} photo(s) — using in video")
+            else:
+                print("[1/5] No photos — AI images will be generated")
+
+            # ── 1F: Research exact topic ──────────────────────────────────────
             print(f"[Research] Researching: {topic_text}")
             try:
                 research = research_series(topic_text, series_name, user_note=raw_input)
@@ -127,11 +144,11 @@ def run_pipeline():
                 print(f"  [WARN] Web research failed for '{topic_text}': {e}")
                 research = {}
 
-            # Always force correct person — never trust research to self-correct
+            # Force correct person — never let research override the user's choice
             if research is not None:
                 research["real_person"] = topic_text
                 research["series_name"] = series_name or topic_text
-            print(f"[Pipeline] Research person forced to: '{topic_text}'")
+            print(f"[Pipeline] Research locked to: '{topic_text}'")
 
             topic = {
                 "topic":        topic_text,
@@ -144,17 +161,10 @@ def run_pipeline():
             }
 
         else:
-            # ── No Telegram input — auto-discover ─────────────────────────────
-            print("[Pipeline] No Telegram topic — auto researching...")
-
-            # Check photos before auto-discovery
-            user_images = check_telegram_for_images()
-            if user_images:
-                print(f"[1/5] Found {len(user_images)} user image(s)")
-
+            # ── No topic sent — auto-discover ─────────────────────────────────
+            print("[Pipeline] No topic received — auto-researching...")
             send_message(
-                f"Dark Crime Decoded — Pipeline starting {today}\n\n"
-                f"No topic received — auto-selecting...\n"
+                f"No topic received — auto-selecting today's story.\n"
                 f"Send a name next time to choose the topic."
             )
 
@@ -187,6 +197,9 @@ def run_pipeline():
             except Exception as e:
                 print(f"  [WARN] Web research failed for '{series}': {e}")
                 topic["research"] = {}
+
+            # Collect any images sent after pipeline start (no 3-min wait in auto mode)
+            user_images = check_telegram_for_images(after_timestamp=pipeline_start_time)
 
         print(f"[Pipeline] FINAL TOPIC: {topic.get('topic', '?')}")
         print(f"[Pipeline] Starting pipeline for: {topic.get('topic', '?')}")

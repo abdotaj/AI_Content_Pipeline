@@ -553,15 +553,33 @@ def download_telegram_photo(file_id: str, caption: str | None = None) -> dict | 
     return {"path": local_path, "tags": tags, "caption": caption or ""}
 
 
-def check_telegram_for_images() -> list[dict]:
+def clear_telegram_queue() -> int:
+    """Mark all pending Telegram updates as read. Returns count cleared."""
+    try:
+        r = requests.get(f"{BASE_URL}/getUpdates", params={"limit": 100}, timeout=20)
+        updates = r.json().get("result", [])
+        if updates:
+            last_id = updates[-1]["update_id"]
+            requests.get(f"{BASE_URL}/getUpdates", params={"offset": last_id + 1}, timeout=10)
+            print(f"[Notify] Cleared {len(updates)} old messages from queue")
+            return len(updates)
+        print(f"[Notify] Queue already empty")
+        return 0
+    except Exception as e:
+        print(f"[Notify] clear_telegram_queue failed: {e}")
+        return 0
+
+
+def check_telegram_for_images(after_timestamp: float = 0.0) -> list[dict]:
     """
-    Check for photos sent to the bot in the last 10 minutes from the owner chat.
-    Does NOT mark updates as read — call this BEFORE check_telegram_for_script().
+    Check for photos sent after `after_timestamp` (Unix time).
+    Pass pipeline_start_time to exclude old images from previous runs.
 
     Returns list of {"path": ..., "tags": [...], "caption": ...} dicts,
-    newest-first (so the most recent photo is at index 0).
+    newest-first.
     """
     current_time = time.time()
+    cutoff = after_timestamp if after_timestamp > 0 else current_time - 600
 
     try:
         r = requests.get(f"{BASE_URL}/getUpdates", params={"limit": 100}, timeout=20)
@@ -580,7 +598,9 @@ def check_telegram_for_images() -> list[dict]:
 
         if chat_id != str(TELEGRAM_CHAT_ID):
             continue
-        if current_time - msg_time > 600:
+        # Only images sent after the cutoff timestamp
+        if msg_time < cutoff:
+            print(f"[Notify] Skipping old image (before cutoff): {caption[:40]!r}")
             continue
 
         photos = message.get("photo", [])
