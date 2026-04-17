@@ -1483,9 +1483,22 @@ def assemble_short_video(audio_path: str, image_paths: list[str], output_path: s
     temp_audio = output_path.replace(".mp4", "_tmp.m4a")
 
     try:
-        audio          = AudioFileClip(audio_path)
-        total_duration = max(audio.duration, 60.0)
-        print(f"[Video] Short assembly — audio: {audio.duration:.1f}s (target: {total_duration:.1f}s)")
+        audio                = AudioFileClip(audio_path)
+        actual_audio_duration = audio.duration
+        print(f"[Video] Short audio duration: {actual_audio_duration:.1f}s")
+
+        # Clamp to 60-90s range
+        target_duration = actual_audio_duration
+        if target_duration < 60:
+            target_duration = 60
+            print(f"[Video] Padding video to minimum 60s")
+        if target_duration > 90:
+            target_duration = 90
+            audio = audio.subclipped(0, 90)
+            print(f"[Video] Trimming to maximum 90s")
+
+        total_duration = target_duration
+        print(f"[Video] Short assembly — target: {total_duration:.1f}s")
     except Exception as e:
         print(f"[Video] CRASH loading audio: {e}")
         traceback.print_exc()
@@ -1554,11 +1567,12 @@ def assemble_short_video(audio_path: str, image_paths: list[str], output_path: s
 
     try:
         final = concatenate_videoclips(final_clips, method="chain")
-        if final.duration > total_duration:
-            final = final.subclipped(0, total_duration)
-        final = final.with_audio(
-            audio.subclipped(0, min(audio.duration, total_duration))
-        )
+        # Trim video to EXACT audio duration — prevents silence at end
+        exact_duration = audio.duration
+        if final.duration > exact_duration:
+            final = final.subclipped(0, exact_duration)
+        final = final.with_audio(audio)
+        print(f"[Video] Final duration: {final.duration:.1f}s  Audio: {audio.duration:.1f}s")
         final.write_videofile(
             output_path,
             fps=30,

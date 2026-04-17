@@ -562,6 +562,24 @@ Return ONLY this JSON with no extra text:
     return script_data
 
 
+def fix_arabic_prison_terms(arabic_text: str) -> str:
+    """Fix mistranslated prison/service terms that Google Translate gets wrong."""
+    replacements = [
+        ("خدم في السجن",  "قضى في السجن"),
+        ("خدم سنوات",     "سجن سنوات"),
+        ("خدم عاماً",     "سجن عاماً"),
+        ("خدم عام",       "سجن عام"),
+        ("خدم أشهر",      "سجن أشهر"),
+        ("خدم شهر",       "سجن شهر"),
+        ("خدم مدة",       "قضى مدة"),
+        ("خدم وقت",       "قضى وقت"),
+        ("خدم فترة",      "قضى فترة"),
+    ]
+    for wrong, correct in replacements:
+        arabic_text = arabic_text.replace(wrong, correct)
+    return arabic_text
+
+
 def translate_to_arabic(text: str) -> str:
     """Translate English text to Arabic using Google Translate free REST API."""
     url = "https://translate.googleapis.com/translate_a/single"
@@ -577,7 +595,7 @@ def translate_to_arabic(text: str) -> str:
     response.raise_for_status()
     result = response.json()
     translated = "".join([item[0] for item in result[0]])
-    return translated
+    return fix_arabic_prison_terms(translated)
 
 
 def translate_script(en_script: dict) -> dict:
