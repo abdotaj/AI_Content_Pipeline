@@ -3,21 +3,20 @@
 #
 #  Daily output (1 topic, 4 videos):
 #
-#    OUTPUT 1 — English long-form (10-12 min)
-#               Auto-uploaded to YouTube
+#    OUTPUT 1 — English long-form (12-20 min)
+#               Auto-uploaded to YouTube + sent to Telegram
 #
-#    OUTPUT 2 — Arabic long-form (10-12 min)
-#               Auto-uploaded to YouTube
+#    OUTPUT 2 — Arabic long-form (12-20 min)
+#               Auto-uploaded to YouTube + sent to Telegram
 #
-#    OUTPUT 3 — English short (55 sec)
+#    OUTPUT 3 — English short (60-90 sec)
 #               Sent to Telegram → POST TO: TikTok + Instagram + YouTube Shorts
 #
-#    OUTPUT 4 — Arabic short (55 sec)
+#    OUTPUT 4 — Arabic short (60-90 sec)
 #               Sent to Telegram → POST TO: TikTok Arabic + Instagram Arabic
 #
-#  Fully automated — ElevenLabs cloned voices generate audio,
-#  Pollinations API generates AI images. No human intervention
-#  needed except approving short clips on Telegram for posting.
+#  ALL 4 videos appear in Telegram for review.
+#  Both long videos are also auto-posted to YouTube.
 # ============================================================
 import os
 import sys
@@ -52,6 +51,7 @@ from agent.script_agent   import write_script, write_short_script, translate_scr
 from agent.video_agent    import create_video
 from agent.notify_agent   import (
     send_message, send_for_manual_posting, send_daily_report,
+    send_video_to_telegram,
     listen_for_content, send_arabic_script_preview, send_english_script_preview,
     check_telegram_for_script, check_telegram_for_images,
 )
@@ -238,8 +238,8 @@ def run_pipeline():
     en_short_id   = f"{today}_{uuid.uuid4().hex[:8]}_english_short"
     en_short_path = _make_video(en_short, en_short_id, stats, user_images=user_images)
 
-    # ── STEP 5: Publish ────────────────────────────────────────
-    print("\n[5/5] Publishing...")
+    # ── STEP 5: Publish + Telegram ─────────────────────────────
+    print("\n[5/5] Uploading long videos to YouTube...")
 
     yt_en_url = yt_ar_url = ""
     yt_en_ok  = yt_ar_ok  = False
@@ -249,7 +249,7 @@ def run_pipeline():
             yt_en_url = upload_to_youtube(en_long_path, en_long)
             yt_en_ok  = True
             stats["posted"] += 1
-            print(f"  YouTube (English): {yt_en_url or 'uploaded (no URL)'}")
+            print(f"[Publish] YouTube EN: {yt_en_url or 'uploaded (no URL)'}")
         except Exception as e:
             print(f"  [ERROR] YouTube English upload: {e}")
             send_message(f"YouTube English upload failed: {e}")
@@ -260,7 +260,7 @@ def run_pipeline():
             yt_ar_url = upload_to_youtube(ar_long_path, ar_long)
             yt_ar_ok  = True
             stats["posted"] += 1
-            print(f"  YouTube (Arabic): {yt_ar_url or 'uploaded (no URL)'}")
+            print(f"[Publish] YouTube AR: {yt_ar_url or 'uploaded (no URL)'}")
         except Exception as e:
             print(f"  [ERROR] YouTube Arabic upload: {e}")
             send_message(f"YouTube Arabic upload failed: {e}")
@@ -271,18 +271,72 @@ def run_pipeline():
         en_short["long_video_url"] = yt_en_url
         ar_short["long_video_url"] = yt_en_url
 
-    # Arabic short first — gets 2-3x more views, post immediately
-    if ar_short_path:
+    # ── Send ALL 4 videos to Telegram ─────────────────────────
+    if en_long_path:
         try:
-            send_for_manual_posting(ar_short_path, ar_short, "TikTok Arabic + Instagram Arabic")
+            send_video_to_telegram(
+                en_long_path,
+                caption=(
+                    f"ENGLISH LONG VIDEO — Posted to YouTube\n"
+                    f"{en_long.get('title', '')}\n"
+                    f"{yt_en_url or 'Upload failed'}\n\n"
+                    f"Duration: ~{get_duration(en_long_path)}"
+                ),
+                label="English Long",
+            )
         except Exception as e:
-            print(f"  [WARN] Telegram Arabic short send failed: {e}")
+            print(f"  [WARN] Telegram English long send failed: {e}")
+
+    if ar_long_path:
+        try:
+            send_video_to_telegram(
+                ar_long_path,
+                caption=(
+                    f"ARABIC LONG VIDEO — Posted to YouTube\n"
+                    f"{ar_long.get('title', '')}\n"
+                    f"{yt_ar_url or 'Upload failed'}\n\n"
+                    f"Duration: ~{get_duration(ar_long_path)}"
+                ),
+                label="Arabic Long",
+            )
+        except Exception as e:
+            print(f"  [WARN] Telegram Arabic long send failed: {e}")
 
     if en_short_path:
         try:
-            send_for_manual_posting(en_short_path, en_short, "TikTok + Instagram + YouTube Shorts")
+            send_for_manual_posting(
+                en_short_path, en_short,
+                "TikTok + Instagram Reels + YouTube Shorts",
+            )
         except Exception as e:
             print(f"  [WARN] Telegram English short send failed: {e}")
+
+    if ar_short_path:
+        try:
+            send_for_manual_posting(
+                ar_short_path, ar_short,
+                "TikTok Arabic + Instagram Arabic",
+            )
+        except Exception as e:
+            print(f"  [WARN] Telegram Arabic short send failed: {e}")
+
+    # ── Daily summary ──────────────────────────────────────────
+    en_status = yt_en_url if yt_en_url else ("uploaded (no URL)" if yt_en_ok else "failed")
+    ar_status = yt_ar_url if yt_ar_url else ("uploaded (no URL)" if yt_ar_ok else "failed")
+    send_message(
+        f"Daily Report — Dark Crime Decoded\n\n"
+        f"Videos Generated: 4\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"English Long → YouTube\n"
+        f"  {en_status}\n\n"
+        f"Arabic Long → YouTube\n"
+        f"  {ar_status}\n\n"
+        f"English Short → Telegram\n"
+        f"  Post to: TikTok + Instagram + YouTube Shorts\n\n"
+        f"Arabic Short → Telegram\n"
+        f"  Post to: TikTok Arabic + Instagram Arabic\n"
+        f"━━━━━━━━━━━━━━━━━━━━━"
+    )
 
     # ── Mark covered + log ─────────────────────────────────────
     series = en_long.get("series") or en_long.get("niche", "").split("behind")[-1].strip()
@@ -293,31 +347,35 @@ def run_pipeline():
             pass
 
     log_entry = {
-        "date":          today,
-        "channel":       "dark_crime",
-        "en_long_id":    en_long_id,
-        "ar_long_id":    ar_long_id,
-        "en_short_id":   en_short_id,
-        "ar_short_id":   ar_short_id,
-        "title":         en_long.get("title", ""),
-        "niche":         en_long.get("niche", ""),
-        "youtube_en":    yt_en_url,
-        "youtube_ar":    yt_ar_url,
+        "date":        today,
+        "channel":     "dark_crime",
+        "en_long_id":  en_long_id,
+        "ar_long_id":  ar_long_id,
+        "en_short_id": en_short_id,
+        "ar_short_id": ar_short_id,
+        "title":       en_long.get("title", ""),
+        "niche":       en_long.get("niche", ""),
+        "youtube_en":  yt_en_url,
+        "youtube_ar":  yt_ar_url,
     }
     _save_log(log_entry)
 
-    en_status = yt_en_url if yt_en_url else ("uploaded (no URL)" if yt_en_ok else "failed")
-    ar_status = yt_ar_url if yt_ar_url else ("uploaded (no URL)" if yt_ar_ok else "failed")
-    send_message(
-        f"Dark Crime Decoded — {en_long.get('title', en_long_id)}\n"
-        f"OUTPUT 1 — YouTube English (long): {en_status}\n"
-        f"OUTPUT 2 — YouTube Arabic (long): {ar_status}\n"
-        f"OUTPUT 3 — English short sent to Telegram\n"
-        f"OUTPUT 4 — Arabic short sent to Telegram"
-    )
-
     send_daily_report(stats)
     print(f"\nDone. Generated: {stats['generated']} | Posted: {stats['posted']} | Errors: {stats['errors']}\n")
+
+
+def get_duration(video_path: str) -> str:
+    """Return 'MM:SS' duration string for a video file."""
+    try:
+        from moviepy import VideoFileClip
+        clip = VideoFileClip(video_path)
+        duration = clip.duration
+        clip.close()
+        mins = int(duration // 60)
+        secs = int(duration % 60)
+        return f"{mins}:{secs:02d}"
+    except Exception:
+        return "unknown"
 
 
 def _make_video(script_data: dict, video_id: str, stats: dict, user_images: list | None = None) -> str:

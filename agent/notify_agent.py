@@ -317,7 +317,8 @@ def send_english_script_preview(script: dict, label: str = "ENGLISH SCRIPT") -> 
         f"{discovery_block}"
         f"{body}\n"
         f"─────────────────\n"
-        f"Generating video automatically..."
+        f"Send voice message to use your voice.\n"
+        f"Or wait — AI voice used automatically in 60 minutes."
     )
     _send_long_text(msg)
     print(f"[Notify] English script sent to Telegram ({label})")
@@ -335,7 +336,8 @@ def send_arabic_script_preview(script: dict, label: str = "النص العربي
         f"─────────────────\n"
         f"{body}\n"
         f"─────────────────\n"
-        f"جاري توليد الفيديو تلقائياً..."
+        f"أرسل رسالة صوتية لاستخدام صوتك.\n"
+        f"أو انتظر — سيتم استخدام الصوت الآلي تلقائياً خلال 60 دقيقة."
     )
     _send_long_text(msg)
     print(f"[Notify] Arabic script sent to Telegram ({label})")
@@ -564,6 +566,42 @@ def check_telegram_for_images() -> list[dict]:
             print(f"[Notify] User image downloaded: {img_info['path']} (tags: {img_info['tags'][:4]})")
 
     return user_images
+
+
+def send_video_to_telegram(video_path: str, caption: str, label: str) -> dict:
+    """Send a video to Telegram. Uses sendVideo under 50 MB, sendDocument above."""
+    import os
+    file_size_mb = os.path.getsize(video_path) / (1024 * 1024)
+    print(f"[Notify] Sending {label}: {file_size_mb:.1f}MB")
+
+    if file_size_mb > 50:
+        print(f"[Notify] File too large for sendVideo ({file_size_mb:.1f}MB) — sending as document")
+        url       = f"{BASE_URL}/sendDocument"
+        files_key = "document"
+    else:
+        url       = f"{BASE_URL}/sendVideo"
+        files_key = "video"
+
+    with open(video_path, "rb") as f:
+        response = requests.post(
+            url,
+            data={
+                "chat_id":           TELEGRAM_CHAT_ID,
+                "caption":           caption[:1024],
+                "supports_streaming": True,
+                "width":             1080,
+                "height":            1920,
+            },
+            files={files_key: f},
+            timeout=300,
+        )
+
+    result = response.json()
+    if result.get("ok"):
+        print(f"[Notify] {label} sent successfully")
+    else:
+        print(f"[Notify] {label} failed: {result.get('description')}")
+    return result
 
 
 def send_daily_report(stats: dict) -> None:
