@@ -580,6 +580,31 @@ def fix_arabic_prison_terms(arabic_text: str) -> str:
     return arabic_text
 
 
+def fix_arabic_cta(arabic_text: str) -> str:
+    """Fix mistranslated CTA verbs and preserve channel name in English."""
+    replacements = [
+        ("اتبع Dark Crime Decoded",  "تابع Dark Crime Decoded"),
+        ("اتبع دارك كرايم",          "تابع Dark Crime Decoded"),
+        ("اتبعنا",                   "تابعونا"),
+        ("اتبع القناة",              "تابع القناة"),
+        ("اتبع للحصول",             "تابع للحصول"),
+        # Restore channel name if Google Translate transliterated it
+        ("دارك كرايم ديكودد",        "Dark Crime Decoded"),
+        ("دارك كرايم ديكوديد",       "Dark Crime Decoded"),
+        ("دارك كرايم",               "Dark Crime Decoded"),
+    ]
+    for wrong, correct in replacements:
+        arabic_text = arabic_text.replace(wrong, correct)
+    return arabic_text
+
+
+def _fix_arabic(text: str) -> str:
+    """Apply all Arabic post-processing fixes in one call."""
+    text = fix_arabic_prison_terms(text)
+    text = fix_arabic_cta(text)
+    return text
+
+
 def translate_to_arabic(text: str) -> str:
     """Translate English text to Arabic using Google Translate free REST API."""
     url = "https://translate.googleapis.com/translate_a/single"
@@ -595,7 +620,7 @@ def translate_to_arabic(text: str) -> str:
     response.raise_for_status()
     result = response.json()
     translated = "".join([item[0] for item in result[0]])
-    return fix_arabic_prison_terms(translated)
+    return _fix_arabic(translated)
 
 
 def translate_script(en_script: dict) -> dict:
@@ -607,7 +632,7 @@ def translate_script(en_script: dict) -> dict:
                               en_script.get("series_type"),
                           ),
         "hook":           translate_to_arabic(en_script.get("hook", "")),
-        "script":         translate_to_arabic(en_script["script"]),
+        "script":         _fix_arabic(translate_to_arabic(en_script["script"])),
         "on_screen_texts": [translate_to_arabic(t) for t in en_script["on_screen_texts"]],
         "caption":        translate_to_arabic(en_script["caption"]),
         "hashtags":       translate_to_arabic(en_script["hashtags"]),
