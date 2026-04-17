@@ -85,7 +85,7 @@ def run_pipeline():
         en_long = next((s for s in ingested if s.get("language") == "english"), ingested[0])
 
     else:
-        # Priority 2a: Telegram photos — check BEFORE clearing the queue
+        # Check Telegram photos BEFORE clearing the update queue
         print("[1/5] Checking Telegram for user images...")
         user_images = check_telegram_for_images()
         if user_images:
@@ -94,96 +94,92 @@ def run_pipeline():
         else:
             print("[1/5] No user images — AI images will be generated")
 
-        # Priority 2b: Telegram text — marks all updates as read
+        # Check Telegram text topic (marks all updates as read)
         print("[1/5] Checking Telegram for user-provided topic...")
         telegram_input = check_telegram_for_script(timeout=15)
 
         if telegram_input and telegram_input.get("type") == "research_note":
-            content     = telegram_input["content"]
-            is_detailed = telegram_input.get("is_detailed", False)
+            # ── USER SENT A TOPIC — use it exclusively, skip auto-discovery ──
+            user_topic = telegram_input["content"]
+            print(f"[Pipeline] USER TOPIC: '{user_topic}'")
+            print(f"[Pipeline] Using EXACTLY this topic — skipping auto-discovery")
+            send_message(f"Got it! Researching: {user_topic}")
 
-            if is_detailed:
-                print(f"[1/5] Research note from Telegram: {content[:100]}...")
-                send_message(f"Got your research note!\nResearching deeper: {content[:100]}...")
-                topic_name = content  # full note used as research seed
-            else:
-                print(f"[1/5] Topic from Telegram: {content!r}")
-                send_message(f"Researching: {content}")
-                topic_name = content
+            from agent.script_agent import get_series_for_person as _gsfp
+            series_info = _gsfp(user_topic)
+            series_name = series_info[0] if series_info else None
+            print(f"[Pipeline] Series detected: {series_name or 'none'}")
+
+            try:
+                research_result = research_series(user_topic, series_name)
+                if research_result is None:
+                    print("[Pipeline] research_series returned None — aborting")
+                    return
+            except Exception as e:
+                print(f"  [WARN] Web research failed for '{user_topic}': {e}")
+                research_result = {}
+
+            # Verify research is for the right person; fix if not
+            research_person = research_result.get("real_person", "")
+            print(f"[Pipeline] Research person: {research_person!r}")
+            if research_person and user_topic.lower() not in research_person.lower():
+                print(f"[Pipeline] WARNING: research returned '{research_person}' — forcing '{user_topic}'")
+                research_result["real_person"] = user_topic
+                research_result["main_topic"]  = user_topic
 
             topic = {
-                "topic":        topic_name,
-                "niche":        topic_name,
+                "topic":        user_topic,
+                "niche":        f"Real story behind {user_topic}",
                 "angle":        "",
-                "keywords":     [topic_name],
-                "search_query": topic_name,
-                "user_note":    content,      # always carry the original note
+                "keywords":     [user_topic],
+                "search_query": user_topic,
+                "research":     research_result,
             }
 
         else:
-            # Priority 3: auto research
+            # ── NO TELEGRAM INPUT — auto-discover topic ───────────────────────
             print("[1/5] No recent Telegram message — researching trending topic...")
             listen_for_content(timeout=30)
-
-        if not ingested and not telegram_input:
-            # Auto research path
             try:
-                topics = research_topics(count=1)
+                auto_topics = research_topics(count=1)
             except Exception as e:
                 send_message(f"Research failed: {e}")
                 print(f"[ERROR] Research: {e}")
                 return
-            topic = topics[0]
-
-        if topic:
-            # FIX 5 — Reject fictional shows before wasting research time
+            topic = auto_topics[0]
             topic_text  = topic.get("topic", "")
             topic_niche = topic.get("niche", "")
+
             if is_fictional(topic_text, topic_niche):
-                print(f"[Pipeline] Fictional topic detected: '{topic_text}' — aborting run")
+                print(f"[Pipeline] Fictional topic blocked: '{topic_text}'")
                 send_message(
                     f"\u26a0\ufe0f Fictional topic blocked: '{topic_text}'\n\n"
-                    f"Dark Crime Decoded only covers REAL true crime stories.\n"
-                    f"Send a real person or real-story show name to continue."
+                    f"Dark Crime Decoded only covers REAL true crime stories."
                 )
                 return
 
-            # Confirm topic before any further work
             print(f"[Pipeline] TOPIC CONFIRMED: {topic_text}")
-            print(f"[Pipeline] Will research: {topic_text}")
-
-            # Research real facts for topic (content files and full-script paths skip this)
-            print("[1b] Web-researching real facts...")
             niche  = topic_niche
             series = niche.split("behind")[-1].strip() if "behind" in niche else topic_text
             try:
-                user_note = topic.get("user_note")
-                research_result = research_series(series, user_note=user_note)
+                research_result = research_series(series, user_note=topic.get("user_note"))
                 if research_result is None:
-                    # research_series() already sent a Telegram warning
-                    print("[Pipeline] research_series returned None (fictional) — aborting")
+                    print("[Pipeline] research_series returned None — aborting")
                     return
                 topic["research"] = research_result
-                # Soft verification — warn if topic name absent from research
-                research_str = str(research_result).lower()
-                if topic_text.lower() not in research_str:
-                    print(f"[Pipeline] WARNING: topic '{topic_text}' not found in research data — check topic matching")
-                    send_message(f"WARNING: Research may not match topic '{topic_text}'. Check pipeline logs.")
-                else:
-                    print(f"[Pipeline] Verified: '{topic_text}' found in research data")
             except Exception as e:
                 print(f"  [WARN] Web research failed for '{series}': {e}")
                 topic["research"] = {}
 
-            # ── STEP 2: Generate 4 scripts ─────────────────────
-            print("\n[2/5] Writing scripts...")
-            try:
-                en_long = write_script(topic, language="english")
-                print("  [2/5] English long script done")
-            except Exception as e:
-                send_message(f"Script writing failed: {e}")
-                print(f"[ERROR] Script: {e}")
-                return
+        # ── STEP 2: Generate 4 scripts ─────────────────────────
+        print("\n[2/5] Writing scripts...")
+        try:
+            en_long = write_script(topic, language="english")
+            print("  [2/5] English long script done")
+        except Exception as e:
+            send_message(f"Script writing failed: {e}")
+            print(f"[ERROR] Script: {e}")
+            return
 
     try:
         en_short = write_short_script(en_long)
@@ -226,21 +222,29 @@ def run_pipeline():
     # ── STEP 4: Generate all 4 videos ─────────────────────────
     print("\n[4/5] Generating videos...")
 
-    # OUTPUT 1 — English long-form → YouTube
+    # OUTPUT 1 — English long-form
     en_long_id   = f"{today}_{uuid.uuid4().hex[:8]}_english_long"
     en_long_path = _make_video(en_long, en_long_id, stats, user_images=user_images)
 
-    # OUTPUT 2 — Arabic long-form → YouTube
+    # OUTPUT 2 — Arabic long-form
     ar_long_id   = f"{today}_{uuid.uuid4().hex[:8]}_arabic_long"
     ar_long_path = _make_video(ar_long, ar_long_id, stats, user_images=user_images)
 
-    # OUTPUT 3 — Arabic short → Telegram (first: gets 2-3x more views)
+    # OUTPUT 3 — Arabic short
     ar_short_id   = f"{today}_{uuid.uuid4().hex[:8]}_arabic_short"
     ar_short_path = _make_video(ar_short, ar_short_id, stats, user_images=user_images)
 
-    # OUTPUT 4 — English short → Telegram
+    # OUTPUT 4 — English short
     en_short_id   = f"{today}_{uuid.uuid4().hex[:8]}_english_short"
     en_short_path = _make_video(en_short, en_short_id, stats, user_images=user_images)
+
+    # Clear user images so they don't bleed into the next run
+    import shutil as _shutil
+    _img_dir = "output/user_images"
+    if os.path.exists(_img_dir):
+        _shutil.rmtree(_img_dir)
+        os.makedirs(_img_dir)
+        print("[Pipeline] User images cleared for next run")
 
     # ── STEP 5: Send ALL 4 videos to Telegram ─────────────────
     print("\n[5/5] Sending all 4 videos to Telegram...")
