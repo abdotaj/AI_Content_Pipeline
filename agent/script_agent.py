@@ -446,6 +446,11 @@ CONCLUSION (150 words = ~1.2 minutes):
 
 TOTAL TARGET: 2000 words minimum, 2500 words maximum.
 
+PRISON SENTENCE RULE (critical for Arabic translation):
+Always write "served X years IN PRISON" or "spent X years BEHIND BARS" — never just "served X years".
+Google Translate needs the prison context word to produce correct Arabic ("سجن" not "خدم").
+Example: "He served 15 years in prison" NOT "He served 15 years".
+
 STRICT WRITING RULES:
 1. NEVER start two consecutive sentences with the same word
 2. NEVER use "He was" more than once per paragraph
@@ -564,19 +569,41 @@ Return ONLY this JSON with no extra text:
 
 def fix_arabic_prison_terms(arabic_text: str) -> str:
     """Fix mistranslated prison/service terms that Google Translate gets wrong."""
-    replacements = [
-        ("خدم في السجن",  "قضى في السجن"),
-        ("خدم سنوات",     "سجن سنوات"),
-        ("خدم عاماً",     "سجن عاماً"),
-        ("خدم عام",       "سجن عام"),
-        ("خدم أشهر",      "سجن أشهر"),
-        ("خدم شهر",       "سجن شهر"),
-        ("خدم مدة",       "قضى مدة"),
-        ("خدم وقت",       "قضى وقت"),
-        ("خدم فترة",      "قضى فترة"),
+    import re
+
+    # Regex patterns: خدم + number + time unit
+    patterns = [
+        (r'خدم\s+(\d+)\s+عامًا',  r'سجن \1 عامًا'),
+        (r'خدم\s+(\d+)\s+عاما',   r'سجن \1 عاماً'),
+        (r'خدم\s+(\d+)\s+عام',    r'سجن \1 عام'),
+        (r'خدم\s+(\d+)\s+سنة',    r'سجن \1 سنة'),
+        (r'خدم\s+(\d+)\s+سنوات',  r'سجن \1 سنوات'),
+        (r'خدم\s+(\d+)\s+شهرًا',  r'قضى \1 شهراً في السجن'),
+        (r'خدم\s+(\d+)\s+شهرا',   r'قضى \1 شهراً في السجن'),
+        (r'خدم\s+(\d+)\s+شهور',   r'قضى \1 شهور في السجن'),
     ]
-    for wrong, correct in replacements:
+    for pattern, replacement in patterns:
+        arabic_text = re.sub(pattern, replacement, arabic_text)
+
+    # Fixed string replacements
+    fixed = [
+        ("خدم في السجن",      "قضى في السجن"),
+        ("خدم مدة في السجن",  "قضى مدة في السجن"),
+        ("خدم فترة",          "قضى فترة"),
+        ("خدم وقتًا",         "قضى وقتاً"),
+        ("خدم حكمًا",         "نفّذ حكماً"),
+        ("خدم عقوبة",         "نفّذ عقوبة"),
+        ("خدم سنوات",         "سجن سنوات"),
+        ("خدم عاماً",         "سجن عاماً"),
+        ("خدم عام",           "سجن عام"),
+        ("خدم أشهر",          "سجن أشهر"),
+        ("خدم شهر",           "سجن شهر"),
+        ("خدم مدة",           "قضى مدة"),
+        ("خدم وقت",           "قضى وقت"),
+    ]
+    for wrong, correct in fixed:
         arabic_text = arabic_text.replace(wrong, correct)
+
     return arabic_text
 
 
@@ -689,6 +716,7 @@ The film captured his excess perfectly.
 But the real story has even more shocking twists.
 Follow Dark Crime Decoded for the full story.
 
+PRISON SENTENCE RULE: Always write "served X years in prison" — never just "served X years".
 STRICT RULES:
 - Count words — output must be 150-180 words total
 - Every sentence = one specific fact (name, number, date, or place)
