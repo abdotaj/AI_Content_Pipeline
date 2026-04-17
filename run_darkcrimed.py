@@ -148,6 +148,10 @@ def run_pipeline():
                 )
                 return
 
+            # Confirm topic before any further work
+            print(f"[Pipeline] TOPIC CONFIRMED: {topic_text}")
+            print(f"[Pipeline] Will research: {topic_text}")
+
             # Research real facts for topic (content files and full-script paths skip this)
             print("[1b] Web-researching real facts...")
             niche  = topic_niche
@@ -160,6 +164,13 @@ def run_pipeline():
                     print("[Pipeline] research_series returned None (fictional) — aborting")
                     return
                 topic["research"] = research_result
+                # Soft verification — warn if topic name absent from research
+                research_str = str(research_result).lower()
+                if topic_text.lower() not in research_str:
+                    print(f"[Pipeline] WARNING: topic '{topic_text}' not found in research data — check topic matching")
+                    send_message(f"WARNING: Research may not match topic '{topic_text}'. Check pipeline logs.")
+                else:
+                    print(f"[Pipeline] Verified: '{topic_text}' found in research data")
             except Exception as e:
                 print(f"  [WARN] Web research failed for '{series}': {e}")
                 topic["research"] = {}

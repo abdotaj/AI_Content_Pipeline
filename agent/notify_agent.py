@@ -404,17 +404,30 @@ def listen_for_voice_message(language: str, timeout: int = 600) -> str:
     return ""
 
 
+_SYSTEM_SKIP_WORDS = [
+    # pipeline status messages sent by the bot itself
+    "approve", "reject", "skip",
+    "pipeline starting", "daily report",
+    "generated", "posted", "errors",
+    "script sent", "video ready",
+    "youtube", "http", "telegram",
+    "upload failed", "upload to",
+    "dark crime decoded —",
+    # emoji markers used in bot messages
+    "✅", "❌", "📋", "📹", "📱", "🎬", "━",
+]
+
+
 def check_telegram_for_script(timeout: int = 15) -> dict | None:
     """
-    Check Telegram for messages sent in the last 10 minutes from the owner chat.
-    Marks ALL pending updates as read regardless of outcome.
+    Check Telegram for a user-sent topic in the last 10 minutes.
 
-    Returns:
-      {"type": "research_note", "content": <text>, "is_detailed": bool}
-        — any text message used as a research seed.
-        Short messages (≤50 chars) = simple topic name.
-        Long messages (>50 chars)  = detailed research note with connections.
-      None — nothing recent found
+    Marks ALL pending updates as read first, then scans newest-first for
+    a short human topic string — skips any message that looks like a bot
+    status report (pipeline updates, YouTube URLs, emoji markers, etc.).
+
+    Returns {"type": "research_note", "content": text, "is_detailed": bool}
+    or None if nothing fresh found.
     """
     import time
 
@@ -430,44 +443,44 @@ def check_telegram_for_script(timeout: int = 15) -> dict | None:
     if not updates:
         return None
 
-    # Always mark all pending messages as read
+    # Mark ALL as read FIRST — prevents stale messages from leaking into next run
     last_update_id = updates[-1]["update_id"]
     try:
         requests.get(f"{BASE_URL}/getUpdates", params={"offset": last_update_id + 1}, timeout=10)
     except Exception:
         pass
 
-    note_found = None
-
     for update in reversed(updates):  # newest first
         message = update.get("message", {})
-        text = message.get("text", "").strip()
-        chat_id = str(message.get("chat", {}).get("id", ""))
+        text     = message.get("text", "").strip()
+        chat_id  = str(message.get("chat", {}).get("id", ""))
         msg_time = message.get("date", 0)
 
-        # Only accept messages from the owner chat
+        # Only owner chat
         if chat_id != str(TELEGRAM_CHAT_ID):
             continue
 
-        # Only accept messages from the last 10 minutes
+        # Only last 10 minutes
         if current_time - msg_time > 600:
             continue
 
-        # Ignore commands, approve/reject/skip control words, and empty messages
+        # Skip bot commands and empty text
         if not text or text.startswith("/") or text.startswith("[") or text.startswith("*"):
             continue
-        if text.lower() in ["approve", "reject", "skip"]:
+
+        # Skip messages that look like bot status reports
+        text_lower = text.lower()
+        if any(word in text_lower for word in _SYSTEM_SKIP_WORDS):
+            print(f"[Notify] Skipping system message: {text[:60]!r}")
             continue
 
-        # Accept ANY text as research input
-        # Short (≤50 chars) = topic name, Long (>50 chars) = detailed research note
-        if len(text) > 2:
+        # Must be a plausible topic length
+        if 2 < len(text) < 200:
             is_detailed = len(text) > 50
-            print(f"[Notify] Research note from Telegram ({'detailed' if is_detailed else 'topic'}): {text[:80]!r}")
-            note_found = {"type": "research_note", "content": text, "is_detailed": is_detailed}
-            break
+            print(f"[Notify] Topic from Telegram ({'detailed' if is_detailed else 'topic'}): {text[:80]!r}")
+            return {"type": "research_note", "content": text, "is_detailed": is_detailed}
 
-    return note_found
+    return None
 
 
 def download_telegram_photo(file_id: str, caption: str | None = None) -> dict | None:

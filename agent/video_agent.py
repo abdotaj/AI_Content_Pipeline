@@ -279,7 +279,8 @@ SUBJECTS = {
     "manson":           "Charles Manson cult leader portrait dark cinematic",
     "lucky luciano":    "Lucky Luciano New York mafia boss portrait cinematic",
     "luciano":          "Lucky Luciano New York mafia portrait cinematic",
-    "frank lucas":      "Frank Lucas real Harlem drug lord portrait cinematic dramatic dark",
+    "frank lucas":      "Frank Lucas real Harlem drug lord 1970s portrait historical cinematic",
+    "frank lucas real": "Frank Lucas real Harlem drug lord 1970s portrait historical cinematic",
     "whitey bulger":    "Whitey Bulger Boston Irish mob portrait cinematic",
     "bulger":           "Whitey Bulger Boston mob boss portrait cinematic",
     "richard ramirez":  "Richard Ramirez Night Stalker killer portrait cinematic",
@@ -340,7 +341,7 @@ SUBJECTS = {
     "wolf of wall street": "Leonardo DiCaprio Margot Robbie Wolf of Wall Street portrait",
 
     # American Gangster — Denzel + Crowe
-    "american gangster":   "Denzel Washington and Russell Crowe American Gangster portrait cinematic",
+    "american gangster":   "Denzel Washington as Frank Lucas American Gangster portrait cinematic",
 
     # City of God
     "city of god":         "Alexandre Rodrigues City of God Brazil portrait cinematic",
@@ -409,11 +410,16 @@ def extract_main_subject(title: str, script: str) -> list[str]:
     title_lower  = title.lower()
     script_lower = script.lower()[:800]
 
-    # Special case: Godfather always returns both Brando + Pacino
+    # Special cases: always return real person + actor pair
     if "godfather" in title_lower:
         return [
             "Marlon Brando as Vito Corleone Godfather portrait cinematic",
             "Al Pacino as Michael Corleone portrait cinematic",
+        ]
+    if "frank lucas" in title_lower or "frank lucas" in script_lower[:800]:
+        return [
+            "Frank Lucas real Harlem drug lord 1970s portrait historical cinematic",
+            "Denzel Washington as Frank Lucas American Gangster portrait cinematic",
         ]
 
     portraits: list[str] = []
