@@ -499,8 +499,10 @@ if __name__ == "__main__":
 
     # ── Parse --channel argument ─────────────────────────────
     _CHANNEL_TOKEN_MAP = {
-        "darkcrimed": "youtube_token_darkcrimed.json",
-        "shopmart":   "youtube_token_shopmart.json",
+        "darkcrimed":    "youtube_token_darkcrimed.json",
+        "darkcrimed_en": "youtube_token_darkcrimed_en.json",
+        "darkcrimed_ar": "youtube_token_darkcrimed_ar.json",
+        "shopmart":      "youtube_token_shopmart.json",
     }
 
     def _get_arg(flag: str) -> str:
@@ -512,7 +514,10 @@ if __name__ == "__main__":
 
     if "--auth-youtube" in sys.argv:
         channel_slug = _get_arg("--channel")
-        out_file = _CHANNEL_TOKEN_MAP.get(channel_slug, "youtube_token.json")
+        out_file = _CHANNEL_TOKEN_MAP.get(
+            channel_slug,
+            f"youtube_token_{channel_slug}.json" if channel_slug else "youtube_token.json",
+        )
         youtube_auth_flow(token_file=out_file)
 
     elif "--auth-tiktok" in sys.argv:
