@@ -48,19 +48,31 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install --upgrade pip
+          pip install --upgrade pip setuptools wheel
           pip install -r requirements.txt
-          pip install openai httpx groq \
-                      edge-tts moviepy pillow \
-                      requests duckduckgo-search \
-                      google-auth google-auth-oauthlib \
-                      google-api-python-client \
-                      python-telegram-bot \
-                      anthropic wikipedia-api \
-                      python-dotenv \
-                      numpy imageio imageio-ffmpeg \
-                      opencv-python-headless --upgrade
-          pip list | grep -E "openai|httpx|groq|moviepy"
+          echo "=== Installed packages ==="
+          pip show openai groq httpx moviepy edge-tts
+
+      - name: Test API connectivity
+        run: |
+          python3 -c "
+          import urllib.request
+          import ssl
+
+          apis = {
+              'OpenAI':       'https://api.openai.com',
+              'Groq':         'https://api.groq.com',
+              'Pollinations': 'https://image.pollinations.ai',
+              'Wikipedia':    'https://en.wikipedia.org',
+          }
+
+          for name, url in apis.items():
+              try:
+                  urllib.request.urlopen(url, timeout=10)
+                  print(f'OK {name} reachable')
+              except Exception as e:
+                  print(f'BLOCKED {name}: {e}')
+          "
 
       - name: Write YouTube token (Arabic channel)
         env:
