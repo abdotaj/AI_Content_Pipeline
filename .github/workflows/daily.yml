@@ -101,6 +101,17 @@ jobs:
           X_BEARER_TOKEN:                    ${{ secrets.X_BEARER_TOKEN }}
         run: python run_darkcrimed.py
 
+      - name: Upload all videos as artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dark-crime-videos-${{ github.run_id }}
+          path: |
+            output/dark_crime/final/*.mp4
+            output/shorts/*.mp4
+            output/dark_crime/manifest_*.json
+          retention-days: 5
+
       - name: Upload logs on failure
         if: failure()
         uses: actions/upload-artifact@v4

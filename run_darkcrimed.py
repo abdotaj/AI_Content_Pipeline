@@ -280,6 +280,14 @@ def run_pipeline():
     # ── STEP 5: Upload long videos to YouTube, then send shorts to Telegram ──
     print("\n[5/5] Publishing videos...")
 
+    # Retry any failed uploads from previous pipeline runs
+    _retry_failed_uploads()
+
+    # Build GitHub Actions artifact URL for failure notifications
+    _run_id   = os.getenv("GITHUB_RUN_ID", "")
+    _repo     = os.getenv("GITHUB_REPOSITORY", "abdotaj/AI_Content_Pipeline")
+    _artifact_url = f"https://github.com/{_repo}/actions/runs/{_run_id}" if _run_id else ""
+
     yt_en_url = None
     if en_long_path:
         try:
@@ -294,7 +302,10 @@ def run_pipeline():
             print(f"  [Publish] English YouTube URL: {yt_en_url}")
         except Exception as e:
             print(f"  [ERROR] English YouTube upload failed: {e}")
-            send_message(f"❌ English YouTube upload failed: {e}")
+            _fail_msg = f"❌ English YouTube upload failed: {e}"
+            if _artifact_url:
+                _fail_msg += f"\n\nDownload video from GitHub artifact:\n{_artifact_url}"
+            send_message(_fail_msg)
 
     yt_ar_url = None
     if ar_long_path:
@@ -310,7 +321,10 @@ def run_pipeline():
             print(f"  [Publish] Arabic YouTube URL: {yt_ar_url}")
         except Exception as e:
             print(f"  [ERROR] Arabic YouTube upload failed: {e}")
-            send_message(f"❌ Arabic YouTube upload failed: {e}")
+            _fail_msg = f"❌ Arabic YouTube upload failed: {e}"
+            if _artifact_url:
+                _fail_msg += f"\n\nDownload video from GitHub artifact:\n{_artifact_url}"
+            send_message(_fail_msg)
 
     if en_short_path:
         try:
@@ -329,6 +343,14 @@ def run_pipeline():
             )
         except Exception as e:
             print(f"  [WARN] Telegram Arabic short send failed: {e}")
+
+    # ── Save manifest (all 4 videos + upload status) ──────────
+    _save_manifest(
+        today,
+        en_long, ar_long, en_short, ar_short,
+        en_long_path, ar_long_path, en_short_path, ar_short_path,
+        yt_en_url, yt_ar_url,
+    )
 
     # ── Daily summary ──────────────────────────────────────────
     send_message(
@@ -398,6 +420,123 @@ def _make_video(script_data: dict, video_id: str, stats: dict, user_images: list
         send_message(f"Video creation failed for {video_id}: {e}")
         stats["errors"] += 1
         return ""
+
+
+def check_failed_uploads() -> list:
+    """Return list of failed YouTube uploads from previous runs where the video still exists."""
+    import glob
+    failed = []
+    for m in sorted(glob.glob("output/dark_crime/manifest_*.json")):
+        try:
+            with open(m) as f:
+                data = json.load(f)
+            status  = data.get("status", {})
+            videos  = data.get("videos", {})
+            scripts = data.get("script_data", {})
+
+            if not status.get("en_long_uploaded"):
+                path = videos.get("en_long", "")
+                if path and os.path.exists(path):
+                    failed.append({
+                        "path":     path,
+                        "script":   scripts.get("en_long", {}),
+                        "token":    "youtube_token_darkcrimed_en.json",
+                        "type":     "en_long",
+                        "manifest": m,
+                    })
+
+            if not status.get("ar_long_uploaded"):
+                path = videos.get("ar_long", "")
+                if path and os.path.exists(path):
+                    failed.append({
+                        "path":     path,
+                        "script":   scripts.get("ar_long", {}),
+                        "token":    "youtube_token_darkcrimed_ar.json",
+                        "type":     "ar_long",
+                        "manifest": m,
+                    })
+        except Exception as e:
+            print(f"  [WARN] Failed to read manifest {m}: {e}")
+    return failed
+
+
+def _retry_failed_uploads():
+    """Retry YouTube uploads that failed in previous pipeline runs."""
+    failed = check_failed_uploads()
+    if not failed:
+        return
+
+    print(f"[Recovery] {len(failed)} failed upload(s) from previous runs — retrying...")
+    send_message(f"[Recovery] Retrying {len(failed)} failed upload(s) from previous runs...")
+
+    for item in failed:
+        label = "English" if "en" in item["type"] else "Arabic"
+        try:
+            url = upload_to_youtube(item["path"], item["script"], token_file=item["token"])
+            if url:
+                print(f"  [Recovery] {label} recovered: {url}")
+                send_message(f"✅ [Recovery] {label} video uploaded: {url}")
+                try:
+                    with open(item["manifest"]) as f:
+                        mdata = json.load(f)
+                    key    = "en_long_uploaded" if "en" in item["type"] else "ar_long_uploaded"
+                    yt_key = "en"               if "en" in item["type"] else "ar"
+                    mdata["status"][key]         = True
+                    mdata["youtube_urls"][yt_key] = url
+                    with open(item["manifest"], "w") as f:
+                        json.dump(mdata, f, ensure_ascii=False, indent=2)
+                except Exception as e2:
+                    print(f"  [WARN] Could not update manifest after recovery: {e2}")
+        except Exception as e:
+            print(f"  [Recovery] {label} retry failed: {e}")
+
+
+def _save_manifest(today, en_long, ar_long, en_short, ar_short,
+                   en_long_path, ar_long_path, en_short_path, ar_short_path,
+                   yt_en_url, yt_ar_url) -> str:
+    """Save a JSON manifest recording all 4 video paths and upload status."""
+    manifest = {
+        "date":  today,
+        "topic": en_long.get("topic", ""),
+        "videos": {
+            "en_long":  en_long_path,
+            "ar_long":  ar_long_path,
+            "en_short": en_short_path,
+            "ar_short": ar_short_path,
+        },
+        "scripts": {
+            "en_long_title":  en_long.get("title",  ""),
+            "ar_long_title":  ar_long.get("title",  ""),
+            "en_short_title": en_short.get("title", ""),
+            "ar_short_title": ar_short.get("title", ""),
+        },
+        "script_data": {
+            "en_long": {k: en_long.get(k, "") for k in ("title", "description", "tags", "language", "niche")},
+            "ar_long": {k: ar_long.get(k, "") for k in ("title", "description", "tags", "language", "niche")},
+        },
+        "youtube_urls": {
+            "en": yt_en_url or "",
+            "ar": yt_ar_url or "",
+        },
+        "telegram_sent": {
+            "en_short": bool(en_short_path),
+            "ar_short": bool(ar_short_path),
+            "en_long":  False,
+            "ar_long":  False,
+        },
+        "status": {
+            "en_long_uploaded": bool(yt_en_url),
+            "ar_long_uploaded": bool(yt_ar_url),
+            "en_short_sent":    bool(en_short_path),
+            "ar_short_sent":    bool(ar_short_path),
+        },
+    }
+    Path("output/dark_crime").mkdir(parents=True, exist_ok=True)
+    manifest_path = f"output/dark_crime/manifest_{today}.json"
+    with open(manifest_path, "w", encoding="utf-8") as f:
+        json.dump(manifest, f, ensure_ascii=False, indent=2)
+    print(f"[Manifest] Saved: {manifest_path}")
+    return manifest_path
 
 
 def _save_log(entry: dict):
