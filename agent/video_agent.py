@@ -74,7 +74,7 @@ def generate_voiceover_openai(text: str, language: str, output_path: str) -> str
         api_key=api_key,
         timeout=httpx.Timeout(60.0, connect=10.0),
     )
-    voice = "onyx"
+    voice = "onyx" if language == "arabic" else "onyx"
     print(f"[Voice] OpenAI TTS: voice={voice} language={language}")
 
     try:
@@ -89,7 +89,7 @@ def generate_voiceover_openai(text: str, language: str, output_path: str) -> str
             for attempt in range(3):
                 try:
                     response = client.audio.speech.create(
-                        model="tts-1",
+                        model="gpt-4o-mini-tts",
                         voice=voice,
                         input=chunk,
                         speed=1.0,
