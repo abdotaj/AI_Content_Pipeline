@@ -114,6 +114,16 @@ jobs:
             output/shorts/*.mp4
             output/dark_crime/manifest_*.json
           retention-days: 5
+          if-no-files-found: warn
+
+      - name: Upload shorts as artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dark-crime-shorts-${{ github.run_id }}
+          path: output/shorts/*.mp4
+          retention-days: 5
+          if-no-files-found: warn
 
       - name: Upload logs on failure
         if: failure()
