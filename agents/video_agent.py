@@ -100,8 +100,9 @@ def generate_voiceover_openai(text: str, language: str, output_path: str) -> str
         api_key=api_key,
         timeout=httpx.Timeout(60.0, connect=10.0),
     )
-    voice = "onyx" if language == "arabic" else "onyx"
-    print(f"[Voice] OpenAI TTS: voice={voice} language={language}")
+    voice = "onyx" if language == "arabic" else "echo"
+    speed = 1.1
+    print(f"[Voice] OpenAI TTS: voice={voice} speed={speed} language={language}")
 
     try:
         chunks = _split_text(text, max_chars=4000)
@@ -118,7 +119,7 @@ def generate_voiceover_openai(text: str, language: str, output_path: str) -> str
                         model="gpt-4o-mini-tts",
                         voice=voice,
                         input=chunk,
-                        speed=1.0,
+                        speed=speed,
                     )
                     response.stream_to_file(chunk_path)
                     print(f"[Voice] OpenAI chunk {i + 1}/{len(chunks)} done")
