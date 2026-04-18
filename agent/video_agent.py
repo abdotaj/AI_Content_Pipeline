@@ -1134,7 +1134,7 @@ def assemble_video(
             clip = image_clips[idx % len(image_clips)]
             remaining = image_target - accumulated
             if clip.duration > remaining:
-                clip = clip.subclipped(0, remaining)
+                clip = clip.subclip(0, remaining)
             looped.append(clip)
             accumulated += clip.duration
             idx += 1
@@ -1150,7 +1150,7 @@ def assemble_video(
     try:
         all_video_clips = (before_clips or []) + looped + (after_clips or [])
         final = concatenate_videoclips(all_video_clips, method="chain")
-        final = final.with_audio(audio)
+        final = final.set_audio(audio)
         print(f"[Video] Concatenated: {final.duration:.1f}s, size={final.size}")
     except Exception as e:
         print(f"[Video] CRASH at concatenation: {e}")
@@ -1278,7 +1278,7 @@ def cut_short_clip(video_path: str, output_path: str, duration: int = 90) -> str
         # Random duration between 60-90 seconds
         actual_duration = random.randint(60, 90)
         actual_duration = min(actual_duration, clip.duration)
-        short = clip.subclipped(0, actual_duration)
+        short = clip.subclip(0, actual_duration)
         short.write_videofile(
             output_path,
             fps=30,
@@ -1531,7 +1531,7 @@ def assemble_video_with_hook(
             break
         remaining = main_duration - accumulated
         if clip.duration > remaining:
-            clip = clip.subclipped(0, remaining)
+            clip = clip.subclip(0, remaining)
         final_main.append(clip)
         accumulated += clip.duration
 
@@ -1541,8 +1541,8 @@ def assemble_video_with_hook(
         all_clips = hook_clips + final_main
         final = concatenate_videoclips(all_clips, method="chain")
         if final.duration > total_duration:
-            final = final.subclipped(0, total_duration)
-        final = final.with_audio(audio)
+            final = final.subclip(0, total_duration)
+        final = final.set_audio(audio)
 
         final.write_videofile(
             output_path,
@@ -1637,7 +1637,7 @@ def assemble_short_video(audio_path: str, image_paths: list[str], output_path: s
             print(f"[Video] Padding video to minimum 60s")
         if target_duration > 90:
             target_duration = 90
-            audio = audio.subclipped(0, 90)
+            audio = audio.subclip(0, 90)
             print(f"[Video] Trimming to maximum 90s")
 
         total_duration = target_duration
@@ -1702,7 +1702,7 @@ def assemble_short_video(audio_path: str, image_paths: list[str], output_path: s
             break
         remaining = total_duration - accumulated
         if clip.duration > remaining:
-            clip = clip.subclipped(0, remaining)
+            clip = clip.subclip(0, remaining)
         final_clips.append(clip)
         accumulated += clip.duration
 
@@ -1713,8 +1713,8 @@ def assemble_short_video(audio_path: str, image_paths: list[str], output_path: s
         # Trim video to EXACT audio duration — prevents silence at end
         exact_duration = audio.duration
         if final.duration > exact_duration:
-            final = final.subclipped(0, exact_duration)
-        final = final.with_audio(audio)
+            final = final.subclip(0, exact_duration)
+        final = final.set_audio(audio)
         print(f"[Video] Final duration: {final.duration:.1f}s  Audio: {audio.duration:.1f}s")
         final.write_videofile(
             output_path,
