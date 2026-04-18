@@ -50,6 +50,8 @@ def _get_video_duration(video_path: str) -> float:
 
 
 def upload_to_youtube(video_path: str, script_data: dict) -> str:
+    import traceback as _tb
+
     try:
         from google.oauth2.credentials import Credentials
         from google.auth.transport.requests import Request
@@ -60,9 +62,26 @@ def upload_to_youtube(video_path: str, script_data: dict) -> str:
         return ""
 
     TOKEN_FILE = _YOUTUBE_TOKEN_FILE
-    if not os.path.exists(TOKEN_FILE):
-        print("[Publish] YouTube token not found. Skipping.")
+    print(f"[Publish] Starting upload: {video_path}")
+    print(f"[Publish] Token file: {TOKEN_FILE}")
+
+    if not os.path.exists(video_path):
+        print(f"[Publish] ERROR: Video file not found: {video_path}")
         return ""
+    if not os.path.exists(TOKEN_FILE):
+        print(f"[Publish] ERROR: Token file not found: {TOKEN_FILE}")
+        return ""
+
+    # Inspect token before loading credentials
+    try:
+        import json as _json
+        with open(TOKEN_FILE, encoding="utf-8") as _f:
+            _peek = _json.load(_f)
+        print(f"[Publish] Token channel_id: {_peek.get('channel_id', 'MISSING')}")
+        print(f"[Publish] Token has refresh_token: {'refresh_token' in _peek}")
+        print(f"[Publish] Token has client_id: {'client_id' in _peek}")
+    except Exception as _e:
+        print(f"[Publish] WARNING: Could not inspect token file: {_e}")
 
     # Select client credentials based on which token file is in use
     if "ar" in os.path.basename(TOKEN_FILE):
@@ -72,6 +91,7 @@ def upload_to_youtube(video_path: str, script_data: dict) -> str:
         client_id     = os.getenv("YOUTUBE_CLIENT_ID_EN", YOUTUBE_CLIENT_ID)
         client_secret = os.getenv("YOUTUBE_CLIENT_SECRET_EN", YOUTUBE_CLIENT_SECRET)
     print(f"[Publish] YouTube credentials: {'AR' if 'ar' in os.path.basename(TOKEN_FILE) else 'EN'} channel")
+    print(f"[Publish] client_id set: {bool(client_id and client_id != 'YOUR_YT_CLIENT_ID')}")
 
     try:
         import json as _json
@@ -80,6 +100,7 @@ def upload_to_youtube(video_path: str, script_data: dict) -> str:
             TOKEN_FILE,
             ["https://www.googleapis.com/auth/youtube.upload"]
         )
+        print(f"[Publish] Credentials loaded — expired: {creds.expired}, valid: {creds.valid}")
 
         if creds.expired and creds.refresh_token:
             print("[Publish] YouTube token expired — refreshing...")
@@ -94,7 +115,7 @@ def upload_to_youtube(video_path: str, script_data: dict) -> str:
                 _json.dump(updated, f, indent=2)
             print("[Publish] YouTube token refreshed.")
 
-        # Read channel_id saved during auth flow (informational / future CMS use)
+        # Read channel_id saved during auth flow
         with open(TOKEN_FILE, encoding="utf-8") as f:
             _token_meta = _json.load(f)
         _channel_id = _token_meta.get("channel_id", "")
@@ -102,6 +123,7 @@ def upload_to_youtube(video_path: str, script_data: dict) -> str:
             print(f"[Publish] Uploading to YouTube channel: {_channel_id}")
 
         youtube = build("youtube", "v3", credentials=creds)
+        print(f"[Publish] YouTube API client built successfully")
 
         # Detect Shorts vs long-form by duration
         duration = _get_video_duration(video_path)
@@ -176,7 +198,8 @@ def upload_to_youtube(video_path: str, script_data: dict) -> str:
         return url
 
     except Exception as e:
-        print(f"[Publish] YouTube failed: {e}")
+        print(f"[Publish] UPLOAD ERROR: {e}")
+        _tb.print_exc()
         return ""
 
 
