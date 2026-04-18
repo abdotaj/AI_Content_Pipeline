@@ -51,6 +51,7 @@ jobs:
           pip install --upgrade pip
           pip install moviepy==1.0.3
           pip install -r requirements.txt
+          pip install openai --upgrade
           pip install "imageio[ffmpeg]" opencv-python-headless
 
       - name: Write YouTube token (Arabic channel)
