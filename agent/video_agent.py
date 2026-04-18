@@ -7,6 +7,32 @@ import random
 import asyncio
 import requests
 from pathlib import Path
+
+import moviepy
+print(f"[Video] MoviePy version: {moviepy.__version__}")
+if moviepy.__version__.startswith('2'):
+    print("[Video] WARNING: MoviePy 2.x detected!")
+    print("[Video] Using compatibility mode")
+    MOVIEPY_V2 = True
+else:
+    print("[Video] MoviePy 1.x confirmed ✅")
+    MOVIEPY_V2 = False
+
+
+def make_image_clip(img_array, duration):
+    """Create a static image VideoClip compatible with MoviePy 1.x and 2.x."""
+    try:
+        from moviepy.editor import ImageClip
+        return ImageClip(img_array).set_duration(duration)
+    except TypeError:
+        import numpy as np
+        try:
+            from moviepy.editor import VideoClip
+        except ImportError:
+            from moviepy import VideoClip
+        def _make_frame(t):
+            return img_array
+        return VideoClip(_make_frame, duration=duration)
 from config import (
     AUDIO_DIR, VIDEO_DIR, FINAL_DIR,
     VIDEO_WIDTH, VIDEO_HEIGHT,
@@ -999,7 +1025,7 @@ def create_title_card(main_line: str, sub_line: str, duration: float = 7.0):
         alpha = max(0.0, min(1.0, alpha))
         return (frame * alpha).astype("uint8")
 
-    return VideoClip(frame_function=make_frame, duration=duration)
+    return VideoClip(make_frame=make_frame, duration=duration)
 
 
 # ── MoviePy clip helpers ───────────────────────────────────────────────────────
@@ -1060,7 +1086,7 @@ def image_to_clips(image_path: str, n_variations: int = 4) -> list:
     for start_s, end_s, dur in specs[:n_variations]:
         fn = _zoom_fn(start_s, end_s, dur)
         # MoviePy calls fn(0) in __init__ → shape (1920,1080,3) → size=(1080,1920)
-        clips.append(VideoClip(frame_function=fn, duration=dur))
+        clips.append(VideoClip(make_frame=fn, duration=dur))
 
     return clips
 
@@ -1449,7 +1475,7 @@ def assemble_video_with_hook(
             if fade_out > 0 and t > dur - fade_out:
                 rgb *= (dur - t) / fade_out
             return np.clip(rgb, 0, 255).astype("uint8")
-        return VideoClip(frame_function=make_frame, duration=dur)
+        return VideoClip(make_frame=make_frame, duration=dur)
 
     # ── HOOK SECTION (0:00 to 1:30): fast cuts every 3-5 s ───────────────────
     # Cycle through ALL images repeatedly — movie-trailer energy
@@ -1641,7 +1667,7 @@ def assemble_short_video(audio_path: str, image_paths: list[str], output_path: s
             if t < 0.2:            fade = t / 0.2
             elif t > dur - 0.2:    fade = (dur - t) / 0.2
             return np.clip(rgb * max(0.0, min(1.0, fade)), 0, 255).astype("uint8")
-        return VideoClip(frame_function=make_frame, duration=dur)
+        return VideoClip(make_frame=make_frame, duration=dur)
 
     # Pre-load frames
     frames = []
