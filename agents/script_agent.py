@@ -3,11 +3,14 @@
 #  English for YouTube, Arabic is a direct translation
 # ============================================================
 import json
+import os
 import groq as groq_lib
 from groq import Groq
+from openai import OpenAI
 from config import GROQ_API_KEY, LONG_VIDEO_DURATION
 
-_groq = Groq(api_key=GROQ_API_KEY)
+_groq   = Groq(api_key=GROQ_API_KEY)
+_openai = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 _FALLBACK_MODELS = [
     "llama-3.3-70b-versatile",   # primary
@@ -37,6 +40,45 @@ def _groq_call(**kwargs):
                 last_err = e
                 break
     raise last_err
+
+
+def openai_script_call(prompt: str, max_tokens: int = 4000, json_mode: bool = False) -> str | None:
+    """Use OpenAI gpt-4o-mini for script generation. Returns raw content string or None."""
+    try:
+        kwargs = dict(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "You are a professional true crime documentary scriptwriter."},
+                {"role": "user",   "content": prompt},
+            ],
+            max_tokens=max_tokens,
+            temperature=0.7,
+        )
+        if json_mode:
+            kwargs["response_format"] = {"type": "json_object"}
+        response = _openai.chat.completions.create(**kwargs)
+        return response.choices[0].message.content
+    except Exception as e:
+        print(f"[Script] OpenAI call failed: {e}")
+        return None
+
+
+def _ai_script_call(prompt: str, max_tokens: int = 4000, temperature: float = 0.85,
+                    json_mode: bool = False) -> str:
+    """OpenAI gpt-4o-mini first, fall back to Groq. Returns raw content string."""
+    result = openai_script_call(prompt, max_tokens=max_tokens, json_mode=json_mode)
+    if result:
+        print("[Script] OpenAI used")
+        return result
+    print("[Script] OpenAI failed — falling back to Groq")
+    kwargs = dict(
+        messages=[{"role": "user", "content": prompt}],
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )
+    if json_mode:
+        kwargs["response_format"] = {"type": "json_object"}
+    return _groq_call(**kwargs).choices[0].message.content
 
 
 title_format = "Dark Crime Decoded: {person} & {series} — {curiosity_hook}"
@@ -195,12 +237,7 @@ EXAMPLES:
 
 Output ONLY the title text, nothing else."""
 
-    r = _groq_call(
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.85,
-        max_tokens=80,
-    )
-    return r.choices[0].message.content.strip().strip('"\'')
+    return _ai_script_call(prompt, max_tokens=80, temperature=0.85).strip().strip('"\'')
 
 
 def _build_darkcrimed_hashtags(raw: str, series_info: tuple[str, str] | None) -> str:
@@ -264,12 +301,7 @@ REQUIREMENTS:
 
 Output ONLY the script text, nothing else."""
 
-    r1 = _groq_call(
-        messages=[{"role": "user", "content": part1_prompt}],
-        temperature=0.85,
-        max_tokens=400,
-    )
-    script_text = r1.choices[0].message.content.strip()
+    script_text = _ai_script_call(part1_prompt, max_tokens=400, temperature=0.85).strip()
 
     part2_prompt = f"""You are a content packaging assistant for an ecommerce channel called Shopmart.
 Based on this product review script, generate metadata.
@@ -292,13 +324,7 @@ Return ONLY this JSON with no extra text:
   "thumbnail_text": "4-word thumbnail text"
 }}"""
 
-    r2 = _groq_call(
-        messages=[{"role": "user", "content": part2_prompt}],
-        temperature=0.3,
-        max_tokens=600,
-        response_format={"type": "json_object"},
-    )
-    meta = json.loads(r2.choices[0].message.content.strip())
+    meta = json.loads(_ai_script_call(part2_prompt, max_tokens=600, temperature=0.3, json_mode=True).strip())
     script_data = {
         "title":           meta.get("title", f"Shopmart: {topic['topic']}"),
         "hook":            meta.get("hook", ""),
@@ -504,12 +530,7 @@ You must EXPAND every section significantly:
 - REAL VS SCREEN: Add 3 specific scene comparisons
 - CONCLUSION: Add what happened to key people afterwards
 Do not summarize — give full detailed information."""
-        r1 = _groq_call(
-            messages=[{"role": "user", "content": _prompt}],
-            temperature=0.85,
-            max_tokens=6000,
-        )
-        script_text = validate_script(r1.choices[0].message.content.strip())
+        script_text = validate_script(_ai_script_call(_prompt, max_tokens=6000, temperature=0.85).strip())
         words   = len(script_text.split())
         minutes = words / 130
         print(f"[Script] Attempt {attempt + 1}: {words} words = ~{minutes:.1f} minutes")
@@ -552,13 +573,7 @@ Return ONLY this JSON with no extra text:
   "thumbnail_text": "4-word thumbnail text"
 }}"""
 
-    r2 = _groq_call(
-        messages=[{"role": "user", "content": part2_prompt}],
-        temperature=0.3,
-        max_tokens=1000,
-        response_format={"type": "json_object"},
-    )
-    meta = json.loads(r2.choices[0].message.content.strip())
+    meta = json.loads(_ai_script_call(part2_prompt, max_tokens=1000, temperature=0.3, json_mode=True).strip())
     _series_name = _series_info[0] if _series_info else _related_series
     _fallback_title = (
         f"The Real Story Behind {_series_name}: {topic['topic']}'s True Life | Dark Crime Decoded"
@@ -756,12 +771,7 @@ Output ONLY the spoken script text, nothing else."""
         _short_prompt = prompt
         if attempt > 0:
             _short_prompt += f"\n\nCRITICAL: Previous attempt was only {len(script_text.split())} words. Write MORE. Need 150-180 words."
-        r = _groq_call(
-            messages=[{"role": "user", "content": _short_prompt}],
-            temperature=0.85,
-            max_tokens=500,
-        )
-        script_text = r.choices[0].message.content.strip()
+        script_text = _ai_script_call(_short_prompt, max_tokens=500, temperature=0.85).strip()
         words   = len(script_text.split())
         seconds = (words / 130) * 60
         print(f"[Script] Short attempt {attempt + 1}: {words} words = ~{seconds:.0f}s")

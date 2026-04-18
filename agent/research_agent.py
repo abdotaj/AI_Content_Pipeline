@@ -16,9 +16,12 @@ except ImportError:
 
 import groq as groq_lib
 from groq import Groq
+from openai import OpenAI
+import os
 from config import GROQ_API_KEY, NICHES, NICHE_WEIGHTS
 
-_groq = Groq(api_key=GROQ_API_KEY)
+_groq   = Groq(api_key=GROQ_API_KEY)
+_openai = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 _FALLBACK_MODELS = [
     "llama-3.3-70b-versatile",   # primary
@@ -47,6 +50,43 @@ def _groq_call(**kwargs):
                 last_err = e
                 break
     raise last_err
+
+
+def openai_research_call(prompt: str) -> str | None:
+    """Use OpenAI gpt-4o-mini for research extraction. Returns raw content string or None."""
+    try:
+        response = _openai.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are a true crime documentary researcher. Extract accurate information from Wikipedia and web sources. Return only valid JSON.",
+                },
+                {"role": "user", "content": prompt},
+            ],
+            max_tokens=2000,
+            temperature=0.1,
+            response_format={"type": "json_object"},
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        print(f"[Research] OpenAI call failed: {e}")
+        return None
+
+
+def _ai_call(prompt: str, temperature: float = 0.1, max_tokens: int = 2000) -> str:
+    """OpenAI gpt-4o-mini first (JSON), fall back to Groq. Returns raw content string."""
+    result = openai_research_call(prompt)
+    if result:
+        print("[Research] OpenAI used")
+        return result
+    print("[Research] OpenAI failed — falling back to Groq")
+    return _groq_call(
+        messages=[{"role": "user", "content": prompt}],
+        temperature=temperature,
+        max_tokens=max_tokens,
+        response_format={"type": "json_object"},
+    ).choices[0].message.content
 
 
 COVERED_TOPICS_PATH = Path("output/covered_topics.json")
@@ -315,13 +355,7 @@ Return ONLY this JSON:
 }}"""
 
     try:
-        response = _groq_call(
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.3,
-            max_tokens=1000,
-            response_format={"type": "json_object"}
-        )
-        data = json.loads(response.choices[0].message.content.strip())
+        data = json.loads(_ai_call(prompt, temperature=0.3, max_tokens=1000))
         all_series = data.get("series", [])
         fresh = [s for s in all_series if s.lower() not in already_done]
         print(f"[Research] Discovered {len(fresh)} fresh series ({len(all_series) - len(fresh)} already covered)")
@@ -357,13 +391,7 @@ Return ONLY this JSON:
   "search_query": "crime dark night investigation"
 }}"""
 
-    response = _groq_call(
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.9,
-        max_tokens=500,
-        response_format={"type": "json_object"}
-    )
-    result = json.loads(response.choices[0].message.content.strip())
+    result = json.loads(_ai_call(prompt, temperature=0.9, max_tokens=500))
     result["niche"] = niche
     result["series"] = series
     return result
@@ -469,13 +497,7 @@ Extract and return JSON:
 Return ONLY valid JSON. If info is not in Wikipedia, use null for strings or [] for arrays."""
 
     try:
-        response = _groq_call(
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=2000,
-            response_format={"type": "json_object"},
-            temperature=0.1,
-        )
-        return json.loads(response.choices[0].message.content)
+        return json.loads(_ai_call(prompt, temperature=0.1, max_tokens=2000))
     except Exception as e:
         print(f"[Research] Wikipedia extraction failed: {e}")
         return None
@@ -526,19 +548,13 @@ Return ONLY this JSON:
 }}"""
 
     try:
-        response = _groq_call(
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.2,
-            max_tokens=800,
-            response_format={"type": "json_object"},
-        )
-        data = json.loads(response.choices[0].message.content.strip())
+        data = json.loads(_ai_call(prompt, temperature=0.2, max_tokens=800))
         facts_out    = data.get("research_facts", [])
         wrong_out    = data.get("research_inaccuracies", [])
         shocking_out = data.get("research_shocking", [])
         print(f"[Research] DuckDuckGo: {len(facts_out)} facts, {len(wrong_out)} inspired-by, {len(shocking_out)} shocking")
     except Exception as e:
-        print(f"[Research] Groq extraction failed: {e} — using raw snippets")
+        print(f"[Research] AI extraction failed: {e} — using raw snippets")
         facts_out    = [raw_facts[:400]]       if raw_facts       else []
         wrong_out    = [raw_inspiration[:400]] if raw_inspiration else []
         shocking_out = [raw_shocking[:400]]    if raw_shocking    else []
@@ -723,13 +739,7 @@ Extract and return JSON:
 Return ONLY valid JSON."""
 
     try:
-        response = _groq_call(
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=2000,
-            response_format={"type": "json_object"},
-            temperature=0.1,
-        )
-        info = json.loads(response.choices[0].message.content)
+        info = json.loads(_ai_call(prompt, temperature=0.1, max_tokens=2000))
         print(f"[Research] Combined research complete: {topic}")
         print(f"[Research] Network: {info.get('network', 'unknown')}")
     except Exception as e:
