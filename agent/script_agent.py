@@ -162,7 +162,6 @@ def _groq_fallback(prompt: str, max_tokens: int, json_mode: bool) -> str:
 
     for model, model_max in [
         ("llama-3.3-70b-versatile", 2000),
-        ("mixtral-8x7b-32768",      2000),
         ("llama-3.1-8b-instant",    1000),
     ]:
         try:
@@ -624,12 +623,12 @@ Series/Movie: {series_label}
 Start immediately with the HOOK. Write spoken words only — no labels, no headers."""
 
     script_text = ""
-    for attempt in range(3):
+    for attempt in range(2):
         _prompt = part1_prompt
         if attempt > 0:
             _prompt += f"""
 
-CRITICAL: Previous attempt was only {len(script_text.split())} words. MINIMUM REQUIRED: 2000 words.
+CRITICAL: Previous attempt was only {len(script_text.split())} words. MINIMUM REQUIRED: 1200 words.
 You must EXPAND every section significantly:
 - HOOK: Add more shocking statistics
 - SERIES INTRO: Describe the show in more detail
@@ -643,8 +642,8 @@ Do not summarize — give full detailed information."""
         words   = len(script_text.split())
         minutes = words / 130
         print(f"[Script] Attempt {attempt + 1}: {words} words = ~{minutes:.1f} minutes")
-        if words >= 1800:
-            print(f"[Script] Length OK: {words} words")
+        if words >= 1200:
+            print(f"[Script] ✅ Length OK: {words} words")
             break
         print(f"[Script] WARNING: Too short ({words} words) — retrying...")
 
