@@ -63,22 +63,67 @@ def openai_script_call(prompt: str, max_tokens: int = 4000, json_mode: bool = Fa
         return None
 
 
-def _ai_script_call(prompt: str, max_tokens: int = 4000, temperature: float = 0.85,
-                    json_mode: bool = False) -> str:
-    """OpenAI gpt-4o-mini first, fall back to Groq. Returns raw content string."""
-    result = openai_script_call(prompt, max_tokens=max_tokens, json_mode=json_mode)
-    if result:
-        print("[Script] OpenAI used")
-        return result
-    print("[Script] OpenAI failed — falling back to Groq")
-    kwargs = dict(
-        messages=[{"role": "user", "content": prompt}],
-        temperature=temperature,
-        max_tokens=max_tokens,
-    )
-    if json_mode:
-        kwargs["response_format"] = {"type": "json_object"}
-    return _groq_call(**kwargs).choices[0].message.content
+def _ai_script_call(prompt: str, max_tokens: int = 1000,
+                    json_mode: bool = False, temperature: float = 0.7) -> str:
+    """OpenAI gpt-4o-mini first, fall back to Groq. Reads API key at call time."""
+    import os as _os
+    import time as _time
+
+    # ── Priority 1: OpenAI ────────────────────────────────────────────────────
+    openai_key = _os.getenv("OPENAI_API_KEY")
+    if openai_key:
+        try:
+            from openai import OpenAI as _OAI
+            client = _OAI(api_key=openai_key)
+            kwargs = {
+                "model": "gpt-4o-mini",
+                "messages": [
+                    {"role": "system", "content": "You are a professional true crime documentary scriptwriter."},
+                    {"role": "user",   "content": prompt},
+                ],
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+            }
+            if json_mode:
+                kwargs["response_format"] = {"type": "json_object"}
+            response = client.chat.completions.create(**kwargs)
+            result = response.choices[0].message.content
+            print("[Script] OpenAI call success ✅")
+            return result
+        except Exception as e:
+            print(f"[Script] OpenAI failed: {e}")
+            print("[Script] Falling back to Groq...")
+
+    # ── Priority 2: Groq fallback ────────────────────────────────────────────
+    try:
+        from groq import Groq as _Groq
+        groq_key = _os.getenv("GROQ_API_KEY")
+        if not groq_key:
+            print("[Script] No Groq key available")
+            return ""
+
+        groq_client = _Groq(api_key=groq_key)
+        _prompt = prompt[:6000] if len(prompt) > 6000 else prompt
+        if len(prompt) > 6000:
+            print("[Script] Truncated prompt for Groq")
+
+        for model in ["llama-3.3-70b-versatile", "mixtral-8x7b-32768", "llama-3.1-8b-instant"]:
+            try:
+                resp = groq_client.chat.completions.create(
+                    model=model,
+                    messages=[{"role": "user", "content": _prompt}],
+                    max_tokens=min(max_tokens, 2000),
+                    temperature=temperature,
+                )
+                print(f"[Script] Groq {model} success")
+                return resp.choices[0].message.content
+            except Exception as e:
+                print(f"[Script] Groq {model} failed: {e}")
+                _time.sleep(3)
+    except Exception as e:
+        print(f"[Script] All AI calls failed: {e}")
+
+    return ""
 
 
 title_format = "Dark Crime Decoded: {person} & {series} — {curiosity_hook}"

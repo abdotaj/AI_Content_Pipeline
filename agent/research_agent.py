@@ -74,19 +74,46 @@ def openai_research_call(prompt: str) -> str | None:
         return None
 
 
-def _ai_call(prompt: str, temperature: float = 0.1, max_tokens: int = 2000) -> str:
-    """OpenAI gpt-4o-mini first (JSON), fall back to Groq. Returns raw content string."""
-    result = openai_research_call(prompt)
-    if result:
-        print("[Research] OpenAI used")
-        return result
-    print("[Research] OpenAI failed — falling back to Groq")
-    return _groq_call(
+def _ai_call(prompt: str, temperature: float = 0.3,
+             max_tokens: int = 1000, json_mode: bool = True) -> str:
+    """OpenAI gpt-4o-mini first, fall back to Groq. Reads API key at call time."""
+    import os as _os
+
+    # ── Priority 1: OpenAI ────────────────────────────────────────────────────
+    openai_key = _os.getenv("OPENAI_API_KEY")
+    if openai_key:
+        try:
+            from openai import OpenAI as _OAI
+            client = _OAI(api_key=openai_key)
+            kwargs = {
+                "model": "gpt-4o-mini",
+                "messages": [
+                    {"role": "system", "content": "You are a true crime documentary researcher. Return accurate information only."},
+                    {"role": "user",   "content": prompt},
+                ],
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+            }
+            if json_mode:
+                kwargs["response_format"] = {"type": "json_object"}
+            response = client.chat.completions.create(**kwargs)
+            result = response.choices[0].message.content
+            print("[Research] OpenAI call success ✅")
+            return result
+        except Exception as e:
+            print(f"[Research] OpenAI failed: {e}")
+            print("[Research] Falling back to Groq...")
+
+    # ── Priority 2: Groq fallback ────────────────────────────────────────────
+    print("[Research] Falling back to Groq")
+    kwargs = dict(
         messages=[{"role": "user", "content": prompt}],
         temperature=temperature,
         max_tokens=max_tokens,
-        response_format={"type": "json_object"},
-    ).choices[0].message.content
+    )
+    if json_mode:
+        kwargs["response_format"] = {"type": "json_object"}
+    return _groq_call(**kwargs).choices[0].message.content
 
 
 COVERED_TOPICS_PATH = Path("output/covered_topics.json")
