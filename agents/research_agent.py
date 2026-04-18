@@ -16,12 +16,10 @@ except ImportError:
 
 import groq as groq_lib
 from groq import Groq
-from openai import OpenAI
 import os
 from config import GROQ_API_KEY, NICHES, NICHE_WEIGHTS
 
-_groq   = Groq(api_key=GROQ_API_KEY)
-_openai = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+_groq = Groq(api_key=GROQ_API_KEY)
 
 _FALLBACK_MODELS = [
     "llama-3.3-70b-versatile",   # primary
@@ -52,84 +50,83 @@ def _groq_call(**kwargs):
     raise last_err
 
 
-def openai_research_call(prompt: str) -> str | None:
-    """Use OpenAI gpt-4o-mini for research extraction. Returns raw content string or None."""
-    try:
-        response = _openai.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {
-                    "role": "system",
-                    "content": "You are a true crime documentary researcher. Extract accurate information from Wikipedia and web sources. Return only valid JSON.",
-                },
-                {"role": "user", "content": prompt},
-            ],
-            max_tokens=2000,
-            temperature=0.1,
-            response_format={"type": "json_object"},
-        )
-        return response.choices[0].message.content
-    except Exception as e:
-        print(f"[Research] OpenAI call failed: {e}")
+def _openai_direct_call(prompt: str, max_tokens: int = 2000,
+                        json_mode: bool = True, temperature: float = 0.3) -> str | None:
+    import os
+    import requests as _req
+
+    api_key = os.getenv("OPENAI_API_KEY", "")
+    if not api_key:
+        print("[Research] No OpenAI key")
         return None
 
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "User-Agent": "DarkCrimeDecoded/1.0",
+    }
 
-def _check_openai_connectivity() -> bool:
-    """Quick TCP check to api.openai.com:443 before attempting API call."""
-    import socket
-    try:
-        socket.setdefaulttimeout(10)
-        socket.socket(socket.AF_INET, socket.SOCK_STREAM).connect(("api.openai.com", 443))
-        return True
-    except Exception as e:
-        print(f"[Research] OpenAI unreachable: {e}")
-        return False
+    payload = {
+        "model": "gpt-4o-mini",
+        "messages": [
+            {
+                "role": "system",
+                "content": "You are a true crime documentary researcher. Extract accurate information from Wikipedia and web sources. Return only valid JSON.",
+            },
+            {
+                "role": "user",
+                "content": prompt,
+            }
+        ],
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+    }
+
+    if json_mode:
+        payload["response_format"] = {"type": "json_object"}
+
+    for attempt in range(3):
+        try:
+            print(f"[Research] OpenAI attempt {attempt + 1}...")
+            response = _req.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers=headers,
+                json=payload,
+                timeout=60,
+            )
+
+            print(f"[Research] OpenAI status: {response.status_code}")
+
+            if response.status_code == 200:
+                data = response.json()
+                text = data["choices"][0]["message"]["content"]
+                words = len(text.split())
+                print(f"[Research] OpenAI success: {words} words ✅")
+                return text
+            else:
+                print(f"[Research] OpenAI error: {response.text[:300]}")
+
+        except _req.exceptions.Timeout:
+            print(f"[Research] OpenAI timeout attempt {attempt + 1}")
+        except Exception as e:
+            print(f"[Research] OpenAI attempt {attempt + 1} failed: {e}")
+
+        import time as _t
+        _t.sleep(10)
+
+    print("[Research] OpenAI all attempts failed")
+    return None
 
 
 def _ai_call(prompt: str, temperature: float = 0.3,
              max_tokens: int = 1000, json_mode: bool = True) -> str:
-    """OpenAI gpt-4o-mini first (connectivity check + 3 retries), fall back to Groq."""
-    import os
-    import time
+    """OpenAI gpt-4o-mini first (requests-based), fall back to Groq."""
+    result = _openai_direct_call(prompt, max_tokens=max_tokens,
+                                 json_mode=json_mode, temperature=temperature)
+    if result:
+        return result
 
-    # ── Priority 1: OpenAI ────────────────────────────────────────────────────
-    openai_key = os.getenv("OPENAI_API_KEY")
-    if openai_key:
-        if not _check_openai_connectivity():
-            print("[Research] Skipping OpenAI — not reachable")
-        else:
-            from openai import OpenAI
-            for attempt in range(3):
-                try:
-                    client = OpenAI(
-                        api_key=openai_key,
-                        timeout=120.0,
-                        max_retries=3,
-                    )
-                    kwargs = {
-                        "model": "gpt-4o-mini",
-                        "messages": [
-                            {"role": "system", "content": "You are a true crime documentary researcher. Return accurate information only."},
-                            {"role": "user",   "content": prompt},
-                        ],
-                        "max_tokens": max_tokens,
-                        "temperature": temperature,
-                    }
-                    if json_mode:
-                        kwargs["response_format"] = {"type": "json_object"}
-                    response = client.chat.completions.create(**kwargs)
-                    result = response.choices[0].message.content
-                    print(f"[Research] OpenAI call success ✅ (attempt {attempt + 1})")
-                    return result
-                except Exception as e:
-                    print(f"[Research] OpenAI attempt {attempt + 1} failed: {e}")
-                    if attempt < 2:
-                        wait = (attempt + 1) * 10
-                        print(f"[Research] Waiting {wait}s...")
-                        time.sleep(wait)
-            print("[Research] OpenAI all attempts failed")
-
-    # ── Priority 2: Groq fallback ────────────────────────────────────────────
+    # ── Groq fallback ────────────────────────────────────────────────────────
     print("[Research] Falling back to Groq")
     max_chars = 3000
     if len(prompt) > max_chars:
