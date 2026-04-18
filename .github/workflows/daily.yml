@@ -74,6 +74,38 @@ jobs:
                   print(f'BLOCKED {name}: {e}')
           "
 
+      - name: Test OpenAI with requests
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          python3 -c "
+          import requests
+          import os
+
+          key = os.environ.get('OPENAI_API_KEY', '')
+          print(f'Key set: {bool(key)}')
+          print(f'Key starts with: {key[:15]}')
+
+          try:
+              r = requests.post(
+                  'https://api.openai.com/v1/chat/completions',
+                  headers={
+                      'Authorization': f'Bearer {key}',
+                      'Content-Type': 'application/json'
+                  },
+                  json={
+                      'model': 'gpt-4o-mini',
+                      'messages': [{'role': 'user', 'content': 'Say OK'}],
+                      'max_tokens': 5
+                  },
+                  timeout=30
+              )
+              print(f'Status: {r.status_code}')
+              print(f'Response: {r.text[:200]}')
+          except Exception as e:
+              print(f'Failed: {e}')
+          "
+
       - name: Write YouTube token (Arabic channel)
         env:
           YOUTUBE_TOKEN_AR: ${{ secrets.YOUTUBE_TOKEN_JSON_DARKCRIMED_AR }}
