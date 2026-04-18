@@ -1719,10 +1719,10 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
                 else:
                     print(f"[Video] Short duration OK: {_dur:.1f}s")
             else:
-                if _dur < 600:
-                    print(f"[Video] WARNING: Long audio too short: {_min:.1f} min (need 10-12 min)")
-                elif _dur > 720:
-                    print(f"[Video] WARNING: Long audio too long: {_min:.1f} min (need 10-12 min)")
+                if _dur < 900:
+                    print(f"[Video] WARNING: Long audio too short: {_min:.1f} min (need 15-19 min)")
+                elif _dur > 1140:
+                    print(f"[Video] WARNING: Long audio too long: {_min:.1f} min (need 15-19 min)")
                 else:
                     print(f"[Video] Long duration OK: {_min:.1f} min")
         except Exception:

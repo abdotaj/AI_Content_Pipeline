@@ -395,36 +395,36 @@ TONE: Celebrate BOTH the real story AND the show. The show is great entertainmen
 
 Use this EXACT structure (no section labels in the output — spoken words only):
 
-HOOK (80 words = ~37 seconds):
+HOOK (100 words = ~46 seconds):
 - Most fascinating single fact about this real story
 - Something that makes the viewer want to know more
 - Example: "{series_label} introduced millions of people to this incredible true story. But the real events were even more extraordinary than anything the show could portray."
 
-SERIES INTRO (200 words = ~1.5 minutes):
+SERIES INTRO (300 words = ~2.3 minutes):
 - Celebrate what {series_label} showed the world — it is great television
 - Why millions of people loved it and why it matters
 - Build excitement: the real story that inspired it is even more incredible
 - Name {series_label} directly and what made it famous
 
-REAL BACKGROUND (350 words = ~2.7 minutes):
+REAL BACKGROUND (500 words = ~3.8 minutes):
 - Real person's early life with specific facts
 - Family, childhood, origins — real dates, real places, real names
 - The fascinating true events BEFORE the series timeline begins
 
-MAIN STORY (500 words = ~3.8 minutes):
+MAIN STORY (800 words = ~6.2 minutes):
 - Full chronological real story
 - Key events the series captured — what {series_label} got RIGHT with evidence
 - How history inspired {series_label} and why filmmakers made their creative choices
 - Real quotes from people involved
 - Specific dates and facts throughout
 
-SHOCKING REVELATIONS (250 words = ~1.9 minutes):
+SHOCKING REVELATIONS (400 words = ~3.1 minutes):
 - 3-4 fascinating real facts that make the true story even more incredible than {series_label}
 - Remarkable real details the show's runtime couldn't fully capture
 - Things that would amaze even the biggest fans of the show
 - Real impact on real people and real history
 
-REAL STORY VS SCREEN STORY (150 words = ~1.2 minutes):
+REAL STORY VS SCREEN STORY (250 words = ~1.9 minutes):
 ONLY write a comparison if you have a VERIFIED, SPECIFIC difference with different facts or numbers.
 Format: "In {series_label}, they showed X. In reality, Y happened."
 NEVER write the same number or fact twice as if they are different.
@@ -438,14 +438,14 @@ If no specific verified difference exists, use ONE of these universal film truth
 
 End this section with: "{series_label} may have taken creative liberties, but it captures the spirit of the real story. The real {wiki_real_person} was just as fascinating — if not more so — than the screen version."
 
-CONCLUSION (80 words = ~37 seconds):
+CONCLUSION (150 words = ~1.2 minutes):
 - What happened after the events {series_label} depicted
 - Where the real people are now
 - One question to tease the next video
 - End with: "Follow Dark Crime Decoded for more real stories behind your favourite crime series"
 
-TOTAL TARGET: 1500 words minimum, 1600 words maximum.
-SECTION TOTALS: 80+200+350+500+250+150+80 = 1610 words = ~12.4 minutes at 130 wpm.
+TOTAL TARGET: 2000 words minimum, 2500 words maximum.
+SECTION TOTALS: 100+300+500+800+400+250+150 = 2500 words = ~19.2 minutes at 130 wpm.
 
 PRISON SENTENCE RULE (critical for Arabic translation):
 Always write "served X years IN PRISON" or "spent X years BEHIND BARS" — never just "served X years".
@@ -494,19 +494,26 @@ Start immediately with the HOOK. Write spoken words only — no labels, no heade
         if attempt > 0:
             _prompt += f"""
 
-CRITICAL WARNING: Your previous attempt was only {len(script_text.split())} words. That is NOT acceptable.
-You MUST write AT LEAST 1500 words. EXPAND every single section.
-Add more specific facts, dates, names, and real events. Do not summarize."""
+CRITICAL: Previous attempt was only {len(script_text.split())} words. MINIMUM REQUIRED: 2000 words.
+You must EXPAND every section significantly:
+- HOOK: Add more shocking statistics
+- SERIES INTRO: Describe the show in more detail
+- REAL BACKGROUND: Add childhood, family, early life details
+- MAIN STORY: Add more specific events with exact dates
+- SHOCKING REVELATIONS: Add 2 more unknown facts
+- REAL VS SCREEN: Add 3 specific scene comparisons
+- CONCLUSION: Add what happened to key people afterwards
+Do not summarize — give full detailed information."""
         r1 = _groq_call(
             messages=[{"role": "user", "content": _prompt}],
             temperature=0.85,
-            max_tokens=3500,
+            max_tokens=6000,
         )
         script_text = validate_script(r1.choices[0].message.content.strip())
         words   = len(script_text.split())
         minutes = words / 130
         print(f"[Script] Attempt {attempt + 1}: {words} words = ~{minutes:.1f} minutes")
-        if words >= 1400:
+        if words >= 1800:
             print(f"[Script] Length OK: {words} words")
             break
         print(f"[Script] WARNING: Too short ({words} words) — retrying...")
@@ -548,7 +555,7 @@ Return ONLY this JSON with no extra text:
     r2 = _groq_call(
         messages=[{"role": "user", "content": part2_prompt}],
         temperature=0.3,
-        max_tokens=800,
+        max_tokens=1000,
         response_format={"type": "json_object"},
     )
     meta = json.loads(r2.choices[0].message.content.strip())
