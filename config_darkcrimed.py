@@ -76,8 +76,8 @@ NICHE_WEIGHTS = [0.10, 0.10, 0.10, 0.08, 0.08,
                  0.06, 0.05, 0.04, 0.01, 0.01]
 
 VIDEOS_PER_DAY = 1
-LONG_VIDEO_DURATION  = 900   # 15 minutes target (12-20 min = 720-1200 s); audio drives actual length
-SHORT_VIDEO_DURATION = 90    # 60-90 seconds; audio drives actual length
+LONG_VIDEO_DURATION  = 660   # 11 minutes target (10-12 min = 600-720 s); audio drives actual length
+SHORT_VIDEO_DURATION = 75    # 75 seconds target (60-90 s range); audio drives actual length
 EDGETTS_RATE         = "+0%"   # edge-tts speaking rate for fallback TTS (+0% = normal speed)
 # Legacy aliases — kept for backward compatibility
 VIDEO_DURATION_SECONDS = LONG_VIDEO_DURATION

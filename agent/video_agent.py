@@ -1705,6 +1705,28 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
         else:
             audio_path = generate_voiceover(script_data["script"], video_id, language)
         print(f"[Video] Audio ready: {audio_path}")
+        # Duration check
+        try:
+            from moviepy import AudioFileClip as _AC
+            _dur = _AC(audio_path).duration
+            _min = _dur / 60
+            _is_short_check = "short" in video_id
+            if _is_short_check:
+                if _dur < 60:
+                    print(f"[Video] WARNING: Short audio too short: {_dur:.1f}s (need 60-90s)")
+                elif _dur > 90:
+                    print(f"[Video] WARNING: Short audio too long: {_dur:.1f}s (need 60-90s)")
+                else:
+                    print(f"[Video] Short duration OK: {_dur:.1f}s")
+            else:
+                if _dur < 600:
+                    print(f"[Video] WARNING: Long audio too short: {_min:.1f} min (need 10-12 min)")
+                elif _dur > 720:
+                    print(f"[Video] WARNING: Long audio too long: {_min:.1f} min (need 10-12 min)")
+                else:
+                    print(f"[Video] Long duration OK: {_min:.1f} min")
+        except Exception:
+            pass
     except Exception as e:
         print(f"[Video] CRASH at voiceover: {e}")
         traceback.print_exc()

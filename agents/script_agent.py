@@ -406,25 +406,25 @@ SERIES INTRO (200 words = ~1.5 minutes):
 - Build excitement: the real story that inspired it is even more incredible
 - Name {series_label} directly and what made it famous
 
-REAL BACKGROUND (400 words = ~3 minutes):
+REAL BACKGROUND (350 words = ~2.7 minutes):
 - Real person's early life with specific facts
 - Family, childhood, origins — real dates, real places, real names
 - The fascinating true events BEFORE the series timeline begins
 
-MAIN STORY (800 words = ~6 minutes):
+MAIN STORY (500 words = ~3.8 minutes):
 - Full chronological real story
 - Key events the series captured — what {series_label} got RIGHT with evidence
 - How history inspired {series_label} and why filmmakers made their creative choices
 - Real quotes from people involved
 - Specific dates and facts throughout
 
-SHOCKING REVELATIONS (400 words = ~3 minutes):
+SHOCKING REVELATIONS (250 words = ~1.9 minutes):
 - 3-4 fascinating real facts that make the true story even more incredible than {series_label}
 - Remarkable real details the show's runtime couldn't fully capture
 - Things that would amaze even the biggest fans of the show
 - Real impact on real people and real history
 
-REAL STORY VS SCREEN STORY (200 words = ~1.5 minutes):
+REAL STORY VS SCREEN STORY (150 words = ~1.2 minutes):
 ONLY write a comparison if you have a VERIFIED, SPECIFIC difference with different facts or numbers.
 Format: "In {series_label}, they showed X. In reality, Y happened."
 NEVER write the same number or fact twice as if they are different.
@@ -438,13 +438,14 @@ If no specific verified difference exists, use ONE of these universal film truth
 
 End this section with: "{series_label} may have taken creative liberties, but it captures the spirit of the real story. The real {wiki_real_person} was just as fascinating — if not more so — than the screen version."
 
-CONCLUSION (150 words = ~1.2 minutes):
+CONCLUSION (80 words = ~37 seconds):
 - What happened after the events {series_label} depicted
 - Where the real people are now
 - One question to tease the next video
 - End with: "Follow Dark Crime Decoded for more real stories behind your favourite crime series"
 
-TOTAL TARGET: 2000 words minimum, 2500 words maximum.
+TOTAL TARGET: 1500 words minimum, 1600 words maximum.
+SECTION TOTALS: 80+200+350+500+250+150+80 = 1610 words = ~12.4 minutes at 130 wpm.
 
 PRISON SENTENCE RULE (critical for Arabic translation):
 Always write "served X years IN PRISON" or "spent X years BEHIND BARS" — never just "served X years".
@@ -487,15 +488,28 @@ Series/Movie: {series_label}
 
 Start immediately with the HOOK. Write spoken words only — no labels, no headers."""
 
-    r1 = _groq_call(
-        messages=[{"role": "user", "content": part1_prompt}],
-        temperature=0.85,
-        max_tokens=5000,
-    )
-    script_text = validate_script(r1.choices[0].message.content.strip())
-    words = len(script_text.split())
-    minutes = words / 130
-    print(f"[Script] {words} words = ~{minutes:.1f} minutes")
+    script_text = ""
+    for attempt in range(3):
+        _prompt = part1_prompt
+        if attempt > 0:
+            _prompt += f"""
+
+CRITICAL WARNING: Your previous attempt was only {len(script_text.split())} words. That is NOT acceptable.
+You MUST write AT LEAST 1500 words. EXPAND every single section.
+Add more specific facts, dates, names, and real events. Do not summarize."""
+        r1 = _groq_call(
+            messages=[{"role": "user", "content": _prompt}],
+            temperature=0.85,
+            max_tokens=3500,
+        )
+        script_text = validate_script(r1.choices[0].message.content.strip())
+        words   = len(script_text.split())
+        minutes = words / 130
+        print(f"[Script] Attempt {attempt + 1}: {words} words = ~{minutes:.1f} minutes")
+        if words >= 1400:
+            print(f"[Script] Length OK: {words} words")
+            break
+        print(f"[Script] WARNING: Too short ({words} words) — retrying...")
 
     # ── PART 2: Generate metadata only (title, hook, captions, etc.) ────────
     _series_info    = get_series_for_person(topic["topic"])
@@ -717,6 +731,7 @@ But the real story has even more shocking twists.
 Follow Dark Crime Decoded for the full story.
 
 PRISON SENTENCE RULE: Always write "served X years in prison" — never just "served X years".
+TOTAL TARGET: 150-180 words for 70-83 seconds.
 STRICT RULES:
 - Count words — output must be 150-180 words total
 - Every sentence = one specific fact (name, number, date, or place)
@@ -729,12 +744,30 @@ Use this context from the full script:
 
 Output ONLY the spoken script text, nothing else."""
 
-    r = _groq_call(
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.85,
-        max_tokens=600,
-    )
-    script_text = r.choices[0].message.content.strip()
+    script_text = ""
+    for attempt in range(2):
+        _short_prompt = prompt
+        if attempt > 0:
+            _short_prompt += f"\n\nCRITICAL: Previous attempt was only {len(script_text.split())} words. Write MORE. Need 150-180 words."
+        r = _groq_call(
+            messages=[{"role": "user", "content": _short_prompt}],
+            temperature=0.85,
+            max_tokens=500,
+        )
+        script_text = r.choices[0].message.content.strip()
+        words   = len(script_text.split())
+        seconds = (words / 130) * 60
+        print(f"[Script] Short attempt {attempt + 1}: {words} words = ~{seconds:.0f}s")
+        if words >= 130:
+            print(f"[Script] Short length OK: {words} words")
+            break
+        print(f"[Script] Short too short ({words} words) — retrying...")
+
+    # Trim if over 200 words
+    words_list = script_text.split()
+    if len(words_list) > 200:
+        script_text = " ".join(words_list[:180])
+        print(f"[Script] Short trimmed to 180 words")
 
     short_data = {
         "title":           en_long_script.get("title", ""),  # overwritten below
