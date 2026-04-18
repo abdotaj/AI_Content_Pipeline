@@ -115,8 +115,10 @@ def _ai_script_call(prompt: str, max_tokens: int = 1000,
             try:
                 client = OpenAI(
                     api_key=openai_key,
-                    timeout=httpx.Timeout(120.0, connect=30.0, read=90.0),
-                    max_retries=2,
+                    http_client=httpx.Client(
+                        timeout=httpx.Timeout(120.0, connect=30.0),
+                        transport=httpx.HTTPTransport(retries=3),
+                    ),
                 )
                 kwargs = {
                     "model": "gpt-4o-mini",
