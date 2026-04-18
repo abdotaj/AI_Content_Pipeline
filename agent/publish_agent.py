@@ -49,7 +49,7 @@ def _get_video_duration(video_path: str) -> float:
         return 999.0
 
 
-def upload_to_youtube(video_path: str, script_data: dict) -> str:
+def upload_to_youtube(video_path: str, script_data: dict, token_file: str = None) -> str:
     import traceback as _tb
 
     try:
@@ -61,7 +61,7 @@ def upload_to_youtube(video_path: str, script_data: dict) -> str:
         print("[Publish] Install: pip install google-api-python-client google-auth")
         return ""
 
-    TOKEN_FILE = _YOUTUBE_TOKEN_FILE
+    TOKEN_FILE = token_file or _YOUTUBE_TOKEN_FILE
     print(f"[Publish] Starting upload: {video_path}")
     print(f"[Publish] Token file: {TOKEN_FILE}")
 
@@ -531,7 +531,7 @@ if __name__ == "__main__":
 
     # ── Parse --channel argument ─────────────────────────────
     _CHANNEL_TOKEN_MAP = {
-        "darkcrimed":    "youtube_token_darkcrimed.json",
+        "darkcrimed":    "youtube_token_darkcrimed_en.json",
         "darkcrimed_en": "youtube_token_darkcrimed_en.json",
         "darkcrimed_ar": "youtube_token_darkcrimed_ar.json",
         "shopmart":      "youtube_token_shopmart.json",

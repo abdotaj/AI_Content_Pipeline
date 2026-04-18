@@ -93,7 +93,9 @@ FINAL_DIR   = "output/dark_crime/final"
 CONTENT_DIR = "content/dark_crime"
 
 # YouTube token file for this channel
-YOUTUBE_TOKEN_FILE = os.getenv("YOUTUBE_TOKEN_FILE_DARKCRIMED", "youtube_token_darkcrimed.json")
+YOUTUBE_TOKEN_FILE    = os.getenv("YOUTUBE_TOKEN_FILE_DARKCRIMED", "youtube_token_darkcrimed_en.json")
+YOUTUBE_TOKEN_FILE_EN = "youtube_token_darkcrimed_en.json"
+YOUTUBE_TOKEN_FILE_AR = "youtube_token_darkcrimed_ar.json"
 
 # --- Schedule ---
 SCHEDULE_HOUR   = 7

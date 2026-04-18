@@ -30,13 +30,12 @@ import config_darkcrimed
 sys.modules["config"] = config_darkcrimed
 
 from config_darkcrimed import (
-    FINAL_DIR, CONTENT_DIR, YOUTUBE_TOKEN_FILE, SHORT_VIDEO_DURATION,
+    FINAL_DIR, CONTENT_DIR, YOUTUBE_TOKEN_FILE_EN, YOUTUBE_TOKEN_FILE_AR,
+    SHORT_VIDEO_DURATION,
 )
 
-# Write YouTube token from env secret (CI) or use existing file (local)
-_yt_token_json = os.getenv("YOUTUBE_TOKEN_JSON_DARKCRIMED")
-if _yt_token_json:
-    Path(YOUTUBE_TOKEN_FILE).write_text(_yt_token_json, encoding="utf-8")
+# Token files are written by daily.yml steps before pipeline runs (CI)
+# Local: use existing youtube_token_darkcrimed_en/ar.json files
 
 from agent.research_agent import research_topics, research_series, mark_covered, is_fictional
 from agent.script_agent   import write_script, write_short_script, translate_script
@@ -285,7 +284,7 @@ def run_pipeline():
     if en_long_path:
         try:
             print("[Publish] Uploading English long to YouTube...")
-            yt_en_url = upload_to_youtube(en_long_path, en_long)
+            yt_en_url = upload_to_youtube(en_long_path, en_long, token_file=YOUTUBE_TOKEN_FILE_EN)
             send_message(
                 f"✅ English Video Published on YouTube!\n\n"
                 f"🎬 {en_long.get('title', '')}\n"
@@ -301,7 +300,7 @@ def run_pipeline():
     if ar_long_path:
         try:
             print("[Publish] Uploading Arabic long to YouTube...")
-            yt_ar_url = upload_to_youtube(ar_long_path, ar_long)
+            yt_ar_url = upload_to_youtube(ar_long_path, ar_long, token_file=YOUTUBE_TOKEN_FILE_AR)
             send_message(
                 f"✅ تم نشر الفيديو العربي على يوتيوب!\n\n"
                 f"🎬 {ar_long.get('title', '')}\n"
