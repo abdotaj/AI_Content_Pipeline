@@ -53,11 +53,24 @@ jobs:
           pip install -r requirements.txt
           pip install "imageio[ffmpeg]" opencv-python-headless
 
-      - name: Write YouTube token (Arabic)
-        run: echo '${{ secrets.YOUTUBE_TOKEN_JSON_DARKCRIMED_AR }}' > youtube_token_darkcrimed_ar.json
+      - name: Write YouTube token (Arabic channel)
+        env:
+          YOUTUBE_TOKEN_AR: ${{ secrets.YOUTUBE_TOKEN_JSON_DARKCRIMED_AR }}
+        run: echo "$YOUTUBE_TOKEN_AR" > youtube_token_darkcrimed_ar.json
 
-      - name: Write YouTube token (English)
-        run: echo '${{ secrets.YOUTUBE_TOKEN_JSON_DARKCRIMED_EN }}' > youtube_token_darkcrimed_en.json
+      - name: Write YouTube token (English channel)
+        env:
+          YOUTUBE_TOKEN_EN: ${{ secrets.YOUTUBE_TOKEN_JSON_DARKCRIMED_EN }}
+        run: echo "$YOUTUBE_TOKEN_EN" > youtube_token_darkcrimed_en.json
+
+      - name: Verify tokens
+        run: |
+          echo "=== Token files ==="
+          ls -la youtube_token_darkcrimed_ar.json youtube_token_darkcrimed_en.json
+          echo "=== AR token channel ==="
+          python3 -c "import json; d=json.load(open('youtube_token_darkcrimed_ar.json')); print(d.get('channel_id','MISSING'))"
+          echo "=== EN token channel ==="
+          python3 -c "import json; d=json.load(open('youtube_token_darkcrimed_en.json')); print(d.get('channel_id','MISSING'))"
 
       - name: Run Dark Crime pipeline
         env:
