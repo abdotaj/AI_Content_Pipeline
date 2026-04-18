@@ -63,8 +63,20 @@ def openai_script_call(prompt: str, max_tokens: int = 4000, json_mode: bool = Fa
         return None
 
 
+def _check_openai_connectivity() -> bool:
+    """Quick TCP check to api.openai.com:443 before attempting API call."""
+    import socket
+    try:
+        socket.setdefaulttimeout(10)
+        socket.socket(socket.AF_INET, socket.SOCK_STREAM).connect(("api.openai.com", 443))
+        return True
+    except Exception as e:
+        print(f"[Script] OpenAI unreachable: {e}")
+        return False
+
+
 def _groq_fallback(prompt: str, max_tokens: int, json_mode: bool) -> str:
-    """Groq fallback with prompt truncation and 3-model retry chain."""
+    """Groq fallback with aggressive prompt truncation and 3-model retry chain."""
     import os
     import time
 
@@ -76,9 +88,12 @@ def _groq_fallback(prompt: str, max_tokens: int, json_mode: bool) -> str:
     from groq import Groq
     groq_client = Groq(api_key=groq_key)
 
-    if len(prompt) > 4000:
-        prompt = prompt[:4000]
-        print("[Script] Prompt truncated to 4000 chars for Groq")
+    # Keep beginning + end to preserve context within 3000-char limit
+    max_chars = 3000
+    if len(prompt) > max_chars:
+        half   = max_chars // 2
+        prompt = prompt[:half] + "\n...\n" + prompt[-half:]
+        print(f"[Script] Prompt truncated to {max_chars} chars for Groq")
 
     for model, model_max in [
         ("llama-3.3-70b-versatile", 2000),
@@ -103,45 +118,45 @@ def _groq_fallback(prompt: str, max_tokens: int, json_mode: bool) -> str:
 
 def _ai_script_call(prompt: str, max_tokens: int = 1000,
                     json_mode: bool = False, temperature: float = 0.7) -> str:
-    """OpenAI gpt-4o-mini first (3 retries + backoff), fall back to Groq."""
+    """OpenAI gpt-4o-mini first (connectivity check + 3 retries), fall back to Groq."""
     import os
     import time
-    import httpx
 
     openai_key = os.getenv("OPENAI_API_KEY")
     if openai_key:
-        from openai import OpenAI
-        for attempt in range(3):
-            try:
-                client = OpenAI(
-                    api_key=openai_key,
-                    http_client=httpx.Client(
-                        timeout=httpx.Timeout(120.0, connect=30.0),
-                        transport=httpx.HTTPTransport(retries=3),
-                    ),
-                )
-                kwargs = {
-                    "model": "gpt-4o-mini",
-                    "messages": [
-                        {"role": "system", "content": "You are a professional true crime documentary scriptwriter."},
-                        {"role": "user",   "content": prompt},
-                    ],
-                    "max_tokens": max_tokens,
-                    "temperature": temperature,
-                }
-                if json_mode:
-                    kwargs["response_format"] = {"type": "json_object"}
-                response = client.chat.completions.create(**kwargs)
-                result = response.choices[0].message.content
-                print(f"[Script] OpenAI success ✅ (attempt {attempt + 1})")
-                return result
-            except Exception as e:
-                print(f"[Script] OpenAI attempt {attempt + 1} failed: {e}")
-                if attempt < 2:
-                    wait = (attempt + 1) * 10
-                    print(f"[Script] Waiting {wait}s...")
-                    time.sleep(wait)
-        print("[Script] OpenAI all attempts failed")
+        if not _check_openai_connectivity():
+            print("[Script] Skipping OpenAI — not reachable")
+        else:
+            from openai import OpenAI
+            for attempt in range(3):
+                try:
+                    client = OpenAI(
+                        api_key=openai_key,
+                        timeout=120.0,
+                        max_retries=3,
+                    )
+                    kwargs = {
+                        "model": "gpt-4o-mini",
+                        "messages": [
+                            {"role": "system", "content": "You are a professional true crime documentary scriptwriter."},
+                            {"role": "user",   "content": prompt},
+                        ],
+                        "max_tokens": max_tokens,
+                        "temperature": temperature,
+                    }
+                    if json_mode:
+                        kwargs["response_format"] = {"type": "json_object"}
+                    response = client.chat.completions.create(**kwargs)
+                    result = response.choices[0].message.content
+                    print(f"[Script] OpenAI success ✅ (attempt {attempt + 1})")
+                    return result
+                except Exception as e:
+                    print(f"[Script] OpenAI attempt {attempt + 1} failed: {e}")
+                    if attempt < 2:
+                        wait = (attempt + 1) * 10
+                        print(f"[Script] Waiting {wait}s...")
+                        time.sleep(wait)
+            print("[Script] OpenAI all attempts failed")
 
     return _groq_fallback(prompt, max_tokens, json_mode)
 
