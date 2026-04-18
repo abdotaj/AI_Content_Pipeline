@@ -60,6 +60,82 @@ def generate_voiceover_edgetts(script_text: str, filename: str, language: str = 
     return audio_path
 
 
+def generate_voiceover_openai(script_text: str, filename: str, language: str = "english") -> str:
+    """Generate voiceover using OpenAI TTS (tts-1-hd). Falls back to edge-tts on failure."""
+    import openai
+
+    api_key = os.getenv("OPENAI_API_KEY", "")
+    if not api_key:
+        print("[Voice] OpenAI API key not set — skipping")
+        return ""
+
+    client = openai.OpenAI(api_key=api_key)
+    voice  = "onyx"  # deep male, works well for both English and Arabic true crime
+    audio_path = os.path.join(AUDIO_DIR, f"{filename}.mp3")
+
+    print(f"[Voice] OpenAI TTS: voice={voice} language={language}")
+
+    chunks = _split_text(script_text, max_chars=4000)
+    print(f"[Voice] OpenAI TTS: {len(chunks)} chunk(s)")
+
+    chunk_files: list[str] = []
+    try:
+        for i, chunk in enumerate(chunks):
+            chunk_path = os.path.join(AUDIO_DIR, f"{filename}_oai_{i}.mp3")
+            response = client.audio.speech.create(
+                model="tts-1-hd",
+                voice=voice,
+                input=chunk,
+                speed=1.0,
+            )
+            response.stream_to_file(chunk_path)
+            chunk_files.append(chunk_path)
+            print(f"[Voice] OpenAI chunk {i + 1}/{len(chunks)} done")
+
+        if len(chunk_files) == 1:
+            import shutil
+            shutil.move(chunk_files[0], audio_path)
+        else:
+            merged = False
+            import subprocess
+            list_path = os.path.join(AUDIO_DIR, f"{filename}_oai_list.txt")
+            with open(list_path, "w", encoding="utf-8") as lf:
+                for cf in chunk_files:
+                    lf.write(f"file '{os.path.abspath(cf)}'\n")
+            ffmpeg_bin = _get_ffmpeg()
+            if ffmpeg_bin:
+                try:
+                    subprocess.run(
+                        [ffmpeg_bin, "-y", "-f", "concat", "-safe", "0",
+                         "-i", list_path, "-c", "copy", audio_path],
+                        check=True, capture_output=True,
+                    )
+                    merged = True
+                except Exception as e:
+                    print(f"[Voice] OpenAI ffmpeg merge failed: {e}")
+            if not merged:
+                merged = _merge_chunks_pydub(chunk_files, audio_path)
+            if not merged:
+                import shutil
+                shutil.copy(chunk_files[0], audio_path)
+                print("[Voice] OpenAI using first chunk only")
+            for f in chunk_files:
+                try: os.remove(f)
+                except OSError: pass
+            try: os.remove(list_path)
+            except OSError: pass
+
+        print(f"[Voice] OpenAI TTS complete: {audio_path}")
+        return audio_path
+
+    except Exception as e:
+        print(f"[Voice] OpenAI TTS failed: {e}")
+        for f in chunk_files:
+            try: os.remove(f)
+            except OSError: pass
+        return ""
+
+
 def _get_ffmpeg() -> str | None:
     """Locate ffmpeg binary — imageio_ffmpeg (bundled with moviepy) first."""
     try:
@@ -157,96 +233,102 @@ def _elevenlabs_chunk(chunk: str, voice_id: str, api_key: str, chunk_path: str) 
 
 
 def generate_voiceover(script_text: str, filename: str, language: str = "english") -> str:
-    """Generate voiceover — ElevenLabs (chunked) if configured, edge-tts as fallback."""
+    """Generate voiceover — ElevenLabs → OpenAI TTS → edge-tts priority chain."""
     from config import ELEVENLABS_API_KEY, ELEVENLABS_VOICE_ID_EN, ELEVENLABS_VOICE_ID_AR, ELEVENLABS_VOICE_ID
 
+    # ── Priority 1: ElevenLabs ────────────────────────────────────────────────
     api_key = ELEVENLABS_API_KEY
     print(f"[Voice] ElevenLabs key: {'set' if api_key and api_key != 'YOUR_ELEVENLABS_KEY' else 'MISSING'}")
-    if not api_key or api_key == "YOUR_ELEVENLABS_KEY":
-        return generate_voiceover_edgetts(script_text, filename, language)
+    if api_key and api_key != "YOUR_ELEVENLABS_KEY":
+        voice_ids = {
+            "english": ELEVENLABS_VOICE_ID_EN or ELEVENLABS_VOICE_ID,
+            "arabic":  ELEVENLABS_VOICE_ID_AR or ELEVENLABS_VOICE_ID,
+        }
+        voice_id = voice_ids.get(language.lower(), ELEVENLABS_VOICE_ID)
+        print(f"[Voice] Voice ID ({language}): {'set' if voice_id else 'MISSING'}")
 
-    voice_ids = {
-        "english": ELEVENLABS_VOICE_ID_EN or ELEVENLABS_VOICE_ID,
-        "arabic":  ELEVENLABS_VOICE_ID_AR or ELEVENLABS_VOICE_ID,
-    }
-    voice_id = voice_ids.get(language.lower(), ELEVENLABS_VOICE_ID)
-    print(f"[Voice] Voice ID ({language}): {'set' if voice_id else 'MISSING'}")
-    if not voice_id:
-        return generate_voiceover_edgetts(script_text, filename, language)
+        if voice_id:
+            audio_path = os.path.join(AUDIO_DIR, f"{filename}.mp3")
+            chunks = _split_text(script_text, max_chars=2000)
+            print(f"[Voice] ElevenLabs: {len(chunks)} chunk(s) for {language}")
 
-    audio_path = os.path.join(AUDIO_DIR, f"{filename}.mp3")
-    chunks = _split_text(script_text, max_chars=2000)
-    print(f"[Voice] ElevenLabs: {len(chunks)} chunk(s) for {language}")
+            chunk_files: list[str] = []
+            el_failed = False
+            for i, chunk in enumerate(chunks):
+                chunk_path = os.path.join(AUDIO_DIR, f"{filename}_chunk_{i}.mp3")
+                result = _elevenlabs_chunk(chunk, voice_id, api_key, chunk_path)
+                if result == "401":
+                    for f in chunk_files:
+                        try: os.remove(f)
+                        except OSError: pass
+                    print("[Voice] ElevenLabs 401 — trying OpenAI TTS")
+                    el_failed = True
+                    break
+                elif result:
+                    chunk_files.append(chunk_path)
+                    print(f"[Voice] ElevenLabs chunk {i + 1}/{len(chunks)} done")
+                    if i < len(chunks) - 1:
+                        time.sleep(2)
+                else:
+                    for f in chunk_files:
+                        try: os.remove(f)
+                        except OSError: pass
+                    print(f"[Voice] ElevenLabs chunk {i + 1} failed — trying OpenAI TTS")
+                    el_failed = True
+                    break
 
-    chunk_files: list[str] = []
-    for i, chunk in enumerate(chunks):
-        chunk_path = os.path.join(AUDIO_DIR, f"{filename}_chunk_{i}.mp3")
-        result = _elevenlabs_chunk(chunk, voice_id, api_key, chunk_path)
-        if result == "401":
-            # 401 will never succeed — skip retries, go straight to edge-tts
-            for f in chunk_files:
-                try: os.remove(f)
-                except OSError: pass
-            print(f"[Voice] 401 Unauthorized — falling back to edge-tts immediately")
-            return generate_voiceover_edgetts(script_text, filename, language)
-        elif result:
-            chunk_files.append(chunk_path)
-            print(f"[Voice] Chunk {i + 1}/{len(chunks)} done")
-            if i < len(chunks) - 1:
-                time.sleep(2)
-        else:
-            # Clean up and fall back to edge-tts for the whole script
-            for f in chunk_files:
-                try: os.remove(f)
-                except OSError: pass
-            print(f"[Voice] Chunk {i + 1} failed — falling back to edge-tts")
-            return generate_voiceover_edgetts(script_text, filename, language)
+            if not el_failed:
+                if len(chunk_files) == 1:
+                    import shutil
+                    shutil.move(chunk_files[0], audio_path)
+                else:
+                    merged = False
+                    import subprocess
+                    list_path = os.path.join(AUDIO_DIR, f"{filename}_list.txt")
+                    with open(list_path, "w", encoding="utf-8") as lf:
+                        for cf in chunk_files:
+                            lf.write(f"file '{os.path.abspath(cf)}'\n")
+                    ffmpeg_bin = _get_ffmpeg()
+                    if ffmpeg_bin:
+                        try:
+                            subprocess.run(
+                                [ffmpeg_bin, "-y", "-f", "concat", "-safe", "0",
+                                 "-i", list_path, "-c", "copy", audio_path],
+                                check=True, capture_output=True,
+                            )
+                            merged = True
+                            print("[Voice] Chunks merged with ffmpeg")
+                        except Exception as e:
+                            print(f"[Voice] ffmpeg concat failed: {e}")
+                    if not merged:
+                        if _merge_chunks_pydub(chunk_files, audio_path):
+                            merged = True
+                            print("[Voice] Chunks merged with pydub")
+                    if not merged:
+                        import shutil
+                        shutil.copy(chunk_files[0], audio_path)
+                        print("[Voice] Using first chunk only (merge failed)")
+                    for f in chunk_files:
+                        try: os.remove(f)
+                        except OSError: pass
+                    try: os.remove(list_path)
+                    except OSError: pass
 
-    if len(chunk_files) == 1:
-        import shutil
-        shutil.move(chunk_files[0], audio_path)
-    else:
-        merged = False
+                print(f"[Voice] ElevenLabs complete: {len(chunks)} chunk(s) -> {audio_path}")
+                return audio_path
 
-        # Attempt 1 — ffmpeg concat
-        import subprocess
-        list_path = os.path.join(AUDIO_DIR, f"{filename}_list.txt")
-        with open(list_path, "w", encoding="utf-8") as lf:
-            for cf in chunk_files:
-                lf.write(f"file '{os.path.abspath(cf)}'\n")
-        ffmpeg_bin = _get_ffmpeg()
-        if ffmpeg_bin:
-            try:
-                subprocess.run(
-                    [ffmpeg_bin, "-y", "-f", "concat", "-safe", "0", "-i", list_path, "-c", "copy", audio_path],
-                    check=True, capture_output=True,
-                )
-                merged = True
-                print("[Voice] Chunks merged with ffmpeg")
-            except Exception as e:
-                print(f"[Voice] ffmpeg concat failed: {e}")
+    # ── Priority 2: OpenAI TTS ────────────────────────────────────────────────
+    openai_key = os.getenv("OPENAI_API_KEY", "")
+    if openai_key:
+        print("[Voice] Trying OpenAI TTS...")
+        result = generate_voiceover_openai(script_text, filename, language)
+        if result:
+            return result
+        print("[Voice] OpenAI TTS failed — falling back to edge-tts")
 
-        # Attempt 2 — pydub (with imageio_ffmpeg path injected)
-        if not merged:
-            if _merge_chunks_pydub(chunk_files, audio_path):
-                merged = True
-                print("[Voice] Chunks merged with pydub")
-
-        # Attempt 3 — use first chunk only (better than silence)
-        if not merged:
-            import shutil
-            shutil.copy(chunk_files[0], audio_path)
-            print("[Voice] Using first chunk only (merge failed)")
-
-        # Cleanup
-        for f in chunk_files:
-            try: os.remove(f)
-            except OSError: pass
-        try: os.remove(list_path)
-        except OSError: pass
-
-    print(f"[Voice] ElevenLabs complete: {len(chunks)} chunk(s) -> {audio_path}")
-    return audio_path
+    # ── Priority 3: edge-tts (always available) ───────────────────────────────
+    print("[Voice] Using edge-tts fallback")
+    return generate_voiceover_edgetts(script_text, filename, language)
 
 
 # ── AI Image generation (Pollinations — free, no key) ─────────────────────────

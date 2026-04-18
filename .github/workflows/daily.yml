@@ -76,6 +76,7 @@ jobs:
         env:
           VIDEOS_PER_DAY:                    "1"
           GROQ_API_KEY:                      ${{ secrets.GROQ_API_KEY }}
+          OPENAI_API_KEY:                    ${{ secrets.OPENAI_API_KEY }}
           GEMINI_API_KEY:                    ${{ secrets.GEMINI_API_KEY }}
           ELEVENLABS_API_KEY:                ${{ secrets.ELEVENLABS_API_KEY }}
           ELEVENLABS_VOICE_ID:               ${{ secrets.ELEVENLABS_VOICE_ID }}
