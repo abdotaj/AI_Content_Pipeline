@@ -948,7 +948,10 @@ def create_title_card(main_line: str, sub_line: str, duration: float = 7.0):
     """
     import numpy as np
     from PIL import Image as PILImage, ImageDraw, ImageFont
-    from moviepy import VideoClip
+    try:
+        from moviepy.editor import VideoClip
+    except ImportError:
+        from moviepy import VideoClip
 
     TARGET_W, TARGET_H = 1080, 1920
     TEAL  = (29, 158, 117)
@@ -1014,7 +1017,10 @@ def image_to_clips(image_path: str, n_variations: int = 4) -> list:
     """
     import numpy as np
     from PIL import Image as PILImage
-    from moviepy import VideoClip
+    try:
+        from moviepy.editor import VideoClip
+    except ImportError:
+        from moviepy import VideoClip
 
     TARGET_W, TARGET_H = 1080, 1920
 
@@ -1070,7 +1076,10 @@ def assemble_video(
     before_clips/after_clips are prepended/appended once (not looped).
     """
     import traceback
-    from moviepy import AudioFileClip, concatenate_videoclips
+    try:
+        from moviepy.editor import AudioFileClip, concatenate_videoclips
+    except ImportError:
+        from moviepy import AudioFileClip, concatenate_videoclips
 
     output_path = os.path.join(FINAL_DIR, f"{output_filename}.mp4")
     temp_audio  = os.path.join(FINAL_DIR, f"{output_filename}_tmp_audio.m4a")
@@ -1227,9 +1236,12 @@ Path(SHORTS_DIR).mkdir(parents=True, exist_ok=True)
 def cut_short_clip(video_path: str, output_path: str, duration: int = 90) -> str:
     """Cut the first 60-90 seconds (random) of a video and save to output_path."""
     try:
-        from moviepy import VideoFileClip
+        from moviepy.editor import VideoFileClip
     except ImportError:
-        return ""
+        try:
+            from moviepy import VideoFileClip
+        except ImportError:
+            return ""
 
     temp_audio = output_path.replace(".mp4", "_tmp.m4a")
     clip = None
@@ -1383,7 +1395,10 @@ def assemble_video_with_hook(
     import traceback
     import numpy as np
     from PIL import Image as PILImage
-    from moviepy import AudioFileClip, VideoClip, concatenate_videoclips
+    try:
+        from moviepy.editor import AudioFileClip, VideoClip, concatenate_videoclips
+    except ImportError:
+        from moviepy import AudioFileClip, VideoClip, concatenate_videoclips
 
     TARGET_W, TARGET_H = 1080, 1920
     hook_duration = 90  # first 90 seconds
@@ -1575,7 +1590,10 @@ def assemble_short_video(audio_path: str, image_paths: list[str], output_path: s
     import traceback
     import numpy as np
     from PIL import Image as PILImage
-    from moviepy import AudioFileClip, VideoClip, concatenate_videoclips
+    try:
+        from moviepy.editor import AudioFileClip, VideoClip, concatenate_videoclips
+    except ImportError:
+        from moviepy import AudioFileClip, VideoClip, concatenate_videoclips
 
     TARGET_W, TARGET_H = 1080, 1920
     temp_audio = output_path.replace(".mp4", "_tmp.m4a")
@@ -1723,7 +1741,10 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
         print(f"[Video] Audio ready: {audio_path}")
         # Duration check
         try:
-            from moviepy import AudioFileClip as _AC
+            try:
+                from moviepy.editor import AudioFileClip as _AC
+            except ImportError:
+                from moviepy import AudioFileClip as _AC
             _dur = _AC(audio_path).duration
             _min = _dur / 60
             _is_short_check = "short" in video_id

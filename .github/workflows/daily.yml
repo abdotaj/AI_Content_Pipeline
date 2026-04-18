@@ -49,6 +49,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --upgrade pip setuptools wheel
+          pip install moviepy==1.0.3 --force-reinstall
           pip install -r requirements.txt
           echo "=== Installed packages ==="
           pip show openai groq httpx moviepy edge-tts
