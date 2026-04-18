@@ -65,7 +65,7 @@ def generate_voiceover_openai(text: str, language: str, output_path: str) -> str
     import openai
     import httpx
 
-    api_key = os.getenv("OPENAI_API_KEY", "")
+    api_key = os.getenv("OPENAI_API_KEY", "").strip()
     if not api_key:
         print("[Voice] OpenAI API key not set — skipping")
         return ""
@@ -333,7 +333,7 @@ def generate_voiceover(script_text: str, filename: str, language: str = "english
                 return audio_path
 
     # ── Priority 2: OpenAI TTS ────────────────────────────────────────────────
-    openai_key = os.getenv("OPENAI_API_KEY", "")
+    openai_key = os.getenv("OPENAI_API_KEY", "").strip()
     if openai_key:
         print("[Voice] Trying OpenAI TTS...")
         _oai_path = os.path.join(AUDIO_DIR, f"{filename}.mp3")

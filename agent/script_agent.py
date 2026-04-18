@@ -46,7 +46,7 @@ def _openai_direct_call(prompt: str, max_tokens: int = 4000,
     import requests
     import json
 
-    api_key = os.getenv("OPENAI_API_KEY", "")
+    api_key = os.getenv("OPENAI_API_KEY", "").strip()
     if not api_key:
         print("[OpenAI] No API key")
         return None
@@ -145,7 +145,7 @@ def _groq_fallback(prompt: str, max_tokens: int, json_mode: bool) -> str:
     import os
     import time
 
-    groq_key = os.getenv("GROQ_API_KEY")
+    groq_key = os.getenv("GROQ_API_KEY", "").strip()
     if not groq_key:
         print("[Script] No Groq key available")
         return ""

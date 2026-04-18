@@ -56,7 +56,7 @@ def _openai_direct_call(prompt: str, max_tokens: int = 2000,
     import requests
     import json
 
-    api_key = os.getenv("OPENAI_API_KEY", "")
+    api_key = os.getenv("OPENAI_API_KEY", "").strip()
     if not api_key:
         print("[OpenAI] No API key")
         return None
