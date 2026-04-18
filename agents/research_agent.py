@@ -76,38 +76,52 @@ def openai_research_call(prompt: str) -> str | None:
 
 def _ai_call(prompt: str, temperature: float = 0.3,
              max_tokens: int = 1000, json_mode: bool = True) -> str:
-    """OpenAI gpt-4o-mini first, fall back to Groq. Reads API key at call time."""
-    import os as _os
+    """OpenAI gpt-4o-mini first (3 retries + backoff), fall back to Groq."""
+    import os
+    import time
+    import httpx
 
     # ── Priority 1: OpenAI ────────────────────────────────────────────────────
-    openai_key = _os.getenv("OPENAI_API_KEY")
+    openai_key = os.getenv("OPENAI_API_KEY")
     if openai_key:
-        try:
-            from openai import OpenAI as _OAI
-            client = _OAI(api_key=openai_key)
-            kwargs = {
-                "model": "gpt-4o-mini",
-                "messages": [
-                    {"role": "system", "content": "You are a true crime documentary researcher. Return accurate information only."},
-                    {"role": "user",   "content": prompt},
-                ],
-                "max_tokens": max_tokens,
-                "temperature": temperature,
-            }
-            if json_mode:
-                kwargs["response_format"] = {"type": "json_object"}
-            response = client.chat.completions.create(**kwargs)
-            result = response.choices[0].message.content
-            print("[Research] OpenAI call success ✅")
-            return result
-        except Exception as e:
-            print(f"[Research] OpenAI failed: {e}")
-            print("[Research] Falling back to Groq...")
+        from openai import OpenAI
+        for attempt in range(3):
+            try:
+                client = OpenAI(
+                    api_key=openai_key,
+                    timeout=httpx.Timeout(120.0, connect=30.0, read=90.0),
+                    max_retries=2,
+                )
+                kwargs = {
+                    "model": "gpt-4o-mini",
+                    "messages": [
+                        {"role": "system", "content": "You are a true crime documentary researcher. Return accurate information only."},
+                        {"role": "user",   "content": prompt},
+                    ],
+                    "max_tokens": max_tokens,
+                    "temperature": temperature,
+                }
+                if json_mode:
+                    kwargs["response_format"] = {"type": "json_object"}
+                response = client.chat.completions.create(**kwargs)
+                result = response.choices[0].message.content
+                print(f"[Research] OpenAI call success ✅ (attempt {attempt + 1})")
+                return result
+            except Exception as e:
+                print(f"[Research] OpenAI attempt {attempt + 1} failed: {e}")
+                if attempt < 2:
+                    wait = (attempt + 1) * 10
+                    print(f"[Research] Waiting {wait}s...")
+                    time.sleep(wait)
+        print("[Research] OpenAI all attempts failed")
 
     # ── Priority 2: Groq fallback ────────────────────────────────────────────
     print("[Research] Falling back to Groq")
+    _prompt = prompt[:4000] if len(prompt) > 4000 else prompt
+    if len(prompt) > 4000:
+        print("[Research] Prompt truncated to 4000 chars for Groq")
     kwargs = dict(
-        messages=[{"role": "user", "content": prompt}],
+        messages=[{"role": "user", "content": _prompt}],
         temperature=temperature,
         max_tokens=max_tokens,
     )

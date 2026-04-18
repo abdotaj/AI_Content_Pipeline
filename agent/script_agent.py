@@ -63,67 +63,85 @@ def openai_script_call(prompt: str, max_tokens: int = 4000, json_mode: bool = Fa
         return None
 
 
-def _ai_script_call(prompt: str, max_tokens: int = 1000,
-                    json_mode: bool = False, temperature: float = 0.7) -> str:
-    """OpenAI gpt-4o-mini first, fall back to Groq. Reads API key at call time."""
-    import os as _os
-    import time as _time
+def _groq_fallback(prompt: str, max_tokens: int, json_mode: bool) -> str:
+    """Groq fallback with prompt truncation and 3-model retry chain."""
+    import os
+    import time
 
-    # ── Priority 1: OpenAI ────────────────────────────────────────────────────
-    openai_key = _os.getenv("OPENAI_API_KEY")
-    if openai_key:
+    groq_key = os.getenv("GROQ_API_KEY")
+    if not groq_key:
+        print("[Script] No Groq key available")
+        return ""
+
+    from groq import Groq
+    groq_client = Groq(api_key=groq_key)
+
+    if len(prompt) > 4000:
+        prompt = prompt[:4000]
+        print("[Script] Prompt truncated to 4000 chars for Groq")
+
+    for model, model_max in [
+        ("llama-3.3-70b-versatile", 2000),
+        ("mixtral-8x7b-32768",      2000),
+        ("llama-3.1-8b-instant",    1000),
+    ]:
         try:
-            from openai import OpenAI as _OAI
-            client = _OAI(api_key=openai_key)
-            kwargs = {
-                "model": "gpt-4o-mini",
-                "messages": [
-                    {"role": "system", "content": "You are a professional true crime documentary scriptwriter."},
-                    {"role": "user",   "content": prompt},
-                ],
-                "max_tokens": max_tokens,
-                "temperature": temperature,
-            }
-            if json_mode:
-                kwargs["response_format"] = {"type": "json_object"}
-            response = client.chat.completions.create(**kwargs)
-            result = response.choices[0].message.content
-            print("[Script] OpenAI call success ✅")
-            return result
+            resp = groq_client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=min(max_tokens, model_max),
+                temperature=0.7,
+            )
+            print(f"[Script] Groq {model} success ✅")
+            return resp.choices[0].message.content
         except Exception as e:
-            print(f"[Script] OpenAI failed: {e}")
-            print("[Script] Falling back to Groq...")
-
-    # ── Priority 2: Groq fallback ────────────────────────────────────────────
-    try:
-        from groq import Groq as _Groq
-        groq_key = _os.getenv("GROQ_API_KEY")
-        if not groq_key:
-            print("[Script] No Groq key available")
-            return ""
-
-        groq_client = _Groq(api_key=groq_key)
-        _prompt = prompt[:6000] if len(prompt) > 6000 else prompt
-        if len(prompt) > 6000:
-            print("[Script] Truncated prompt for Groq")
-
-        for model in ["llama-3.3-70b-versatile", "mixtral-8x7b-32768", "llama-3.1-8b-instant"]:
-            try:
-                resp = groq_client.chat.completions.create(
-                    model=model,
-                    messages=[{"role": "user", "content": _prompt}],
-                    max_tokens=min(max_tokens, 2000),
-                    temperature=temperature,
-                )
-                print(f"[Script] Groq {model} success")
-                return resp.choices[0].message.content
-            except Exception as e:
-                print(f"[Script] Groq {model} failed: {e}")
-                _time.sleep(3)
-    except Exception as e:
-        print(f"[Script] All AI calls failed: {e}")
+            print(f"[Script] Groq {model} failed: {e}")
+            time.sleep(5)
 
     return ""
+
+
+def _ai_script_call(prompt: str, max_tokens: int = 1000,
+                    json_mode: bool = False, temperature: float = 0.7) -> str:
+    """OpenAI gpt-4o-mini first (3 retries + backoff), fall back to Groq."""
+    import os
+    import time
+    import httpx
+
+    openai_key = os.getenv("OPENAI_API_KEY")
+    if openai_key:
+        from openai import OpenAI
+        for attempt in range(3):
+            try:
+                client = OpenAI(
+                    api_key=openai_key,
+                    timeout=httpx.Timeout(120.0, connect=30.0, read=90.0),
+                    max_retries=2,
+                )
+                kwargs = {
+                    "model": "gpt-4o-mini",
+                    "messages": [
+                        {"role": "system", "content": "You are a professional true crime documentary scriptwriter."},
+                        {"role": "user",   "content": prompt},
+                    ],
+                    "max_tokens": max_tokens,
+                    "temperature": temperature,
+                }
+                if json_mode:
+                    kwargs["response_format"] = {"type": "json_object"}
+                response = client.chat.completions.create(**kwargs)
+                result = response.choices[0].message.content
+                print(f"[Script] OpenAI success ✅ (attempt {attempt + 1})")
+                return result
+            except Exception as e:
+                print(f"[Script] OpenAI attempt {attempt + 1} failed: {e}")
+                if attempt < 2:
+                    wait = (attempt + 1) * 10
+                    print(f"[Script] Waiting {wait}s...")
+                    time.sleep(wait)
+        print("[Script] OpenAI all attempts failed")
+
+    return _groq_fallback(prompt, max_tokens, json_mode)
 
 
 title_format = "Dark Crime Decoded: {person} & {series} — {curiosity_hook}"
