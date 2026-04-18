@@ -126,6 +126,40 @@ jobs:
           echo "=== EN token channel ==="
           python3 -c "import json; d=json.load(open('youtube_token_darkcrimed_en.json')); print(d.get('channel_id','MISSING'))"
 
+      - name: Debug OpenAI connection
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          python3 << 'EOF'
+          import requests
+          import os
+          import json
+
+          key = os.environ.get("OPENAI_API_KEY", "")
+          print(f"Key set: {bool(key)}")
+          print(f"Key prefix: {key[:20]}")
+
+          # Test 1
+          try:
+              r = requests.post(
+                  "https://api.openai.com/v1/chat/completions",
+                  headers={
+                      "Authorization": f"Bearer {key}",
+                      "Content-Type": "application/json"
+                  },
+                  json={
+                      "model": "gpt-4o-mini",
+                      "messages": [{"role": "user", "content": "Hi"}],
+                      "max_tokens": 5
+                  },
+                  timeout=30
+              )
+              print(f"Status: {r.status_code}")
+              print(f"Response: {r.text[:300]}")
+          except Exception as e:
+              print(f"Failed: {type(e).__name__}: {e}")
+          EOF
+
       - name: Run Dark Crime pipeline
         env:
           VIDEOS_PER_DAY:                    "1"

@@ -44,18 +44,12 @@ def _openai_direct_call(prompt: str, max_tokens: int = 4000,
                         json_mode: bool = False) -> str | None:
     import os
     import requests
-    import json as _json
+    import json
 
     api_key = os.getenv("OPENAI_API_KEY", "")
     if not api_key:
-        print("[Script] No OpenAI key")
+        print("[OpenAI] No API key")
         return None
-
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-        "User-Agent": "DarkCrimeDecoded/1.0",
-    }
 
     payload = {
         "model": "gpt-4o-mini",
@@ -76,36 +70,73 @@ def _openai_direct_call(prompt: str, max_tokens: int = 4000,
     if json_mode:
         payload["response_format"] = {"type": "json_object"}
 
-    for attempt in range(3):
-        try:
-            print(f"[Script] OpenAI attempt {attempt + 1}...")
-            response = requests.post(
-                "https://api.openai.com/v1/chat/completions",
-                headers=headers,
-                json=payload,
-                timeout=60,
-            )
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "User-Agent": "python-requests/2.31.0",
+    }
 
-            print(f"[Script] OpenAI status: {response.status_code}")
+    # Attempt 1: Standard requests
+    try:
+        print("[OpenAI] Attempt 1: standard requests")
+        r = requests.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers=headers,
+            json=payload,
+            timeout=60,
+            verify=True,
+        )
+        print(f"[OpenAI] Status: {r.status_code}")
+        if r.status_code == 200:
+            return r.json()["choices"][0]["message"]["content"]
+        else:
+            print(f"[OpenAI] Error: {r.text[:200]}")
+    except Exception as e:
+        print(f"[OpenAI] Attempt 1 failed: {e}")
 
-            if response.status_code == 200:
-                data = response.json()
-                text = data["choices"][0]["message"]["content"]
-                words = len(text.split())
-                print(f"[Script] OpenAI success: {words} words ✅")
-                return text
-            else:
-                print(f"[Script] OpenAI error: {response.text[:300]}")
+    # Attempt 2: No SSL verification
+    try:
+        print("[OpenAI] Attempt 2: no SSL verify")
+        import urllib3
+        urllib3.disable_warnings()
+        r = requests.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers=headers,
+            json=payload,
+            timeout=60,
+            verify=False,
+        )
+        print(f"[OpenAI] Status: {r.status_code}")
+        if r.status_code == 200:
+            return r.json()["choices"][0]["message"]["content"]
+    except Exception as e:
+        print(f"[OpenAI] Attempt 2 failed: {e}")
 
-        except requests.exceptions.Timeout:
-            print(f"[Script] OpenAI timeout attempt {attempt + 1}")
-        except Exception as e:
-            print(f"[Script] OpenAI attempt {attempt + 1} failed: {e}")
+    # Attempt 3: urllib with custom SSL context
+    try:
+        print("[OpenAI] Attempt 3: urllib")
+        import urllib.request
+        import ssl
 
-        import time
-        time.sleep(10)
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
 
-    print("[Script] OpenAI all attempts failed")
+        data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            "https://api.openai.com/v1/chat/completions",
+            data=data,
+            headers=headers,
+            method="POST",
+        )
+
+        with urllib.request.urlopen(req, timeout=60, context=ctx) as resp:
+            result = json.loads(resp.read().decode())
+            return result["choices"][0]["message"]["content"]
+    except Exception as e:
+        print(f"[OpenAI] Attempt 3 failed: {e}")
+
+    print("[OpenAI] All connection attempts failed")
     return None
 
 
