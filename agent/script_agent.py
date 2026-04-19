@@ -222,6 +222,70 @@ PERSON_TO_SERIES: dict[str, tuple[str, str]] = {
     "kitty genovese":  ("Kitty",                 "Movie"),
     "wm3":             ("Devil's Knot",          "Movie"),
     "west memphis":    ("Devil's Knot",          "Movie"),
+
+    # ARABIC / MIDDLE EAST
+    "رأفت الهجان":              ("Agent Ramzy",       "Series"),
+    "rafat al hagan":           ("Agent Ramzy",       "Series"),
+    "el hagan":                 ("Rafat El Hagan",    "Series"),
+    "يحيى العلمي":              ("Al Hayba",          "Series"),
+    "al hayba":                 ("Al Hayba",          "Series"),
+    "نمس":                      ("Al Nemr",           "Series"),
+
+    # EGYPT
+    "احمد عرابي":               ("Urabi Revolt",      "Documentary"),
+    "ملك فاروق":                ("King Farouk",       "Series"),
+    "king farouk":              ("King Farouk",       "Series"),
+    "انور السادات":             ("Sadat",             "Movie"),
+    "sadat":                    ("Sadat",             "Movie"),
+
+    # SAUDI / GULF
+    "juhayman":                 ("Juhayman",          "Series"),
+    "جهيمان":                   ("Juhayman",          "Series"),
+    "grand mosque seizure":     ("Juhayman",          "Series"),
+
+    # IRAQ
+    "saddam hussein":           ("House of Saddam",   "Series"),
+    "سدام حسين":                ("House of Saddam",   "Series"),
+    "house of saddam":          ("House of Saddam",   "Series"),
+    "uday saddam":              ("House of Saddam",   "Series"),
+
+    # SUDAN
+    "omar bashir":              ("Sudan",             "Documentary"),
+
+    # INTERNATIONAL
+    "kim jong un":              ("The Interview",     "Movie"),
+    "chapo guzman":             ("El Chapo",          "Series"),
+
+    # UK
+    "reggie kray":              ("Legend",            "Movie"),
+    "ronnie kray":              ("Legend",            "Movie"),
+    "kray twins":               ("Legend",            "Movie"),
+    "ronnie biggs":             ("Great Train Robbery", "Movie"),
+
+    # COLOMBIA
+    "carlos lehder":            ("Narcos",            "Series"),
+
+    # MEXICO
+    "miguel angel felix gallardo": ("Narcos Mexico",  "Series"),
+    "felix gallardo":           ("Narcos Mexico",     "Series"),
+    "amado carrillo":           ("Narcos Mexico",     "Series"),
+
+    # ITALY
+    "giovanni falcone":         ("The Traitor",       "Movie"),
+    "falcone":                  ("The Traitor",       "Movie"),
+
+    # RUSSIA
+    "semion mogilevich":        ("McMafia",           "Series"),
+    "mcmafia":                  ("McMafia",           "Series"),
+    "bratva":                   ("McMafia",           "Series"),
+
+    # JAPAN
+    "yakuza":                   ("Tokyo Vice",        "Series"),
+    "tokyo vice":               ("Tokyo Vice",        "Series"),
+
+    # BRAZIL
+    "fernandinho beira mar":    ("City of God",       "Movie"),
+    "comando vermelho":         ("City of God",       "Movie"),
 }
 
 
@@ -263,6 +327,24 @@ SERIES_ARABIC: dict[str, tuple[str, str]] = {
     "Gotti":               ("غوتي",              "فيلم"),
     "Blow":                ("بلو",               "فيلم"),
     "Peaky Blinders":      ("بيكي بلايندرز",      "مسلسل"),
+    # Global additions
+    "House of Saddam":     ("بيت صدام",          "مسلسل"),
+    "Juhayman":            ("جهيمان",            "مسلسل"),
+    "Agent Ramzy":         ("رأفت الهجان",        "مسلسل"),
+    "Al Hayba":            ("الهيبة",            "مسلسل"),
+    "Legend":              ("الأسطورة",          "فيلم"),
+    "McMafia":             ("ماك مافيا",          "مسلسل"),
+    "Tokyo Vice":          ("طوكيو فايس",         "مسلسل"),
+    "Baghdad Central":     ("بغداد سنترال",       "مسلسل"),
+    "Fauda":               ("فاودا",             "مسلسل"),
+    "Gomorrah":            ("غومورا",            "مسلسل"),
+    "ZeroZeroZero":        ("زيرو زيرو زيرو",    "مسلسل"),
+    "Suburra":             ("سوبورا",            "مسلسل"),
+    "The Traitor":         ("الخائن",            "فيلم"),
+    "King Farouk":         ("الملك فاروق",        "مسلسل"),
+    "Sadat":               ("السادات",           "فيلم"),
+    "The Interview":       ("المقابلة",          "فيلم"),
+    "Great Train Robbery": ("السطو على القطار",   "فيلم"),
 }
 
 

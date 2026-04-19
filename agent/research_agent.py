@@ -220,6 +220,50 @@ REAL_STORY_SHOWS = [
     "city of god",
     "blow",
     "donnie brasco",
+    # Global additions
+    "house of saddam",
+    "juhayman",
+    "agent ramzy",
+    "rafat el hagan",
+    "al hayba",
+    "legend",
+    "mcmafia",
+    "tokyo vice",
+    "baghdad central",
+    "fauda",
+    "gomorrah",
+    "zeroerozero",
+    "suburra",
+    "il traditore",
+    "the traitor",
+    "king farouk",
+    "sadat",
+    "great train robbery",
+]
+
+GLOBAL_NICHES = [
+    # Arabic content — high demand
+    "رأفت الهجان القصة الحقيقية",
+    "جهيمان العتيبي الحادثة الحقيقية",
+    "بيت صدام حسين المسلسل",
+    "الملك فاروق القصة الحقيقية",
+    "السادات الفيلم الحقيقي",
+    # Gulf specific
+    "true crime Saudi Arabia documentary",
+    "UAE crime documentary series",
+    "Iraq war crime story film",
+    "Egypt crime documentary",
+    # International with Arabic connection
+    "Fauda Israeli series real story",
+    "Baghdad Central series true story",
+    "Paranormal Egypt series real events",
+    # Classic international
+    "Kray twins Legend movie real story",
+    "McMafia real Russian mafia story",
+    "Tokyo Vice real yakuza story",
+    "Gomorrah Italian mafia true story",
+    "Suburra Netflix Italy real story",
+    "ZeroZeroZero real cartel story",
 ]
 
 
@@ -423,6 +467,8 @@ def discover_new_series() -> list[str]:
         "top crime movies based on true story IMDB",
         "new true crime documentary 2026",
         "most watched crime series all time",
+        "Arabic crime series true story Middle East documentary",
+        "best international crime series based on true events",
     ]
 
     raw_text = ""
@@ -430,9 +476,15 @@ def discover_new_series() -> list[str]:
         raw_text += f"\nQuery: {q}\n{web_search(q)}\n"
         time.sleep(0.3)
 
+    # Seed with global niches so AI knows what territory to include
+    global_seed = "\n".join(f"- {n}" for n in GLOBAL_NICHES)
+
     prompt = f"""You are a content researcher. Based on the search results below,
 compile a list of 30 unique crime TV series or movies (real titles only).
-Include all-time classics and recent 2024-2026 releases.
+Include all-time classics, recent 2024-2026 releases, and global/Arabic content.
+
+GLOBAL TOPIC SEEDS (include relevant ones):
+{global_seed}
 
 Search results:
 {raw_text[:4000]}
@@ -447,13 +499,17 @@ Return ONLY this JSON:
         all_series = data.get("series", [])
         fresh = [s for s in all_series if s.lower() not in already_done]
         print(f"[Research] Discovered {len(fresh)} fresh series ({len(all_series) - len(fresh)} already covered)")
+        # Also inject uncovered global niches directly
+        for niche in GLOBAL_NICHES:
+            if niche.lower() not in already_done and niche not in fresh:
+                fresh.append(niche)
         return fresh[:20]
     except Exception as e:
         print(f"[Research] Series discovery failed: {e}")
 
-    # Fallback to built-in NICHES
+    # Fallback to built-in NICHES + GLOBAL_NICHES
     fallback = []
-    for niche in NICHES:
+    for niche in list(NICHES) + GLOBAL_NICHES:
         s = niche.split("behind")[-1].strip() if "behind" in niche else niche
         if s.lower() not in already_done:
             fallback.append(s)
