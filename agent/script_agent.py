@@ -562,9 +562,218 @@ def get_script_angle(topic_text: str, series_info: tuple | None) -> str:
     return "series"
 
 
-def _write_documentary_script(topic: dict, research: dict) -> str:
+def detect_part_number(user_note: str) -> int | None:
+    """Return 1 or 2 if user_note contains a part marker, else None."""
+    if not user_note:
+        return None
+    note_lower = user_note.lower()
+    if "part 1" in note_lower or "الجزء الأول" in note_lower:
+        return 1
+    if "part 2" in note_lower or "الجزء الثاني" in note_lower:
+        return 2
+    return None
+
+
+_PART2_QUEUE_PATH = "output/pending_part2.json"
+
+
+def queue_part2_topic(topic: dict) -> None:
+    """Save topic to a queue file so the next run can pick it up as Part 2."""
+    import datetime
+    from pathlib import Path as _Path
+    queue_path = _Path(_PART2_QUEUE_PATH)
+    queue_path.parent.mkdir(parents=True, exist_ok=True)
+    entry = {
+        "topic":        topic.get("topic", ""),
+        "niche":        topic.get("niche", ""),
+        "search_query": topic.get("search_query", ""),
+        "keywords":     topic.get("keywords", []),
+        "user_note":    f"Part 2 — {topic.get('topic', '')}",
+        "queued_at":    datetime.date.today().isoformat(),
+        "part":         2,
+    }
+    queue_path.write_text(
+        json.dumps(entry, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    print(f"[Script] Part 2 queued for tomorrow: {entry['topic']}")
+
+
+def load_queued_part2() -> dict | None:
+    """Load and clear a pending Part 2 topic if one exists."""
+    from pathlib import Path as _Path
+    queue_path = _Path(_PART2_QUEUE_PATH)
+    if not queue_path.exists():
+        return None
+    try:
+        entry = json.loads(queue_path.read_text(encoding="utf-8"))
+        queue_path.unlink()
+        print(f"[Script] Loaded queued Part 2: {entry.get('topic', '')}")
+        return entry
+    except Exception as e:
+        print(f"[Script] Failed to load Part 2 queue: {e}")
+        return None
+
+
+def _is_hemedti_topic(topic_text: str) -> bool:
+    """Return True if the topic is about Hemedti / RSF Sudan."""
+    t = topic_text.lower()
+    return any(k in t for k in ["hemedti", "حميدتي", "dagalo", "محمد حمدان", "rsf sudan"])
+
+
+def _write_hemedti_part1(research: dict) -> str:
+    """Hemedti Part 1 — Origins through Darfur crimes."""
+    facts = "\n".join(f"- {f}" for f in (
+        research.get("research_facts") or []
+    )[:5]) or "(research the documented background)"
+
+    prompt = f"""You are an investigative documentary writer.
+Write a 1800-word Part 1 script about Mohamed Hamdan Dagalo (Hemedti).
+
+VERIFIED FACTS AVAILABLE:
+{facts}
+
+Use this EXACT structure (spoken words only — no section labels):
+
+HOOK (100 words):
+Open with: "In 2023 he launched the deadliest war in African history.
+But in 1980 he was just a camel trader on the Chad-Sudan border
+with no education and no future..."
+Why this story matters now.
+
+ORIGINS (400 words):
+The Chad/Sudan border geography and its open-border history.
+The Dagalo family roots across both countries.
+Camel trading background — specific routes, specific years.
+First connection to armed groups and how it happened.
+How poverty and geography shaped his ambition.
+
+RISE TO POWER (500 words):
+Janjaweed militia — what it was, when it started, who ran it.
+Darfur 2003 — Bashir's decision to use Janjaweed as a weapon.
+Hemedti's role: specific operations, specific years.
+How he built personal wealth from conflict — gold, livestock, land.
+The transformation from militia commander to RSF general.
+
+DARFUR CRIMES (400 words):
+Documented war crimes with specific dates.
+ICC warrant — what it covers, when issued.
+Number of victims — villages burned with documented dates.
+International response and why it failed.
+How he escaped accountability.
+
+MYSTERY (200 words):
+How a camel trader became a billionaire.
+Gold mines in Darfur — the documented connection.
+UAE gold trade deals — confirmed reports.
+Estimated personal wealth from investigative reports.
+
+CONCLUSION + PART 2 TEASER (100 words):
+"This is only the beginning of Hemedti's story.
+In Part 2, we reveal how he overthrew Sudan's dictator,
+massacred protesters in Khartoum, and started a full civil war
+with UAE backing and Colombian mercenaries.
+Follow Dark Crime Decoded — Part 2 coming soon."
+
+RULES:
+- 1800 words total
+- Specific dates, numbers, names — every sentence
+- Never state as confirmed what is only alleged
+- Write like a serious Al Jazeera / BBC documentary narrator
+- No section labels — spoken words only
+
+Start immediately with the HOOK."""
+
+    result = _ai_script_call(prompt, max_tokens=4000, temperature=0.75)
+    words = len(result.split()) if result else 0
+    print(f"[Script] Hemedti Part 1: {words} words")
+    return result or ""
+
+
+def _write_hemedti_part2(research: dict) -> str:
+    """Hemedti Part 2 — Revolution, massacre, UAE, mercenaries, current war."""
+    facts = "\n".join(f"- {f}" for f in (
+        research.get("research_facts") or []
+    )[:5]) or "(research the documented events)"
+
+    prompt = f"""You are an investigative documentary writer.
+Write a 1800-word Part 2 script about Mohamed Hamdan Dagalo (Hemedti).
+This is a continuation — viewers already know Part 1 (his origins and Darfur).
+
+VERIFIED FACTS AVAILABLE:
+{facts}
+
+Use this EXACT structure (spoken words only — no section labels):
+
+HOOK (100 words):
+"He helped overthrow Sudan's dictator.
+Then he became Sudan's biggest monster.
+This is Part 2 of Hemedti's story."
+Brief recap: who Hemedti is, what Part 1 covered.
+
+REVOLUTION ROLE (300 words):
+The 2019 revolution against Omar Bashir — what triggered it.
+Hemedti's double game — pretending to support protesters.
+The precise moment he betrayed Bashir — date, what happened.
+How Bashir was arrested and what role RSF played.
+
+KHARTOUM MASSACRE (400 words):
+June 3, 2019 — the sit-in massacre outside military headquarters.
+Specific confirmed numbers killed, specific time it started.
+RSF's confirmed role — documented evidence.
+International condemnation that followed.
+Survivor testimonies from documented reports.
+Why no one was held accountable.
+
+UAE CONNECTION (300 words):
+UAE financial support — confirmed figures from investigative reports.
+Gold smuggling operations — how it works, documented routes.
+Mohamed bin Zayed relationship — documented meetings and deals.
+Why UAE supports RSF: specific geopolitical reasons.
+
+COLOMBIAN MERCENARIES (300 words):
+Confirmed reports of foreign fighters from Latin America.
+Where they were recruited, what organisations confirmed this.
+Their documented role in the 2023 war.
+International law violations this represents.
+
+CURRENT WAR (200 words):
+April 15, 2023 — war start, what triggered it.
+Current documented civilian casualties.
+Hemedti's confirmed last location.
+Is he alive, is he in hiding, what do sources say?
+
+CONCLUSION (100 words):
+"The ICC wants him. Multiple governments have sanctioned him.
+But Hemedti has not been found.
+Follow Dark Crime Decoded for updates
+as this story continues to unfold."
+
+RULES:
+- 1800 words total
+- Every sentence = one specific documented fact
+- Never state as confirmed what is only alleged — say "according to reports" or "allegedly"
+- Write like a serious investigative documentary narrator
+- No section labels — spoken words only
+
+Start immediately with the HOOK."""
+
+    result = _ai_script_call(prompt, max_tokens=4000, temperature=0.75)
+    words = len(result.split()) if result else 0
+    print(f"[Script] Hemedti Part 2: {words} words")
+    return result or ""
+
+
+def _write_documentary_script(topic: dict, research: dict, part_number: int | None = None) -> str:
     """Write a documentary-style script for topics where no movie/series exists."""
     name = topic.get("topic", "")
+
+    # Route Hemedti to dedicated structured prompts
+    if _is_hemedti_topic(name):
+        if part_number == 2:
+            return _write_hemedti_part2(research)
+        return _write_hemedti_part1(research)
+
+    # Generic documentary prompt for all other documentary-only topics
     facts = "\n".join(f"- {f}" for f in (
         research.get("research_facts") or research.get("real_facts", [])
     )[:5]) or "(research the documented events)"
@@ -572,8 +781,15 @@ def _write_documentary_script(topic: dict, research: dict) -> str:
         research.get("research_shocking") or research.get("shocking_real_facts", [])
     )[:4]) or "(include documented allegations)"
 
+    part_label = f" — Part {part_number}" if part_number else ""
+    next_part_teaser = (
+        f'\nEnd with: "Part 2 of this story is coming soon on Dark Crime Decoded."'
+        if part_number == 1 else
+        f'\nEnd with: "Follow Dark Crime Decoded for stories Hollywood has not told yet."'
+    )
+
     prompt = f"""You are a documentary scriptwriter covering under-reported world events.
-Write a 1800-2000 word documentary script about: {name}
+Write a 1800-2000 word documentary script about: {name}{part_label}
 
 This is a DOCUMENTARY style — no movie or series exists for this topic.
 
@@ -616,8 +832,7 @@ But the real events are more dramatic than any crime movie ever made."
 Compare the scale to famous crime movies viewers know.
 
 CONCLUSION (100 words):
-Legacy and ongoing impact.
-End with: "Follow Dark Crime Decoded for stories Hollywood has not told yet."
+Legacy and ongoing impact.{next_part_teaser}
 
 RULES:
 - 1800-2000 words total
@@ -630,7 +845,7 @@ Start immediately with the HOOK. Spoken words only."""
 
     result = _ai_script_call(prompt, max_tokens=4000, temperature=0.75)
     words = len(result.split()) if result else 0
-    print(f"[Script] Documentary script: {words} words")
+    print(f"[Script] Documentary script{part_label}: {words} words")
     return result or ""
 
 
@@ -779,20 +994,33 @@ def _write_darkcrimed_script(topic: dict) -> dict:
 
     # Documentary-only topics: use investigative prompt, skip series comparison, early return
     if _angle == "documentary":
-        print(f"[Script] Documentary angle detected for: {topic['topic']}")
-        script_text      = validate_script(_write_documentary_script(topic, research))
+        user_note    = research.get("user_discovery", "") or topic.get("user_note", "")
+        part_number  = detect_part_number(user_note)
+        print(f"[Script] Documentary angle detected for: {topic['topic']} (part={part_number})")
+
+        script_text      = validate_script(_write_documentary_script(topic, research, part_number))
         _series_name_raw = _si_long[0] if _si_long else topic.get("niche", topic["topic"])
         _series_type_raw = "Documentary"
+
+        # Build title with part label if applicable
+        part_suffix = f" — Part {part_number}" if part_number else ""
         doc_title = (
-            f"The Untold Story of {topic['topic']}: "
+            f"The Untold Story of {topic['topic']}{part_suffix}: "
             f"What The World Needs To Know | Dark Crime Decoded"
         )
+
+        # Queue Part 2 automatically when Part 1 is being written
+        if part_number == 1:
+            queue_part2_topic(topic)
+
         script_data = {
             "title":           doc_title,
             "hook":            script_text[:120] if script_text else "",
             "script":          script_text,
             "on_screen_texts": [],
-            "caption":         f"The real untold story of {topic['topic']}. Follow Dark Crime Decoded.",
+            "caption":         (
+                f"Part {part_number} — " if part_number else ""
+            ) + f"The real untold story of {topic['topic']}. Follow Dark Crime Decoded.",
             "hashtags":        _build_darkcrimed_hashtags("", None),
             "thumbnail_text":  topic["topic"][:30],
             "chapters":        generate_chapters(script_text),
@@ -803,6 +1031,7 @@ def _write_darkcrimed_script(topic: dict) -> dict:
             "language":        "english",
             "series_name":     _series_name_raw,
             "series_type":     _series_type_raw,
+            "part_number":     part_number,
             "user_discovery":          research.get("user_discovery", ""),
             "user_discovery_expanded": research.get("user_discovery_expanded", []),
         }
