@@ -674,13 +674,14 @@ massacred protesters in Khartoum, and started a full civil war
 with UAE backing and Colombian mercenaries.
 Follow Dark Crime Decoded — Part 2 coming soon."
 
-IMPORTANT TERMINOLOGY:
-- RSF = Rapid Support Forces (قوات الدعم السريع) — NEVER translate as مراسلون بلا حدود
-- Janjaweed = الجنجويد
-- SAF = القوات المسلحة السودانية (Sudan Armed Forces)
-- Hemedti = حميدتي or محمد حمدان دقلو
-- Darfur = دارفور
-- Khartoum = الخرطوم
+TERMINOLOGY — USE EXACTLY AS WRITTEN:
+- First mention: "Rapid Support Forces (RSF)" — then "RSF" alone after that
+- First mention of Janjaweed: "Janjaweed militia" — then "Janjaweed" alone
+- First mention of SAF: "Sudan Armed Forces (SAF)" — then "SAF" alone
+- First mention of ICC: "International Criminal Court (ICC)" — then "ICC" alone
+- NO documentary exists about RSF — NEVER reference a film or documentary
+- This is based on investigative journalism and documented evidence only
+- NEVER write "The RSF Documentary" or "The documentary shows" — say "Evidence confirms" or "Reports show"
 
 RULES:
 - 1800 words total
@@ -756,13 +757,14 @@ But Hemedti has not been found.
 Follow Dark Crime Decoded for updates
 as this story continues to unfold."
 
-IMPORTANT TERMINOLOGY:
-- RSF = Rapid Support Forces (قوات الدعم السريع) — NEVER translate as مراسلون بلا حدود
-- Janjaweed = الجنجويد
-- SAF = القوات المسلحة السودانية (Sudan Armed Forces)
-- Hemedti = حميدتي or محمد حمدان دقلو
-- Darfur = دارفور
-- Khartoum = الخرطوم
+TERMINOLOGY — USE EXACTLY AS WRITTEN:
+- First mention: "Rapid Support Forces (RSF)" — then "RSF" alone after that
+- First mention of Janjaweed: "Janjaweed militia" — then "Janjaweed" alone
+- First mention of SAF: "Sudan Armed Forces (SAF)" — then "SAF" alone
+- First mention of ICC: "International Criminal Court (ICC)" — then "ICC" alone
+- NO documentary exists about RSF — NEVER reference a film or documentary
+- This is based on investigative journalism and documented evidence only
+- NEVER write "The RSF Documentary" or "The documentary shows" — say "Evidence confirms" or "Reports show"
 
 RULES:
 - 1800 words total
@@ -1014,7 +1016,10 @@ def _write_darkcrimed_script(topic: dict) -> dict:
         part_number  = detect_part_number(user_note)
         print(f"[Script] Documentary angle detected for: {topic['topic']} (part={part_number})")
 
-        script_text      = validate_script(_write_documentary_script(topic, research, part_number))
+        _raw_doc         = _write_documentary_script(topic, research, part_number)
+        _raw_doc         = check_hallucination(_raw_doc)
+        _raw_doc         = fix_first_mention(_raw_doc, is_arabic=False)
+        script_text      = validate_script(_raw_doc)
         _series_name_raw = _si_long[0] if _si_long else topic.get("niche", topic["topic"])
         _series_type_raw = "Documentary"
 
@@ -1379,12 +1384,57 @@ def fix_arabic_cta(arabic_text: str) -> str:
 
 
 def fix_arabic_rsf(text: str) -> str:
-    """Fix RSF being wrongly translated as 'Reporters Without Borders'."""
-    # Google Translate maps RSF → مراسلون بلا حدود (Reporters Without Borders) ❌
-    for wrong in ["مراسلون بلا حدود", "مراسلين بلا حدود", "المراسلون بلا حدود"]:
-        text = text.replace(wrong, "قوات الدعم السريع")
-    text = text.replace("RSF السودان", "قوات الدعم السريع في السودان")
+    """Fix RSF and related terminology wrongly translated by Google Translate."""
+    fixes = [
+        # RSF wrong translations — Google maps RSF to Reporters Without Borders ❌
+        ("مراسلون بلا حدود",                              "قوات الدعم السريع"),
+        ("مراسلين بلا حدود",                              "قوات الدعم السريع"),
+        ("المراسلون بلا حدود",                             "قوات الدعم السريع"),
+        ("منظمة RSF",                                     "قوات الدعم السريع"),
+        ("RSF السودان",                                   "قوات الدعم السريع في السودان"),
+        # Fake documentary phrases
+        ("الفيلم الوثائقي الذي أعدته منظمة قوات الدعم السريع", "هذا التحقيق"),
+        ("وثائقي قوات الدعم السريع",                      "هذا التحقيق"),
+        ("الفيلم الوثائقي لمنظمة",                        "تحقيق"),
+        ("الذي أعدته منظمة",                              "الذي يكشفه"),
+    ]
+    for wrong, correct in fixes:
+        text = text.replace(wrong, correct)
+    # Bare RSF must come last so compound phrases above match first
     text = text.replace("RSF", "قوات الدعم السريع")
+    return text
+
+
+def fix_rsf_translation(arabic_text: str) -> str:
+    """Alias kept for backward compatibility — delegates to fix_arabic_rsf."""
+    return fix_arabic_rsf(arabic_text)
+
+
+def check_hallucination(script_text: str) -> str:
+    """Remove hallucinated references to a non-existent RSF documentary."""
+    fake_replacements = {
+        "The RSF Sudan Documentary portrays":  "Evidence and testimonies show",
+        "The RSF Documentary shows":           "Investigation reveals",
+        "The documentary portrays his rise":   "Documented evidence shows his rise",
+        "The film effectively shows":          "Survivor testimonies confirm",
+        "The documentary depicts":             "Evidence confirms",
+        "the RSF documentary":                 "this investigation",
+        "The RSF documentary":                 "This investigation",
+        "an RSF documentary":                  "investigative reporting",
+    }
+    for fake, real in fake_replacements.items():
+        script_text = script_text.replace(fake, real)
+    return script_text
+
+
+def fix_first_mention(text: str, is_arabic: bool = False) -> str:
+    """Ensure first abbreviation mention includes the full name."""
+    if is_arabic:
+        if "RSF" in text and "قوات الدعم السريع" not in text:
+            text = text.replace("RSF", "قوات الدعم السريع (RSF)", 1)
+    else:
+        if "RSF" in text and "Rapid Support Forces" not in text:
+            text = text.replace("RSF", "Rapid Support Forces (RSF)", 1)
     return text
 
 
@@ -1396,22 +1446,92 @@ def _fix_arabic(text: str) -> str:
     return text
 
 
-def translate_to_arabic(text: str) -> str:
+def translate_to_arabic_google(text: str) -> str:
     """Translate English text to Arabic using Google Translate free REST API."""
     url = "https://translate.googleapis.com/translate_a/single"
     params = {
         "client": "gtx",
-        "sl": "en",
-        "tl": "ar",
-        "dt": "t",
-        "q": text,
+        "sl":     "en",
+        "tl":     "ar",
+        "dt":     "t",
+        "q":      text,
     }
     import requests as _requests
     response = _requests.get(url, params=params)
     response.raise_for_status()
-    result = response.json()
+    result     = response.json()
     translated = "".join([item[0] for item in result[0]])
     return _fix_arabic(translated)
+
+
+def translate_to_arabic_openai(english_text: str, topic: str = "") -> str:
+    """Translate to Arabic via OpenAI gpt-4o-mini with correct RSF terminology. Falls back to Google."""
+    import os as _os
+    import requests as _req
+
+    api_key = _os.getenv("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        return translate_to_arabic_google(english_text)
+
+    prompt = f"""Translate this English true crime script to Arabic.
+
+CRITICAL RULES:
+1. First mention of RSF: "قوات الدعم السريع (RSF)" — subsequent mentions: "قوات الدعم السريع" or "RSF"
+2. RSF is NEVER "مراسلون بلا حدود" — RSF = Rapid Support Forces = قوات الدعم السريع ALWAYS
+3. First mention of SAF: "القوات المسلحة السودانية (SAF)"
+4. First mention of ICC: "محكمة الجنايات الدولية (ICC)"
+5. Keep all proper names in original language (Hemedti, Dagalo, Khartoum, Darfur, etc.)
+6. Keep "Dark Crime Decoded" in English
+7. Keep series/movie names in English
+8. NEVER add content not in the original
+9. Maintain the same paragraph structure
+10. This is serious investigative journalism — translate formally and accurately
+
+English text to translate:
+{english_text}
+
+Return ONLY the Arabic translation. No explanations, no notes."""
+
+    try:
+        r = _req.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": "gpt-4o-mini",
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are a professional Arabic translator specialising in "
+                            "true crime and investigative journalism. You translate "
+                            "accurately with correct military and legal terminology."
+                        ),
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                "max_tokens": 4000,
+                "temperature": 0.3,
+            },
+            timeout=60,
+        )
+        if r.status_code == 200:
+            result = r.json()["choices"][0]["message"]["content"].strip()
+            result = _fix_arabic(result)
+            print("[Script] OpenAI Arabic translation ✅")
+            return result
+    except Exception as e:
+        print(f"[Script] OpenAI translation failed: {e}")
+
+    print("[Script] Falling back to Google Translate")
+    return translate_to_arabic_google(english_text)
+
+
+def translate_to_arabic(text: str) -> str:
+    """Public entry point — uses OpenAI, falls back to Google."""
+    return translate_to_arabic_openai(text)
 
 
 def _build_hemedti_arabic_title(part_number: int | None) -> str:
@@ -1440,7 +1560,7 @@ def translate_script(en_script: dict) -> dict:
     ar_data = {
         "title":          ar_title,
         "hook":           translate_to_arabic(en_script.get("hook", "")),
-        "script":         _fix_arabic(translate_to_arabic(en_script["script"])),
+        "script":         fix_first_mention(translate_to_arabic(en_script["script"]), is_arabic=True),
         "on_screen_texts": [translate_to_arabic(t) for t in en_script["on_screen_texts"]],
         "caption":        translate_to_arabic(en_script["caption"]),
         "hashtags":       translate_to_arabic(en_script["hashtags"]),
