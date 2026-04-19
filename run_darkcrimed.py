@@ -14,7 +14,10 @@ import os
 import sys
 import json
 import uuid
+import time
+import glob
 import datetime
+import requests
 from pathlib import Path
 
 # Force UTF-8 output on Windows
@@ -50,6 +53,72 @@ from agent.publish_agent  import upload_to_youtube
 from agents.content_agent import ingest_content_files
 
 
+def check_24h_cooldown() -> bool:
+    """Return True if pipeline should run, False if last run was < 24 hours ago."""
+    manifests = glob.glob("output/dark_crime/manifest_*.json")
+
+    if not manifests:
+        print("[Pipeline] No previous runs found — starting fresh")
+        return True
+
+    latest = max(manifests, key=os.path.getmtime)
+
+    try:
+        with open(latest) as f:
+            data = json.load(f)
+
+        # Use saved timestamp; fall back to file mtime for old manifests
+        last_run = data.get("timestamp") or os.path.getmtime(latest)
+        elapsed = time.time() - last_run
+        elapsed_hours = elapsed / 3600
+
+        print(f"[Pipeline] Last run: {elapsed_hours:.1f} hours ago")
+
+        if elapsed_hours < 24:
+            remaining = 24 - elapsed_hours
+            print(f"[Pipeline] Too soon — {remaining:.1f} hours remaining")
+            send_message(
+                f"\u23f0 Pipeline Cooldown Active\n\n"
+                f"Last run: {elapsed_hours:.1f} hours ago\n"
+                f"Next run available in: {remaining:.1f} hours\n\n"
+                f'To force run anyway send: "force run"'
+            )
+            return False
+
+        print("[Pipeline] Cooldown passed — ready to run")
+        return True
+
+    except Exception as e:
+        print(f"[Pipeline] Cooldown check error: {e}")
+        return True  # Run anyway if check fails
+
+
+def check_force_run() -> bool:
+    """Return True if user sent 'force run' to Telegram in the last 5 minutes."""
+    from config_darkcrimed import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+    base_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
+    cutoff = time.time() - 300  # 5 minutes
+
+    try:
+        r = requests.get(f"{base_url}/getUpdates", params={"limit": 20}, timeout=10)
+        updates = r.json().get("result", [])
+    except Exception as e:
+        print(f"[Pipeline] check_force_run error: {e}")
+        return False
+
+    for upd in updates:
+        msg = upd.get("message", {})
+        if str(msg.get("chat", {}).get("id", "")) != str(TELEGRAM_CHAT_ID):
+            continue
+        if msg.get("date", 0) < cutoff:
+            continue
+        if "force run" in msg.get("text", "").lower():
+            print("[Pipeline] Force run requested by user")
+            return True
+
+    return False
+
+
 def run_pipeline():
     today = datetime.date.today().isoformat()
     stats = {"generated": 0, "posted": 0, "skipped": 0, "errors": 0}
@@ -58,9 +127,15 @@ def run_pipeline():
     print(f"  Dark Crime Decoded Pipeline — {today}")
     print(f"{'='*50}\n")
 
+    # ── Cooldown guard ─────────────────────────────────────────
+    if not check_24h_cooldown():
+        if not check_force_run():
+            print("[Pipeline] Skipping — cooldown active")
+            return
+        print("[Pipeline] Cooldown bypassed by user")
+
     # ── STEP 1: Topic + images ────────────────────────────────
-    import time as _time
-    pipeline_start_time = _time.time()
+    pipeline_start_time = time.time()
 
     # Priority 1: content/dark_crime/ JSON files (skip Telegram flow)
     ingested = ingest_content_files(content_dir=CONTENT_DIR)
@@ -87,7 +162,7 @@ def run_pipeline():
             f"Waiting 60 seconds..."
         )
         print("[1/5] Waiting 60 seconds for topic...")
-        _time.sleep(60)
+        time.sleep(60)
 
         # ── 1C: Read ONLY messages sent after the clear ───────────────────────
         print("[1/5] Checking for topic sent in last 60 seconds...")
@@ -121,7 +196,7 @@ def run_pipeline():
                 f"No photos = AI generates automatically"
             )
             print("[1/5] Waiting 3 minutes for photos...")
-            _time.sleep(180)
+            time.sleep(180)
 
             # ── 1E: Collect images sent AFTER pipeline start ──────────────────
             user_images = check_telegram_for_images(after_timestamp=pipeline_start_time)
@@ -335,12 +410,22 @@ def run_pipeline():
         except Exception as e:
             print(f"  [WARN] Telegram English short send failed: {e}")
 
-    if ar_short_path:
+    if ar_short_path and os.path.exists(ar_short_path):
         try:
-            send_for_manual_posting(
-                ar_short_path, ar_short,
-                "TikTok Arabic + Instagram Arabic",
-            )
+            size_mb = os.path.getsize(ar_short_path) / 1024 / 1024
+            print(f"[Notify] Arabic short size: {size_mb:.1f}MB")
+            if size_mb > 50:
+                caption = (
+                    f"MANUAL POST NEEDED\n\nTitle: {ar_short.get('title', '')}\n"
+                    f"Post to: TikTok Arabic + Instagram Arabic\n\n"
+                    f"{ar_short.get('hashtags', '')}"
+                )
+                send_video_to_telegram(ar_short_path, caption, "Arabic short (document)")
+            else:
+                send_for_manual_posting(
+                    ar_short_path, ar_short,
+                    "TikTok Arabic + Instagram Arabic",
+                )
         except Exception as e:
             print(f"  [WARN] Telegram Arabic short send failed: {e}")
 
@@ -496,6 +581,7 @@ def _save_manifest(today, en_long, ar_long, en_short, ar_short,
                    yt_en_url, yt_ar_url) -> str:
     """Save a JSON manifest recording all 4 video paths and upload status."""
     manifest = {
+        "timestamp": time.time(),
         "date":  today,
         "topic": en_long.get("topic", ""),
         "videos": {
