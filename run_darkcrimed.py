@@ -41,8 +41,8 @@ from config_darkcrimed import (
 # Local: use existing youtube_token_darkcrimed_en/ar.json files
 
 from agent.research_agent import research_topics, research_series, mark_covered, is_fictional
-from agent.script_agent   import write_script, write_short_script, translate_script
-from agent.video_agent    import create_video
+from agent.script_agent   import write_script, write_short_script, translate_script, detect_part_number
+from agent.video_agent    import create_video, process_user_images_smart, load_part2_images
 from agent.notify_agent   import (
     send_message, send_for_manual_posting, send_daily_report,
     send_video_to_telegram, clear_telegram_queue,
@@ -142,6 +142,8 @@ def run_pipeline():
 
     topic = None
     user_images: list = []
+    _part_number:       int | None = None
+    _series_name_for_filter: str | None = None
 
     if ingested:
         print("[1/5] Using script from content files.")
@@ -187,6 +189,11 @@ def run_pipeline():
             series_type = series_info[1] if series_info else None
             print(f"[Pipeline] Series: {series_name} ({series_type})")
 
+            _part_number = detect_part_number(raw_input)
+            _series_name_for_filter = series_name
+            if _part_number:
+                print(f"[Pipeline] Part {_part_number} detected in user note")
+
             # ── 1D: Ask for photos now that topic is confirmed ────────────────
             send_message(
                 f"Topic confirmed: {topic_text}\n\n"
@@ -201,8 +208,20 @@ def run_pipeline():
             # ── 1E: Collect images sent AFTER pipeline start ──────────────────
             user_images = check_telegram_for_images(after_timestamp=pipeline_start_time)
             if user_images:
-                print(f"[1/5] Found {len(user_images)} image(s) for '{topic_text}'")
-                send_message(f"Got {len(user_images)} photo(s) — using in video")
+                print(f"[1/5] Found {len(user_images)} image(s) for '{topic_text}' — checking relevance...")
+                _use_now, _save_later, _ignored = process_user_images_smart(
+                    user_images,
+                    topic=topic_text,
+                    series_name=series_name,
+                    part_number=_part_number,
+                )
+                user_images = _use_now
+                send_message(
+                    f"📸 Image Check Complete for: {topic_text}\n\n"
+                    f"✅ Using now: {len(_use_now)} images\n"
+                    f"📦 Saved for Part 2: {len(_save_later)} images\n"
+                    f"❌ Not relevant: {len(_ignored)} images"
+                )
             else:
                 print("[1/5] No photos — AI images will be generated")
 
@@ -273,6 +292,14 @@ def run_pipeline():
 
             # Collect any images sent after pipeline start (no 3-min wait in auto mode)
             user_images = check_telegram_for_images(after_timestamp=pipeline_start_time)
+            if user_images:
+                _auto_topic  = topic.get("topic", "")
+                _auto_series = topic.get("series_name") or topic.get("niche", "")
+                _use_now, _, _ = process_user_images_smart(
+                    user_images, topic=_auto_topic,
+                    series_name=_auto_series, part_number=None,
+                )
+                user_images = _use_now
 
         print(f"[Pipeline] FINAL TOPIC: {topic.get('topic', '?')}")
         print(f"[Pipeline] Starting pipeline for: {topic.get('topic', '?')}")
@@ -324,6 +351,16 @@ def run_pipeline():
         except Exception as e:
             print(f"  [WARN] Script preview failed ({label}): {e}")
     print("  Scripts sent — continuing pipeline immediately.")
+
+    # ── Load saved Part 2 images if this is a Part 2 run ──────
+    _part_num_final = en_long.get("part_number")
+    if _part_num_final == 2:
+        _p2_paths = load_part2_images(en_long.get("topic", ""))
+        if _p2_paths:
+            _p2_dicts = [{"path": p, "tags": ["portrait", "real"]} for p in _p2_paths]
+            user_images = _p2_dicts + list(user_images)
+            print(f"[Pipeline] Added {len(_p2_paths)} saved Part 2 images")
+            send_message(f"[Pipeline] Loaded {len(_p2_paths)} saved images for Part 2")
 
     # ── STEP 4: Generate all 4 videos ─────────────────────────
     print("\n[4/5] Generating videos...")

@@ -16,6 +16,7 @@ youtube_token*.json
 .claude/worktrees/**
 content/pending/
 output/user_images/
+output/pending_images/
 agent/*.txt
 agents/*.txt
 # No Node.js files — Python-only project

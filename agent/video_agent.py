@@ -2,6 +2,7 @@
 #  agents/video_agent.py  —  AI-generated images + voiceover
 # ============================================================
 import os
+import json
 import time
 import random
 import asyncio
@@ -763,6 +764,177 @@ def process_user_images(user_images: list[dict], video_id: str) -> list[dict]:
         print(f"[Image] User image {i + 1}: AI transform + original queued")
 
     return processed
+
+
+def check_image_relevance(
+    image_path: str,
+    topic: str,
+    series_name: str | None,
+    part_number: int | None = None,
+) -> str:
+    """Use OpenAI Vision to decide image relevance. Returns 'use_now', 'save_part2', or 'ignore'."""
+    import base64
+
+    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        return "use_now"
+
+    try:
+        with open(image_path, "rb") as f:
+            img_b64 = base64.b64encode(f.read()).decode("utf-8")
+    except Exception as e:
+        print(f"[Image] Cannot read image: {e}")
+        return "ignore"
+
+    prompt = f"""Look at this image carefully.
+Current video topic: {topic}
+Related series/movie: {series_name or 'Documentary'}
+Current part: Part {part_number or 1}
+
+Answer with ONLY one of these three options:
+
+USE_NOW — if the image shows:
+- The real person ({topic})
+- Actors from {series_name}
+- Locations related to {topic}
+- Historical events related to {topic}
+- Documents or evidence related to {topic}
+
+SAVE_PART2 — if the image shows:
+- Events that belong to Part 2 of the story
+- Later timeline events not covered in Part 1
+- Related but different aspect of the story
+
+IGNORE — if the image shows:
+- Unrelated people or places
+- Random photos with no connection
+- Duplicate of another image sent
+
+Reply with ONLY: USE_NOW or SAVE_PART2 or IGNORE"""
+
+    try:
+        r = requests.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": "gpt-4o-mini",
+                "messages": [{
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{img_b64}",
+                                "detail": "low",
+                            },
+                        },
+                        {"type": "text", "text": prompt},
+                    ],
+                }],
+                "max_tokens": 10,
+                "temperature": 0,
+            },
+            timeout=30,
+        )
+        if r.status_code == 200:
+            answer = r.json()["choices"][0]["message"]["content"].strip().upper()
+            if "USE_NOW" in answer:
+                print(f"[Image] ✅ Relevant: {image_path}")
+                return "use_now"
+            if "SAVE_PART2" in answer:
+                print(f"[Image] 📦 Save for Part 2: {image_path}")
+                return "save_part2"
+            print(f"[Image] ❌ Not relevant: {image_path}")
+            return "ignore"
+    except Exception as e:
+        print(f"[Image] Vision check failed: {e}")
+        return "use_now"
+
+    return "use_now"
+
+
+def save_images_for_part2(images: list, topic: str) -> int:
+    """Copy images to output/pending_images/ and write manifest. Returns count saved."""
+    import shutil
+    import datetime
+
+    os.makedirs("output/pending_images", exist_ok=True)
+    saved: list[str] = []
+
+    for i, img in enumerate(images):
+        path = img if isinstance(img, str) else img.get("path", "")
+        if path and os.path.exists(path):
+            ext  = os.path.splitext(path)[1] or ".jpg"
+            dest = f"output/pending_images/part2_{topic.replace(' ', '_')}_{i}{ext}"
+            shutil.copy2(path, dest)
+            saved.append(dest)
+            print(f"[Image] Saved for Part 2: {dest}")
+
+    manifest = {
+        "topic":    topic,
+        "images":   saved,
+        "saved_at": datetime.date.today().isoformat(),
+    }
+    with open("output/pending_images/manifest.json", "w", encoding="utf-8") as f:
+        json.dump(manifest, f, ensure_ascii=False, indent=2)
+
+    print(f"[Image] {len(saved)} images saved for Part 2")
+    return len(saved)
+
+
+def load_part2_images(topic: str) -> list[str]:
+    """Load and clear saved Part 2 images if they match topic. Returns list of paths."""
+    manifest_path = "output/pending_images/manifest.json"
+    if not os.path.exists(manifest_path):
+        return []
+    try:
+        with open(manifest_path, encoding="utf-8") as f:
+            data = json.load(f)
+        if topic.lower() in data.get("topic", "").lower():
+            existing = [p for p in data.get("images", []) if os.path.exists(p)]
+            print(f"[Image] Loaded {len(existing)} Part 2 images for {topic}")
+            os.remove(manifest_path)
+            return existing
+    except Exception as e:
+        print(f"[Image] Part 2 image load failed: {e}")
+    return []
+
+
+def process_user_images_smart(
+    user_images: list,
+    topic: str,
+    series_name: str | None,
+    part_number: int | None = None,
+) -> tuple[list, list, list]:
+    """Filter user images by OpenAI Vision relevance. Returns (use_now, save_for_later, ignored)."""
+    use_now:        list = []
+    save_for_later: list = []
+    ignored:        list = []
+
+    for img in user_images:
+        path = img if isinstance(img, str) else img.get("path", "")
+        if not path or not os.path.exists(path):
+            continue
+        result = check_image_relevance(path, topic, series_name, part_number)
+        if result == "use_now":
+            use_now.append(img)
+        elif result == "save_part2":
+            save_for_later.append(img)
+        else:
+            ignored.append(img)
+
+    print(f"[Image] Smart filter results:")
+    print(f"  ✅ Use now: {len(use_now)}")
+    print(f"  📦 Save Part 2: {len(save_for_later)}")
+    print(f"  ❌ Ignored: {len(ignored)}")
+
+    if save_for_later:
+        save_images_for_part2(save_for_later, topic)
+
+    return use_now, save_for_later, ignored
 
 
 def get_person_images(
