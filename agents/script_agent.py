@@ -674,6 +674,14 @@ massacred protesters in Khartoum, and started a full civil war
 with UAE backing and Colombian mercenaries.
 Follow Dark Crime Decoded — Part 2 coming soon."
 
+IMPORTANT TERMINOLOGY:
+- RSF = Rapid Support Forces (قوات الدعم السريع) — NEVER translate as مراسلون بلا حدود
+- Janjaweed = الجنجويد
+- SAF = القوات المسلحة السودانية (Sudan Armed Forces)
+- Hemedti = حميدتي or محمد حمدان دقلو
+- Darfur = دارفور
+- Khartoum = الخرطوم
+
 RULES:
 - 1800 words total
 - Specific dates, numbers, names — every sentence
@@ -747,6 +755,14 @@ CONCLUSION (100 words):
 But Hemedti has not been found.
 Follow Dark Crime Decoded for updates
 as this story continues to unfold."
+
+IMPORTANT TERMINOLOGY:
+- RSF = Rapid Support Forces (قوات الدعم السريع) — NEVER translate as مراسلون بلا حدود
+- Janjaweed = الجنجويد
+- SAF = القوات المسلحة السودانية (Sudan Armed Forces)
+- Hemedti = حميدتي or محمد حمدان دقلو
+- Darfur = دارفور
+- Khartoum = الخرطوم
 
 RULES:
 - 1800 words total
@@ -1002,12 +1018,28 @@ def _write_darkcrimed_script(topic: dict) -> dict:
         _series_name_raw = _si_long[0] if _si_long else topic.get("niche", topic["topic"])
         _series_type_raw = "Documentary"
 
-        # Build title with part label if applicable
-        part_suffix = f" — Part {part_number}" if part_number else ""
-        doc_title = (
-            f"The Untold Story of {topic['topic']}{part_suffix}: "
-            f"What The World Needs To Know | Dark Crime Decoded"
-        )
+        # Hemedti-specific title overrides
+        _topic_lower = topic["topic"].lower()
+        if "hemedti" in _topic_lower or "حميدتي" in _topic_lower or "dagalo" in _topic_lower:
+            if part_number == 1:
+                doc_title = (
+                    "Hemedti Part 1: From Camel Trader to Warlord | Dark Crime Decoded"
+                )
+            elif part_number == 2:
+                doc_title = (
+                    "Hemedti Part 2: The Massacre, UAE and Colombian Mercenaries | Dark Crime Decoded"
+                )
+            else:
+                doc_title = (
+                    "Hemedti: The Most Dangerous Man You Never Heard Of | Dark Crime Decoded"
+                )
+        else:
+            # Generic documentary title with optional part label
+            part_suffix = f" — Part {part_number}" if part_number else ""
+            doc_title = (
+                f"The Untold Story of {topic['topic']}{part_suffix}: "
+                f"What The World Needs To Know | Dark Crime Decoded"
+            )
 
         # Queue Part 2 automatically when Part 1 is being written
         if part_number == 1:
@@ -1346,10 +1378,21 @@ def fix_arabic_cta(arabic_text: str) -> str:
     return arabic_text
 
 
+def fix_arabic_rsf(text: str) -> str:
+    """Fix RSF being wrongly translated as 'Reporters Without Borders'."""
+    # Google Translate maps RSF → مراسلون بلا حدود (Reporters Without Borders) ❌
+    for wrong in ["مراسلون بلا حدود", "مراسلين بلا حدود", "المراسلون بلا حدود"]:
+        text = text.replace(wrong, "قوات الدعم السريع")
+    text = text.replace("RSF السودان", "قوات الدعم السريع في السودان")
+    text = text.replace("RSF", "قوات الدعم السريع")
+    return text
+
+
 def _fix_arabic(text: str) -> str:
     """Apply all Arabic post-processing fixes in one call."""
     text = fix_arabic_prison_terms(text)
     text = fix_arabic_cta(text)
+    text = fix_arabic_rsf(text)
     return text
 
 
@@ -1371,14 +1414,31 @@ def translate_to_arabic(text: str) -> str:
     return _fix_arabic(translated)
 
 
+def _build_hemedti_arabic_title(part_number: int | None) -> str:
+    """Return the correct Arabic title for Hemedti videos."""
+    if part_number == 1:
+        return "حميدتي الجزء الأول: من تاجر الإبل إلى أمير الحرب | فك رموز الجريمة المظلمة"
+    if part_number == 2:
+        return "حميدتي الجزء الثاني: المجزرة والإمارات والمرتزقة الكولومبيون | فك رموز الجريمة المظلمة"
+    return "حميدتي: أخطر رجل لم تسمع عنه | فك رموز الجريمة المظلمة"
+
+
 def translate_script(en_script: dict) -> dict:
     """Translate an English script_data dict into Arabic using Google Translate."""
+    _topic_lower = en_script.get("topic", "").lower()
+    _is_hemedti  = any(k in _topic_lower for k in ["hemedti", "حميدتي", "dagalo"])
+
+    if _is_hemedti:
+        ar_title = _build_hemedti_arabic_title(en_script.get("part_number"))
+    else:
+        ar_title = _build_arabic_title(
+            en_script.get("title", ""),
+            en_script.get("series_name"),
+            en_script.get("series_type"),
+        )
+
     ar_data = {
-        "title":          _build_arabic_title(
-                              en_script.get("title", ""),
-                              en_script.get("series_name"),
-                              en_script.get("series_type"),
-                          ),
+        "title":          ar_title,
         "hook":           translate_to_arabic(en_script.get("hook", "")),
         "script":         _fix_arabic(translate_to_arabic(en_script["script"])),
         "on_screen_texts": [translate_to_arabic(t) for t in en_script["on_screen_texts"]],
