@@ -64,11 +64,11 @@ def generate_voiceover_edgetts(script_text: str, filename: str, language: str = 
         import edge_tts
 
     if language.lower() == "arabic":
-        voice = "ar-SA-ZariyahNeural"    # Arabic female
-        rate  = "+0%"                     # Normal speed
+        voice = "ar-SA-ZariyahNeural"
+        rate  = "+15%"
     else:
-        voice = "en-US-ChristopherNeural"  # English male deep
-        rate  = "+0%"                      # Normal speed
+        voice = "en-US-ChristopherNeural"
+        rate  = "+20%"
 
     audio_path = os.path.join(AUDIO_DIR, f"{filename}.mp3")
 
@@ -101,7 +101,7 @@ def generate_voiceover_openai(text: str, language: str, output_path: str) -> str
         timeout=httpx.Timeout(60.0, connect=10.0),
     )
     voice = "onyx" if language == "arabic" else "echo"
-    speed = 1.1
+    speed = 1.2 if language == "arabic" else 1.25
     print(f"[Voice] OpenAI TTS: voice={voice} speed={speed} language={language}")
 
     try:

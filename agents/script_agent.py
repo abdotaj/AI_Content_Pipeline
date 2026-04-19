@@ -290,12 +290,12 @@ def _build_arabic_title(en_title: str, series_name: str | None, series_type: str
     ar_entry = SERIES_ARABIC.get(series_name or "")
     if ar_entry:
         ar_series, ar_type = ar_entry
-        return f"القصة الحقيقية وراء {ar_type} {ar_series} | داركرايم ديكودد"
+        return f"القصة الحقيقية وراء {ar_type} {ar_series} | Dark Crime Decoded"
     # No dict entry — use type word with original English series name
     if series_name:
         ar_type = "فيلم" if series_type == "Movie" else "مسلسل" if series_type == "Series" else ""
         if ar_type:
-            return f"القصة الحقيقية وراء {ar_type} {series_name} | داركرايم ديكودد"
+            return f"القصة الحقيقية وراء {ar_type} {series_name} | Dark Crime Decoded"
     return translate_to_arabic(en_title)
 
 
@@ -450,6 +450,126 @@ Return ONLY this JSON with no extra text:
     }
     print(f"[Script] Written (shopmart english): '{script_data['title']}'")
     return script_data
+
+
+def write_long_script_split(topic: dict, research: dict, series_info: tuple | None) -> str:
+    """Write 1800+ word script via 3 separate OpenAI calls (opening/middle/closing)."""
+    import time
+
+    series = series_info[0] if series_info else topic.get("niche", topic.get("topic", ""))
+    stype  = series_info[1] if series_info else "Movie"
+    name   = topic.get("topic", "")
+
+    base_context = f"""Topic: {name}
+Series/Movie: {series} ({stype})
+Network: {research.get('network', 'unknown')}
+Real person: {research.get('real_person', name)}
+Key facts: {(research.get('research_facts') or research.get('what_show_got_right', []))[:3]}
+"""
+
+    # CALL 1 — Opening 500 words
+    prompt1 = f"""{base_context}
+Write the OPENING of a true crime documentary script.
+Exactly 500 words.
+
+HOOK (80 words):
+Most shocking fact about {name} to open with.
+Make viewer unable to stop watching.
+Start with a specific date, number or shocking event.
+
+SERIES INTRO (150 words):
+What {series} showed the world.
+Why millions watched it.
+Celebrate the show then say:
+"But the real story is even more extraordinary..."
+
+REAL BACKGROUND (270 words):
+Who was {name} before everything happened.
+Specific dates, places, family background.
+First criminal involvement with exact year.
+What shaped them into who they became.
+
+RULES:
+- Exactly 500 words
+- Every sentence has ONE specific fact
+- No two sentences start with same word
+- No vague phrases
+- Write like a Netflix documentary narrator"""
+
+    part1 = _openai_direct_call(prompt1, max_tokens=800)
+    if not part1:
+        print("[Script] Split call 1 failed")
+        return ""
+    time.sleep(3)
+
+    # CALL 2 — Main story 800 words
+    prompt2 = f"""{base_context}
+Write the MAIN STORY of a true crime documentary.
+Exactly 800 words.
+
+MAIN STORY (800 words):
+Full chronological story of {name}.
+Start from their first major crime.
+Include specific dates, amounts, names.
+Key events that {series} depicted.
+What the {stype} got right vs reality.
+Real quotes from people involved.
+Specific numbers — money, victims, dates.
+Dramatic turning points in the story.
+
+RULES:
+- Exactly 800 words
+- Chronological order with specific years
+- Every paragraph introduces new information
+- No repetition from opening section
+- Include at least 8 specific dates or numbers"""
+
+    part2 = _openai_direct_call(prompt2, max_tokens=1200)
+    if not part2:
+        print("[Script] Split call 2 failed")
+        return ""
+    time.sleep(3)
+
+    # CALL 3 — Closing 500 words
+    prompt3 = f"""{base_context}
+Write the CLOSING of a true crime documentary.
+Exactly 500 words.
+
+SHOCKING FACTS (200 words):
+3-4 facts about {name} that {series} never showed.
+Things that would shock even fans of the show.
+Real impact on real people.
+
+REAL VS SCREEN (200 words):
+Direct comparison format:
+"In {series}, they showed X. In reality, Y happened."
+3 specific scene comparisons.
+What Hollywood changed for drama.
+Celebrate both the real story and the {stype}.
+
+CONCLUSION (100 words):
+What happened to {name} after the story ended.
+Where are they now or how did they die.
+Legacy and impact on history.
+End with: "Follow Dark Crime Decoded for more real stories behind your favourite crime {stype}s."
+
+RULES:
+- Exactly 500 words
+- Specific facts only — no vague statements
+- End with exact CTA phrase above"""
+
+    part3 = _openai_direct_call(prompt3, max_tokens=800)
+    if not part3:
+        print("[Script] Split call 3 failed")
+        return ""
+
+    parts = [p for p in [part1, part2, part3] if p]
+    full_script = "\n\n".join(parts)
+
+    words   = len(full_script.split())
+    minutes = words / 130
+    print(f"[Script] Split combined: {words} words = ~{minutes:.1f} minutes ✅")
+    return full_script
 
 
 def _write_darkcrimed_script(topic: dict) -> dict:
@@ -623,11 +743,21 @@ Series/Movie: {series_label}
 
 Start immediately with the HOOK. Write spoken words only — no labels, no headers."""
 
-    script_text = ""
-    for attempt in range(2):
-        _prompt = part1_prompt
-        if attempt > 0:
-            _prompt += f"""
+    # Primary: 3-call split (opening 500 + middle 800 + closing 500 = 1800 words)
+    script_text = write_long_script_split(topic, research, _si_long)
+    if script_text and len(script_text.split()) >= 1200:
+        script_text = validate_script(script_text)
+        print(f"[Script] ✅ Split method OK: {len(script_text.split())} words")
+    else:
+        if script_text:
+            print(f"[Script] Split too short ({len(script_text.split())} words) — falling back to single call")
+        else:
+            print("[Script] Split method failed — falling back to single call")
+        script_text = ""
+        for attempt in range(2):
+            _prompt = part1_prompt
+            if attempt > 0:
+                _prompt += f"""
 
 CRITICAL: Previous attempt was only {len(script_text.split())} words. MINIMUM REQUIRED: 1200 words.
 You must EXPAND every section significantly:
@@ -639,14 +769,14 @@ You must EXPAND every section significantly:
 - REAL VS SCREEN: Add 3 specific scene comparisons
 - CONCLUSION: Add what happened to key people afterwards
 Do not summarize — give full detailed information."""
-        script_text = validate_script(_ai_script_call(_prompt, max_tokens=6000, temperature=0.85).strip())
-        words   = len(script_text.split())
-        minutes = words / 130
-        print(f"[Script] Attempt {attempt + 1}: {words} words = ~{minutes:.1f} minutes")
-        if words >= 1200:
-            print(f"[Script] ✅ Length OK: {words} words")
-            break
-        print(f"[Script] WARNING: Too short ({words} words) — retrying...")
+            script_text = validate_script(_ai_script_call(_prompt, max_tokens=6000, temperature=0.85).strip())
+            words   = len(script_text.split())
+            minutes = words / 130
+            print(f"[Script] Attempt {attempt + 1}: {words} words = ~{minutes:.1f} minutes")
+            if words >= 1200:
+                print(f"[Script] ✅ Length OK: {words} words")
+                break
+            print(f"[Script] WARNING: Too short ({words} words) — retrying...")
 
     # ── PART 2: Generate metadata only (title, hook, captions, etc.) ────────
     _series_info    = get_series_for_person(topic["topic"])
@@ -761,6 +891,7 @@ def fix_arabic_cta(arabic_text: str) -> str:
         ("اتبع القناة",              "تابع القناة"),
         ("اتبع للحصول",             "تابع للحصول"),
         # Restore channel name if Google Translate transliterated it
+        ("داركرايم ديكودد",          "Dark Crime Decoded"),
         ("دارك كرايم ديكودد",        "Dark Crime Decoded"),
         ("دارك كرايم ديكوديد",       "Dark Crime Decoded"),
         ("دارك كرايم",               "Dark Crime Decoded"),
