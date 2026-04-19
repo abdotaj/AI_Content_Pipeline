@@ -250,7 +250,14 @@ PERSON_TO_SERIES: dict[str, tuple[str, str]] = {
     "uday saddam":              ("House of Saddam",   "Series"),
 
     # SUDAN
-    "omar bashir":              ("Sudan",             "Documentary"),
+    "hemedti":                  ("Sudan War Crimes",  "Documentary"),
+    "محمد حمدان دقلو":           ("جرائم حرب السودان", "Documentary"),
+    "dagalo":                   ("Sudan War Crimes",  "Documentary"),
+    "حميدتي":                   ("RSF Sudan",         "Documentary"),
+    "rsf sudan":                ("Sudan War Crimes",  "Documentary"),
+    "rapid support forces":     ("Sudan War Crimes",  "Documentary"),
+    "البشير":                   ("House of Bashir",   "Documentary"),
+    "omar bashir":              ("Dictator Files",    "Documentary"),
 
     # INTERNATIONAL
     "kim jong un":              ("The Interview",     "Movie"),
@@ -534,6 +541,99 @@ Return ONLY this JSON with no extra text:
     return script_data
 
 
+DOCUMENTARY_ONLY_TOPICS = [
+    "hemedti",
+    "حميدتي",
+    "dagalo",
+    "محمد حمدان دقلو",
+    "omar bashir",
+    "البشير",
+    "rsf sudan",
+    "rapid support forces",
+]
+
+
+def get_script_angle(topic_text: str, series_info: tuple | None) -> str:
+    """Return 'documentary' for topics with no movie/series, else 'series'."""
+    topic_lower = topic_text.lower()
+    for doc_topic in DOCUMENTARY_ONLY_TOPICS:
+        if doc_topic in topic_lower:
+            return "documentary"
+    return "series"
+
+
+def _write_documentary_script(topic: dict, research: dict) -> str:
+    """Write a documentary-style script for topics where no movie/series exists."""
+    name = topic.get("topic", "")
+    facts = "\n".join(f"- {f}" for f in (
+        research.get("research_facts") or research.get("real_facts", [])
+    )[:5]) or "(research the documented events)"
+    shocking = "\n".join(f"- {s}" for s in (
+        research.get("research_shocking") or research.get("shocking_real_facts", [])
+    )[:4]) or "(include documented allegations)"
+
+    prompt = f"""You are a documentary scriptwriter covering under-reported world events.
+Write a 1800-2000 word documentary script about: {name}
+
+This is a DOCUMENTARY style — no movie or series exists for this topic.
+
+VERIFIED FACTS:
+{facts}
+
+SHOCKING DOCUMENTED DETAILS:
+{shocking}
+
+Use this EXACT structure (spoken words only — no section labels):
+
+HOOK (100 words):
+Open with: "While Hollywood has ignored this story..."
+Most shocking documented fact about {name}.
+Why the world needs to know this story.
+
+BACKGROUND (400 words):
+Who is {name} — full background with specific dates.
+Rise to power.
+Key events that shocked the world.
+
+CRIMES AND ALLEGATIONS (500 words):
+Specific documented events and allegations with dates.
+International response if any.
+Real numbers — victims, scale, evidence.
+
+MYSTERY SECTION (300 words):
+Current status of {name} — confirmed information only.
+What different sources say.
+What the world is watching.
+
+GLOBAL IMPACT (300 words):
+How this person affected the region.
+International reaction.
+What happens next.
+
+WHY NO MOVIE EXISTS (200 words):
+"Hollywood has not touched this story yet.
+But the real events are more dramatic than any crime movie ever made."
+Compare the scale to famous crime movies viewers know.
+
+CONCLUSION (100 words):
+Legacy and ongoing impact.
+End with: "Follow Dark Crime Decoded for stories Hollywood has not told yet."
+
+RULES:
+- 1800-2000 words total
+- Every sentence = one specific documented fact
+- Never state as confirmed what is only alleged — say "allegedly" or "accused of"
+- No vague phrases — specific dates, numbers, names
+- Write like a serious investigative documentary narrator
+
+Start immediately with the HOOK. Spoken words only."""
+
+    result = _ai_script_call(prompt, max_tokens=4000, temperature=0.75)
+    words = len(result.split()) if result else 0
+    print(f"[Script] Documentary script: {words} words")
+    return result or ""
+
+
 def write_long_script_split(topic: dict, research: dict, series_info: tuple | None) -> str:
     """Write 1800+ word script via 3 separate OpenAI calls (opening/middle/closing)."""
     import time
@@ -675,6 +775,40 @@ def _write_darkcrimed_script(topic: dict) -> dict:
 
     # ── PART 1: Script body ───────────────────────────────────────────────────
     _si_long = get_series_for_person(topic["topic"])
+    _angle   = get_script_angle(topic["topic"], _si_long)
+
+    # Documentary-only topics: use investigative prompt, skip series comparison, early return
+    if _angle == "documentary":
+        print(f"[Script] Documentary angle detected for: {topic['topic']}")
+        script_text      = validate_script(_write_documentary_script(topic, research))
+        _series_name_raw = _si_long[0] if _si_long else topic.get("niche", topic["topic"])
+        _series_type_raw = "Documentary"
+        doc_title = (
+            f"The Untold Story of {topic['topic']}: "
+            f"What The World Needs To Know | Dark Crime Decoded"
+        )
+        script_data = {
+            "title":           doc_title,
+            "hook":            script_text[:120] if script_text else "",
+            "script":          script_text,
+            "on_screen_texts": [],
+            "caption":         f"The real untold story of {topic['topic']}. Follow Dark Crime Decoded.",
+            "hashtags":        _build_darkcrimed_hashtags("", None),
+            "thumbnail_text":  topic["topic"][:30],
+            "chapters":        generate_chapters(script_text),
+            "topic":           topic["topic"],
+            "niche":           topic["niche"],
+            "search_query":    topic.get("search_query", ""),
+            "keywords":        topic.get("keywords", []),
+            "language":        "english",
+            "series_name":     _series_name_raw,
+            "series_type":     _series_type_raw,
+            "user_discovery":          research.get("user_discovery", ""),
+            "user_discovery_expanded": research.get("user_discovery_expanded", []),
+        }
+        print(f"[Script] Written (documentary english): '{script_data['title']}'")
+        return script_data
+
     # Prefer series_type from research, then PERSON_TO_SERIES lookup, then default
     _series_name_raw = research.get("series_name") or (topic.get("series_name")) or (_si_long[0] if _si_long else series)
     _series_type_raw = research.get("series_type") or (_si_long[1] if _si_long else "Movie")

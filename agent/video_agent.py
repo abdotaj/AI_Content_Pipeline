@@ -520,6 +520,14 @@ SUBJECTS = {
 
     # Devil's Knot / West Memphis
     "devil's knot":        "West Memphis Three documentary portrait cinematic",
+
+    # Sudan — documentary topics
+    "hemedti":             "Mohamed Hamdan Dagalo Hemedti RSF Sudan military general portrait cinematic",
+    "حميدتي":              "Sudanese military general RSF commander portrait dark cinematic dramatic",
+    "dagalo":              "RSF Sudan military commander portrait cinematic dark dramatic",
+    "محمد حمدان دقلو":     "Sudanese military general portrait dark cinematic dramatic",
+    "omar bashir":         "Omar al-Bashir Sudan dictator president portrait cinematic",
+    "البشير":              "Sudan president portrait dark cinematic dramatic",
 }
 
 # Keys sorted longest-first — computed once at import time
