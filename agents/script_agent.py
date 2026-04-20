@@ -896,7 +896,7 @@ Start immediately with the HOOK. Spoken words only."""
 
 
 def write_long_script_split(topic: dict, research: dict, series_info: tuple | None) -> str:
-    """Write 3600–5000 word script via 5 separate OpenAI calls (one section each)."""
+    """Write 4100–5500 word script via 5 separate OpenAI calls (one section each)."""
     import time
 
     series = series_info[0] if series_info else topic.get("niche", topic.get("topic", ""))
@@ -909,15 +909,25 @@ Real person: {research.get('real_person', name)}
 Key facts: {(research.get('research_facts') or research.get('what_show_got_right', []))[:3]}
 """
 
+    _no_truncate = """
+You must write between 800–1400 words for this section.
+Do not summarize. Do not truncate. Write in full detail.
+If you are approaching the end, do not conclude — the next section will continue the story."""
+
+    _no_truncate_conclusion = """
+You must write between 500–700 words for this section.
+Do not summarize. Do not truncate. Write in full detail."""
+
     sections: list[str] = []
 
-    # CALL 1 — Hook + Intro (600–700 words)
+    # CALL 1 — Hook + Intro (800–1000 words)
     prompt1 = f"""{base_context}
 Write the hook and introduction for a crime documentary script about {name}.
 Hook must grab attention immediately. Intro must build suspense.
-Write 600–700 words. Do not conclude. End mid-story."""
+Write 800–1000 words. Do not conclude. End mid-story.
+{_no_truncate}"""
 
-    s1 = _openai_direct_call(prompt1, max_tokens=1500, system_prompt=_SCRIPT_SYSTEM_PROMPT)
+    s1 = _openai_direct_call(prompt1, max_tokens=2000, system_prompt=_SCRIPT_SYSTEM_PROMPT)
     if not s1:
         print("[Script] 5-call split: call 1 failed")
         return ""
@@ -925,16 +935,17 @@ Write 600–700 words. Do not conclude. End mid-story."""
     print(f"[Script] Section 1 (Hook+Intro): {len(s1.split())} words")
     time.sleep(3)
 
-    # CALL 2 — Background & Context (700–900 words)
+    # CALL 2 — Background & Context (900–1200 words)
     prompt2 = f"""{base_context}
 Continue the script. Write the background and context section.
 Cover history, key players, timeline of events.
-Write 700–900 words. Do not conclude. End mid-story.
+Write 900–1200 words. Do not conclude. End mid-story.
+{_no_truncate}
 
 PREVIOUS SECTION:
 {s1}"""
 
-    s2 = _openai_direct_call(prompt2, max_tokens=1500, system_prompt=_SCRIPT_SYSTEM_PROMPT)
+    s2 = _openai_direct_call(prompt2, max_tokens=2000, system_prompt=_SCRIPT_SYSTEM_PROMPT)
     if not s2:
         print("[Script] 5-call split: call 2 failed")
         return ""
@@ -942,18 +953,19 @@ PREVIOUS SECTION:
     print(f"[Script] Section 2 (Background): {len(s2.split())} words")
     time.sleep(3)
 
-    # CALL 3 — Main Events Deep Dive (800–1000 words)
+    # CALL 3 — Main Events Deep Dive (1000–1400 words)
     prompt3 = f"""{base_context}
 Continue the script. Write the main events section in full detail.
 Every key moment, dialogue, scene description.
-Write 800–1000 words. Do not conclude.
+Write 1000–1400 words. Do not conclude.
+{_no_truncate}
 
 PREVIOUS SECTIONS:
 {s1}
 
 {s2}"""
 
-    s3 = _openai_direct_call(prompt3, max_tokens=1500, system_prompt=_SCRIPT_SYSTEM_PROMPT)
+    s3 = _openai_direct_call(prompt3, max_tokens=2000, system_prompt=_SCRIPT_SYSTEM_PROMPT)
     if not s3:
         print("[Script] 5-call split: call 3 failed")
         return ""
@@ -961,11 +973,12 @@ PREVIOUS SECTIONS:
     print(f"[Script] Section 3 (Main Events): {len(s3.split())} words")
     time.sleep(3)
 
-    # CALL 4 — Analysis & Aftermath (700–900 words)
+    # CALL 4 — Analysis & Aftermath (900–1200 words)
     prompt4 = f"""{base_context}
 Continue the script. Write the analysis and aftermath section.
 What happened next, investigations, consequences, expert opinions.
-Write 700–900 words. Do not conclude.
+Write 900–1200 words. Do not conclude.
+{_no_truncate}
 
 PREVIOUS SECTIONS:
 {s1}
@@ -974,7 +987,7 @@ PREVIOUS SECTIONS:
 
 {s3}"""
 
-    s4 = _openai_direct_call(prompt4, max_tokens=1500, system_prompt=_SCRIPT_SYSTEM_PROMPT)
+    s4 = _openai_direct_call(prompt4, max_tokens=2000, system_prompt=_SCRIPT_SYSTEM_PROMPT)
     if not s4:
         print("[Script] 5-call split: call 4 failed")
         return ""
@@ -982,11 +995,12 @@ PREVIOUS SECTIONS:
     print(f"[Script] Section 4 (Analysis): {len(s4.split())} words")
     time.sleep(3)
 
-    # CALL 5 — Conclusion (400–500 words)
+    # CALL 5 — Conclusion (500–700 words)
     prompt5 = f"""{base_context}
 Continue the script. Write the final conclusion.
 Wrap up the story, final thoughts, call to action for viewers.
-Write 400–500 words. This is the final section.
+Write 500–700 words. This is the final section.
+{_no_truncate_conclusion}
 
 PREVIOUS SECTIONS:
 {s1}
@@ -997,7 +1011,7 @@ PREVIOUS SECTIONS:
 
 {s4}"""
 
-    s5 = _openai_direct_call(prompt5, max_tokens=1500, system_prompt=_SCRIPT_SYSTEM_PROMPT)
+    s5 = _openai_direct_call(prompt5, max_tokens=2000, system_prompt=_SCRIPT_SYSTEM_PROMPT)
     if not s5:
         print("[Script] 5-call split: call 5 failed")
         return ""
@@ -1019,8 +1033,8 @@ PREVIOUS SECTIONS:
     minutes     = total_words / 130
     print(f"[Script] 5-call split total: {total_words} words = ~{minutes:.1f} minutes ✅")
 
-    if total_words < 3000:
-        print(f"[Script] WARNING: English script below 3000 words ({total_words})")
+    if total_words < 3500:
+        print(f"[Script] WARNING: English script below 3500 words ({total_words}) — consider regenerating")
 
     return full_script
 
@@ -1605,8 +1619,8 @@ def translate_long_script_arabic(english_text: str, topic: str = "") -> str:
     result    = "\n\n".join(translated)
     ar_words  = len(result.split())
     print(f"[Script] Arabic translation total: {ar_words} words")
-    if ar_words < 2800:
-        print(f"[Script] WARNING: Arabic script below 2800 words ({ar_words})")
+    if ar_words < 3200:
+        print(f"[Script] WARNING: Arabic script below 3200 words ({ar_words}) — consider regenerating")
     return result
 
 
