@@ -168,6 +168,14 @@ Rules:
 - One or two lines max per section — don't overdo it"""
 
 
+def clean_word_count(text: str) -> int:
+    """Count only real vocabulary words — strips punctuation, ellipses, line breaks."""
+    import re
+    cleaned = re.sub(r'[^\w\s]', '', text)
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+    return len([w for w in cleaned.split() if w.strip()])
+
+
 def _groq_fallback(prompt: str, max_tokens: int, json_mode: bool) -> str:
     """Groq fallback with aggressive prompt truncation and 3-model retry chain."""
     import os
@@ -896,7 +904,7 @@ Start immediately with the HOOK. Spoken words only."""
 
 
 def write_long_script_split(topic: dict, research: dict, series_info: tuple | None) -> str:
-    """Write 4100–5500 word script via 5 separate OpenAI calls (one section each)."""
+    """Write 2,500–3,050 real-word script via 5 OpenAI calls → 15–18 min runtime."""
     import time
 
     series = series_info[0] if series_info else topic.get("niche", topic.get("topic", ""))
@@ -909,114 +917,14 @@ Real person: {research.get('real_person', name)}
 Key facts: {(research.get('research_facts') or research.get('what_show_got_right', []))[:3]}
 """
 
-    _no_truncate = """
-You must write between 800–1400 words for this section.
-Do not summarize. Do not truncate. Write in full detail.
-If you are approaching the end, do not conclude — the next section will continue the story."""
-
-    _no_truncate_conclusion = """
-You must write between 500–700 words for this section.
-Do not summarize. Do not truncate. Write in full detail."""
-
-    sections: list[str] = []
-
-    # CALL 1 — Hook + Intro (800–1000 words)
-    prompt1 = f"""{base_context}
-Write the hook and introduction for a crime documentary script about {name}.
-Hook must grab attention immediately. Intro must build suspense.
-Write 800–1000 words. Do not conclude. End mid-story.
-{_no_truncate}"""
-
-    s1 = _openai_direct_call(prompt1, max_tokens=2000, system_prompt=_SCRIPT_SYSTEM_PROMPT)
-    if not s1:
-        print("[Script] 5-call split: call 1 failed")
-        return ""
-    sections.append(s1)
-    print(f"[Script] Section 1 (Hook+Intro): {len(s1.split())} words")
-    time.sleep(3)
-
-    # CALL 2 — Background & Context (900–1200 words)
-    prompt2 = f"""{base_context}
-Continue the script. Write the background and context section.
-Cover history, key players, timeline of events.
-Write 900–1200 words. Do not conclude. End mid-story.
-{_no_truncate}
-
-PREVIOUS SECTION:
-{s1}"""
-
-    s2 = _openai_direct_call(prompt2, max_tokens=2000, system_prompt=_SCRIPT_SYSTEM_PROMPT)
-    if not s2:
-        print("[Script] 5-call split: call 2 failed")
-        return ""
-    sections.append(s2)
-    print(f"[Script] Section 2 (Background): {len(s2.split())} words")
-    time.sleep(3)
-
-    # CALL 3 — Main Events Deep Dive (1000–1400 words)
-    prompt3 = f"""{base_context}
-Continue the script. Write the main events section in full detail.
-Every key moment, dialogue, scene description.
-Write 1000–1400 words. Do not conclude.
-{_no_truncate}
-
-PREVIOUS SECTIONS:
-{s1}
-
-{s2}"""
-
-    s3 = _openai_direct_call(prompt3, max_tokens=2000, system_prompt=_SCRIPT_SYSTEM_PROMPT)
-    if not s3:
-        print("[Script] 5-call split: call 3 failed")
-        return ""
-    sections.append(s3)
-    print(f"[Script] Section 3 (Main Events): {len(s3.split())} words")
-    time.sleep(3)
-
-    # CALL 4 — Analysis & Aftermath (900–1200 words)
-    prompt4 = f"""{base_context}
-Continue the script. Write the analysis and aftermath section.
-What happened next, investigations, consequences, expert opinions.
-Write 900–1200 words. Do not conclude.
-{_no_truncate}
-
-PREVIOUS SECTIONS:
-{s1}
-
-{s2}
-
-{s3}"""
-
-    s4 = _openai_direct_call(prompt4, max_tokens=2000, system_prompt=_SCRIPT_SYSTEM_PROMPT)
-    if not s4:
-        print("[Script] 5-call split: call 4 failed")
-        return ""
-    sections.append(s4)
-    print(f"[Script] Section 4 (Analysis): {len(s4.split())} words")
-    time.sleep(3)
-
-    # CALL 5 — Conclusion (500–700 words)
-    prompt5 = f"""{base_context}
-Continue the script. Write the final conclusion.
-Wrap up the story, final thoughts, call to action for viewers.
-Write 500–700 words. This is the final section.
-{_no_truncate_conclusion}
-
-PREVIOUS SECTIONS:
-{s1}
-
-{s2}
-
-{s3}
-
-{s4}"""
-
-    s5 = _openai_direct_call(prompt5, max_tokens=2000, system_prompt=_SCRIPT_SYSTEM_PROMPT)
-    if not s5:
-        print("[Script] 5-call split: call 5 failed")
-        return ""
-    sections.append(s5)
-    print(f"[Script] Section 5 (Conclusion): {len(s5.split())} words")
+    # (label, min_words, max_words, is_final)
+    _SECTIONS_META = [
+        ("Hook + Intro",          450,  550,  False),
+        ("Background & Context",  550,  650,  False),
+        ("Main Events Deep Dive", 650,  800,  False),
+        ("Analysis & Aftermath",  550,  650,  False),
+        ("Conclusion",            300,  400,  True),
+    ]
 
     _SECTION_LABELS = [
         "[SECTION: Introduction]",
@@ -1025,16 +933,127 @@ PREVIOUS SECTIONS:
         "[SECTION: Shocking Facts]",
         "[SECTION: Conclusion]",
     ]
+
+    def _section_instruction(min_w: int, max_w: int, is_final: bool) -> str:
+        conclude = (
+            "This is the final section — wrap up the story, deliver final thoughts, "
+            "call to action for viewers."
+            if is_final else
+            "Do not summarize or conclude — the next section will continue the story. "
+            "End mid-story."
+        )
+        return (
+            f"Write exactly {min_w}–{max_w} real words for this section. "
+            "Real words only — do not count punctuation, ellipses, or line breaks. "
+            "No filler. No repetition. Every sentence adds new information. "
+            + conclude
+        )
+
+    def _call_section(prompt: str, label: str, min_w: int, max_w: int,
+                      call_num: int) -> str | None:
+        result = _openai_direct_call(prompt, max_tokens=1200,
+                                     system_prompt=_SCRIPT_SYSTEM_PROMPT)
+        if not result:
+            print(f"[Script] Section {call_num} ({label}): call failed")
+            return None
+        real  = clean_word_count(result)
+        raw   = len(result.split())
+        emoji = "✅" if real >= min_w else "⚠️"
+        print(f"[Script] Section {call_num} ({label}): {real} real words {emoji} "
+              f"(target {min_w}–{max_w}, raw {raw})")
+        # One retry if below minimum
+        if real < min_w:
+            print(f"[Script] Section {call_num}: below minimum — retrying once")
+            time.sleep(4)
+            retry = _openai_direct_call(prompt, max_tokens=1200,
+                                        system_prompt=_SCRIPT_SYSTEM_PROMPT)
+            if retry:
+                r_real = clean_word_count(retry)
+                r_raw  = len(retry.split())
+                emoji2 = "✅" if r_real >= min_w else "⚠️"
+                print(f"[Script] Section {call_num} retry: {r_real} real words {emoji2} "
+                      f"(raw {r_raw})")
+                if r_real >= real:
+                    return retry
+        return result
+
+    sections: list[str] = []
+    prompts_ctx: list[str] = []  # accumulate previous sections for context
+
+    section_prompts = [
+        lambda: f"""{base_context}
+Write the hook and introduction for a crime documentary script about {name}.
+Hook must grab attention immediately. Build suspense.
+{_section_instruction(450, 550, False)}""",
+
+        lambda: f"""{base_context}
+Continue the script. Write the background and context section.
+Cover history, key players, timeline of events.
+{_section_instruction(550, 650, False)}
+
+PREVIOUS SECTION:
+{sections[0]}""",
+
+        lambda: f"""{base_context}
+Continue the script. Write the main events section in full detail.
+Every key moment, dialogue, scene description.
+{_section_instruction(650, 800, False)}
+
+PREVIOUS SECTIONS:
+{sections[0]}
+
+{sections[1]}""",
+
+        lambda: f"""{base_context}
+Continue the script. Write the analysis and aftermath section.
+What happened next, investigations, consequences, expert opinions.
+{_section_instruction(550, 650, False)}
+
+PREVIOUS SECTIONS:
+{sections[0]}
+
+{sections[1]}
+
+{sections[2]}""",
+
+        lambda: f"""{base_context}
+Continue the script. Write the final conclusion.
+{_section_instruction(300, 400, True)}
+
+PREVIOUS SECTIONS:
+{sections[0]}
+
+{sections[1]}
+
+{sections[2]}
+
+{sections[3]}""",
+    ]
+
+    for i, (label, min_w, max_w, is_final) in enumerate(_SECTIONS_META):
+        prompt = section_prompts[i]()
+        result = _call_section(prompt, label, min_w, max_w, i + 1)
+        if not result:
+            return ""
+        sections.append(result)
+        if i < len(_SECTIONS_META) - 1:
+            time.sleep(3)
+
     full_script = "\n\n".join(
         f"{_SECTION_LABELS[i]}\n{section}"
         for i, section in enumerate(sections)
     )
-    total_words = len(full_script.split())
-    minutes     = total_words / 130
-    print(f"[Script] 5-call split total: {total_words} words = ~{minutes:.1f} minutes ✅")
 
-    if total_words < 3500:
-        print(f"[Script] WARNING: English script below 3500 words ({total_words}) — consider regenerating")
+    total_real = clean_word_count(full_script)
+    total_raw  = len(full_script.split())
+    minutes    = total_real / 163  # ~163 wpm for documentary English narration
+    print(f"[Script] Total English: {total_real} real words (raw {total_raw}) "
+          f"→ Est. runtime: ~{minutes:.0f} min")
+
+    if total_real < 2450:
+        print(f"[Script] WARNING: English total {total_real} real words — below 2,450 target, consider regenerating")
+    elif total_real > 3150:
+        print(f"[Script] WARNING: English total {total_real} real words — above 3,150 cap, may run long")
 
     return full_script
 
@@ -1807,10 +1826,11 @@ def translate_long_script_arabic(english_text: str, topic: str = "") -> str:
             _time.sleep(2)
 
     result    = "\n\n".join(translated)
-    ar_words  = len(result.split())
-    print(f"[Script] Arabic translation total: {ar_words} words")
-    if ar_words < 3200:
-        print(f"[Script] WARNING: Arabic script below 3200 words ({ar_words}) — consider regenerating")
+    ar_real   = clean_word_count(result)
+    ar_raw    = len(result.split())
+    print(f"[Script] Arabic translation total: {ar_real} real words (raw {ar_raw})")
+    if ar_real < 2250:
+        print(f"[Script] WARNING: Arabic total {ar_real} real words — below 2,250 target, consider regenerating")
     return result
 
 
