@@ -424,23 +424,38 @@ def _build_arabic_title(en_title: str, series_name: str | None, series_type: str
     return translate_to_arabic(en_title)
 
 
-def generate_chapters(total_words):
-    """Generate accurate YouTube chapter timestamps proportional to script length."""
+CHAPTER_LABELS_EN = [
+    "🎬 Introduction",
+    "📖 Background & Origins",
+    "⚡ Rise to Power",
+    "😱 The Real Story",
+    "💀 Shocking Revelations",
+    "⚖️ Evidence & Investigation",
+    "🎯 Conclusion",
+]
+
+CHAPTER_LABELS_AR = [
+    "🎬 مقدمة",
+    "📖 الخلفية والأصول",
+    "⚡ الصعود إلى السلطة",
+    "😱 القصة الحقيقية",
+    "💀 الحقائق الصادمة",
+    "⚖️ الأدلة والتحقيق",
+    "🎯 الخاتمة",
+]
+
+_CHAPTER_PROPORTIONS = [0.0, 0.13, 0.28, 0.45, 0.63, 0.78, 0.90]
+
+
+def generate_chapters(total_words, language: str = "english"):
+    """Generate YouTube chapter timestamps proportional to script length."""
     words_per_minute = 156  # 130 wpm * 1.2x playback speed
     total_seconds = (total_words / words_per_minute) * 60
 
-    proportions = [
-        (0.0,  "🎬 Introduction & Hook"),
-        (0.13, "📖 Background & Origins"),
-        (0.28, "⚡ Rise to Power"),
-        (0.45, "😱 Main Events"),
-        (0.63, "💀 Shocking Revelations"),
-        (0.78, "⚖️ Evidence & Investigation"),
-        (0.90, "🎯 Conclusion"),
-    ]
+    labels = CHAPTER_LABELS_AR if language == "arabic" else CHAPTER_LABELS_EN
 
     chapters = []
-    for ratio, title in proportions:
+    for ratio, title in zip(_CHAPTER_PROPORTIONS, labels):
         seconds = int(total_seconds * ratio)
         mins = seconds // 60
         secs = seconds % 60

@@ -41,7 +41,7 @@ from config_darkcrimed import (
 # Local: use existing youtube_token_darkcrimed_en/ar.json files
 
 from agent.research_agent import research_topics, research_series, mark_covered, is_fictional
-from agent.script_agent   import write_script, write_short_script, translate_script, detect_part_number
+from agent.script_agent   import write_script, write_short_script, translate_script, detect_part_number, generate_chapters
 from agent.video_agent    import create_video, process_user_images_smart, load_part2_images, ensure_music_assets
 from agent.notify_agent   import (
     send_message, send_for_manual_posting, send_daily_report,
@@ -327,6 +327,10 @@ def run_pipeline():
 
     try:
         ar_long = translate_script(en_long)
+        # Replace English chapter labels with Arabic equivalents
+        ar_word_count = len(ar_long.get("script", "").split())
+        if ar_word_count > 0:
+            ar_long["chapters"] = generate_chapters(ar_word_count, language="arabic")
         print("  [2/5] Arabic long script done")
     except Exception as e:
         send_message(f"Arabic translation failed: {e}")
