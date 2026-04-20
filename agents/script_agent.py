@@ -41,7 +41,8 @@ def _groq_call(**kwargs):
 
 
 def _openai_direct_call(prompt: str, max_tokens: int = 4000,
-                        json_mode: bool = False) -> str | None:
+                        json_mode: bool = False,
+                        system_prompt: str | None = None) -> str | None:
     import os
     import requests
     import json
@@ -51,12 +52,18 @@ def _openai_direct_call(prompt: str, max_tokens: int = 4000,
         print("[OpenAI] No API key")
         return None
 
+    _system = system_prompt or "You are a professional true crime documentary scriptwriter."
+
+    print("=== SYSTEM PROMPT ===")
+    print(_system)
+    print("=== END SYSTEM PROMPT ===")
+
     payload = {
         "model": "gpt-4o-mini",
         "messages": [
             {
                 "role": "system",
-                "content": "You are a professional true crime documentary scriptwriter."
+                "content": _system,
             },
             {
                 "role": "user",
@@ -138,6 +145,27 @@ def _openai_direct_call(prompt: str, max_tokens: int = 4000,
 
     print("[OpenAI] All connection attempts failed")
     return None
+
+
+_SCRIPT_SYSTEM_PROMPT = """You are a professional true crime documentary scriptwriter.
+
+Tone rules:
+- 85% dark, serious, documentary tone
+- 15% dry humor and sarcasm — especially when describing:
+  * How stupid a criminal's mistake was
+  * Ironic twists in the story
+  * Moments where the subject embarrassed themselves
+  * Unexpected plot twists
+
+Examples of good dry humor in crime scripts:
+- 'He planned the perfect crime. Except he left his wallet at the scene.'
+- 'For a man who controlled an entire militia, he somehow forgot that cameras exist.'
+- 'Genius move. Truly. A masterclass in how not to be a warlord.'
+
+Rules:
+- Never make fun of victims
+- Only humor directed at criminals, corrupt officials, or ironic situations
+- One or two lines max per section — don't overdo it"""
 
 
 def _groq_fallback(prompt: str, max_tokens: int, json_mode: bool) -> str:
@@ -889,7 +917,7 @@ Write the hook and introduction for a crime documentary script about {name}.
 Hook must grab attention immediately. Intro must build suspense.
 Write 600–700 words. Do not conclude. End mid-story."""
 
-    s1 = _openai_direct_call(prompt1, max_tokens=1500)
+    s1 = _openai_direct_call(prompt1, max_tokens=1500, system_prompt=_SCRIPT_SYSTEM_PROMPT)
     if not s1:
         print("[Script] 5-call split: call 1 failed")
         return ""
@@ -906,7 +934,7 @@ Write 700–900 words. Do not conclude. End mid-story.
 PREVIOUS SECTION:
 {s1}"""
 
-    s2 = _openai_direct_call(prompt2, max_tokens=1500)
+    s2 = _openai_direct_call(prompt2, max_tokens=1500, system_prompt=_SCRIPT_SYSTEM_PROMPT)
     if not s2:
         print("[Script] 5-call split: call 2 failed")
         return ""
@@ -925,7 +953,7 @@ PREVIOUS SECTIONS:
 
 {s2}"""
 
-    s3 = _openai_direct_call(prompt3, max_tokens=1500)
+    s3 = _openai_direct_call(prompt3, max_tokens=1500, system_prompt=_SCRIPT_SYSTEM_PROMPT)
     if not s3:
         print("[Script] 5-call split: call 3 failed")
         return ""
@@ -946,7 +974,7 @@ PREVIOUS SECTIONS:
 
 {s3}"""
 
-    s4 = _openai_direct_call(prompt4, max_tokens=1500)
+    s4 = _openai_direct_call(prompt4, max_tokens=1500, system_prompt=_SCRIPT_SYSTEM_PROMPT)
     if not s4:
         print("[Script] 5-call split: call 4 failed")
         return ""
@@ -969,7 +997,7 @@ PREVIOUS SECTIONS:
 
 {s4}"""
 
-    s5 = _openai_direct_call(prompt5, max_tokens=1500)
+    s5 = _openai_direct_call(prompt5, max_tokens=1500, system_prompt=_SCRIPT_SYSTEM_PROMPT)
     if not s5:
         print("[Script] 5-call split: call 5 failed")
         return ""
@@ -1517,7 +1545,10 @@ Return ONLY the Arabic translation. No explanations, no notes."""
                         "content": (
                             "You are a professional Arabic translator specialising in "
                             "true crime and investigative journalism. You translate "
-                            "accurately with correct military and legal terminology."
+                            "accurately with correct military and legal terminology. "
+                            "When the source text contains dry humor or sarcasm, adapt "
+                            "it naturally into Arabic — do not translate literally. "
+                            "Arabic humor should feel native, not like a translated joke."
                         ),
                     },
                     {"role": "user", "content": prompt},
