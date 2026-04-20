@@ -142,23 +142,6 @@ def generate_voiceover_openai(text: str, language: str, output_path: str,
         timeout=httpx.Timeout(60.0, connect=10.0),
     )
 
-    if is_short:
-        model = "tts-1"
-        voice = "alloy" if language == "arabic" else "echo"
-        speed = 1.10
-        label = f"{'Arabic' if language == 'arabic' else 'English'} short"
-    elif language == "arabic":
-        model = "tts-1"
-        voice = "alloy"
-        speed = 1.06
-        label = "Arabic long"
-    else:
-        model = "gpt-4o-mini-tts"
-        voice = "onyx"
-        speed = 1.03
-        label = "English long"
-
-    # Voice instructions (only gpt-4o-mini-tts supports this parameter)
     _INSTRUCTIONS = {
         "onyx": (
             "Deep cinematic war-documentary narrator. "
@@ -176,8 +159,35 @@ def generate_voiceover_openai(text: str, language: str, output_path: str,
             "Smooth, believable, controlled tension. "
             "Strong clear ending sentence. Maintain realism and credibility."
         ),
+        "alloy_arabic": (
+            "أسلوب الأداء: راوٍ وثائقي عربي احترافي. "
+            "صوت عميق وواثق وهادئ. نبرة جادة وغامضة. إلقاء طبيعي جداً. "
+            "وضوح ممتاز للحروف. وقفات قصيرة بعد الجمل المهمة. "
+            "تصاعد تدريجي في التوتر أثناء الأحداث. "
+            "خفض النبرة عند المآسي والضحايا. "
+            "لا مبالغة، لا تمثيل زائد، لا صوت روبوتي. "
+            "الإحساس العام: هيبة، غموض، مصداقية، قوة هادئة، سرد سينمائي."
+        ),
     }
-    tts_instructions = _INSTRUCTIONS.get(voice) if model == "gpt-4o-mini-tts" else None
+
+    if is_short:
+        model = "gpt-4o-mini-tts"
+        voice = "alloy"
+        speed = 1.05 if language == "arabic" else 1.10
+        label = f"{'Arabic' if language == 'arabic' else 'English'} short"
+    elif language == "arabic":
+        model = "gpt-4o-mini-tts"
+        voice = "alloy"
+        speed = 0.97
+        label = "Arabic long"
+    else:
+        model = "gpt-4o-mini-tts"
+        voice = "onyx"
+        speed = 1.03
+        label = "English long"
+
+    instr_key = "alloy_arabic" if language == "arabic" else voice
+    tts_instructions = _INSTRUCTIONS.get(instr_key)
 
     print(f"[Voice] TTS speed: {speed} ({label}) | model={model} voice={voice}")
 
@@ -2276,6 +2286,101 @@ def assemble_short_video(audio_path: str, image_paths: list[str], output_path: s
     return output_path
 
 
+# ── Netflix-quality audio post-processing ─────────────────────────────────────
+
+def process_audio_netflix(input_path: str) -> str:
+    """
+    Apply a 5-step ffmpeg chain for cinematic audio quality.
+    Returns the processed file path (replaces input in-place).
+    Skips silently if ffmpeg is unavailable.
+    """
+    import subprocess
+    import shutil
+
+    ffmpeg_bin = _get_ffmpeg()
+    if not ffmpeg_bin:
+        print("[Audio] ffmpeg not found — skipping Netflix processing")
+        return input_path
+
+    base   = input_path.replace(".mp3", "")
+    steps  = [
+        # 1. Bass boost — warmth
+        ([ffmpeg_bin, "-y", "-i", input_path,
+          "-af", "equalizer=f=120:width_type=o:width=2:g=3",
+          f"{base}_s1.mp3"], "bass boost"),
+        # 2. De-esser — tame harsh sibilants (Arabic س / ش)
+        ([ffmpeg_bin, "-y", "-i", f"{base}_s1.mp3",
+          "-af", "highpass=f=80,lowpass=f=12000",
+          f"{base}_s2.mp3"], "de-esser"),
+        # 3. Light compression — consistent volume
+        ([ffmpeg_bin, "-y", "-i", f"{base}_s2.mp3",
+          "-af", "acompressor=threshold=0.5:ratio=4:attack=5:release=50",
+          f"{base}_s3.mp3"], "compression"),
+        # 4. Subtle reverb — space and depth
+        ([ffmpeg_bin, "-y", "-i", f"{base}_s3.mp3",
+          "-af", "aecho=0.8:0.9:40:0.3",
+          f"{base}_s4.mp3"], "reverb"),
+        # 5. Loudness normalisation
+        ([ffmpeg_bin, "-y", "-i", f"{base}_s4.mp3",
+          "-af", "loudnorm=I=-16:TP=-1.5:LRA=11",
+          f"{base}_processed.mp3"], "loudnorm"),
+    ]
+
+    prev = input_path
+    step_files: list[str] = []
+    for cmd, label in steps:
+        try:
+            subprocess.run(cmd, check=True, capture_output=True)
+            step_files.append(cmd[-1])
+            prev = cmd[-1]
+        except Exception as e:
+            print(f"[Audio] Netflix step '{label}' failed: {e} — stopping chain")
+            break
+
+    if not step_files:
+        return input_path
+
+    final_processed = step_files[-1]
+
+    # Mix background music if available
+    music_path = os.path.join(os.path.dirname(__file__), "..", "assets", "background_music.mp3")
+    music_path = os.path.normpath(music_path)
+    output_with_music = f"{base}_final.mp3"
+
+    if os.path.exists(music_path):
+        try:
+            subprocess.run(
+                [ffmpeg_bin, "-y",
+                 "-i", final_processed,
+                 "-i", music_path,
+                 "-filter_complex", "[1]volume=0.08[bg];[0][bg]amix=inputs=2:duration=first",
+                 output_with_music],
+                check=True, capture_output=True,
+            )
+            final_processed = output_with_music
+            print("[Audio] Background music mixed ✅")
+        except Exception as e:
+            print(f"[Audio] Music mix failed: {e} — using voice-only")
+    else:
+        print("[Audio] No background_music.mp3 found — skipping music mix")
+
+    # Replace original with processed
+    try:
+        shutil.move(final_processed, input_path)
+    except Exception as e:
+        print(f"[Audio] Could not replace original with processed: {e}")
+        return final_processed
+
+    # Clean up intermediate step files
+    for f in step_files:
+        if f != final_processed and os.path.exists(f):
+            try: os.remove(f)
+            except OSError: pass
+
+    print("[Audio] Audio post-processed: bass boost + compression + reverb + music mixed")
+    return input_path
+
+
 # ── Section-aware TTS + accurate chapter builder ──────────────────────────────
 
 _SECTION_DISPLAY = {
@@ -2408,6 +2513,9 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
             if dynamic_chapters:
                 script_data["chapters"] = dynamic_chapters
                 print("[Video] Dynamic chapters saved to script_data")
+            # Netflix-quality audio post-processing (long videos only)
+            if audio_path and os.path.exists(audio_path):
+                audio_path = process_audio_netflix(audio_path)
         else:
             audio_path = generate_voiceover(script_data["script"], video_id, language)
         print(f"[Video] Audio ready: {audio_path}")

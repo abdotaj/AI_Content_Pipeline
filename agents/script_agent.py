@@ -1501,12 +1501,16 @@ def _fix_arabic(text: str) -> str:
 def format_for_tts(text: str) -> str:
     """
     Format script text for natural TTS delivery.
+    Auto-routes Arabic text to format_for_tts_arabic().
     - Short punchy sentences get their own line.
     - Shocking facts / numbers get trailing ellipsis.
     - Long sentences split at natural pause conjunctions.
     - Section markers are preserved unchanged.
     """
     import re
+    # Detect Arabic by Unicode block presence
+    if re.search(r'[\u0600-\u06FF]', text):
+        return format_for_tts_arabic(text)
 
     lines_out: list[str] = []
     for raw_line in text.splitlines():
@@ -1577,6 +1581,110 @@ def format_for_tts(text: str) -> str:
     result = re.sub(r'\n{3,}', '\n\n', result)
     line_count = len([l for l in result.splitlines() if l.strip()])
     print(f"[Script] Script formatted for TTS — {line_count} lines")
+    return result
+
+
+def _clean_arabic_with_openai(section_text: str) -> str:
+    """Ask OpenAI to rewrite Arabic section in clean fusha — short sentences, no filler."""
+    import os as _os
+    import requests as _req
+
+    api_key = _os.getenv("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        return section_text
+
+    prompt = (
+        "أعد كتابة هذا النص العربي بأسلوب فصيح حديث ومباشر.\n"
+        "جمل قصيرة وقوية. أفعال قوية. احذف الحشو والتكرار.\n"
+        "حافظ على نفس المعنى والوقائع تماماً.\n"
+        "أعد النص المعاد صياغته فقط بدون تعليق.\n\n"
+        f"{section_text}"
+    )
+    try:
+        r = _req.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json={
+                "model": "gpt-4o-mini",
+                "messages": [
+                    {"role": "system", "content": "أنت محرر نصوص وثائقية عربية محترف."},
+                    {"role": "user", "content": prompt},
+                ],
+                "max_tokens": 2000,
+                "temperature": 0.4,
+            },
+            timeout=45,
+        )
+        if r.status_code == 200:
+            return r.json()["choices"][0]["message"]["content"].strip()
+    except Exception as e:
+        print(f"[Script] Arabic cleanup failed: {e}")
+    return section_text
+
+
+def format_for_tts_arabic(text: str) -> str:
+    """
+    Format Arabic script for natural TTS delivery.
+    - OpenAI cleanup pass (fusha, no filler).
+    - Each sentence on its own line.
+    - Shocking facts / numbers → trailing "..."
+    - Short punchy clauses each on own line.
+    - Breathing-room blank lines every 2-3 lines.
+    """
+    import re
+
+    # Section markers go through unchanged; process section bodies separately
+    section_marker_re = re.compile(r'(\[SECTION:[^\]]+\])')
+    parts = section_marker_re.split(text)
+    out_parts: list[str] = []
+
+    for part in parts:
+        if section_marker_re.match(part):
+            out_parts.append(part)
+            continue
+        if not part.strip():
+            out_parts.append(part)
+            continue
+
+        # OpenAI cleanup per section (skip tiny fragments)
+        cleaned = _clean_arabic_with_openai(part) if len(part.split()) > 20 else part
+
+        lines_out: list[str] = []
+        line_count_since_break = 0
+
+        # Split at Arabic sentence endings: . ؟ ! ، (comma as soft pause)
+        # Use period/question/exclamation as hard splits, comma as soft split
+        sentences = re.split(r'(?<=[.؟!،])\s*', cleaned)
+
+        for sent in sentences:
+            sent = sent.strip()
+            if not sent:
+                continue
+
+            # Numbers or short punchy clauses → ellipsis
+            has_number = bool(re.search(r'\d[\d,]*', sent))
+            words      = sent.split()
+            is_punchy  = len(words) <= 6
+
+            if (has_number or is_punchy) and sent[-1] in '.؟!،':
+                sent = sent[:-1] + "..."
+            elif sent[-1] not in '.؟!،...':
+                sent += "."
+
+            lines_out.append(sent)
+            line_count_since_break += 1
+
+            # Breathing room every 2-3 lines
+            if line_count_since_break >= 3:
+                lines_out.append("")
+                line_count_since_break = 0
+
+        out_parts.append("\n".join(lines_out))
+
+    result = "\n".join(out_parts).strip()
+    result = re.sub(r'\n{3,}', '\n\n', result)
+    line_count = len([l for l in result.splitlines() if l.strip()])
+    print(f"[Script] Arabic script formatted for TTS — {line_count} lines")
     return result
 
 
