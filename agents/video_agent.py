@@ -1192,8 +1192,8 @@ def download_real_image(url: str, output_path: str) -> str | None:
         return None
 
 
-def search_real_image(query: str, output_path: str) -> str | None:
-    """DuckDuckGo image search. Tries up to 5 result URLs. Returns saved path or None."""
+def _ddgs_image_results(query: str, max_results: int = 5) -> list[str]:
+    """Return list of image URLs from DuckDuckGo. Returns empty list on any failure."""
     try:
         from duckduckgo_search import DDGS
     except ImportError:
@@ -1201,24 +1201,69 @@ def search_real_image(query: str, output_path: str) -> str | None:
         try:
             from duckduckgo_search import DDGS
         except Exception:
-            return None
-
+            return []
     try:
         with DDGS() as ddgs:
-            results = list(ddgs.images(query, max_results=5, safesearch="moderate"))
+            results = list(ddgs.images(query, max_results=max_results, safesearch="moderate"))
+        return [r["image"] for r in results if r.get("image")]
     except Exception as e:
         print(f"[Image] DDGS search failed '{query}': {e}")
-        return None
+        return []
 
-    for result in results:
-        url = result.get("image", "")
-        if not url:
-            continue
+
+def _download_first_valid(urls: list[str], output_path: str) -> str | None:
+    """Try each URL in order, return path of the first that downloads successfully."""
+    for url in urls:
         saved = download_real_image(url, output_path)
         if saved:
-            print(f"[Image] ✅ Real photo: '{query}'")
             return saved
+    return None
 
+
+def _translate_to_arabic_query(english_query: str) -> str | None:
+    """Translate an English image search query to Arabic via OpenAI."""
+    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        return None
+    try:
+        r = requests.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": "gpt-4o-mini",
+                "messages": [{
+                    "role": "user",
+                    "content": (
+                        f"Translate this image search query to Arabic. "
+                        f"Return only the Arabic translation, nothing else.\n\n"
+                        f"Query: {english_query}"
+                    ),
+                }],
+                "max_tokens": 30,
+                "temperature": 0.1,
+            },
+            timeout=15,
+        )
+        if r.status_code == 200:
+            return r.json()["choices"][0]["message"]["content"].strip()
+    except Exception as e:
+        print(f"[Image] Arabic query translation failed: {e}")
+    return None
+
+
+def search_real_image(query: str, output_path: str) -> str | None:
+    """DuckDuckGo image search. Tries up to 5 result URLs. Returns saved path or None."""
+    urls = _ddgs_image_results(query)
+    if not urls:
+        print(f"[Image] No real photo found for '{query}'")
+        return None
+    saved = _download_first_valid(urls, output_path)
+    if saved:
+        print(f"[Image] ✅ Real photo: '{query}'")
+        return saved
     print(f"[Image] No real photo found for '{query}'")
     return None
 
@@ -1327,17 +1372,32 @@ def fetch_real_images(script_text: str, count: int, video_id: str) -> list[str]:
         # Step 1: get specific search query for this chunk
         query = _get_search_query_for_chunk(chunk)
 
-        # Step 2: real photo via DuckDuckGo
+        # Step 2: English DuckDuckGo search
         if query:
             if query in query_cache:
                 shutil.copy2(query_cache[query], img_path)
                 saved = img_path
                 print(f"[Image] ♻️  Reused '{query}' for chunk {i}")
             else:
-                saved = search_real_image(query, img_path)
-                if saved:
-                    query_cache[query] = saved
-                    real_count += 1
+                en_urls = _ddgs_image_results(query)
+                if len(en_urls) >= 2:
+                    saved = _download_first_valid(en_urls, img_path)
+                    if saved:
+                        print(f"[Image] ✅ Real photo (EN): '{query}'")
+                        query_cache[query] = saved
+                        real_count += 1
+
+                # Step 3: fewer than 2 English results → retry in Arabic
+                if not saved:
+                    ar_query = _translate_to_arabic_query(query)
+                    if ar_query:
+                        ar_urls = _ddgs_image_results(ar_query)
+                        if ar_urls:
+                            print(f"[Image] chunk {i}: retried in Arabic, found {len(ar_urls)} results")
+                            saved = _download_first_valid(ar_urls, img_path)
+                            if saved:
+                                query_cache[query] = saved
+                                real_count += 1
 
         # Step 4: AI fallback — Pollinations with script-matched prompt
         if not saved:
