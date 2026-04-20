@@ -126,7 +126,8 @@ def generate_voiceover_edgetts(script_text: str, filename: str, language: str = 
     return audio_path
 
 
-def generate_voiceover_openai(text: str, language: str, output_path: str) -> str:
+def generate_voiceover_openai(text: str, language: str, output_path: str,
+                              is_short: bool = False) -> str:
     """Generate voiceover using OpenAI TTS (tts-1) with timeout and per-chunk retry."""
     import openai
     import httpx
@@ -140,16 +141,24 @@ def generate_voiceover_openai(text: str, language: str, output_path: str) -> str
         api_key=api_key,
         timeout=httpx.Timeout(60.0, connect=10.0),
     )
-    # Arabic: tts-1 + alloy (best Arabic quality). English: gpt-4o-mini-tts + echo.
-    if language == "arabic":
+
+    if is_short:
+        model = "tts-1"
+        voice = "alloy" if language == "arabic" else "echo"
+        speed = 1.10
+        label = f"{'Arabic' if language == 'arabic' else 'English'} short"
+    elif language == "arabic":
         model = "tts-1"
         voice = "alloy"
-        speed = 1.2
+        speed = 1.06
+        label = "Arabic long"
     else:
         model = "gpt-4o-mini-tts"
         voice = "echo"
-        speed = 1.25
-    print(f"[Voice] OpenAI TTS: model={model} voice={voice} speed={speed} language={language}")
+        speed = 1.03
+        label = "English long"
+
+    print(f"[Voice] TTS speed: {speed} ({label}) | model={model} voice={voice}")
 
     try:
         chunks = _split_text(text, max_chars=4000)
@@ -412,7 +421,8 @@ def generate_voiceover(script_text: str, filename: str, language: str = "english
     if openai_key:
         print("[Voice] Trying OpenAI TTS...")
         _oai_path = os.path.join(AUDIO_DIR, f"{filename}.mp3")
-        result = generate_voiceover_openai(script_text, language, _oai_path)
+        _is_short = "short" in filename.lower()
+        result = generate_voiceover_openai(script_text, language, _oai_path, is_short=_is_short)
         if result:
             return result
         print("[Voice] OpenAI TTS failed — falling back to edge-tts")
