@@ -178,12 +178,12 @@ def generate_voiceover_openai(text: str, language: str, output_path: str,
     elif language == "arabic":
         model = "gpt-4o-mini-tts"
         voice = "alloy"
-        speed = 0.97
+        speed = 1.00
         label = "Arabic long"
     else:
         model = "gpt-4o-mini-tts"
         voice = "onyx"
-        speed = 1.03
+        speed = 1.05
         label = "English long"
 
     instr_key = "alloy_arabic" if language == "arabic" else voice
@@ -310,22 +310,42 @@ def _merge_chunks_pydub(chunk_files: list[str], output_path: str) -> bool:
         return False
 
 
-def _split_text(text: str, max_chars: int = 1500) -> list[str]:
-    """Split text on word boundaries into chunks no larger than max_chars."""
+def _split_text(text: str, max_chars: int = 4000) -> list[str]:
+    """Split text preserving complete paragraphs; no content is ever dropped."""
+    if len(text) <= max_chars:
+        return [text]
+
     chunks: list[str] = []
-    words = text.split()
-    current: list[str] = []
-    current_len = 0
-    for word in words:
-        if current_len + len(word) > max_chars:
-            chunks.append(" ".join(current))
-            current = [word]
-            current_len = len(word)
+    paragraphs = text.split("\n\n")
+    current = ""
+    for para in paragraphs:
+        if len(current) + len(para) + 2 <= max_chars:
+            current = (current + "\n\n" + para).lstrip("\n")
         else:
-            current.append(word)
-            current_len += len(word) + 1
+            if current:
+                chunks.append(current.strip())
+            # Paragraph itself too large — split on sentence boundaries
+            if len(para) > max_chars:
+                sentences = para.replace(". ", ".|").replace("! ", "!|").replace("? ", "?|").split("|")
+                sub = ""
+                for sent in sentences:
+                    if len(sub) + len(sent) + 1 <= max_chars:
+                        sub = (sub + " " + sent).lstrip()
+                    else:
+                        if sub:
+                            chunks.append(sub.strip())
+                        sub = sent
+                current = sub
+            else:
+                current = para
     if current:
-        chunks.append(" ".join(current))
+        chunks.append(current.strip())
+
+    original_words = len(text.split())
+    chunked_words = sum(len(c.split()) for c in chunks)
+    print(f"[TTS] Chunks: {len(chunks)} | Original: {original_words} words | Chunked: {chunked_words} words")
+    if chunked_words < original_words * 0.95:
+        print("[TTS] ⚠️ Content lost in chunking!")
     return chunks
 
 
@@ -1138,12 +1158,47 @@ Return only the image prompt, nothing else."""
     return f"dark crime documentary scene, cinematic{_IMAGE_PROMPT_SUFFIX}"
 
 
-def generate_image_prompts(script_text: str, count: int) -> list[str]:
+SCENE_PROMPTS: dict[str, list[str]] = {
+    "hemedti": [
+        "Aerial cinematic shot of Darfur desert Sudan, burned villages smoke rising, documentary realism, vertical 9:16",
+        "Sudanese military commander portrait, RSF uniform, dark dramatic lighting, cinematic vertical 9:16",
+        "Chad Sudan border region landscape, camel traders, desert market 1980s, cinematic documentary",
+        "Gold mine illegal operation in African desert, armed guards, aerial view cinematic vertical",
+        "Khartoum city Sudan aerial view, military presence, dramatic documentary style vertical 9:16",
+        "International Criminal Court ICC building Den Haag, dramatic lighting documentary vertical 9:16",
+        "Darfur genocide memorial, survivors, dramatic documentary style vertical 9:16 cinematic",
+        "UAE Dubai skyline night, gold trading deal, cinematic documentary vertical 9:16",
+        "Colombian mercenaries military training, documentary style dramatic vertical 9:16",
+        "Sudan civil war 2023, destroyed buildings, documentary realism cinematic vertical 9:16",
+        "Janjaweed militia horseback Sudan desert, historical dramatic cinematic vertical 9:16",
+        "African Union UN peacekeepers Darfur, documentary cinematic vertical 9:16",
+    ],
+}
+
+
+def get_scene_prompts(topic: str, research: dict) -> list[str] | None:
+    """Return hardcoded scene prompts for known topics, or None for generic handling."""
+    topic_lower = topic.lower()
+    for key, prompts in SCENE_PROMPTS.items():
+        if key in topic_lower:
+            return prompts
+    return None
+
+
+def generate_image_prompts(script_text: str, count: int, topic: str = "", research: dict | None = None) -> list[str]:
     """Split script into [count] equal chunks, call OpenAI once per chunk.
     Returns list of [count] specific image prompts.
     Falls back gracefully per chunk if OpenAI call fails.
     """
     import re
+
+    # Use hardcoded scene prompts for known topics
+    if topic:
+        scene = get_scene_prompts(topic, research or {})
+        if scene:
+            result = (scene * ((count // len(scene)) + 1))[:count]
+            print(f"[Image] Using {len(result)} scene-based prompts for topic: {topic}")
+            return result
 
     # Strip [SECTION: ...] markers so they don't pollute chunk text
     clean = re.sub(r'\[SECTION:[^\]]+\]\s*', '', script_text).strip()
@@ -2025,7 +2080,7 @@ def assemble_video_with_hook(
         img_path = image_paths[img_index % len(image_paths)]
         try:
             frame     = _load_frame(img_path)
-            cut_dur   = random.uniform(3, 5)
+            cut_dur   = random.uniform(3, 4)
             remaining = hook_duration - hook_total
             cut_dur   = min(cut_dur, remaining)
             if img_index % 2 == 0:
@@ -2046,9 +2101,9 @@ def assemble_video_with_hook(
     for img_path in image_paths:
         try:
             frame = _load_frame(img_path)
-            dur1  = random.uniform(8, 12)
+            dur1  = random.uniform(6, 8)
             main_clips.append(_zoom_clip(frame, dur1, 1.00, 1.06, fade_in=0.5, fade_out=0.5))
-            dur2  = random.uniform(8, 12)
+            dur2  = random.uniform(6, 8)
             main_clips.append(_zoom_clip(frame, dur2, 1.06, 1.00, fade_in=0.5, fade_out=0.5))
         except Exception as e:
             print(f"[Video] Main clip error: {e}")
@@ -2058,7 +2113,7 @@ def assemble_video_with_hook(
     # Loop main clips until they cover main_duration + buffer
     while sum(c.duration for c in main_clips) < main_duration + 20:
         src = image_paths[random.randint(0, len(image_paths) - 1)]
-        dur = random.uniform(8, 12)
+        dur = random.uniform(6, 8)
         main_clips.append(_zoom_clip(_load_frame(src), dur, 1.00, 1.06, fade_in=0.5, fade_out=0.5))
 
     # Trim to main_duration
@@ -2222,8 +2277,8 @@ def assemble_short_video(audio_path: str, image_paths: list[str], output_path: s
     # 2 variations per image: zoom in (5-7 s) + zoom out (5-7 s)
     all_clips = []
     for frame in frames:
-        all_clips.append(_zoom_clip(frame, 1.00, 1.08, random.uniform(5, 7)))
-        all_clips.append(_zoom_clip(frame, 1.08, 1.00, random.uniform(5, 7)))
+        all_clips.append(_zoom_clip(frame, 1.00, 1.08, random.uniform(6, 8)))
+        all_clips.append(_zoom_clip(frame, 1.08, 1.00, random.uniform(6, 8)))
 
     random.shuffle(all_clips)
 

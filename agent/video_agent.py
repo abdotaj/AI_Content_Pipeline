@@ -46,6 +46,45 @@ for d in [AUDIO_DIR, VIDEO_DIR, FINAL_DIR, IMAGES_DIR]:
     Path(d).mkdir(parents=True, exist_ok=True)
 
 
+# ── Chapter / timestamp helpers ───────────────────────────────────────────────
+
+def format_time(seconds: float) -> str:
+    """Convert seconds to MM:SS string (e.g. 105.3 → '01:45')."""
+    m = int(seconds // 60)
+    s = int(seconds % 60)
+    return f"{m:02d}:{s:02d}"
+
+
+def get_audio_duration(audio_path: str) -> float:
+    """Return audio duration in seconds using mutagen, falling back to moviepy."""
+    try:
+        from mutagen.mp3 import MP3
+        return MP3(audio_path).info.length
+    except ImportError:
+        os.system("pip install mutagen -q")
+        try:
+            from mutagen.mp3 import MP3
+            return MP3(audio_path).info.length
+        except Exception:
+            pass
+    except Exception as e:
+        print(f"[Video] mutagen error: {e}")
+    try:
+        try:
+            from moviepy.editor import AudioFileClip as _AC
+        except ImportError:
+            from moviepy import AudioFileClip as _AC
+        return _AC(audio_path).duration
+    except Exception:
+        return 0.0
+
+
+def _strip_section_markers(text: str) -> str:
+    """Remove [SECTION: ...] markers so they are never spoken in TTS."""
+    import re
+    return re.sub(r'\[SECTION:[^\]]+\]\s*', '', text).strip()
+
+
 # ── Voiceover ─────────────────────────────────────────────────────────────────
 
 def get_voice(language: str) -> str:
@@ -87,7 +126,8 @@ def generate_voiceover_edgetts(script_text: str, filename: str, language: str = 
     return audio_path
 
 
-def generate_voiceover_openai(text: str, language: str, output_path: str) -> str:
+def generate_voiceover_openai(text: str, language: str, output_path: str,
+                              is_short: bool = False) -> str:
     """Generate voiceover using OpenAI TTS (tts-1) with timeout and per-chunk retry."""
     import openai
     import httpx
@@ -101,9 +141,55 @@ def generate_voiceover_openai(text: str, language: str, output_path: str) -> str
         api_key=api_key,
         timeout=httpx.Timeout(60.0, connect=10.0),
     )
-    voice = "onyx" if language == "arabic" else "echo"
-    speed = 1.2 if language == "arabic" else 1.25
-    print(f"[Voice] OpenAI TTS: voice={voice} speed={speed} language={language}")
+
+    _INSTRUCTIONS = {
+        "onyx": (
+            "Deep cinematic war-documentary narrator. "
+            "Powerful, dark, commanding. Calm confidence with subtle tension underneath every sentence. "
+            "Slight dramatic pause after shocking facts. "
+            "Lower slower tone during tragic moments. Never robotic or exaggerated."
+        ),
+        "nova": (
+            "Sharp modern investigative narrator. "
+            "Fast hook, intense energy. Strong first sentence. "
+            "Build suspense gradually. Clear pronunciation of foreign names."
+        ),
+        "alloy": (
+            "Neutral elite documentary narrator. "
+            "Smooth, believable, controlled tension. "
+            "Strong clear ending sentence. Maintain realism and credibility."
+        ),
+        "alloy_arabic": (
+            "أسلوب الأداء: راوٍ وثائقي عربي احترافي. "
+            "صوت عميق وواثق وهادئ. نبرة جادة وغامضة. إلقاء طبيعي جداً. "
+            "وضوح ممتاز للحروف. وقفات قصيرة بعد الجمل المهمة. "
+            "تصاعد تدريجي في التوتر أثناء الأحداث. "
+            "خفض النبرة عند المآسي والضحايا. "
+            "لا مبالغة، لا تمثيل زائد، لا صوت روبوتي. "
+            "الإحساس العام: هيبة، غموض، مصداقية، قوة هادئة، سرد سينمائي."
+        ),
+    }
+
+    if is_short:
+        model = "gpt-4o-mini-tts"
+        voice = "alloy"
+        speed = 1.05 if language == "arabic" else 1.10
+        label = f"{'Arabic' if language == 'arabic' else 'English'} short"
+    elif language == "arabic":
+        model = "gpt-4o-mini-tts"
+        voice = "alloy"
+        speed = 1.00
+        label = "Arabic long"
+    else:
+        model = "gpt-4o-mini-tts"
+        voice = "onyx"
+        speed = 1.05
+        label = "English long"
+
+    instr_key = "alloy_arabic" if language == "arabic" else voice
+    tts_instructions = _INSTRUCTIONS.get(instr_key)
+
+    print(f"[Voice] TTS speed: {speed} ({label}) | model={model} voice={voice}")
 
     try:
         chunks = _split_text(text, max_chars=4000)
@@ -116,12 +202,15 @@ def generate_voiceover_openai(text: str, language: str, output_path: str) -> str
 
             for attempt in range(3):
                 try:
-                    response = client.audio.speech.create(
-                        model="gpt-4o-mini-tts",
+                    tts_kwargs = dict(
+                        model=model,
                         voice=voice,
                         input=chunk,
                         speed=speed,
                     )
+                    if tts_instructions:
+                        tts_kwargs["instructions"] = tts_instructions
+                    response = client.audio.speech.create(**tts_kwargs)
                     response.stream_to_file(chunk_path)
                     print(f"[Voice] OpenAI chunk {i + 1}/{len(chunks)} done")
                     audio_files.append(chunk_path)
@@ -221,22 +310,42 @@ def _merge_chunks_pydub(chunk_files: list[str], output_path: str) -> bool:
         return False
 
 
-def _split_text(text: str, max_chars: int = 1500) -> list[str]:
-    """Split text on word boundaries into chunks no larger than max_chars."""
+def _split_text(text: str, max_chars: int = 4000) -> list[str]:
+    """Split text preserving complete paragraphs; no content is ever dropped."""
+    if len(text) <= max_chars:
+        return [text]
+
     chunks: list[str] = []
-    words = text.split()
-    current: list[str] = []
-    current_len = 0
-    for word in words:
-        if current_len + len(word) > max_chars:
-            chunks.append(" ".join(current))
-            current = [word]
-            current_len = len(word)
+    paragraphs = text.split("\n\n")
+    current = ""
+    for para in paragraphs:
+        if len(current) + len(para) + 2 <= max_chars:
+            current = (current + "\n\n" + para).lstrip("\n")
         else:
-            current.append(word)
-            current_len += len(word) + 1
+            if current:
+                chunks.append(current.strip())
+            # Paragraph itself too large — split on sentence boundaries
+            if len(para) > max_chars:
+                sentences = para.replace(". ", ".|").replace("! ", "!|").replace("? ", "?|").split("|")
+                sub = ""
+                for sent in sentences:
+                    if len(sub) + len(sent) + 1 <= max_chars:
+                        sub = (sub + " " + sent).lstrip()
+                    else:
+                        if sub:
+                            chunks.append(sub.strip())
+                        sub = sent
+                current = sub
+            else:
+                current = para
     if current:
-        chunks.append(" ".join(current))
+        chunks.append(current.strip())
+
+    original_words = len(text.split())
+    chunked_words = sum(len(c.split()) for c in chunks)
+    print(f"[TTS] Chunks: {len(chunks)} | Original: {original_words} words | Chunked: {chunked_words} words")
+    if chunked_words < original_words * 0.95:
+        print("[TTS] ⚠️ Content lost in chunking!")
     return chunks
 
 
@@ -277,6 +386,16 @@ def _elevenlabs_chunk(chunk: str, voice_id: str, api_key: str, chunk_path: str) 
 
 def generate_voiceover(script_text: str, filename: str, language: str = "english") -> str:
     """Generate voiceover — ElevenLabs → OpenAI TTS → edge-tts priority chain."""
+    script_text = _strip_section_markers(script_text)
+    try:
+        from agents.script_agent import format_for_tts as _fmt
+    except ImportError:
+        try:
+            from script_agent import format_for_tts as _fmt
+        except ImportError:
+            _fmt = None
+    if _fmt:
+        script_text = _fmt(script_text)
     from config import ELEVENLABS_API_KEY, ELEVENLABS_VOICE_ID_EN, ELEVENLABS_VOICE_ID_AR, ELEVENLABS_VOICE_ID
 
     # ── Priority 1: ElevenLabs ────────────────────────────────────────────────
@@ -365,7 +484,8 @@ def generate_voiceover(script_text: str, filename: str, language: str = "english
     if openai_key:
         print("[Voice] Trying OpenAI TTS...")
         _oai_path = os.path.join(AUDIO_DIR, f"{filename}.mp3")
-        result = generate_voiceover_openai(script_text, language, _oai_path)
+        _is_short = "short" in filename.lower()
+        result = generate_voiceover_openai(script_text, language, _oai_path, is_short=_is_short)
         if result:
             return result
         print("[Voice] OpenAI TTS failed — falling back to edge-tts")
@@ -978,87 +1098,127 @@ def get_person_images(
     return images
 
 
-def generate_image_prompts(title: str, niche: str, script: str = "", language: str = "english") -> tuple[list[str], int]:
-    """Return (list_of_12_prompts, seed) for Pollinations.
 
-    12-slot structure:
-      1.  Real criminal portrait (AI — Wikipedia real photo handled separately)
-      2.  Actor / series portrait
-      3.  Real location from the story
-      4.  Era / time-period scene
-      5.  Crime / theme scene
-      6.  Justice / conclusion scene
-      7.  Alternate portrait (extreme closeup, different angle)
-      8.  Vintage newspaper / historical archive
-      9.  Investigation board / evidence room
-      10. Second atmospheric location
-      11. Actor alternate (dramatic intensity)
-      12. Final courtroom / verdict scene
+
+_IMAGE_PROMPT_SUFFIX = (
+    ", dark cinematic documentary style, no text, "
+    "no watermarks, photorealistic, high detail"
+)
+
+
+def build_image_prompt(chunk_text: str) -> str:
+    """Ask OpenAI for a specific ≤20-word image prompt from a script chunk.
+    Falls back to a generic cinematic prompt if OpenAI is unavailable.
     """
-    t      = (title + " " + niche).lower()
-    s      = script.lower()[:800]
-    suffix = "vertical 9:16 cinematic portrait dramatic lighting dark background professional 4k photography style"
+    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    first_200 = " ".join(chunk_text.split()[:200])
 
-    # Slots 1 & 2 — portraits
-    portraits  = extract_main_subject(title, script)
-    portrait_1 = portraits[0]
-    portrait_2 = portraits[1] if len(portraits) >= 2 else portrait_1.replace("portrait", "closeup dramatic shadows intense").strip()
+    if not api_key:
+        return f"dark crime documentary scene, cinematic{_IMAGE_PROMPT_SUFFIX}"
 
-    # Slot 3 — Real location
-    location = next(
-        (v for k, v in _LOCATIONS.items() if k in t or k in s),
-        "dark city night street dramatic cinematic",
-    )
+    prompt = f"""Read this script excerpt and write a specific visual image generation prompt (max 20 words) that represents the exact subject being described.
 
-    # Slot 4 — Era / time period
-    era = next(
-        (v for k, v in _ERAS.items() if k in s),
-        "modern dark cinematic atmospheric",
-    )
+Rules:
+- Name real places, real objects, real events
+- No human faces
+- Dark cinematic documentary style
+- Be specific not generic
 
-    # Slot 5 — Crime / theme scene
-    theme = next(
-        (v for k, v in _THEMES.items() if k in t or k in s),
-        "crime investigation evidence board detective cinematic",
-    )
+Examples:
+GOOD: 'Burned village Darfur Sudan desert, smoke ruins, golden hour, cinematic aerial view'
+BAD: 'dark crime documentary background'
 
-    # Slot 6 — Justice
-    justice = "courtroom trial verdict judge gavel dramatic justice cinematic"
+Script excerpt: {first_200}
 
-    # Slot 7 — Alternate portrait (extreme closeup)
-    portrait_alt = portrait_1.replace("portrait", "extreme closeup dramatic shadows intense gaze").strip()
+Return only the image prompt, nothing else."""
 
-    # Slot 8 — Historical archive / newspaper
-    newspaper = "vintage newspaper front page crime headline archive 1920s sepia dramatic cinematic"
+    try:
+        r = requests.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": "gpt-4o-mini",
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": 60,
+                "temperature": 0.7,
+            },
+            timeout=30,
+        )
+        if r.status_code == 200:
+            result = r.json()["choices"][0]["message"]["content"].strip().strip('"\'')
+            print(f"[Image] Chunk prompt: {result[:70]}")
+            return f"{result}{_IMAGE_PROMPT_SUFFIX}"
+        print(f"[Image] build_image_prompt error {r.status_code}")
+    except Exception as e:
+        print(f"[Image] build_image_prompt failed: {e}")
 
-    # Slot 9 — Investigation / evidence board
-    evidence = "crime investigation evidence board detective newspaper clippings red string dark cinematic"
+    return f"dark crime documentary scene, cinematic{_IMAGE_PROMPT_SUFFIX}"
 
-    # Slot 10 — Second atmospheric location
-    second_location = "dark alley night rain atmospheric crime city street cinematic"
 
-    # Slot 11 — Actor alternate angle
-    actor_alt = portrait_2.replace("portrait", "dramatic intensity extreme closeup").strip()
+SCENE_PROMPTS: dict[str, list[str]] = {
+    "hemedti": [
+        "Aerial cinematic shot of Darfur desert Sudan, burned villages smoke rising, documentary realism, vertical 9:16",
+        "Sudanese military commander portrait, RSF uniform, dark dramatic lighting, cinematic vertical 9:16",
+        "Chad Sudan border region landscape, camel traders, desert market 1980s, cinematic documentary",
+        "Gold mine illegal operation in African desert, armed guards, aerial view cinematic vertical",
+        "Khartoum city Sudan aerial view, military presence, dramatic documentary style vertical 9:16",
+        "International Criminal Court ICC building Den Haag, dramatic lighting documentary vertical 9:16",
+        "Darfur genocide memorial, survivors, dramatic documentary style vertical 9:16 cinematic",
+        "UAE Dubai skyline night, gold trading deal, cinematic documentary vertical 9:16",
+        "Colombian mercenaries military training, documentary style dramatic vertical 9:16",
+        "Sudan civil war 2023, destroyed buildings, documentary realism cinematic vertical 9:16",
+        "Janjaweed militia horseback Sudan desert, historical dramatic cinematic vertical 9:16",
+        "African Union UN peacekeepers Darfur, documentary cinematic vertical 9:16",
+    ],
+}
 
-    # Slot 12 — Final verdict
-    verdict = "court verdict guilty judge gavel justice served historic dramatic cinematic"
 
-    seed = random.randint(1, 99999)
-    prompts = [
-        f"{portrait_1}, {suffix}",     # 1
-        f"{portrait_2}, {suffix}",     # 2
-        f"{location}, {suffix}",       # 3
-        f"{era}, {suffix}",            # 4
-        f"{theme}, {suffix}",          # 5
-        f"{justice}, {suffix}",        # 6
-        f"{portrait_alt}, {suffix}",   # 7
-        f"{newspaper}, {suffix}",      # 8
-        f"{evidence}, {suffix}",       # 9
-        f"{second_location}, {suffix}",# 10
-        f"{actor_alt}, {suffix}",      # 11
-        f"{verdict}, {suffix}",        # 12
-    ]
-    return prompts, seed
+def get_scene_prompts(topic: str, research: dict) -> list[str] | None:
+    """Return hardcoded scene prompts for known topics, or None for generic handling."""
+    topic_lower = topic.lower()
+    for key, prompts in SCENE_PROMPTS.items():
+        if key in topic_lower:
+            return prompts
+    return None
+
+
+def generate_image_prompts(script_text: str, count: int, topic: str = "", research: dict | None = None) -> list[str]:
+    """Split script into [count] equal chunks, call OpenAI once per chunk.
+    Returns list of [count] specific image prompts.
+    Falls back gracefully per chunk if OpenAI call fails.
+    """
+    import re
+
+    # Use hardcoded scene prompts for known topics
+    if topic:
+        scene = get_scene_prompts(topic, research or {})
+        if scene:
+            result = (scene * ((count // len(scene)) + 1))[:count]
+            print(f"[Image] Using {len(result)} scene-based prompts for topic: {topic}")
+            return result
+
+    # Strip [SECTION: ...] markers so they don't pollute chunk text
+    clean = re.sub(r'\[SECTION:[^\]]+\]\s*', '', script_text).strip()
+    words = clean.split()
+
+    if not words:
+        return [f"dark crime documentary cinematic{_IMAGE_PROMPT_SUFFIX}"] * count
+
+    chunk_size = max(1, len(words) // count)
+    prompts: list[str] = []
+    for i in range(count):
+        start      = i * chunk_size
+        end        = start + chunk_size if i < count - 1 else len(words)
+        chunk_text = " ".join(words[start:end])
+        prompts.append(build_image_prompt(chunk_text))
+        if i < count - 1:
+            time.sleep(1)
+
+    print(f"[Image] Built {len(prompts)} chunk-specific prompts from script")
+    return prompts
 
 
 def clean_prompt(prompt: str) -> str:
@@ -1111,6 +1271,258 @@ def generate_ai_image(prompt: str, output_path: str, seed: int = None) -> str:
     img.save(output_path, "PNG")
     print(f"[Image] Using dark background fallback for: {prompt[:60]}")
     return output_path
+
+
+# ── Real-photo fetching ────────────────────────────────────────────────────────
+
+def download_real_image(url: str, output_path: str) -> str | None:
+    """Download image from URL, smart-crop to 1080×1920 portrait. Returns path or None."""
+    import io
+    from PIL import Image as PILImage
+
+    try:
+        r = requests.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
+        if r.status_code != 200:
+            return None
+        img = PILImage.open(io.BytesIO(r.content)).convert("RGB")
+        w, h = img.size
+        target_ratio = 9 / 16
+        if w / h > target_ratio:
+            new_w = int(h * target_ratio)
+            left  = (w - new_w) // 2
+            img   = img.crop((left, 0, left + new_w, h))
+        img = img.resize((1080, 1920), PILImage.LANCZOS)
+        output_path = output_path.replace(".jpg", ".png")
+        img.save(output_path, "PNG")
+        return output_path
+    except Exception as e:
+        print(f"[Image] Download failed ({url[:70]}): {e}")
+        return None
+
+
+def _ddgs_image_results(query: str, max_results: int = 5) -> list[str]:
+    """Return list of image URLs from DuckDuckGo. Returns empty list on any failure."""
+    try:
+        from duckduckgo_search import DDGS
+    except ImportError:
+        os.system("pip install duckduckgo-search -q")
+        try:
+            from duckduckgo_search import DDGS
+        except Exception:
+            return []
+    try:
+        with DDGS() as ddgs:
+            results = list(ddgs.images(query, max_results=max_results, safesearch="moderate"))
+        return [r["image"] for r in results if r.get("image")]
+    except Exception as e:
+        print(f"[Image] DDGS search failed '{query}': {e}")
+        return []
+
+
+def _download_first_valid(urls: list[str], output_path: str) -> str | None:
+    """Try each URL in order, return path of the first that downloads successfully."""
+    for url in urls:
+        saved = download_real_image(url, output_path)
+        if saved:
+            return saved
+    return None
+
+
+def _translate_to_arabic_query(english_query: str) -> str | None:
+    """Translate an English image search query to Arabic via OpenAI."""
+    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        return None
+    try:
+        r = requests.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": "gpt-4o-mini",
+                "messages": [{
+                    "role": "user",
+                    "content": (
+                        f"Translate this image search query to Arabic. "
+                        f"Return only the Arabic translation, nothing else.\n\n"
+                        f"Query: {english_query}"
+                    ),
+                }],
+                "max_tokens": 30,
+                "temperature": 0.1,
+            },
+            timeout=15,
+        )
+        if r.status_code == 200:
+            return r.json()["choices"][0]["message"]["content"].strip()
+    except Exception as e:
+        print(f"[Image] Arabic query translation failed: {e}")
+    return None
+
+
+def search_real_image(query: str, output_path: str) -> str | None:
+    """DuckDuckGo image search. Tries up to 5 result URLs. Returns saved path or None."""
+    urls = _ddgs_image_results(query)
+    if not urls:
+        print(f"[Image] No real photo found for '{query}'")
+        return None
+    saved = _download_first_valid(urls, output_path)
+    if saved:
+        print(f"[Image] ✅ Real photo: '{query}'")
+        return saved
+    print(f"[Image] No real photo found for '{query}'")
+    return None
+
+
+def _get_search_query_for_chunk(chunk_text: str) -> str | None:
+    """Call OpenAI to get a specific 5-word English image search query for a script chunk.
+    Always returns English — works even when chunk_text is Arabic or any other language.
+    Works for any topic — crime, politics, war, science, business, sport, etc.
+    Returns None if OpenAI is unavailable or the chunk is too generic.
+    """
+    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        return None
+
+    first_150 = " ".join(chunk_text.split()[:150])
+    prompt = f"""What is the single most specific, searchable subject in this text?
+Return only a short search query (max 5 words) suitable for image search.
+Always write the query in English, even if the text is in Arabic or another language.
+
+Examples:
+GOOD: 'Mohamed Hamdan Dagalo RSF'
+GOOD: 'Darfur burning village 2003'
+GOOD: 'Elon Musk Tesla factory'
+GOOD: 'Pablo Escobar mugshot'
+BAD: 'crime story background'
+BAD: 'dark documentary scene'
+
+Text: {first_150}
+
+Return only the English search query, nothing else."""
+
+    try:
+        r = requests.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": "gpt-4o-mini",
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": 20,
+                "temperature": 0.3,
+            },
+            timeout=20,
+        )
+        if r.status_code == 200:
+            query = r.json()["choices"][0]["message"]["content"].strip().strip('"\'')
+            if len(query.split()) <= 8 and len(query) > 3:
+                return query
+    except Exception as e:
+        print(f"[Image] Search query generation failed: {e}")
+    return None
+
+
+def fetch_real_images(script_text: str, count: int, video_id: str) -> list[str]:
+    """
+    Universal image builder — works for any script topic.
+
+    For each of [count] equal script chunks:
+      1. Ask OpenAI for the most specific searchable subject (max 5 words).
+      2. Search DuckDuckGo images for that query — try up to 3 URLs.
+      3. Re-use a cached download when the same query appears again.
+      4. Fall back to Pollinations AI generation if real search fails.
+
+    Logs each image as ✅ real photo or 🤖 AI generated.
+    Returns list of image paths.
+    """
+    import re
+    import shutil
+
+    clean = re.sub(r'\[SECTION:[^\]]+\]\s*', '', script_text).strip()
+    words = clean.split()
+
+    seed          = random.randint(1, 99999)
+    fallback_base = f"dark cinematic documentary scene{_IMAGE_PROMPT_SUFFIX}"
+
+    if not words:
+        paths = []
+        for i in range(count):
+            p = os.path.join(IMAGES_DIR, f"{video_id}_img_{i}.png")
+            r = generate_ai_image(fallback_base, p, seed=seed + i)
+            if r:
+                paths.append(r)
+        return paths
+
+    # AI fallback prompts (one OpenAI call per chunk via generate_image_prompts)
+    ai_prompts = generate_image_prompts(script_text, count)
+
+    # Split script into equal word-chunks
+    chunk_size = max(1, len(words) // count)
+    chunks = [
+        " ".join(words[i * chunk_size: (i + 1) * chunk_size if i < count - 1 else len(words)])
+        for i in range(count)
+    ]
+
+    image_paths:  list[str]      = []
+    query_cache:  dict[str, str] = {}   # query → saved path (avoid re-downloading)
+    real_count    = 0
+    ai_count      = 0
+
+    for i, chunk in enumerate(chunks):
+        img_path = os.path.join(IMAGES_DIR, f"{video_id}_img_{i}.png")
+        saved    = None
+
+        # Step 1: get specific search query for this chunk
+        query = _get_search_query_for_chunk(chunk)
+
+        # Step 2: English DuckDuckGo search
+        if query:
+            if query in query_cache:
+                shutil.copy2(query_cache[query], img_path)
+                saved = img_path
+                print(f"[Image] ♻️  Reused '{query}' for chunk {i}")
+            else:
+                en_urls = _ddgs_image_results(query)
+                if len(en_urls) >= 2:
+                    saved = _download_first_valid(en_urls, img_path)
+                    if saved:
+                        print(f"[Image] ✅ Real photo (EN): '{query}'")
+                        query_cache[query] = saved
+                        real_count += 1
+
+                # Step 3: fewer than 2 English results → retry in Arabic
+                if not saved:
+                    ar_query = _translate_to_arabic_query(query)
+                    if ar_query:
+                        ar_urls = _ddgs_image_results(ar_query)
+                        if ar_urls:
+                            print(f"[Image] chunk {i}: retried in Arabic, found {len(ar_urls)} results")
+                            saved = _download_first_valid(ar_urls, img_path)
+                            if saved:
+                                query_cache[query] = saved
+                                real_count += 1
+
+        # Step 4: AI fallback — Pollinations with script-matched prompt
+        if not saved:
+            print(f"[Image] chunk {i}: no real image found, using AI generation")
+            ai_prompt = ai_prompts[i] if i < len(ai_prompts) else fallback_base
+            saved = generate_ai_image(ai_prompt, img_path, seed=seed + i)
+            if saved:
+                ai_count += 1
+
+        if saved:
+            image_paths.append(saved)
+
+        if i < count - 1:
+            time.sleep(2)
+
+    print(f"[Image] Images: {real_count}/{count} real photos | {ai_count}/{count} AI generated")
+    return image_paths
 
 
 # ── Title card helpers ────────────────────────────────────────────────────────
@@ -1668,7 +2080,7 @@ def assemble_video_with_hook(
         img_path = image_paths[img_index % len(image_paths)]
         try:
             frame     = _load_frame(img_path)
-            cut_dur   = random.uniform(3, 5)
+            cut_dur   = random.uniform(3, 4)
             remaining = hook_duration - hook_total
             cut_dur   = min(cut_dur, remaining)
             if img_index % 2 == 0:
@@ -1689,9 +2101,9 @@ def assemble_video_with_hook(
     for img_path in image_paths:
         try:
             frame = _load_frame(img_path)
-            dur1  = random.uniform(8, 12)
+            dur1  = random.uniform(6, 8)
             main_clips.append(_zoom_clip(frame, dur1, 1.00, 1.06, fade_in=0.5, fade_out=0.5))
-            dur2  = random.uniform(8, 12)
+            dur2  = random.uniform(6, 8)
             main_clips.append(_zoom_clip(frame, dur2, 1.06, 1.00, fade_in=0.5, fade_out=0.5))
         except Exception as e:
             print(f"[Video] Main clip error: {e}")
@@ -1701,7 +2113,7 @@ def assemble_video_with_hook(
     # Loop main clips until they cover main_duration + buffer
     while sum(c.duration for c in main_clips) < main_duration + 20:
         src = image_paths[random.randint(0, len(image_paths) - 1)]
-        dur = random.uniform(8, 12)
+        dur = random.uniform(6, 8)
         main_clips.append(_zoom_clip(_load_frame(src), dur, 1.00, 1.06, fade_in=0.5, fade_out=0.5))
 
     # Trim to main_duration
@@ -1763,8 +2175,8 @@ def assemble_video_with_hook(
 # ── Image count helpers ───────────────────────────────────────────────────────
 
 def calculate_unique_images(is_short: bool = False) -> int:
-    """Return number of unique AI images to generate (8 short / 12 long)."""
-    return 8 if is_short else 12
+    """Return number of unique AI images to generate (6 short / 20 long)."""
+    return 6 if is_short else 20
 
 
 def calculate_total_images(user_images=None) -> int:
@@ -1865,8 +2277,8 @@ def assemble_short_video(audio_path: str, image_paths: list[str], output_path: s
     # 2 variations per image: zoom in (5-7 s) + zoom out (5-7 s)
     all_clips = []
     for frame in frames:
-        all_clips.append(_zoom_clip(frame, 1.00, 1.08, random.uniform(5, 7)))
-        all_clips.append(_zoom_clip(frame, 1.08, 1.00, random.uniform(5, 7)))
+        all_clips.append(_zoom_clip(frame, 1.00, 1.08, random.uniform(6, 8)))
+        all_clips.append(_zoom_clip(frame, 1.08, 1.00, random.uniform(6, 8)))
 
     random.shuffle(all_clips)
 
@@ -1929,6 +2341,262 @@ def assemble_short_video(audio_path: str, image_paths: list[str], output_path: s
     return output_path
 
 
+# ── Music asset management ────────────────────────────────────────────────────
+
+_MUSIC_TRACKS = {
+    "assets/music/documentary_long.mp3":
+        "https://cdn.pixabay.com/download/audio/2022/03/15/audio_8cb749612b.mp3",
+    "assets/music/documentary_short.mp3":
+        "https://cdn.pixabay.com/download/audio/2022/01/18/audio_d0c6ff1c23.mp3",
+}
+
+
+def ensure_music_assets() -> None:
+    """Download royalty-free background music tracks on first run if missing."""
+    os.makedirs("assets/music", exist_ok=True)
+    for path, url in _MUSIC_TRACKS.items():
+        if os.path.exists(path):
+            continue
+        print(f"[Music] Downloading music: {path}...")
+        try:
+            r = requests.get(url, timeout=60, stream=True)
+            if r.status_code == 200:
+                with open(path, "wb") as f:
+                    for chunk in r.iter_content(chunk_size=65536):
+                        f.write(chunk)
+                size_kb = os.path.getsize(path) // 1024
+                print(f"[Music] Downloaded: {path} ({size_kb} KB) ✅")
+            else:
+                print(f"[Music] Failed to download {path} — HTTP {r.status_code} ⚠️")
+        except Exception as e:
+            print(f"[Music] Download error for {path}: {e} ⚠️")
+
+
+def mix_background_music(voice_path: str, is_short: bool = False) -> str:
+    """Mix looping background music under the voice track at -24 dB (volume=0.06)."""
+    import subprocess
+
+    music_file = (
+        "assets/music/documentary_short.mp3" if is_short
+        else "assets/music/documentary_long.mp3"
+    )
+
+    if not os.path.exists(music_file):
+        print(f"[Music] Music file missing ({music_file}) — skipping mix ⚠️")
+        return voice_path
+
+    ffmpeg_bin = _get_ffmpeg()
+    if not ffmpeg_bin:
+        print("[Music] ffmpeg not found — skipping music mix")
+        return voice_path
+
+    output = voice_path.replace(".mp3", "_with_music.mp3")
+    try:
+        subprocess.run(
+            [ffmpeg_bin,
+             "-i", voice_path,
+             "-stream_loop", "-1",
+             "-i", music_file,
+             "-filter_complex", "[1]volume=0.06[bg];[0][bg]amix=inputs=2:duration=first",
+             "-c:a", "libmp3lame", "-q:a", "2",
+             "-y", output],
+            check=True, capture_output=True,
+        )
+        label = "short" if is_short else "long"
+        print(f"[Music] Music mixed at -24 dB ({label}): {output} ✅")
+        return output
+    except Exception as e:
+        print(f"[Music] Mix failed: {e} — returning voice-only")
+        return voice_path
+
+
+# ── Netflix-quality audio post-processing ─────────────────────────────────────
+
+def process_audio_netflix(input_path: str) -> str:
+    """
+    Apply a 5-step ffmpeg chain for cinematic audio quality.
+    Returns the processed file path (replaces input in-place).
+    Skips silently if ffmpeg is unavailable.
+    """
+    import subprocess
+    import shutil
+
+    ffmpeg_bin = _get_ffmpeg()
+    if not ffmpeg_bin:
+        print("[Audio] ffmpeg not found — skipping Netflix processing")
+        return input_path
+
+    base   = input_path.replace(".mp3", "")
+    steps  = [
+        # 1. Bass boost — warmth
+        ([ffmpeg_bin, "-y", "-i", input_path,
+          "-af", "equalizer=f=120:width_type=o:width=2:g=3",
+          f"{base}_s1.mp3"], "bass boost"),
+        # 2. De-esser — tame harsh sibilants (Arabic س / ش)
+        ([ffmpeg_bin, "-y", "-i", f"{base}_s1.mp3",
+          "-af", "highpass=f=80,lowpass=f=12000",
+          f"{base}_s2.mp3"], "de-esser"),
+        # 3. Light compression — consistent volume
+        ([ffmpeg_bin, "-y", "-i", f"{base}_s2.mp3",
+          "-af", "acompressor=threshold=0.5:ratio=4:attack=5:release=50",
+          f"{base}_s3.mp3"], "compression"),
+        # 4. Subtle reverb — space and depth
+        ([ffmpeg_bin, "-y", "-i", f"{base}_s3.mp3",
+          "-af", "aecho=0.8:0.9:40:0.3",
+          f"{base}_s4.mp3"], "reverb"),
+        # 5. Loudness normalisation
+        ([ffmpeg_bin, "-y", "-i", f"{base}_s4.mp3",
+          "-af", "loudnorm=I=-16:TP=-1.5:LRA=11",
+          f"{base}_processed.mp3"], "loudnorm"),
+    ]
+
+    prev = input_path
+    step_files: list[str] = []
+    for cmd, label in steps:
+        try:
+            subprocess.run(cmd, check=True, capture_output=True)
+            step_files.append(cmd[-1])
+            prev = cmd[-1]
+        except Exception as e:
+            print(f"[Audio] Netflix step '{label}' failed: {e} — stopping chain")
+            break
+
+    if not step_files:
+        return input_path
+
+    final_processed = step_files[-1]
+
+    # Mix background music via dedicated function
+    _is_short = "short" in os.path.basename(input_path).lower()
+    mixed = mix_background_music(final_processed, is_short=_is_short)
+    if mixed != final_processed:
+        final_processed = mixed
+
+    # Replace original with processed
+    try:
+        shutil.move(final_processed, input_path)
+    except Exception as e:
+        print(f"[Audio] Could not replace original with processed: {e}")
+        return final_processed
+
+    # Clean up intermediate step files
+    for f in step_files:
+        if f != final_processed and os.path.exists(f):
+            try: os.remove(f)
+            except OSError: pass
+
+    print("[Audio] Audio post-processed: bass boost + compression + reverb + music mixed")
+    return input_path
+
+
+# ── Section-aware TTS + accurate chapter builder ──────────────────────────────
+
+_SECTION_DISPLAY = {
+    "Introduction":   "🎬 Introduction",
+    "Background":     "📺 Background & Context",
+    "Main Story":     "🔍 Main Story",
+    "Shocking Facts": "💀 Shocking Facts",
+    "Conclusion":     "🎯 Conclusion",
+}
+
+
+def generate_tts_sections(script_text: str, video_id: str, language: str) -> tuple[str, str]:
+    """
+    Split script at [SECTION: ...] markers, generate TTS per section,
+    measure each section duration with mutagen, build accurate chapter
+    timestamps, concatenate all sections into one audio file.
+
+    Returns (audio_path, chapters_text).
+    Falls back to single full-script TTS when markers are absent or any
+    section TTS call fails.
+    """
+    import re
+    import subprocess
+
+    final_audio = os.path.join(AUDIO_DIR, f"{video_id}.mp3")
+
+    # Parse [SECTION: Name] markers
+    raw = re.split(r'\[SECTION:\s*([^\]]+)\]', script_text.strip())
+    sections: list[tuple[str, str]] = []
+    for i in range(1, len(raw), 2):
+        name    = raw[i].strip()
+        content = raw[i + 1].strip() if i + 1 < len(raw) else ""
+        if content:
+            sections.append((name, content))
+
+    if not sections:
+        print("[Video] No section markers — using single-call TTS")
+        audio_path = generate_voiceover(script_text, video_id, language)
+        return audio_path, ""
+
+    print(f"[Video] Generating TTS for {len(sections)} sections")
+
+    section_paths: list[str]   = []
+    section_durations: list[float] = []
+
+    for i, (name, content) in enumerate(sections):
+        sec_id   = f"{video_id}_sec{i}"
+        sec_path = generate_voiceover(content, sec_id, language)
+        if not sec_path or not os.path.exists(sec_path):
+            print(f"[Video] Section {i + 1} TTS failed — falling back to full-script TTS")
+            audio_path = generate_voiceover(script_text, video_id, language)
+            return audio_path, ""
+        dur = get_audio_duration(sec_path)
+        section_durations.append(dur)
+        section_paths.append(sec_path)
+        print(f"[Video] Section {i + 1} '{name}': {dur:.1f}s ({format_time(dur)})")
+
+    # Concatenate section audio files
+    if len(section_paths) == 1:
+        import shutil
+        shutil.move(section_paths[0], final_audio)
+    else:
+        merged = False
+        list_path = os.path.join(AUDIO_DIR, f"{video_id}_sec_list.txt")
+        with open(list_path, "w", encoding="utf-8") as lf:
+            for sp in section_paths:
+                lf.write(f"file '{os.path.abspath(sp)}'\n")
+        ffmpeg_bin = _get_ffmpeg()
+        if ffmpeg_bin:
+            try:
+                subprocess.run(
+                    [ffmpeg_bin, "-y", "-f", "concat", "-safe", "0",
+                     "-i", list_path, "-c", "copy", final_audio],
+                    check=True, capture_output=True,
+                )
+                merged = True
+                print("[Video] Sections merged with ffmpeg")
+            except Exception as e:
+                print(f"[Video] Section ffmpeg merge failed: {e}")
+        if not merged:
+            merged = _merge_chunks_pydub(section_paths, final_audio)
+            if merged:
+                print("[Video] Sections merged with pydub")
+        if not merged:
+            import shutil
+            shutil.copy(section_paths[0], final_audio)
+            print("[Video] Using first section only (merge failed)")
+        try: os.remove(list_path)
+        except OSError: pass
+        for sp in section_paths:
+            if os.path.exists(sp) and sp != final_audio:
+                try: os.remove(sp)
+                except OSError: pass
+
+    # Build chapter timestamps from cumulative durations
+    cumulative = 0.0
+    chapter_lines = ["⏱️ CHAPTERS"]
+    for i, (name, _) in enumerate(sections):
+        display = _SECTION_DISPLAY.get(name, f"📌 {name}")
+        chapter_lines.append(f"{format_time(cumulative)} {display}")
+        cumulative += section_durations[i]
+
+    chapters = "\n".join(chapter_lines)
+    total_dur = sum(section_durations)
+    print(f"[Video] Chapters built (total {format_time(total_dur)}):\n{chapters}")
+    return final_audio, chapters
+
+
 # ── Main entry point ───────────────────────────────────────────────────────────
 
 def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", user_images: list | None = None) -> str:
@@ -1939,13 +2607,28 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
     print(f"[Video] Starting: {title} ({language})")
 
     # ── Voiceover ─────────────────────────────────────────────────────────────
+    is_short = "short" in video_id
     try:
         if custom_audio_path and Path(custom_audio_path).exists():
             enhanced_path = os.path.join(AUDIO_DIR, f"{video_id}_enhanced.mp3")
             audio_path = clean_voice(custom_audio_path, enhanced_path)
             print(f"[Video] Using custom audio: {audio_path}")
+        elif not is_short:
+            # Long video: section-by-section TTS for accurate chapter timestamps
+            audio_path, dynamic_chapters = generate_tts_sections(
+                script_data["script"], video_id, language
+            )
+            if dynamic_chapters:
+                script_data["chapters"] = dynamic_chapters
+                print("[Video] Dynamic chapters saved to script_data")
+            # Netflix-quality audio post-processing (long videos only)
+            if audio_path and os.path.exists(audio_path):
+                audio_path = process_audio_netflix(audio_path)
         else:
             audio_path = generate_voiceover(script_data["script"], video_id, language)
+            # Mix background music for shorts
+            if audio_path and os.path.exists(audio_path):
+                audio_path = mix_background_music(audio_path, is_short=True)
         print(f"[Video] Audio ready: {audio_path}")
         # Duration check
         try:
@@ -1978,34 +2661,18 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
         return ""
 
     # ── Image / clip counts ───────────────────────────────────────────────────
-    is_short = "short" in video_id
     n_images = calculate_unique_images(is_short=is_short)
     calculate_total_images(user_images)
     print(f"[Video] Generating {n_images} AI images ({'short' if is_short else 'long'})")
 
-    # ── Prompt generation ─────────────────────────────────────────────────────
+    # ── Image generation (real photos + AI fallback per script chunk) ────────
     try:
-        prompts, seed = generate_image_prompts(title, niche, script_data.get("script", ""), language)
-        extended_prompts = [prompts[i % len(prompts)] for i in range(n_images)]
+        script_text = script_data.get("script", "")
+        image_paths = fetch_real_images(script_text, n_images, video_id)
     except Exception as e:
-        print(f"[Video] CRASH at prompt generation: {e}")
+        print(f"[Video] CRASH at image generation: {e}")
         traceback.print_exc()
         return ""
-
-    # ── Image download ────────────────────────────────────────────────────────
-    image_paths: list[str] = []
-    for i, prompt in enumerate(extended_prompts):
-        img_path = os.path.join(IMAGES_DIR, f"{video_id}_img_{i}.png")
-        try:
-            result = generate_ai_image(prompt, img_path, seed=seed + i)
-        except Exception as e:
-            print(f"[Video] CRASH generating image {i}: {e}")
-            traceback.print_exc()
-            result = None
-        if result:
-            image_paths.append(result)
-        if i < len(extended_prompts) - 1:
-            time.sleep(5)
 
     if not image_paths:
         print("[Video] No images generated, aborting")

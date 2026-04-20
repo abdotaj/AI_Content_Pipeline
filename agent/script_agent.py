@@ -41,7 +41,8 @@ def _groq_call(**kwargs):
 
 
 def _openai_direct_call(prompt: str, max_tokens: int = 4000,
-                        json_mode: bool = False) -> str | None:
+                        json_mode: bool = False,
+                        system_prompt: str | None = None) -> str | None:
     import os
     import requests
     import json
@@ -51,12 +52,18 @@ def _openai_direct_call(prompt: str, max_tokens: int = 4000,
         print("[OpenAI] No API key")
         return None
 
+    _system = system_prompt or "You are a professional true crime documentary scriptwriter."
+
+    print("=== SYSTEM PROMPT ===")
+    print(_system)
+    print("=== END SYSTEM PROMPT ===")
+
     payload = {
         "model": "gpt-4o-mini",
         "messages": [
             {
                 "role": "system",
-                "content": "You are a professional true crime documentary scriptwriter."
+                "content": _system,
             },
             {
                 "role": "user",
@@ -138,6 +145,35 @@ def _openai_direct_call(prompt: str, max_tokens: int = 4000,
 
     print("[OpenAI] All connection attempts failed")
     return None
+
+
+_SCRIPT_SYSTEM_PROMPT = """You are a professional true crime documentary scriptwriter.
+
+Tone rules:
+- 85% dark, serious, documentary tone
+- 15% dry humor and sarcasm — especially when describing:
+  * How stupid a criminal's mistake was
+  * Ironic twists in the story
+  * Moments where the subject embarrassed themselves
+  * Unexpected plot twists
+
+Examples of good dry humor in crime scripts:
+- 'He planned the perfect crime. Except he left his wallet at the scene.'
+- 'For a man who controlled an entire militia, he somehow forgot that cameras exist.'
+- 'Genius move. Truly. A masterclass in how not to be a warlord.'
+
+Rules:
+- Never make fun of victims
+- Only humor directed at criminals, corrupt officials, or ironic situations
+- One or two lines max per section — don't overdo it"""
+
+
+def clean_word_count(text: str) -> int:
+    """Count only real vocabulary words — strips punctuation, ellipses, line breaks."""
+    import re
+    cleaned = re.sub(r'[^\w\s]', '', text)
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+    return len([w for w in cleaned.split() if w.strip()])
 
 
 def _groq_fallback(prompt: str, max_tokens: int, json_mode: bool) -> str:
@@ -388,23 +424,29 @@ def _build_arabic_title(en_title: str, series_name: str | None, series_type: str
     return translate_to_arabic(en_title)
 
 
-def generate_chapters(script, total_duration_seconds=LONG_VIDEO_DURATION):
-    """Return YouTube chapter timestamps for an 18-minute documentary."""
-    chapters = [
-        (0,    "🎬 Introduction"),
-        (90,   "📺 What The Series Showed"),
-        (210,  "🔍 The Real Background"),
-        (420,  "😱 The Real Story"),
-        (780,  "💀 Shocking Facts"),
-        (960,  "⚖️ Real Story vs Screen"),
-        (1050, "🎯 Conclusion"),
+def generate_chapters(total_words):
+    """Generate accurate YouTube chapter timestamps proportional to script length."""
+    words_per_minute = 156  # 130 wpm * 1.2x playback speed
+    total_seconds = (total_words / words_per_minute) * 60
+
+    proportions = [
+        (0.0,  "🎬 Introduction & Hook"),
+        (0.13, "📖 Background & Origins"),
+        (0.28, "⚡ Rise to Power"),
+        (0.45, "😱 Main Events"),
+        (0.63, "💀 Shocking Revelations"),
+        (0.78, "⚖️ Evidence & Investigation"),
+        (0.90, "🎯 Conclusion"),
     ]
-    chapter_text = ""
-    for seconds, title in chapters:
+
+    chapters = []
+    for ratio, title in proportions:
+        seconds = int(total_seconds * ratio)
         mins = seconds // 60
         secs = seconds % 60
-        chapter_text += f"{mins:02d}:{secs:02d} {title}\n"
-    return chapter_text
+        chapters.append(f"{mins:02d}:{secs:02d} {title}")
+
+    return "\n".join(chapters)
 
 
 def add_short_title(script_data: dict) -> str:
@@ -693,8 +735,8 @@ RULES:
 Start immediately with the HOOK."""
 
     result = _ai_script_call(prompt, max_tokens=4000, temperature=0.75)
-    words = len(result.split()) if result else 0
-    print(f"[Script] Hemedti Part 1: {words} words")
+    words = clean_word_count(result) if result else 0
+    print(f"[Script] Hemedti Part 1: {words} real words")
     return result or ""
 
 
@@ -776,8 +818,8 @@ RULES:
 Start immediately with the HOOK."""
 
     result = _ai_script_call(prompt, max_tokens=4000, temperature=0.75)
-    words = len(result.split()) if result else 0
-    print(f"[Script] Hemedti Part 2: {words} words")
+    words = clean_word_count(result) if result else 0
+    print(f"[Script] Hemedti Part 2: {words} real words")
     return result or ""
 
 
@@ -862,13 +904,13 @@ RULES:
 Start immediately with the HOOK. Spoken words only."""
 
     result = _ai_script_call(prompt, max_tokens=4000, temperature=0.75)
-    words = len(result.split()) if result else 0
-    print(f"[Script] Documentary script{part_label}: {words} words")
+    words = clean_word_count(result) if result else 0
+    print(f"[Script] Documentary script{part_label}: {words} real words")
     return result or ""
 
 
 def write_long_script_split(topic: dict, research: dict, series_info: tuple | None) -> str:
-    """Write 1800+ word script via 3 separate OpenAI calls (opening/middle/closing)."""
+    """Write 2,500–3,050 real-word script via 5 OpenAI calls → 15–18 min runtime."""
     import time
 
     series = series_info[0] if series_info else topic.get("niche", topic.get("topic", ""))
@@ -877,113 +919,415 @@ def write_long_script_split(topic: dict, research: dict, series_info: tuple | No
 
     base_context = f"""Topic: {name}
 Series/Movie: {series} ({stype})
-Network: {research.get('network', 'unknown')}
 Real person: {research.get('real_person', name)}
 Key facts: {(research.get('research_facts') or research.get('what_show_got_right', []))[:3]}
 """
 
-    # CALL 1 — Opening 500 words
-    prompt1 = f"""{base_context}
-Write the OPENING of a true crime documentary script.
-Exactly 500 words.
+    # (label, min_words, max_words, is_final)
+    _SECTIONS_META = [
+        ("Hook + Intro",          450,  550,  False),
+        ("Background & Context",  550,  650,  False),
+        ("Main Events Deep Dive", 650,  800,  False),
+        ("Analysis & Aftermath",  550,  650,  False),
+        ("Conclusion",            300,  400,  True),
+    ]
 
-HOOK (80 words):
-Most shocking fact about {name} to open with.
+    _SECTION_LABELS = [
+        "[SECTION: Introduction]",
+        "[SECTION: Background]",
+        "[SECTION: Main Story]",
+        "[SECTION: Shocking Facts]",
+        "[SECTION: Conclusion]",
+    ]
+
+    def _section_instruction(min_w: int, max_w: int, is_final: bool) -> str:
+        conclude = (
+            "This is the final section — wrap up the story, deliver final thoughts, "
+            "call to action for viewers."
+            if is_final else
+            "Do not summarize or conclude — the next section will continue the story. "
+            "End mid-story."
+        )
+        return (
+            f"Write exactly {min_w}–{max_w} real words for this section. "
+            "Real words only — do not count punctuation, ellipses, or line breaks. "
+            "No filler. No repetition. Every sentence adds new information. "
+            + conclude
+        )
+
+    def _call_section(prompt: str, label: str, min_w: int, max_w: int,
+                      call_num: int) -> str | None:
+        result = _openai_direct_call(prompt, max_tokens=1200,
+                                     system_prompt=_SCRIPT_SYSTEM_PROMPT)
+        if not result:
+            print(f"[Script] Section {call_num} ({label}): call failed")
+            return None
+        real  = clean_word_count(result)
+        raw   = len(result.split())
+        emoji = "✅" if real >= min_w else "⚠️"
+        print(f"[Script] Section {call_num} ({label}): {real} real words {emoji} "
+              f"(target {min_w}–{max_w}, raw {raw})")
+        # One retry if below minimum
+        if real < min_w:
+            print(f"[Script] Section {call_num}: below minimum — retrying once")
+            time.sleep(4)
+            retry = _openai_direct_call(prompt, max_tokens=1200,
+                                        system_prompt=_SCRIPT_SYSTEM_PROMPT)
+            if retry:
+                r_real = clean_word_count(retry)
+                r_raw  = len(retry.split())
+                emoji2 = "✅" if r_real >= min_w else "⚠️"
+                print(f"[Script] Section {call_num} retry: {r_real} real words {emoji2} "
+                      f"(raw {r_raw})")
+                if r_real >= real:
+                    return retry
+        return result
+
+    sections: list[str] = []
+    prompts_ctx: list[str] = []  # accumulate previous sections for context
+
+    section_prompts = [
+        lambda: f"""{base_context}
+Write the hook and introduction for a crime documentary script about {name}.
+Hook must grab attention immediately. Build suspense.
+{_section_instruction(450, 550, False)}""",
+
+        lambda: f"""{base_context}
+Continue the script. Write the background and context section.
+Cover history, key players, timeline of events.
+{_section_instruction(550, 650, False)}
+
+PREVIOUS SECTION:
+{sections[0]}""",
+
+        lambda: f"""{base_context}
+Continue the script. Write the main events section in full detail.
+Every key moment, dialogue, scene description.
+{_section_instruction(650, 800, False)}
+
+PREVIOUS SECTIONS:
+{sections[0]}
+
+{sections[1]}""",
+
+        lambda: f"""{base_context}
+Continue the script. Write the analysis and aftermath section.
+What happened next, investigations, consequences, expert opinions.
+{_section_instruction(550, 650, False)}
+
+PREVIOUS SECTIONS:
+{sections[0]}
+
+{sections[1]}
+
+{sections[2]}""",
+
+        lambda: f"""{base_context}
+Continue the script. Write the final conclusion.
+{_section_instruction(300, 400, True)}
+
+PREVIOUS SECTIONS:
+{sections[0]}
+
+{sections[1]}
+
+{sections[2]}
+
+{sections[3]}""",
+    ]
+
+    for i, (label, min_w, max_w, is_final) in enumerate(_SECTIONS_META):
+        prompt = section_prompts[i]()
+        result = _call_section(prompt, label, min_w, max_w, i + 1)
+        if not result:
+            return ""
+        sections.append(result)
+        if i < len(_SECTIONS_META) - 1:
+            time.sleep(3)
+
+    full_script = "\n\n".join(
+        f"{_SECTION_LABELS[i]}\n{section}"
+        for i, section in enumerate(sections)
+    )
+
+    total_real = clean_word_count(full_script)
+    total_raw  = len(full_script.split())
+    minutes    = total_real / 163  # ~163 wpm for documentary English narration
+    print(f"[Script] Total English: {total_real} real words (raw {total_raw}) "
+          f"→ Est. runtime: ~{minutes:.0f} min")
+
+    if total_real < 2450:
+        print(f"[Script] WARNING: English total {total_real} real words — below 2,450 target, consider regenerating")
+    elif total_real > 3150:
+        print(f"[Script] WARNING: English total {total_real} real words — above 3,150 cap, may run long")
+
+    return full_script
+
+
+def write_ultra_long_script(topic_name: str, research: dict,
+                             series_info: tuple | None, part_number: int = 1) -> str:
+    """Write 4000-5000 word script via 6 separate OpenAI calls (target ~14-17 min EN, ~16-19 min AR)."""
+    import time
+
+    series = series_info[0] if series_info else "Documentary"
+    stype  = series_info[1] if series_info else "Documentary"
+
+    base = f"""Topic: {topic_name}
+Series/Movie: {series} ({stype})
+Research facts: {(research.get('research_facts') or research.get('real_facts', []))[:5]}
+Network: {research.get('network', 'unknown')}
+Real person: {research.get('real_person', topic_name)}
+Shocking facts: {(research.get('research_shocking') or research.get('shocking_real_facts', []))[:3]}
+"""
+
+    sections: list[str] = []
+
+    # SECTION 1 — Hook + Series Intro + Real Background (800 words)
+    print("[Script] Writing Section 1/6...")
+    s1 = _openai_direct_call(f"""{base}
+Write SECTION 1 of a true crime documentary. Exactly 800 words.
+
+HOOK (100 words):
+Most shocking single fact to open with.
+Start with specific date/number/event.
 Make viewer unable to stop watching.
-Start with a specific date, number or shocking event.
 
-SERIES INTRO (150 words):
+SERIES INTRO (250 words):
 What {series} showed the world.
 Why millions watched it.
-Celebrate the show then say:
+Specific scenes that captivated audiences.
+Celebrate the show then build excitement:
 "But the real story is even more extraordinary..."
 
-REAL BACKGROUND (270 words):
-Who was {name} before everything happened.
-Specific dates, places, family background.
-First criminal involvement with exact year.
-What shaped them into who they became.
-
-RULES:
-- Exactly 500 words
-- Every sentence has ONE specific fact
-- No two sentences start with same word
-- No vague phrases
-- Write like a Netflix documentary narrator"""
-
-    part1 = _openai_direct_call(prompt1, max_tokens=800)
-    if not part1:
-        print("[Script] Split call 1 failed")
-        return ""
-    time.sleep(3)
-
-    # CALL 2 — Main story 800 words
-    prompt2 = f"""{base_context}
-Write the MAIN STORY of a true crime documentary.
-Exactly 800 words.
-
-MAIN STORY (800 words):
-Full chronological story of {name}.
-Start from their first major crime.
-Include specific dates, amounts, names.
-Key events that {series} depicted.
-What the {stype} got right vs reality.
-Real quotes from people involved.
-Specific numbers — money, victims, dates.
-Dramatic turning points in the story.
+REAL BACKGROUND OPENING (450 words):
+Who was {topic_name} before everything happened.
+Family background with specific details.
+Childhood and early life.
+First signs of what was to come.
+Specific dates and places.
 
 RULES:
 - Exactly 800 words
-- Chronological order with specific years
-- Every paragraph introduces new information
-- No repetition from opening section
-- Include at least 8 specific dates or numbers"""
-
-    part2 = _openai_direct_call(prompt2, max_tokens=1200)
-    if not part2:
-        print("[Script] Split call 2 failed")
-        return ""
+- Every sentence has one specific fact
+- No two consecutive sentences start same word
+- Write like Netflix documentary narrator
+- Dramatic but factual
+""", max_tokens=1200, system_prompt=_SCRIPT_SYSTEM_PROMPT)
+    if s1:
+        sections.append(s1)
+        print(f"[Script] S1: {clean_word_count(s1)} real words")
     time.sleep(3)
 
-    # CALL 3 — Closing 500 words
-    prompt3 = f"""{base_context}
-Write the CLOSING of a true crime documentary.
-Exactly 500 words.
+    # SECTION 2 — Early Life + Rise to Power (800 words)
+    print("[Script] Writing Section 2/6...")
+    s2 = _openai_direct_call(f"""{base}
+Write SECTION 2 of a true crime documentary. Exactly 800 words. Continue from early life.
+DO NOT repeat anything from Section 1.
 
-SHOCKING FACTS (200 words):
-3-4 facts about {name} that {series} never showed.
-Things that would shock even fans of the show.
-Real impact on real people.
+EARLY CRIMINAL LIFE (400 words):
+First involvement in crime.
+Specific year and circumstances.
+Who recruited or influenced them.
+Early crimes with specific details.
+How they built initial power/wealth.
 
-REAL VS SCREEN (200 words):
-Direct comparison format:
-"In {series}, they showed X. In reality, Y happened."
-3 specific scene comparisons.
-What Hollywood changed for drama.
-Celebrate both the real story and the {stype}.
+RISE TO POWER (400 words):
+Key events that accelerated their rise.
+Specific dates when major milestones happened.
+People who helped or were betrayed.
+First major crime or atrocity.
+How ordinary people saw them then.
 
-CONCLUSION (100 words):
-What happened to {name} after the story ended.
-Where are they now or how did they die.
-Legacy and impact on history.
-End with: "Follow Dark Crime Decoded for more real stories behind your favourite crime {stype}s."
+RULES:
+- Exactly 800 words
+- New information only — no repetition
+- Specific dates numbers names places
+""", max_tokens=1200, system_prompt=_SCRIPT_SYSTEM_PROMPT)
+    if s2:
+        sections.append(s2)
+        print(f"[Script] S2: {clean_word_count(s2)} real words")
+    time.sleep(3)
+
+    # SECTION 3 — Main Story + Turning Point (900 words)
+    print("[Script] Writing Section 3/6...")
+    s3 = _openai_direct_call(f"""{base}
+Write SECTION 3 of a true crime documentary. Exactly 900 words. The main events.
+DO NOT repeat anything from previous sections.
+
+MAIN STORY — PEAK POWER (450 words):
+At height of their power what happened.
+Most significant events chronologically.
+Real victims and real impact.
+Specific operations or crimes.
+International attention and response.
+
+TURNING POINT (450 words):
+The moment everything started to change.
+Key event that led to downfall or exposure.
+How law enforcement/international community responded.
+Specific date when the world noticed.
+Real people who fought against them.
+
+RULES:
+- Exactly 900 words
+- Chronological order with years
+- Every paragraph = new information
+- Include 10+ specific dates or numbers
+""", max_tokens=1400, system_prompt=_SCRIPT_SYSTEM_PROMPT)
+    if s3:
+        sections.append(s3)
+        print(f"[Script] S3: {clean_word_count(s3)} real words")
+    time.sleep(3)
+
+    # SECTION 4 — Shocking Revelations + International Connections (800 words)
+    print("[Script] Writing Section 4/6...")
+    s4 = _openai_direct_call(f"""{base}
+Write SECTION 4 of a true crime documentary. Exactly 800 words. Shocking facts.
+DO NOT repeat anything from previous sections.
+
+SHOCKING REVELATIONS (400 words):
+5 facts most people never knew.
+Information hidden from public.
+Connections that were never reported.
+Financial crimes or secret deals.
+What happened behind the scenes.
+
+INTERNATIONAL CONNECTIONS (400 words):
+Foreign governments or organizations involved.
+Money flows and financial networks.
+How they escaped justice so long.
+Who protected them and why.
+Documents or evidence that exists.
+
+RULES:
+- Exactly 800 words
+- Facts that would shock even informed viewers
+- Cite specific sources: ICC, UN, journalists
+- No speculation — only documented facts
+""", max_tokens=1200, system_prompt=_SCRIPT_SYSTEM_PROMPT)
+    if s4:
+        sections.append(s4)
+        print(f"[Script] S4: {clean_word_count(s4)} real words")
+    time.sleep(3)
+
+    # SECTION 5 — Series vs Reality OR Evidence (1000 words)
+    print("[Script] Writing Section 5/6...")
+    is_documentary = get_script_angle(topic_name, series_info) == "documentary"
+    if is_documentary:
+        s5_prompt = f"""{base}
+Write SECTION 5 of a true crime documentary. Exactly 800 words. Evidence and investigation.
+DO NOT repeat anything from previous sections.
+
+EVIDENCE AND PROOF (400 words):
+ICC warrant details and specific charges.
+UN investigation findings with dates.
+Survivor testimonies — what they described.
+Leaked documents or communications.
+Journalists killed or arrested covering this.
+
+CURRENT STATUS (400 words):
+Where is {topic_name} now?
+Last confirmed sighting with date.
+What different sources report.
+International manhunt details.
+What justice looks like for victims.
+
+RULES:
+- Exactly 800 words
+- Only documented confirmed facts
+- Cite sources: ICC, UN, Human Rights Watch
+- Respectful of victims
+"""
+    else:
+        s5_prompt = f"""{base}
+Write SECTION 5 of a true crime documentary. Exactly 800 words. Real vs Screen comparison.
+DO NOT repeat anything from previous sections.
+
+REAL STORY VS {series} (400 words):
+Direct comparisons:
+"In {series}, they showed X. In reality Y happened."
+3-4 specific scene comparisons.
+What the {stype} got right — celebrate accuracy.
+What was changed for drama — explain why filmmakers chose this.
+
+WHAT THE {stype.upper()} LEFT OUT (400 words):
+Key real events not in the {stype}.
+Real people not shown or renamed.
+Timeline changes and why.
+Most dramatic real moment not depicted.
+What sequel could cover.
+
+RULES:
+- Exactly 800 words
+- Specific scene references
+- Respectful of filmmakers' creative choices
+"""
+    s5 = _openai_direct_call(s5_prompt, max_tokens=1200, system_prompt=_SCRIPT_SYSTEM_PROMPT)
+    if s5:
+        sections.append(s5)
+        print(f"[Script] S5: {clean_word_count(s5)} real words")
+    time.sleep(3)
+
+    # SECTION 6 — Conclusion (500 words)
+    print("[Script] Writing Section 6/6...")
+    s6 = _openai_direct_call(f"""{base}
+Write SECTION 6 — THE CONCLUSION of a true crime documentary. Exactly 500 words.
+DO NOT repeat anything from previous sections.
+
+AFTERMATH (250 words):
+What happened after the main events.
+Where key people are now.
+Justice served or denied — specific outcomes.
+Impact on victims families today.
+Legacy of this case on history.
+
+FINAL REFLECTION (150 words):
+Why this story matters today.
+What it teaches about power and corruption.
+Connection to current world events.
+Why people need to know this story.
+
+CTA (100 words):
+"The story of {topic_name} is far from over..."
+Tease what Part 2 will cover (if part 1).
+"Follow Dark Crime Decoded for more real stories
+that change how you see the world."
+Strong emotional ending.
 
 RULES:
 - Exactly 500 words
-- Specific facts only — no vague statements
-- End with exact CTA phrase above"""
+- Emotional but factual ending
+- Strong memorable final line
+""", max_tokens=800, system_prompt=_SCRIPT_SYSTEM_PROMPT)
+    if s6:
+        sections.append(s6)
+        print(f"[Script] S6: {clean_word_count(s6)} real words")
 
-    part3 = _openai_direct_call(prompt3, max_tokens=800)
-    if not part3:
-        print("[Script] Split call 3 failed")
-        return ""
+    # Expand any section that fell below its minimum threshold
+    SECTION_MINS = [600, 600, 700, 600, 600, 400]
+    for i, section in enumerate(sections):
+        min_w = SECTION_MINS[i] if i < len(SECTION_MINS) else 400
+        if clean_word_count(section) < min_w:
+            print(f"[Script] Expanding section {i + 1} (below {min_w} word min)...")
+            expanded = _openai_direct_call(
+                f"Expand this section to minimum {min_w} words. "
+                f"Add more specific facts, dates, storytelling. "
+                f"Keep same topic and style.\n\n{section}",
+                max_tokens=1200,
+                system_prompt=_SCRIPT_SYSTEM_PROMPT,
+            )
+            if expanded and clean_word_count(expanded) > clean_word_count(section):
+                sections[i] = expanded
 
-    parts = [p for p in [part1, part2, part3] if p]
-    full_script = "\n\n".join(parts)
-
-    words   = len(full_script.split())
-    minutes = words / 130
-    print(f"[Script] Split combined: {words} words = ~{minutes:.1f} minutes ✅")
+    full_script = "\n\n".join(sections)
+    total_words = clean_word_count(full_script)
+    total_minutes = total_words / 130
+    if total_words < 3000:
+        print(f"[Script] ❌ Too short: {total_words} words (minimum 3000)")
+    elif total_words < 4000:
+        print(f"[Script] ✅ Good: {total_words} words = ~{total_minutes:.0f} min")
+    else:
+        print(f"[Script] ✅ Excellent: {total_words} words = ~{total_minutes:.0f} min")
     return full_script
 
 
@@ -1060,7 +1404,7 @@ def _write_darkcrimed_script(topic: dict) -> dict:
             ) + f"The real untold story of {topic['topic']}. Follow Dark Crime Decoded.",
             "hashtags":        _build_darkcrimed_hashtags("", None),
             "thumbnail_text":  topic["topic"][:30],
-            "chapters":        generate_chapters(script_text),
+            "chapters":        generate_chapters(clean_word_count(script_text)),
             "topic":           topic["topic"],
             "niche":           topic["niche"],
             "search_query":    topic.get("search_query", ""),
@@ -1225,14 +1569,14 @@ Series/Movie: {series_label}
 
 Start immediately with the HOOK. Write spoken words only — no labels, no headers."""
 
-    # Primary: 3-call split (opening 500 + middle 800 + closing 500 = 1800 words)
+    # Primary: 5-call split targeting 2,500–3,050 real words
     script_text = write_long_script_split(topic, research, _si_long)
-    if script_text and len(script_text.split()) >= 1200:
+    if script_text and clean_word_count(script_text) >= 2000:
         script_text = validate_script(script_text)
-        print(f"[Script] ✅ Split method OK: {len(script_text.split())} words")
+        print(f"[Script] ✅ Split method OK: {clean_word_count(script_text)} real words")
     else:
         if script_text:
-            print(f"[Script] Split too short ({len(script_text.split())} words) — falling back to single call")
+            print(f"[Script] Split too short ({clean_word_count(script_text)} real words) — falling back to single call")
         else:
             print("[Script] Split method failed — falling back to single call")
         script_text = ""
@@ -1241,7 +1585,7 @@ Start immediately with the HOOK. Write spoken words only — no labels, no heade
             if attempt > 0:
                 _prompt += f"""
 
-CRITICAL: Previous attempt was only {len(script_text.split())} words. MINIMUM REQUIRED: 1200 words.
+CRITICAL: Previous attempt was only {clean_word_count(script_text)} real words. MINIMUM REQUIRED: 1200 real words.
 You must EXPAND every section significantly:
 - HOOK: Add more shocking statistics
 - SERIES INTRO: Describe the show in more detail
@@ -1252,13 +1596,13 @@ You must EXPAND every section significantly:
 - CONCLUSION: Add what happened to key people afterwards
 Do not summarize — give full detailed information."""
             script_text = validate_script(_ai_script_call(_prompt, max_tokens=6000, temperature=0.85).strip())
-            words   = len(script_text.split())
-            minutes = words / 130
-            print(f"[Script] Attempt {attempt + 1}: {words} words = ~{minutes:.1f} minutes")
+            words   = clean_word_count(script_text)
+            minutes = words / 163
+            print(f"[Script] Attempt {attempt + 1}: {words} real words = ~{minutes:.1f} minutes")
             if words >= 1200:
-                print(f"[Script] ✅ Length OK: {words} words")
+                print(f"[Script] ✅ Length OK: {words} real words")
                 break
-            print(f"[Script] WARNING: Too short ({words} words) — retrying...")
+            print(f"[Script] WARNING: Too short ({words} real words) — retrying...")
 
     # ── PART 2: Generate metadata only (title, hook, captions, etc.) ────────
     _series_info    = get_series_for_person(topic["topic"])
@@ -1308,7 +1652,7 @@ Return ONLY this JSON with no extra text:
         "caption":        meta.get("caption", ""),
         "hashtags":       _build_darkcrimed_hashtags(meta.get("hashtags", ""), _series_info),
         "thumbnail_text": meta.get("thumbnail_text", ""),
-        "chapters":       generate_chapters(script_text),
+        "chapters":       generate_chapters(clean_word_count(script_text)),
     }
     script_data["topic"]              = topic["topic"]
     script_data["niche"]              = topic["niche"]
@@ -1446,6 +1790,196 @@ def _fix_arabic(text: str) -> str:
     return text
 
 
+def format_for_tts(text: str) -> str:
+    """
+    Format script text for natural TTS delivery.
+    Auto-routes Arabic text to format_for_tts_arabic().
+    - Short punchy sentences get their own line.
+    - Shocking facts / numbers get trailing ellipsis.
+    - Long sentences split at natural pause conjunctions.
+    - Section markers are preserved unchanged.
+    """
+    import re
+    # Detect Arabic by Unicode block presence
+    if re.search(r'[\u0600-\u06FF]', text):
+        return format_for_tts_arabic(text)
+
+    lines_out: list[str] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+
+        # Preserve blank lines and section markers
+        if not line or line.startswith("[SECTION:"):
+            lines_out.append(raw_line)
+            continue
+
+        # Split the line into individual sentences
+        sentences = re.split(r'(?<=[.!?])\s+', line)
+        formatted: list[str] = []
+        for sent in sentences:
+            sent = sent.strip()
+            if not sent:
+                continue
+
+            # Rule 2: numbers / shocking facts get "..."
+            # Matches sentences ending with a plain period that contain a number
+            # or that are ≤8 words (punchy fact)
+            words = sent.split()
+            has_number = bool(re.search(r'\d[\d,]*', sent))
+            is_punchy  = len(words) <= 8 and sent.endswith(".")
+            if (has_number or is_punchy) and sent.endswith("."):
+                sent = sent[:-1] + "..."
+
+            # Rule 3: split long sentences at natural pause conjunctions
+            # Only split if sentence is >14 words
+            if len(words) > 14:
+                # Split before: but, and, yet, so, while, because, after, before,
+                #               when, though, although, however, until
+                pause_pattern = re.compile(
+                    r'\s+(but|and yet|yet|so|while|because|after|before|'
+                    r'when|though|although|however|until)\s+',
+                    re.IGNORECASE,
+                )
+                parts = pause_pattern.split(sent)
+                rebuilt: list[str] = []
+                i = 0
+                while i < len(parts):
+                    chunk = parts[i].strip()
+                    if i + 1 < len(parts):
+                        conjunction = parts[i + 1]
+                        next_chunk  = parts[i + 2].strip() if i + 2 < len(parts) else ""
+                        # Add ellipsis after first part, capitalise conjunction
+                        if chunk and not chunk[-1] in ".!?...":
+                            chunk += "..."
+                        rebuilt.append(chunk)
+                        # Start next chunk with the conjunction capitalised
+                        if next_chunk:
+                            rebuilt.append(conjunction.capitalize() + " " + next_chunk)
+                        i += 3
+                    else:
+                        if chunk:
+                            rebuilt.append(chunk)
+                        i += 1
+                formatted.extend(rebuilt)
+            else:
+                formatted.append(sent)
+
+        # Rule 4: consecutive short sentences (≤6 words) each on their own line
+        lines_out.extend(formatted)
+        lines_out.append("")  # blank line between original lines for breathing room
+
+    result = "\n".join(lines_out).strip()
+    # Collapse 3+ consecutive blank lines → 1
+    result = re.sub(r'\n{3,}', '\n\n', result)
+    line_count = len([l for l in result.splitlines() if l.strip()])
+    print(f"[Script] Script formatted for TTS — {line_count} lines")
+    return result
+
+
+def _clean_arabic_with_openai(section_text: str) -> str:
+    """Ask OpenAI to rewrite Arabic section in clean fusha — short sentences, no filler."""
+    import os as _os
+    import requests as _req
+
+    api_key = _os.getenv("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        return section_text
+
+    prompt = (
+        "أعد كتابة هذا النص العربي بأسلوب فصيح حديث ومباشر.\n"
+        "جمل قصيرة وقوية. أفعال قوية. احذف الحشو والتكرار.\n"
+        "حافظ على نفس المعنى والوقائع تماماً.\n"
+        "أعد النص المعاد صياغته فقط بدون تعليق.\n\n"
+        f"{section_text}"
+    )
+    try:
+        r = _req.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json={
+                "model": "gpt-4o-mini",
+                "messages": [
+                    {"role": "system", "content": "أنت محرر نصوص وثائقية عربية محترف."},
+                    {"role": "user", "content": prompt},
+                ],
+                "max_tokens": 2000,
+                "temperature": 0.4,
+            },
+            timeout=45,
+        )
+        if r.status_code == 200:
+            return r.json()["choices"][0]["message"]["content"].strip()
+    except Exception as e:
+        print(f"[Script] Arabic cleanup failed: {e}")
+    return section_text
+
+
+def format_for_tts_arabic(text: str) -> str:
+    """
+    Format Arabic script for natural TTS delivery.
+    - OpenAI cleanup pass (fusha, no filler).
+    - Each sentence on its own line.
+    - Shocking facts / numbers → trailing "..."
+    - Short punchy clauses each on own line.
+    - Breathing-room blank lines every 2-3 lines.
+    """
+    import re
+
+    # Section markers go through unchanged; process section bodies separately
+    section_marker_re = re.compile(r'(\[SECTION:[^\]]+\])')
+    parts = section_marker_re.split(text)
+    out_parts: list[str] = []
+
+    for part in parts:
+        if section_marker_re.match(part):
+            out_parts.append(part)
+            continue
+        if not part.strip():
+            out_parts.append(part)
+            continue
+
+        # OpenAI cleanup per section (skip tiny fragments)
+        cleaned = _clean_arabic_with_openai(part) if clean_word_count(part) > 20 else part
+
+        lines_out: list[str] = []
+        line_count_since_break = 0
+
+        # Split at Arabic sentence endings: . ؟ ! ، (comma as soft pause)
+        # Use period/question/exclamation as hard splits, comma as soft split
+        sentences = re.split(r'(?<=[.؟!،])\s*', cleaned)
+
+        for sent in sentences:
+            sent = sent.strip()
+            if not sent:
+                continue
+
+            # Numbers or short punchy clauses → ellipsis
+            has_number = bool(re.search(r'\d[\d,]*', sent))
+            words      = sent.split()
+            is_punchy  = len(words) <= 6
+
+            if (has_number or is_punchy) and sent[-1] in '.؟!،':
+                sent = sent[:-1] + "..."
+            elif sent[-1] not in '.؟!،...':
+                sent += "."
+
+            lines_out.append(sent)
+            line_count_since_break += 1
+
+            # Breathing room every 2-3 lines
+            if line_count_since_break >= 3:
+                lines_out.append("")
+                line_count_since_break = 0
+
+        out_parts.append("\n".join(lines_out))
+
+    result = "\n".join(out_parts).strip()
+    result = re.sub(r'\n{3,}', '\n\n', result)
+    line_count = len([l for l in result.splitlines() if l.strip()])
+    print(f"[Script] Arabic script formatted for TTS — {line_count} lines")
+    return result
+
+
 def translate_to_arabic_google(text: str) -> str:
     """Translate English text to Arabic using Google Translate free REST API."""
     url = "https://translate.googleapis.com/translate_a/single"
@@ -1473,64 +2007,153 @@ def translate_to_arabic_openai(english_text: str, topic: str = "") -> str:
     if not api_key:
         return translate_to_arabic_google(english_text)
 
-    prompt = f"""Translate this English true crime script to Arabic.
+    word_count = len(english_text.split())
+    min_ar_words = int(word_count * 0.9)
+
+    def _build_prompt(strong: bool = False) -> str:
+        extra = (
+            "\n\nWARNING: Previous attempt was too short. You MUST translate EVERY sentence. "
+            "Do NOT skip, summarize, or combine paragraphs. Every English paragraph must become "
+            "one full Arabic paragraph of the same length."
+        ) if strong else ""
+        return f"""Translate this English script to Arabic.
 
 CRITICAL RULES:
-1. First mention of RSF: "قوات الدعم السريع (RSF)" — subsequent mentions: "قوات الدعم السريع" or "RSF"
-2. RSF is NEVER "مراسلون بلا حدود" — RSF = Rapid Support Forces = قوات الدعم السريع ALWAYS
-3. First mention of SAF: "القوات المسلحة السودانية (SAF)"
-4. First mention of ICC: "محكمة الجنايات الدولية (ICC)"
-5. Keep all proper names in original language (Hemedti, Dagalo, Khartoum, Darfur, etc.)
-6. Keep "Dark Crime Decoded" in English
-7. Keep series/movie names in English
-8. NEVER add content not in the original
-9. Maintain the same paragraph structure
-10. This is serious investigative journalism — translate formally and accurately
+1. DO NOT shorten or summarize anything
+2. Every English paragraph = one Arabic paragraph
+3. Keep ALL sentences — do not skip any
+4. Maintain dramatic pacing and storytelling
+5. Arabic should be SAME LENGTH as English
+6. If English has {word_count} words → Arabic must have minimum {min_ar_words} words
+7. Do not combine sentences
+8. Keep all specific facts, dates, numbers
+9. RSF = قوات الدعم السريع (NEVER مراسلون بلا حدود)
+10. Keep "Dark Crime Decoded" in English
+11. First mention of RSF: "قوات الدعم السريع (RSF)"
+12. First mention of SAF: "القوات المسلحة السودانية (SAF)"
+13. First mention of ICC: "محكمة الجنايات الدولية (ICC)"
+14. Keep all proper names in original language (Hemedti, Dagalo, Khartoum, Darfur, etc.)
+15. Keep series/movie names in English
+16. This is serious investigative journalism — translate formally and accurately
 
-English text to translate:
+English word count: {word_count}
+Your Arabic translation must be at least {min_ar_words} words.{extra}
+
+English text:
 {english_text}
 
 Return ONLY the Arabic translation. No explanations, no notes."""
 
-    try:
-        r = _req.post(
-            "https://api.openai.com/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": "gpt-4o-mini",
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": (
-                            "You are a professional Arabic translator specialising in "
-                            "true crime and investigative journalism. You translate "
-                            "accurately with correct military and legal terminology."
-                        ),
-                    },
-                    {"role": "user", "content": prompt},
-                ],
-                "max_tokens": 4000,
-                "temperature": 0.3,
-            },
-            timeout=60,
-        )
-        if r.status_code == 200:
-            result = r.json()["choices"][0]["message"]["content"].strip()
-            result = _fix_arabic(result)
-            print("[Script] OpenAI Arabic translation ✅")
-            return result
-    except Exception as e:
-        print(f"[Script] OpenAI translation failed: {e}")
+    def _do_translate(prompt_text: str) -> str | None:
+        try:
+            r = _req.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": "gpt-4o-mini",
+                    "messages": [
+                        {
+                            "role": "system",
+                            "content": (
+                                "You are a professional Arabic translator specialising in "
+                                "true crime and investigative journalism. You translate "
+                                "accurately with correct military and legal terminology. "
+                                "Preserve every sentence — never summarise or skip content. "
+                                "When the source text contains dry humor or sarcasm, adapt "
+                                "it naturally into Arabic — do not translate literally."
+                            ),
+                        },
+                        {"role": "user", "content": prompt_text},
+                    ],
+                    "max_tokens": 6000,
+                    "temperature": 0.3,
+                },
+                timeout=90,
+            )
+            if r.status_code == 200:
+                return r.json()["choices"][0]["message"]["content"].strip()
+        except Exception as e:
+            print(f"[Script] OpenAI translation failed: {e}")
+        return None
+
+    result = _do_translate(_build_prompt(strong=False))
+    if result:
+        result = _fix_arabic(result)
+        ar_words = len(result.split())
+        en_words = word_count
+        ratio = ar_words / max(en_words, 1)
+        print(f"[Script] EN: {en_words} words | AR: {ar_words} words | Ratio: {ratio:.2f}")
+        if ratio < 0.8:
+            print("[Script] ⚠️ Arabic too short — retrying with stronger instruction")
+            retry = _do_translate(_build_prompt(strong=True))
+            if retry:
+                retry = _fix_arabic(retry)
+                retry_words = len(retry.split())
+                if retry_words > ar_words:
+                    print(f"[Script] Retry AR: {retry_words} words — using retry")
+                    result = retry
+                else:
+                    print(f"[Script] Retry not longer ({retry_words} vs {ar_words}) — keeping original")
+        print("[Script] OpenAI Arabic translation ✅")
+        return result
 
     print("[Script] Falling back to Google Translate")
     return translate_to_arabic_google(english_text)
 
 
+def translate_long_script_arabic(english_text: str, topic: str = "") -> str:
+    """Translate a long script to Arabic in ~800-word chunks, then stitch."""
+    import time as _time
+
+    paragraphs = [p.strip() for p in english_text.split("\n\n") if p.strip()]
+
+    chunks: list[str] = []
+    current: list[str] = []
+    current_words = 0
+    for para in paragraphs:
+        pw = len(para.split())
+        if current_words + pw > 800 and current:
+            chunks.append("\n\n".join(current))
+            current = [para]
+            current_words = pw
+        else:
+            current.append(para)
+            current_words += pw
+    if current:
+        chunks.append("\n\n".join(current))
+
+    total_en = clean_word_count(english_text)
+    print(f"[Script] Translating {total_en} real-word script in {len(chunks)} chunks")
+
+    translated: list[str] = []
+    for i, chunk in enumerate(chunks):
+        print(f"[Script] Translating chunk {i + 1}/{len(chunks)}...")
+        ar_chunk = translate_to_arabic_openai(chunk, topic=topic)
+        translated.append(ar_chunk)
+        if i < len(chunks) - 1:
+            _time.sleep(2)
+
+    result   = "\n\n".join(translated)
+    ar_real  = clean_word_count(result)
+    ar_raw   = len(result.split())
+    ar_min   = ar_real // 140
+    ar_max   = ar_real // 130
+    if ar_real >= 2250:
+        print(f"[Script] Total Arabic: {ar_real} real words (raw {ar_raw}) ✅ "
+              f"→ Est. runtime: ~{ar_min}–{ar_max} min")
+    else:
+        print(f"[Script] Total Arabic: {ar_real} real words (raw {ar_raw}) ⚠️ "
+              f"below 2,250 target — consider regenerating")
+    return result
+
+
 def translate_to_arabic(text: str) -> str:
-    """Public entry point — uses OpenAI, falls back to Google."""
+    """Public entry point — chunked for long scripts, otherwise single OpenAI call."""
+    if clean_word_count(text) > 1000:
+        return translate_long_script_arabic(text)
     return translate_to_arabic_openai(text)
 
 
@@ -1635,21 +2258,21 @@ Output ONLY the spoken script text, nothing else."""
     for attempt in range(2):
         _short_prompt = prompt
         if attempt > 0:
-            _short_prompt += f"\n\nCRITICAL: Previous attempt was only {len(script_text.split())} words. Write MORE. Need 150-180 words."
+            _short_prompt += f"\n\nCRITICAL: Previous attempt was only {clean_word_count(script_text)} real words. Write MORE. Need 150-180 words."
         script_text = _ai_script_call(_short_prompt, max_tokens=500, temperature=0.85).strip()
-        words   = len(script_text.split())
+        words   = clean_word_count(script_text)
         seconds = (words / 130) * 60
-        print(f"[Script] Short attempt {attempt + 1}: {words} words = ~{seconds:.0f}s")
+        print(f"[Script] Short attempt {attempt + 1}: {words} real words = ~{seconds:.0f}s")
         if words >= 130:
-            print(f"[Script] Short length OK: {words} words")
+            print(f"[Script] Short length OK: {words} real words")
             break
-        print(f"[Script] Short too short ({words} words) — retrying...")
+        print(f"[Script] Short too short ({words} real words) — retrying...")
 
-    # Trim if over 200 words
+    # Trim if over 200 real words
     words_list = script_text.split()
-    if len(words_list) > 200:
+    if clean_word_count(script_text) > 200:
         script_text = " ".join(words_list[:180])
-        print(f"[Script] Short trimmed to 180 words")
+        print(f"[Script] Short trimmed to ~180 words")
 
     short_data = {
         "title":           en_long_script.get("title", ""),  # overwritten below
