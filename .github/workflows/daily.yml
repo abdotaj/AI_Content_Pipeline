@@ -46,6 +46,12 @@ jobs:
           key: pip-${{ hashFiles('requirements.txt') }}
           restore-keys: pip-
 
+      - name: Cache music assets
+        uses: actions/cache@v4
+        with:
+          path: assets/music/
+          key: music-assets-v1
+
       - name: Install dependencies
         run: |
           pip install --upgrade pip setuptools wheel

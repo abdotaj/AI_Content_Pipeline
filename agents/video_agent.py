@@ -2286,6 +2286,75 @@ def assemble_short_video(audio_path: str, image_paths: list[str], output_path: s
     return output_path
 
 
+# ── Music asset management ────────────────────────────────────────────────────
+
+_MUSIC_TRACKS = {
+    "assets/music/documentary_long.mp3":
+        "https://cdn.pixabay.com/download/audio/2022/03/15/audio_8cb749612b.mp3",
+    "assets/music/documentary_short.mp3":
+        "https://cdn.pixabay.com/download/audio/2022/01/18/audio_d0c6ff1c23.mp3",
+}
+
+
+def ensure_music_assets() -> None:
+    """Download royalty-free background music tracks on first run if missing."""
+    os.makedirs("assets/music", exist_ok=True)
+    for path, url in _MUSIC_TRACKS.items():
+        if os.path.exists(path):
+            continue
+        print(f"[Music] Downloading music: {path}...")
+        try:
+            r = requests.get(url, timeout=60, stream=True)
+            if r.status_code == 200:
+                with open(path, "wb") as f:
+                    for chunk in r.iter_content(chunk_size=65536):
+                        f.write(chunk)
+                size_kb = os.path.getsize(path) // 1024
+                print(f"[Music] Downloaded: {path} ({size_kb} KB) ✅")
+            else:
+                print(f"[Music] Failed to download {path} — HTTP {r.status_code} ⚠️")
+        except Exception as e:
+            print(f"[Music] Download error for {path}: {e} ⚠️")
+
+
+def mix_background_music(voice_path: str, is_short: bool = False) -> str:
+    """Mix looping background music under the voice track at -24 dB (volume=0.06)."""
+    import subprocess
+
+    music_file = (
+        "assets/music/documentary_short.mp3" if is_short
+        else "assets/music/documentary_long.mp3"
+    )
+
+    if not os.path.exists(music_file):
+        print(f"[Music] Music file missing ({music_file}) — skipping mix ⚠️")
+        return voice_path
+
+    ffmpeg_bin = _get_ffmpeg()
+    if not ffmpeg_bin:
+        print("[Music] ffmpeg not found — skipping music mix")
+        return voice_path
+
+    output = voice_path.replace(".mp3", "_with_music.mp3")
+    try:
+        subprocess.run(
+            [ffmpeg_bin,
+             "-i", voice_path,
+             "-stream_loop", "-1",
+             "-i", music_file,
+             "-filter_complex", "[1]volume=0.06[bg];[0][bg]amix=inputs=2:duration=first",
+             "-c:a", "libmp3lame", "-q:a", "2",
+             "-y", output],
+            check=True, capture_output=True,
+        )
+        label = "short" if is_short else "long"
+        print(f"[Music] Music mixed at -24 dB ({label}): {output} ✅")
+        return output
+    except Exception as e:
+        print(f"[Music] Mix failed: {e} — returning voice-only")
+        return voice_path
+
+
 # ── Netflix-quality audio post-processing ─────────────────────────────────────
 
 def process_audio_netflix(input_path: str) -> str:
@@ -2342,27 +2411,11 @@ def process_audio_netflix(input_path: str) -> str:
 
     final_processed = step_files[-1]
 
-    # Mix background music if available
-    music_path = os.path.join(os.path.dirname(__file__), "..", "assets", "background_music.mp3")
-    music_path = os.path.normpath(music_path)
-    output_with_music = f"{base}_final.mp3"
-
-    if os.path.exists(music_path):
-        try:
-            subprocess.run(
-                [ffmpeg_bin, "-y",
-                 "-i", final_processed,
-                 "-i", music_path,
-                 "-filter_complex", "[1]volume=0.08[bg];[0][bg]amix=inputs=2:duration=first",
-                 output_with_music],
-                check=True, capture_output=True,
-            )
-            final_processed = output_with_music
-            print("[Audio] Background music mixed ✅")
-        except Exception as e:
-            print(f"[Audio] Music mix failed: {e} — using voice-only")
-    else:
-        print("[Audio] No background_music.mp3 found — skipping music mix")
+    # Mix background music via dedicated function
+    _is_short = "short" in os.path.basename(input_path).lower()
+    mixed = mix_background_music(final_processed, is_short=_is_short)
+    if mixed != final_processed:
+        final_processed = mixed
 
     # Replace original with processed
     try:
@@ -2518,6 +2571,9 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
                 audio_path = process_audio_netflix(audio_path)
         else:
             audio_path = generate_voiceover(script_data["script"], video_id, language)
+            # Mix background music for shorts
+            if audio_path and os.path.exists(audio_path):
+                audio_path = mix_background_music(audio_path, is_short=True)
         print(f"[Video] Audio ready: {audio_path}")
         # Duration check
         try:

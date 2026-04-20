@@ -42,7 +42,7 @@ from config_darkcrimed import (
 
 from agent.research_agent import research_topics, research_series, mark_covered, is_fictional
 from agent.script_agent   import write_script, write_short_script, translate_script, detect_part_number
-from agent.video_agent    import create_video, process_user_images_smart, load_part2_images
+from agent.video_agent    import create_video, process_user_images_smart, load_part2_images, ensure_music_assets
 from agent.notify_agent   import (
     send_message, send_for_manual_posting, send_daily_report,
     send_video_to_telegram, clear_telegram_queue,
@@ -126,6 +126,9 @@ def run_pipeline():
     print(f"\n{'='*50}")
     print(f"  Dark Crime Decoded Pipeline — {today}")
     print(f"{'='*50}\n")
+
+    # ── Ensure music assets are downloaded ────────────────────
+    ensure_music_assets()
 
     # ── Cooldown guard ─────────────────────────────────────────
     if not check_24h_cooldown():

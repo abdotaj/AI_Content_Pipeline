@@ -22,3 +22,5 @@ agents/*.txt
 # No Node.js files — Python-only project
 speech.js
 *.js
+# Binary audio assets — downloaded at runtime, not committed
+assets/music/*.mp3
