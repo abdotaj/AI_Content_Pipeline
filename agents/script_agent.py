@@ -729,8 +729,8 @@ RULES:
 Start immediately with the HOOK."""
 
     result = _ai_script_call(prompt, max_tokens=4000, temperature=0.75)
-    words = len(result.split()) if result else 0
-    print(f"[Script] Hemedti Part 1: {words} words")
+    words = clean_word_count(result) if result else 0
+    print(f"[Script] Hemedti Part 1: {words} real words")
     return result or ""
 
 
@@ -812,8 +812,8 @@ RULES:
 Start immediately with the HOOK."""
 
     result = _ai_script_call(prompt, max_tokens=4000, temperature=0.75)
-    words = len(result.split()) if result else 0
-    print(f"[Script] Hemedti Part 2: {words} words")
+    words = clean_word_count(result) if result else 0
+    print(f"[Script] Hemedti Part 2: {words} real words")
     return result or ""
 
 
@@ -898,8 +898,8 @@ RULES:
 Start immediately with the HOOK. Spoken words only."""
 
     result = _ai_script_call(prompt, max_tokens=4000, temperature=0.75)
-    words = len(result.split()) if result else 0
-    print(f"[Script] Documentary script{part_label}: {words} words")
+    words = clean_word_count(result) if result else 0
+    print(f"[Script] Documentary script{part_label}: {words} real words")
     return result or ""
 
 
@@ -1296,14 +1296,14 @@ Series/Movie: {series_label}
 
 Start immediately with the HOOK. Write spoken words only — no labels, no headers."""
 
-    # Primary: 5-call split targeting 3600–5000 words
+    # Primary: 5-call split targeting 2,500–3,050 real words
     script_text = write_long_script_split(topic, research, _si_long)
-    if script_text and len(script_text.split()) >= 3000:
+    if script_text and clean_word_count(script_text) >= 2000:
         script_text = validate_script(script_text)
-        print(f"[Script] ✅ Split method OK: {len(script_text.split())} words")
+        print(f"[Script] ✅ Split method OK: {clean_word_count(script_text)} real words")
     else:
         if script_text:
-            print(f"[Script] Split too short ({len(script_text.split())} words) — falling back to single call")
+            print(f"[Script] Split too short ({clean_word_count(script_text)} real words) — falling back to single call")
         else:
             print("[Script] Split method failed — falling back to single call")
         script_text = ""
@@ -1312,7 +1312,7 @@ Start immediately with the HOOK. Write spoken words only — no labels, no heade
             if attempt > 0:
                 _prompt += f"""
 
-CRITICAL: Previous attempt was only {len(script_text.split())} words. MINIMUM REQUIRED: 1200 words.
+CRITICAL: Previous attempt was only {clean_word_count(script_text)} real words. MINIMUM REQUIRED: 1200 real words.
 You must EXPAND every section significantly:
 - HOOK: Add more shocking statistics
 - SERIES INTRO: Describe the show in more detail
@@ -1323,13 +1323,13 @@ You must EXPAND every section significantly:
 - CONCLUSION: Add what happened to key people afterwards
 Do not summarize — give full detailed information."""
             script_text = validate_script(_ai_script_call(_prompt, max_tokens=6000, temperature=0.85).strip())
-            words   = len(script_text.split())
-            minutes = words / 130
-            print(f"[Script] Attempt {attempt + 1}: {words} words = ~{minutes:.1f} minutes")
+            words   = clean_word_count(script_text)
+            minutes = words / 163
+            print(f"[Script] Attempt {attempt + 1}: {words} real words = ~{minutes:.1f} minutes")
             if words >= 1200:
-                print(f"[Script] ✅ Length OK: {words} words")
+                print(f"[Script] ✅ Length OK: {words} real words")
                 break
-            print(f"[Script] WARNING: Too short ({words} words) — retrying...")
+            print(f"[Script] WARNING: Too short ({words} real words) — retrying...")
 
     # ── PART 2: Generate metadata only (title, hook, captions, etc.) ────────
     _series_info    = get_series_for_person(topic["topic"])
@@ -1666,7 +1666,7 @@ def format_for_tts_arabic(text: str) -> str:
             continue
 
         # OpenAI cleanup per section (skip tiny fragments)
-        cleaned = _clean_arabic_with_openai(part) if len(part.split()) > 20 else part
+        cleaned = _clean_arabic_with_openai(part) if clean_word_count(part) > 20 else part
 
         lines_out: list[str] = []
         line_count_since_break = 0
@@ -1814,8 +1814,8 @@ def translate_long_script_arabic(english_text: str, topic: str = "") -> str:
     if current:
         chunks.append("\n\n".join(current))
 
-    total_en = len(english_text.split())
-    print(f"[Script] Translating {total_en}-word script in {len(chunks)} chunks")
+    total_en = clean_word_count(english_text)
+    print(f"[Script] Translating {total_en} real-word script in {len(chunks)} chunks")
 
     translated: list[str] = []
     for i, chunk in enumerate(chunks):
@@ -1825,18 +1825,23 @@ def translate_long_script_arabic(english_text: str, topic: str = "") -> str:
         if i < len(chunks) - 1:
             _time.sleep(2)
 
-    result    = "\n\n".join(translated)
-    ar_real   = clean_word_count(result)
-    ar_raw    = len(result.split())
-    print(f"[Script] Arabic translation total: {ar_real} real words (raw {ar_raw})")
-    if ar_real < 2250:
-        print(f"[Script] WARNING: Arabic total {ar_real} real words — below 2,250 target, consider regenerating")
+    result   = "\n\n".join(translated)
+    ar_real  = clean_word_count(result)
+    ar_raw   = len(result.split())
+    ar_min   = ar_real // 140
+    ar_max   = ar_real // 130
+    if ar_real >= 2250:
+        print(f"[Script] Total Arabic: {ar_real} real words (raw {ar_raw}) ✅ "
+              f"→ Est. runtime: ~{ar_min}–{ar_max} min")
+    else:
+        print(f"[Script] Total Arabic: {ar_real} real words (raw {ar_raw}) ⚠️ "
+              f"below 2,250 target — consider regenerating")
     return result
 
 
 def translate_to_arabic(text: str) -> str:
     """Public entry point — chunked for long scripts, otherwise single OpenAI call."""
-    if len(text.split()) > 1000:
+    if clean_word_count(text) > 1000:
         return translate_long_script_arabic(text)
     return translate_to_arabic_openai(text)
 
@@ -1942,21 +1947,21 @@ Output ONLY the spoken script text, nothing else."""
     for attempt in range(2):
         _short_prompt = prompt
         if attempt > 0:
-            _short_prompt += f"\n\nCRITICAL: Previous attempt was only {len(script_text.split())} words. Write MORE. Need 150-180 words."
+            _short_prompt += f"\n\nCRITICAL: Previous attempt was only {clean_word_count(script_text)} real words. Write MORE. Need 150-180 words."
         script_text = _ai_script_call(_short_prompt, max_tokens=500, temperature=0.85).strip()
-        words   = len(script_text.split())
+        words   = clean_word_count(script_text)
         seconds = (words / 130) * 60
-        print(f"[Script] Short attempt {attempt + 1}: {words} words = ~{seconds:.0f}s")
+        print(f"[Script] Short attempt {attempt + 1}: {words} real words = ~{seconds:.0f}s")
         if words >= 130:
-            print(f"[Script] Short length OK: {words} words")
+            print(f"[Script] Short length OK: {words} real words")
             break
-        print(f"[Script] Short too short ({words} words) — retrying...")
+        print(f"[Script] Short too short ({words} real words) — retrying...")
 
-    # Trim if over 200 words
+    # Trim if over 200 real words
     words_list = script_text.split()
-    if len(words_list) > 200:
+    if clean_word_count(script_text) > 200:
         script_text = " ".join(words_list[:180])
-        print(f"[Script] Short trimmed to 180 words")
+        print(f"[Script] Short trimmed to ~180 words")
 
     short_data = {
         "title":           en_long_script.get("title", ""),  # overwritten below
