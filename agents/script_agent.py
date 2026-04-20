@@ -868,7 +868,7 @@ Start immediately with the HOOK. Spoken words only."""
 
 
 def write_long_script_split(topic: dict, research: dict, series_info: tuple | None) -> str:
-    """Write 1800+ word script via 3 separate OpenAI calls (opening/middle/closing)."""
+    """Write 3600–5000 word script via 5 separate OpenAI calls (one section each)."""
     import time
 
     series = series_info[0] if series_info else topic.get("niche", topic.get("topic", ""))
@@ -877,113 +877,113 @@ def write_long_script_split(topic: dict, research: dict, series_info: tuple | No
 
     base_context = f"""Topic: {name}
 Series/Movie: {series} ({stype})
-Network: {research.get('network', 'unknown')}
 Real person: {research.get('real_person', name)}
 Key facts: {(research.get('research_facts') or research.get('what_show_got_right', []))[:3]}
 """
 
-    # CALL 1 — Opening 500 words
+    sections: list[str] = []
+
+    # CALL 1 — Hook + Intro (600–700 words)
     prompt1 = f"""{base_context}
-Write the OPENING of a true crime documentary script.
-Exactly 500 words.
+Write the hook and introduction for a crime documentary script about {name}.
+Hook must grab attention immediately. Intro must build suspense.
+Write 600–700 words. Do not conclude. End mid-story."""
 
-HOOK (80 words):
-Most shocking fact about {name} to open with.
-Make viewer unable to stop watching.
-Start with a specific date, number or shocking event.
-
-SERIES INTRO (150 words):
-What {series} showed the world.
-Why millions watched it.
-Celebrate the show then say:
-"But the real story is even more extraordinary..."
-
-REAL BACKGROUND (270 words):
-Who was {name} before everything happened.
-Specific dates, places, family background.
-First criminal involvement with exact year.
-What shaped them into who they became.
-
-RULES:
-- Exactly 500 words
-- Every sentence has ONE specific fact
-- No two sentences start with same word
-- No vague phrases
-- Write like a Netflix documentary narrator"""
-
-    part1 = _openai_direct_call(prompt1, max_tokens=800)
-    if not part1:
-        print("[Script] Split call 1 failed")
+    s1 = _openai_direct_call(prompt1, max_tokens=1500)
+    if not s1:
+        print("[Script] 5-call split: call 1 failed")
         return ""
+    sections.append(s1)
+    print(f"[Script] Section 1 (Hook+Intro): {len(s1.split())} words")
     time.sleep(3)
 
-    # CALL 2 — Main story 800 words
+    # CALL 2 — Background & Context (700–900 words)
     prompt2 = f"""{base_context}
-Write the MAIN STORY of a true crime documentary.
-Exactly 800 words.
+Continue the script. Write the background and context section.
+Cover history, key players, timeline of events.
+Write 700–900 words. Do not conclude. End mid-story.
 
-MAIN STORY (800 words):
-Full chronological story of {name}.
-Start from their first major crime.
-Include specific dates, amounts, names.
-Key events that {series} depicted.
-What the {stype} got right vs reality.
-Real quotes from people involved.
-Specific numbers — money, victims, dates.
-Dramatic turning points in the story.
+PREVIOUS SECTION:
+{s1}"""
 
-RULES:
-- Exactly 800 words
-- Chronological order with specific years
-- Every paragraph introduces new information
-- No repetition from opening section
-- Include at least 8 specific dates or numbers"""
-
-    part2 = _openai_direct_call(prompt2, max_tokens=1200)
-    if not part2:
-        print("[Script] Split call 2 failed")
+    s2 = _openai_direct_call(prompt2, max_tokens=1500)
+    if not s2:
+        print("[Script] 5-call split: call 2 failed")
         return ""
+    sections.append(s2)
+    print(f"[Script] Section 2 (Background): {len(s2.split())} words")
     time.sleep(3)
 
-    # CALL 3 — Closing 500 words
+    # CALL 3 — Main Events Deep Dive (800–1000 words)
     prompt3 = f"""{base_context}
-Write the CLOSING of a true crime documentary.
-Exactly 500 words.
+Continue the script. Write the main events section in full detail.
+Every key moment, dialogue, scene description.
+Write 800–1000 words. Do not conclude.
 
-SHOCKING FACTS (200 words):
-3-4 facts about {name} that {series} never showed.
-Things that would shock even fans of the show.
-Real impact on real people.
+PREVIOUS SECTIONS:
+{s1}
 
-REAL VS SCREEN (200 words):
-Direct comparison format:
-"In {series}, they showed X. In reality, Y happened."
-3 specific scene comparisons.
-What Hollywood changed for drama.
-Celebrate both the real story and the {stype}.
+{s2}"""
 
-CONCLUSION (100 words):
-What happened to {name} after the story ended.
-Where are they now or how did they die.
-Legacy and impact on history.
-End with: "Follow Dark Crime Decoded for more real stories behind your favourite crime {stype}s."
-
-RULES:
-- Exactly 500 words
-- Specific facts only — no vague statements
-- End with exact CTA phrase above"""
-
-    part3 = _openai_direct_call(prompt3, max_tokens=800)
-    if not part3:
-        print("[Script] Split call 3 failed")
+    s3 = _openai_direct_call(prompt3, max_tokens=1500)
+    if not s3:
+        print("[Script] 5-call split: call 3 failed")
         return ""
+    sections.append(s3)
+    print(f"[Script] Section 3 (Main Events): {len(s3.split())} words")
+    time.sleep(3)
 
-    parts = [p for p in [part1, part2, part3] if p]
-    full_script = "\n\n".join(parts)
+    # CALL 4 — Analysis & Aftermath (700–900 words)
+    prompt4 = f"""{base_context}
+Continue the script. Write the analysis and aftermath section.
+What happened next, investigations, consequences, expert opinions.
+Write 700–900 words. Do not conclude.
 
-    words   = len(full_script.split())
-    minutes = words / 130
-    print(f"[Script] Split combined: {words} words = ~{minutes:.1f} minutes ✅")
+PREVIOUS SECTIONS:
+{s1}
+
+{s2}
+
+{s3}"""
+
+    s4 = _openai_direct_call(prompt4, max_tokens=1500)
+    if not s4:
+        print("[Script] 5-call split: call 4 failed")
+        return ""
+    sections.append(s4)
+    print(f"[Script] Section 4 (Analysis): {len(s4.split())} words")
+    time.sleep(3)
+
+    # CALL 5 — Conclusion (400–500 words)
+    prompt5 = f"""{base_context}
+Continue the script. Write the final conclusion.
+Wrap up the story, final thoughts, call to action for viewers.
+Write 400–500 words. This is the final section.
+
+PREVIOUS SECTIONS:
+{s1}
+
+{s2}
+
+{s3}
+
+{s4}"""
+
+    s5 = _openai_direct_call(prompt5, max_tokens=1500)
+    if not s5:
+        print("[Script] 5-call split: call 5 failed")
+        return ""
+    sections.append(s5)
+    print(f"[Script] Section 5 (Conclusion): {len(s5.split())} words")
+
+    full_script = "\n\n".join(sections)
+    total_words = len(full_script.split())
+    minutes     = total_words / 130
+    print(f"[Script] 5-call split total: {total_words} words = ~{minutes:.1f} minutes ✅")
+
+    if total_words < 3000:
+        print(f"[Script] WARNING: English script below 3000 words ({total_words})")
+
     return full_script
 
 
@@ -1225,9 +1225,9 @@ Series/Movie: {series_label}
 
 Start immediately with the HOOK. Write spoken words only — no labels, no headers."""
 
-    # Primary: 3-call split (opening 500 + middle 800 + closing 500 = 1800 words)
+    # Primary: 5-call split targeting 3600–5000 words
     script_text = write_long_script_split(topic, research, _si_long)
-    if script_text and len(script_text.split()) >= 1200:
+    if script_text and len(script_text.split()) >= 3000:
         script_text = validate_script(script_text)
         print(f"[Script] ✅ Split method OK: {len(script_text.split())} words")
     else:
@@ -1529,8 +1529,50 @@ Return ONLY the Arabic translation. No explanations, no notes."""
     return translate_to_arabic_google(english_text)
 
 
+def translate_long_script_arabic(english_text: str, topic: str = "") -> str:
+    """Translate a long script to Arabic in ~800-word chunks, then stitch."""
+    import time as _time
+
+    paragraphs = [p.strip() for p in english_text.split("\n\n") if p.strip()]
+
+    chunks: list[str] = []
+    current: list[str] = []
+    current_words = 0
+    for para in paragraphs:
+        pw = len(para.split())
+        if current_words + pw > 800 and current:
+            chunks.append("\n\n".join(current))
+            current = [para]
+            current_words = pw
+        else:
+            current.append(para)
+            current_words += pw
+    if current:
+        chunks.append("\n\n".join(current))
+
+    total_en = len(english_text.split())
+    print(f"[Script] Translating {total_en}-word script in {len(chunks)} chunks")
+
+    translated: list[str] = []
+    for i, chunk in enumerate(chunks):
+        print(f"[Script] Translating chunk {i + 1}/{len(chunks)}...")
+        ar_chunk = translate_to_arabic_openai(chunk, topic=topic)
+        translated.append(ar_chunk)
+        if i < len(chunks) - 1:
+            _time.sleep(2)
+
+    result    = "\n\n".join(translated)
+    ar_words  = len(result.split())
+    print(f"[Script] Arabic translation total: {ar_words} words")
+    if ar_words < 2800:
+        print(f"[Script] WARNING: Arabic script below 2800 words ({ar_words})")
+    return result
+
+
 def translate_to_arabic(text: str) -> str:
-    """Public entry point — uses OpenAI, falls back to Google."""
+    """Public entry point — chunked for long scripts, otherwise single OpenAI call."""
+    if len(text.split()) > 1000:
+        return translate_long_script_arabic(text)
     return translate_to_arabic_openai(text)
 
 
