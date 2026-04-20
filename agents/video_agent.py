@@ -1193,7 +1193,7 @@ def download_real_image(url: str, output_path: str) -> str | None:
 
 
 def search_real_image(query: str, output_path: str) -> str | None:
-    """DuckDuckGo image search. Tries up to 3 result URLs. Returns saved path or None."""
+    """DuckDuckGo image search. Tries up to 5 result URLs. Returns saved path or None."""
     try:
         from duckduckgo_search import DDGS
     except ImportError:
@@ -1205,7 +1205,7 @@ def search_real_image(query: str, output_path: str) -> str | None:
 
     try:
         with DDGS() as ddgs:
-            results = list(ddgs.images(query, max_results=3, safesearch="off"))
+            results = list(ddgs.images(query, max_results=5, safesearch="moderate"))
     except Exception as e:
         print(f"[Image] DDGS search failed '{query}': {e}")
         return None
@@ -1224,8 +1224,9 @@ def search_real_image(query: str, output_path: str) -> str | None:
 
 
 def _get_search_query_for_chunk(chunk_text: str) -> str | None:
-    """Call OpenAI to get a specific 5-word image search query for a script chunk.
-    Works for any topic — crime, politics, science, business, sport, etc.
+    """Call OpenAI to get a specific 5-word English image search query for a script chunk.
+    Always returns English — works even when chunk_text is Arabic or any other language.
+    Works for any topic — crime, politics, war, science, business, sport, etc.
     Returns None if OpenAI is unavailable or the chunk is too generic.
     """
     api_key = os.getenv("OPENAI_API_KEY", "").strip()
@@ -1234,19 +1235,20 @@ def _get_search_query_for_chunk(chunk_text: str) -> str | None:
 
     first_150 = " ".join(chunk_text.split()[:150])
     prompt = f"""What is the single most specific, searchable subject in this text?
-Return only a short search query (max 5 words) suitable for finding a real news or documentary photo.
+Return only a short search query (max 5 words) suitable for image search.
+Always write the query in English, even if the text is in Arabic or another language.
 
 Examples:
 GOOD: 'Mohamed Hamdan Dagalo RSF'
 GOOD: 'Darfur burning village 2003'
 GOOD: 'Elon Musk Tesla factory'
-GOOD: 'Pablo Escobar mugshot Colombia'
+GOOD: 'Pablo Escobar mugshot'
 BAD: 'crime story background'
 BAD: 'dark documentary scene'
 
 Text: {first_150}
 
-Return only the search query, nothing else."""
+Return only the English search query, nothing else."""
 
     try:
         r = requests.post(
@@ -1337,13 +1339,13 @@ def fetch_real_images(script_text: str, count: int, video_id: str) -> list[str]:
                     query_cache[query] = saved
                     real_count += 1
 
-        # Step 3: AI fallback
+        # Step 4: AI fallback — Pollinations with script-matched prompt
         if not saved:
+            print(f"[Image] chunk {i}: no real image found, using AI generation")
             ai_prompt = ai_prompts[i] if i < len(ai_prompts) else fallback_base
             saved = generate_ai_image(ai_prompt, img_path, seed=seed + i)
             if saved:
                 ai_count += 1
-                print(f"[Image] 🤖 AI fallback for chunk {i}")
 
         if saved:
             image_paths.append(saved)
@@ -1351,7 +1353,7 @@ def fetch_real_images(script_text: str, count: int, video_id: str) -> list[str]:
         if i < count - 1:
             time.sleep(2)
 
-    print(f"[Image] Final: {real_count} real + {ai_count} AI = {len(image_paths)} images")
+    print(f"[Image] Images: {real_count}/{count} real photos | {ai_count}/{count} AI generated")
     return image_paths
 
 
