@@ -154,9 +154,30 @@ def generate_voiceover_openai(text: str, language: str, output_path: str,
         label = "Arabic long"
     else:
         model = "gpt-4o-mini-tts"
-        voice = "echo"
+        voice = "onyx"
         speed = 1.03
         label = "English long"
+
+    # Voice instructions (only gpt-4o-mini-tts supports this parameter)
+    _INSTRUCTIONS = {
+        "onyx": (
+            "Deep cinematic war-documentary narrator. "
+            "Powerful, dark, commanding. Calm confidence with subtle tension underneath every sentence. "
+            "Slight dramatic pause after shocking facts. "
+            "Lower slower tone during tragic moments. Never robotic or exaggerated."
+        ),
+        "nova": (
+            "Sharp modern investigative narrator. "
+            "Fast hook, intense energy. Strong first sentence. "
+            "Build suspense gradually. Clear pronunciation of foreign names."
+        ),
+        "alloy": (
+            "Neutral elite documentary narrator. "
+            "Smooth, believable, controlled tension. "
+            "Strong clear ending sentence. Maintain realism and credibility."
+        ),
+    }
+    tts_instructions = _INSTRUCTIONS.get(voice) if model == "gpt-4o-mini-tts" else None
 
     print(f"[Voice] TTS speed: {speed} ({label}) | model={model} voice={voice}")
 
@@ -171,12 +192,15 @@ def generate_voiceover_openai(text: str, language: str, output_path: str,
 
             for attempt in range(3):
                 try:
-                    response = client.audio.speech.create(
+                    tts_kwargs = dict(
                         model=model,
                         voice=voice,
                         input=chunk,
                         speed=speed,
                     )
+                    if tts_instructions:
+                        tts_kwargs["instructions"] = tts_instructions
+                    response = client.audio.speech.create(**tts_kwargs)
                     response.stream_to_file(chunk_path)
                     print(f"[Voice] OpenAI chunk {i + 1}/{len(chunks)} done")
                     audio_files.append(chunk_path)
@@ -333,6 +357,15 @@ def _elevenlabs_chunk(chunk: str, voice_id: str, api_key: str, chunk_path: str) 
 def generate_voiceover(script_text: str, filename: str, language: str = "english") -> str:
     """Generate voiceover — ElevenLabs → OpenAI TTS → edge-tts priority chain."""
     script_text = _strip_section_markers(script_text)
+    try:
+        from agents.script_agent import format_for_tts as _fmt
+    except ImportError:
+        try:
+            from script_agent import format_for_tts as _fmt
+        except ImportError:
+            _fmt = None
+    if _fmt:
+        script_text = _fmt(script_text)
     from config import ELEVENLABS_API_KEY, ELEVENLABS_VOICE_ID_EN, ELEVENLABS_VOICE_ID_AR, ELEVENLABS_VOICE_ID
 
     # ── Priority 1: ElevenLabs ────────────────────────────────────────────────

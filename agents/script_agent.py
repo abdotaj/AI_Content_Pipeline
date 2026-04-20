@@ -1498,6 +1498,88 @@ def _fix_arabic(text: str) -> str:
     return text
 
 
+def format_for_tts(text: str) -> str:
+    """
+    Format script text for natural TTS delivery.
+    - Short punchy sentences get their own line.
+    - Shocking facts / numbers get trailing ellipsis.
+    - Long sentences split at natural pause conjunctions.
+    - Section markers are preserved unchanged.
+    """
+    import re
+
+    lines_out: list[str] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+
+        # Preserve blank lines and section markers
+        if not line or line.startswith("[SECTION:"):
+            lines_out.append(raw_line)
+            continue
+
+        # Split the line into individual sentences
+        sentences = re.split(r'(?<=[.!?])\s+', line)
+        formatted: list[str] = []
+        for sent in sentences:
+            sent = sent.strip()
+            if not sent:
+                continue
+
+            # Rule 2: numbers / shocking facts get "..."
+            # Matches sentences ending with a plain period that contain a number
+            # or that are ≤8 words (punchy fact)
+            words = sent.split()
+            has_number = bool(re.search(r'\d[\d,]*', sent))
+            is_punchy  = len(words) <= 8 and sent.endswith(".")
+            if (has_number or is_punchy) and sent.endswith("."):
+                sent = sent[:-1] + "..."
+
+            # Rule 3: split long sentences at natural pause conjunctions
+            # Only split if sentence is >14 words
+            if len(words) > 14:
+                # Split before: but, and, yet, so, while, because, after, before,
+                #               when, though, although, however, until
+                pause_pattern = re.compile(
+                    r'\s+(but|and yet|yet|so|while|because|after|before|'
+                    r'when|though|although|however|until)\s+',
+                    re.IGNORECASE,
+                )
+                parts = pause_pattern.split(sent)
+                rebuilt: list[str] = []
+                i = 0
+                while i < len(parts):
+                    chunk = parts[i].strip()
+                    if i + 1 < len(parts):
+                        conjunction = parts[i + 1]
+                        next_chunk  = parts[i + 2].strip() if i + 2 < len(parts) else ""
+                        # Add ellipsis after first part, capitalise conjunction
+                        if chunk and not chunk[-1] in ".!?...":
+                            chunk += "..."
+                        rebuilt.append(chunk)
+                        # Start next chunk with the conjunction capitalised
+                        if next_chunk:
+                            rebuilt.append(conjunction.capitalize() + " " + next_chunk)
+                        i += 3
+                    else:
+                        if chunk:
+                            rebuilt.append(chunk)
+                        i += 1
+                formatted.extend(rebuilt)
+            else:
+                formatted.append(sent)
+
+        # Rule 4: consecutive short sentences (≤6 words) each on their own line
+        lines_out.extend(formatted)
+        lines_out.append("")  # blank line between original lines for breathing room
+
+    result = "\n".join(lines_out).strip()
+    # Collapse 3+ consecutive blank lines → 1
+    result = re.sub(r'\n{3,}', '\n\n', result)
+    line_count = len([l for l in result.splitlines() if l.strip()])
+    print(f"[Script] Script formatted for TTS — {line_count} lines")
+    return result
+
+
 def translate_to_arabic_google(text: str) -> str:
     """Translate English text to Arabic using Google Translate free REST API."""
     url = "https://translate.googleapis.com/translate_a/single"
