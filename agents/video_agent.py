@@ -1165,6 +1165,196 @@ def generate_ai_image(prompt: str, output_path: str, seed: int = None) -> str:
     return output_path
 
 
+# ── Real-photo fetching ────────────────────────────────────────────────────────
+
+def download_real_image(url: str, output_path: str) -> str | None:
+    """Download image from URL, smart-crop to 1080×1920 portrait. Returns path or None."""
+    import io
+    from PIL import Image as PILImage
+
+    try:
+        r = requests.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
+        if r.status_code != 200:
+            return None
+        img = PILImage.open(io.BytesIO(r.content)).convert("RGB")
+        w, h = img.size
+        target_ratio = 9 / 16
+        if w / h > target_ratio:
+            new_w = int(h * target_ratio)
+            left  = (w - new_w) // 2
+            img   = img.crop((left, 0, left + new_w, h))
+        img = img.resize((1080, 1920), PILImage.LANCZOS)
+        output_path = output_path.replace(".jpg", ".png")
+        img.save(output_path, "PNG")
+        return output_path
+    except Exception as e:
+        print(f"[Image] Download failed ({url[:70]}): {e}")
+        return None
+
+
+def search_real_image(query: str, output_path: str) -> str | None:
+    """DuckDuckGo image search. Tries up to 3 result URLs. Returns saved path or None."""
+    try:
+        from duckduckgo_search import DDGS
+    except ImportError:
+        os.system("pip install duckduckgo-search -q")
+        try:
+            from duckduckgo_search import DDGS
+        except Exception:
+            return None
+
+    try:
+        with DDGS() as ddgs:
+            results = list(ddgs.images(query, max_results=3, safesearch="off"))
+    except Exception as e:
+        print(f"[Image] DDGS search failed '{query}': {e}")
+        return None
+
+    for result in results:
+        url = result.get("image", "")
+        if not url:
+            continue
+        saved = download_real_image(url, output_path)
+        if saved:
+            print(f"[Image] ✅ Real photo: '{query}'")
+            return saved
+
+    print(f"[Image] No real photo found for '{query}'")
+    return None
+
+
+def _get_search_query_for_chunk(chunk_text: str) -> str | None:
+    """Call OpenAI to get a specific 5-word image search query for a script chunk.
+    Works for any topic — crime, politics, science, business, sport, etc.
+    Returns None if OpenAI is unavailable or the chunk is too generic.
+    """
+    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        return None
+
+    first_150 = " ".join(chunk_text.split()[:150])
+    prompt = f"""What is the single most specific, searchable subject in this text?
+Return only a short search query (max 5 words) suitable for finding a real news or documentary photo.
+
+Examples:
+GOOD: 'Mohamed Hamdan Dagalo RSF'
+GOOD: 'Darfur burning village 2003'
+GOOD: 'Elon Musk Tesla factory'
+GOOD: 'Pablo Escobar mugshot Colombia'
+BAD: 'crime story background'
+BAD: 'dark documentary scene'
+
+Text: {first_150}
+
+Return only the search query, nothing else."""
+
+    try:
+        r = requests.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": "gpt-4o-mini",
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": 20,
+                "temperature": 0.3,
+            },
+            timeout=20,
+        )
+        if r.status_code == 200:
+            query = r.json()["choices"][0]["message"]["content"].strip().strip('"\'')
+            if len(query.split()) <= 8 and len(query) > 3:
+                return query
+    except Exception as e:
+        print(f"[Image] Search query generation failed: {e}")
+    return None
+
+
+def fetch_real_images(script_text: str, count: int, video_id: str) -> list[str]:
+    """
+    Universal image builder — works for any script topic.
+
+    For each of [count] equal script chunks:
+      1. Ask OpenAI for the most specific searchable subject (max 5 words).
+      2. Search DuckDuckGo images for that query — try up to 3 URLs.
+      3. Re-use a cached download when the same query appears again.
+      4. Fall back to Pollinations AI generation if real search fails.
+
+    Logs each image as ✅ real photo or 🤖 AI generated.
+    Returns list of image paths.
+    """
+    import re
+    import shutil
+
+    clean = re.sub(r'\[SECTION:[^\]]+\]\s*', '', script_text).strip()
+    words = clean.split()
+
+    seed          = random.randint(1, 99999)
+    fallback_base = f"dark cinematic documentary scene{_IMAGE_PROMPT_SUFFIX}"
+
+    if not words:
+        paths = []
+        for i in range(count):
+            p = os.path.join(IMAGES_DIR, f"{video_id}_img_{i}.png")
+            r = generate_ai_image(fallback_base, p, seed=seed + i)
+            if r:
+                paths.append(r)
+        return paths
+
+    # AI fallback prompts (one OpenAI call per chunk via generate_image_prompts)
+    ai_prompts = generate_image_prompts(script_text, count)
+
+    # Split script into equal word-chunks
+    chunk_size = max(1, len(words) // count)
+    chunks = [
+        " ".join(words[i * chunk_size: (i + 1) * chunk_size if i < count - 1 else len(words)])
+        for i in range(count)
+    ]
+
+    image_paths:  list[str]      = []
+    query_cache:  dict[str, str] = {}   # query → saved path (avoid re-downloading)
+    real_count    = 0
+    ai_count      = 0
+
+    for i, chunk in enumerate(chunks):
+        img_path = os.path.join(IMAGES_DIR, f"{video_id}_img_{i}.png")
+        saved    = None
+
+        # Step 1: get specific search query for this chunk
+        query = _get_search_query_for_chunk(chunk)
+
+        # Step 2: real photo via DuckDuckGo
+        if query:
+            if query in query_cache:
+                shutil.copy2(query_cache[query], img_path)
+                saved = img_path
+                print(f"[Image] ♻️  Reused '{query}' for chunk {i}")
+            else:
+                saved = search_real_image(query, img_path)
+                if saved:
+                    query_cache[query] = saved
+                    real_count += 1
+
+        # Step 3: AI fallback
+        if not saved:
+            ai_prompt = ai_prompts[i] if i < len(ai_prompts) else fallback_base
+            saved = generate_ai_image(ai_prompt, img_path, seed=seed + i)
+            if saved:
+                ai_count += 1
+                print(f"[Image] 🤖 AI fallback for chunk {i}")
+
+        if saved:
+            image_paths.append(saved)
+
+        if i < count - 1:
+            time.sleep(2)
+
+    print(f"[Image] Final: {real_count} real + {ai_count} AI = {len(image_paths)} images")
+    return image_paths
+
+
 # ── Title card helpers ────────────────────────────────────────────────────────
 
 def _detect_font() -> str | None:
@@ -2151,30 +2341,14 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
     calculate_total_images(user_images)
     print(f"[Video] Generating {n_images} AI images ({'short' if is_short else 'long'})")
 
-    # ── Prompt generation (one OpenAI call per script chunk) ─────────────────
+    # ── Image generation (real photos + AI fallback per script chunk) ────────
     try:
         script_text = script_data.get("script", "")
-        prompts = generate_image_prompts(script_text, n_images)
+        image_paths = fetch_real_images(script_text, n_images, video_id)
     except Exception as e:
-        print(f"[Video] CRASH at prompt generation: {e}")
+        print(f"[Video] CRASH at image generation: {e}")
         traceback.print_exc()
         return ""
-
-    # ── Image download ────────────────────────────────────────────────────────
-    seed = random.randint(1, 99999)
-    image_paths: list[str] = []
-    for i, prompt in enumerate(prompts):
-        img_path = os.path.join(IMAGES_DIR, f"{video_id}_img_{i}.png")
-        try:
-            result = generate_ai_image(prompt, img_path, seed=seed + i)
-        except Exception as e:
-            print(f"[Video] CRASH generating image {i}: {e}")
-            traceback.print_exc()
-            result = None
-        if result:
-            image_paths.append(result)
-        if i < len(prompts) - 1:
-            time.sleep(5)
 
     if not image_paths:
         print("[Video] No images generated, aborting")
