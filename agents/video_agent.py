@@ -1025,87 +1025,92 @@ def get_person_images(
     return images
 
 
-def generate_image_prompts(title: str, niche: str, script: str = "", language: str = "english") -> tuple[list[str], int]:
-    """Return (list_of_12_prompts, seed) for Pollinations.
 
-    12-slot structure:
-      1.  Real criminal portrait (AI — Wikipedia real photo handled separately)
-      2.  Actor / series portrait
-      3.  Real location from the story
-      4.  Era / time-period scene
-      5.  Crime / theme scene
-      6.  Justice / conclusion scene
-      7.  Alternate portrait (extreme closeup, different angle)
-      8.  Vintage newspaper / historical archive
-      9.  Investigation board / evidence room
-      10. Second atmospheric location
-      11. Actor alternate (dramatic intensity)
-      12. Final courtroom / verdict scene
+
+_IMAGE_PROMPT_SUFFIX = (
+    ", dark cinematic documentary style, no text, "
+    "no watermarks, photorealistic, high detail"
+)
+
+
+def build_image_prompt(chunk_text: str) -> str:
+    """Ask OpenAI for a specific ≤20-word image prompt from a script chunk.
+    Falls back to a generic cinematic prompt if OpenAI is unavailable.
     """
-    t      = (title + " " + niche).lower()
-    s      = script.lower()[:800]
-    suffix = "vertical 9:16 cinematic portrait dramatic lighting dark background professional 4k photography style"
+    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    first_200 = " ".join(chunk_text.split()[:200])
 
-    # Slots 1 & 2 — portraits
-    portraits  = extract_main_subject(title, script)
-    portrait_1 = portraits[0]
-    portrait_2 = portraits[1] if len(portraits) >= 2 else portrait_1.replace("portrait", "closeup dramatic shadows intense").strip()
+    if not api_key:
+        return f"dark crime documentary scene, cinematic{_IMAGE_PROMPT_SUFFIX}"
 
-    # Slot 3 — Real location
-    location = next(
-        (v for k, v in _LOCATIONS.items() if k in t or k in s),
-        "dark city night street dramatic cinematic",
-    )
+    prompt = f"""Read this script excerpt and write a specific visual image generation prompt (max 20 words) that represents the exact subject being described.
 
-    # Slot 4 — Era / time period
-    era = next(
-        (v for k, v in _ERAS.items() if k in s),
-        "modern dark cinematic atmospheric",
-    )
+Rules:
+- Name real places, real objects, real events
+- No human faces
+- Dark cinematic documentary style
+- Be specific not generic
 
-    # Slot 5 — Crime / theme scene
-    theme = next(
-        (v for k, v in _THEMES.items() if k in t or k in s),
-        "crime investigation evidence board detective cinematic",
-    )
+Examples:
+GOOD: 'Burned village Darfur Sudan desert, smoke ruins, golden hour, cinematic aerial view'
+BAD: 'dark crime documentary background'
 
-    # Slot 6 — Justice
-    justice = "courtroom trial verdict judge gavel dramatic justice cinematic"
+Script excerpt: {first_200}
 
-    # Slot 7 — Alternate portrait (extreme closeup)
-    portrait_alt = portrait_1.replace("portrait", "extreme closeup dramatic shadows intense gaze").strip()
+Return only the image prompt, nothing else."""
 
-    # Slot 8 — Historical archive / newspaper
-    newspaper = "vintage newspaper front page crime headline archive 1920s sepia dramatic cinematic"
+    try:
+        r = requests.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": "gpt-4o-mini",
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": 60,
+                "temperature": 0.7,
+            },
+            timeout=30,
+        )
+        if r.status_code == 200:
+            result = r.json()["choices"][0]["message"]["content"].strip().strip('"\'')
+            print(f"[Image] Chunk prompt: {result[:70]}")
+            return f"{result}{_IMAGE_PROMPT_SUFFIX}"
+        print(f"[Image] build_image_prompt error {r.status_code}")
+    except Exception as e:
+        print(f"[Image] build_image_prompt failed: {e}")
 
-    # Slot 9 — Investigation / evidence board
-    evidence = "crime investigation evidence board detective newspaper clippings red string dark cinematic"
+    return f"dark crime documentary scene, cinematic{_IMAGE_PROMPT_SUFFIX}"
 
-    # Slot 10 — Second atmospheric location
-    second_location = "dark alley night rain atmospheric crime city street cinematic"
 
-    # Slot 11 — Actor alternate angle
-    actor_alt = portrait_2.replace("portrait", "dramatic intensity extreme closeup").strip()
+def generate_image_prompts(script_text: str, count: int) -> list[str]:
+    """Split script into [count] equal chunks, call OpenAI once per chunk.
+    Returns list of [count] specific image prompts.
+    Falls back gracefully per chunk if OpenAI call fails.
+    """
+    import re
 
-    # Slot 12 — Final verdict
-    verdict = "court verdict guilty judge gavel justice served historic dramatic cinematic"
+    # Strip [SECTION: ...] markers so they don't pollute chunk text
+    clean = re.sub(r'\[SECTION:[^\]]+\]\s*', '', script_text).strip()
+    words = clean.split()
 
-    seed = random.randint(1, 99999)
-    prompts = [
-        f"{portrait_1}, {suffix}",     # 1
-        f"{portrait_2}, {suffix}",     # 2
-        f"{location}, {suffix}",       # 3
-        f"{era}, {suffix}",            # 4
-        f"{theme}, {suffix}",          # 5
-        f"{justice}, {suffix}",        # 6
-        f"{portrait_alt}, {suffix}",   # 7
-        f"{newspaper}, {suffix}",      # 8
-        f"{evidence}, {suffix}",       # 9
-        f"{second_location}, {suffix}",# 10
-        f"{actor_alt}, {suffix}",      # 11
-        f"{verdict}, {suffix}",        # 12
-    ]
-    return prompts, seed
+    if not words:
+        return [f"dark crime documentary cinematic{_IMAGE_PROMPT_SUFFIX}"] * count
+
+    chunk_size = max(1, len(words) // count)
+    prompts: list[str] = []
+    for i in range(count):
+        start      = i * chunk_size
+        end        = start + chunk_size if i < count - 1 else len(words)
+        chunk_text = " ".join(words[start:end])
+        prompts.append(build_image_prompt(chunk_text))
+        if i < count - 1:
+            time.sleep(1)
+
+    print(f"[Image] Built {len(prompts)} chunk-specific prompts from script")
+    return prompts
 
 
 def clean_prompt(prompt: str) -> str:
@@ -1810,8 +1815,8 @@ def assemble_video_with_hook(
 # ── Image count helpers ───────────────────────────────────────────────────────
 
 def calculate_unique_images(is_short: bool = False) -> int:
-    """Return number of unique AI images to generate (8 short / 12 long)."""
-    return 8 if is_short else 12
+    """Return number of unique AI images to generate (6 short / 20 long)."""
+    return 6 if is_short else 20
 
 
 def calculate_total_images(user_images=None) -> int:
@@ -2146,18 +2151,19 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
     calculate_total_images(user_images)
     print(f"[Video] Generating {n_images} AI images ({'short' if is_short else 'long'})")
 
-    # ── Prompt generation ─────────────────────────────────────────────────────
+    # ── Prompt generation (one OpenAI call per script chunk) ─────────────────
     try:
-        prompts, seed = generate_image_prompts(title, niche, script_data.get("script", ""), language)
-        extended_prompts = [prompts[i % len(prompts)] for i in range(n_images)]
+        script_text = script_data.get("script", "")
+        prompts = generate_image_prompts(script_text, n_images)
     except Exception as e:
         print(f"[Video] CRASH at prompt generation: {e}")
         traceback.print_exc()
         return ""
 
     # ── Image download ────────────────────────────────────────────────────────
+    seed = random.randint(1, 99999)
     image_paths: list[str] = []
-    for i, prompt in enumerate(extended_prompts):
+    for i, prompt in enumerate(prompts):
         img_path = os.path.join(IMAGES_DIR, f"{video_id}_img_{i}.png")
         try:
             result = generate_ai_image(prompt, img_path, seed=seed + i)
@@ -2167,7 +2173,7 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
             result = None
         if result:
             image_paths.append(result)
-        if i < len(extended_prompts) - 1:
+        if i < len(prompts) - 1:
             time.sleep(5)
 
     if not image_paths:
