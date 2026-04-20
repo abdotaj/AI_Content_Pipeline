@@ -976,7 +976,17 @@ PREVIOUS SECTIONS:
     sections.append(s5)
     print(f"[Script] Section 5 (Conclusion): {len(s5.split())} words")
 
-    full_script = "\n\n".join(sections)
+    _SECTION_LABELS = [
+        "[SECTION: Introduction]",
+        "[SECTION: Background]",
+        "[SECTION: Main Story]",
+        "[SECTION: Shocking Facts]",
+        "[SECTION: Conclusion]",
+    ]
+    full_script = "\n\n".join(
+        f"{_SECTION_LABELS[i]}\n{section}"
+        for i, section in enumerate(sections)
+    )
     total_words = len(full_script.split())
     minutes     = total_words / 130
     print(f"[Script] 5-call split total: {total_words} words = ~{minutes:.1f} minutes ✅")

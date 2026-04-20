@@ -46,6 +46,45 @@ for d in [AUDIO_DIR, VIDEO_DIR, FINAL_DIR, IMAGES_DIR]:
     Path(d).mkdir(parents=True, exist_ok=True)
 
 
+# ── Chapter / timestamp helpers ───────────────────────────────────────────────
+
+def format_time(seconds: float) -> str:
+    """Convert seconds to MM:SS string (e.g. 105.3 → '01:45')."""
+    m = int(seconds // 60)
+    s = int(seconds % 60)
+    return f"{m:02d}:{s:02d}"
+
+
+def get_audio_duration(audio_path: str) -> float:
+    """Return audio duration in seconds using mutagen, falling back to moviepy."""
+    try:
+        from mutagen.mp3 import MP3
+        return MP3(audio_path).info.length
+    except ImportError:
+        os.system("pip install mutagen -q")
+        try:
+            from mutagen.mp3 import MP3
+            return MP3(audio_path).info.length
+        except Exception:
+            pass
+    except Exception as e:
+        print(f"[Video] mutagen error: {e}")
+    try:
+        try:
+            from moviepy.editor import AudioFileClip as _AC
+        except ImportError:
+            from moviepy import AudioFileClip as _AC
+        return _AC(audio_path).duration
+    except Exception:
+        return 0.0
+
+
+def _strip_section_markers(text: str) -> str:
+    """Remove [SECTION: ...] markers so they are never spoken in TTS."""
+    import re
+    return re.sub(r'\[SECTION:[^\]]+\]\s*', '', text).strip()
+
+
 # ── Voiceover ─────────────────────────────────────────────────────────────────
 
 def get_voice(language: str) -> str:
@@ -101,9 +140,16 @@ def generate_voiceover_openai(text: str, language: str, output_path: str) -> str
         api_key=api_key,
         timeout=httpx.Timeout(60.0, connect=10.0),
     )
-    voice = "onyx" if language == "arabic" else "echo"
-    speed = 1.2 if language == "arabic" else 1.25
-    print(f"[Voice] OpenAI TTS: voice={voice} speed={speed} language={language}")
+    # Arabic: tts-1 + alloy (best Arabic quality). English: gpt-4o-mini-tts + echo.
+    if language == "arabic":
+        model = "tts-1"
+        voice = "alloy"
+        speed = 1.2
+    else:
+        model = "gpt-4o-mini-tts"
+        voice = "echo"
+        speed = 1.25
+    print(f"[Voice] OpenAI TTS: model={model} voice={voice} speed={speed} language={language}")
 
     try:
         chunks = _split_text(text, max_chars=4000)
@@ -117,7 +163,7 @@ def generate_voiceover_openai(text: str, language: str, output_path: str) -> str
             for attempt in range(3):
                 try:
                     response = client.audio.speech.create(
-                        model="gpt-4o-mini-tts",
+                        model=model,
                         voice=voice,
                         input=chunk,
                         speed=speed,
@@ -277,6 +323,7 @@ def _elevenlabs_chunk(chunk: str, voice_id: str, api_key: str, chunk_path: str) 
 
 def generate_voiceover(script_text: str, filename: str, language: str = "english") -> str:
     """Generate voiceover — ElevenLabs → OpenAI TTS → edge-tts priority chain."""
+    script_text = _strip_section_markers(script_text)
     from config import ELEVENLABS_API_KEY, ELEVENLABS_VOICE_ID_EN, ELEVENLABS_VOICE_ID_AR, ELEVENLABS_VOICE_ID
 
     # ── Priority 1: ElevenLabs ────────────────────────────────────────────────
@@ -1929,6 +1976,114 @@ def assemble_short_video(audio_path: str, image_paths: list[str], output_path: s
     return output_path
 
 
+# ── Section-aware TTS + accurate chapter builder ──────────────────────────────
+
+_SECTION_DISPLAY = {
+    "Introduction":   "🎬 Introduction",
+    "Background":     "📺 Background & Context",
+    "Main Story":     "🔍 Main Story",
+    "Shocking Facts": "💀 Shocking Facts",
+    "Conclusion":     "🎯 Conclusion",
+}
+
+
+def generate_tts_sections(script_text: str, video_id: str, language: str) -> tuple[str, str]:
+    """
+    Split script at [SECTION: ...] markers, generate TTS per section,
+    measure each section duration with mutagen, build accurate chapter
+    timestamps, concatenate all sections into one audio file.
+
+    Returns (audio_path, chapters_text).
+    Falls back to single full-script TTS when markers are absent or any
+    section TTS call fails.
+    """
+    import re
+    import subprocess
+
+    final_audio = os.path.join(AUDIO_DIR, f"{video_id}.mp3")
+
+    # Parse [SECTION: Name] markers
+    raw = re.split(r'\[SECTION:\s*([^\]]+)\]', script_text.strip())
+    sections: list[tuple[str, str]] = []
+    for i in range(1, len(raw), 2):
+        name    = raw[i].strip()
+        content = raw[i + 1].strip() if i + 1 < len(raw) else ""
+        if content:
+            sections.append((name, content))
+
+    if not sections:
+        print("[Video] No section markers — using single-call TTS")
+        audio_path = generate_voiceover(script_text, video_id, language)
+        return audio_path, ""
+
+    print(f"[Video] Generating TTS for {len(sections)} sections")
+
+    section_paths: list[str]   = []
+    section_durations: list[float] = []
+
+    for i, (name, content) in enumerate(sections):
+        sec_id   = f"{video_id}_sec{i}"
+        sec_path = generate_voiceover(content, sec_id, language)
+        if not sec_path or not os.path.exists(sec_path):
+            print(f"[Video] Section {i + 1} TTS failed — falling back to full-script TTS")
+            audio_path = generate_voiceover(script_text, video_id, language)
+            return audio_path, ""
+        dur = get_audio_duration(sec_path)
+        section_durations.append(dur)
+        section_paths.append(sec_path)
+        print(f"[Video] Section {i + 1} '{name}': {dur:.1f}s ({format_time(dur)})")
+
+    # Concatenate section audio files
+    if len(section_paths) == 1:
+        import shutil
+        shutil.move(section_paths[0], final_audio)
+    else:
+        merged = False
+        list_path = os.path.join(AUDIO_DIR, f"{video_id}_sec_list.txt")
+        with open(list_path, "w", encoding="utf-8") as lf:
+            for sp in section_paths:
+                lf.write(f"file '{os.path.abspath(sp)}'\n")
+        ffmpeg_bin = _get_ffmpeg()
+        if ffmpeg_bin:
+            try:
+                subprocess.run(
+                    [ffmpeg_bin, "-y", "-f", "concat", "-safe", "0",
+                     "-i", list_path, "-c", "copy", final_audio],
+                    check=True, capture_output=True,
+                )
+                merged = True
+                print("[Video] Sections merged with ffmpeg")
+            except Exception as e:
+                print(f"[Video] Section ffmpeg merge failed: {e}")
+        if not merged:
+            merged = _merge_chunks_pydub(section_paths, final_audio)
+            if merged:
+                print("[Video] Sections merged with pydub")
+        if not merged:
+            import shutil
+            shutil.copy(section_paths[0], final_audio)
+            print("[Video] Using first section only (merge failed)")
+        try: os.remove(list_path)
+        except OSError: pass
+        for sp in section_paths:
+            if os.path.exists(sp) and sp != final_audio:
+                try: os.remove(sp)
+                except OSError: pass
+
+    # Build chapter timestamps from cumulative durations
+    cumulative = 0.0
+    chapter_lines = ["⏱️ CHAPTERS"]
+    for i, (name, _) in enumerate(sections):
+        display = _SECTION_DISPLAY.get(name, f"📌 {name}")
+        chapter_lines.append(f"{format_time(cumulative)} {display}")
+        cumulative += section_durations[i]
+
+    chapters = "\n".join(chapter_lines)
+    total_dur = sum(section_durations)
+    print(f"[Video] Chapters built (total {format_time(total_dur)}):\n{chapters}")
+    return final_audio, chapters
+
+
 # ── Main entry point ───────────────────────────────────────────────────────────
 
 def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", user_images: list | None = None) -> str:
@@ -1939,11 +2094,20 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
     print(f"[Video] Starting: {title} ({language})")
 
     # ── Voiceover ─────────────────────────────────────────────────────────────
+    is_short = "short" in video_id
     try:
         if custom_audio_path and Path(custom_audio_path).exists():
             enhanced_path = os.path.join(AUDIO_DIR, f"{video_id}_enhanced.mp3")
             audio_path = clean_voice(custom_audio_path, enhanced_path)
             print(f"[Video] Using custom audio: {audio_path}")
+        elif not is_short:
+            # Long video: section-by-section TTS for accurate chapter timestamps
+            audio_path, dynamic_chapters = generate_tts_sections(
+                script_data["script"], video_id, language
+            )
+            if dynamic_chapters:
+                script_data["chapters"] = dynamic_chapters
+                print("[Video] Dynamic chapters saved to script_data")
         else:
             audio_path = generate_voiceover(script_data["script"], video_id, language)
         print(f"[Video] Audio ready: {audio_path}")
@@ -1978,7 +2142,6 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
         return ""
 
     # ── Image / clip counts ───────────────────────────────────────────────────
-    is_short = "short" in video_id
     n_images = calculate_unique_images(is_short=is_short)
     calculate_total_images(user_images)
     print(f"[Video] Generating {n_images} AI images ({'short' if is_short else 'long'})")
