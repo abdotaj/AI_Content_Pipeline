@@ -8,6 +8,14 @@ import random
 import asyncio
 import requests
 from pathlib import Path
+try:
+    # Pillow 10+ removed Image.ANTIALIAS, while MoviePy 1.x still references it.
+    # Keep a runtime alias so rendering works across both versions.
+    from PIL import Image as _PILImage
+    if not hasattr(_PILImage, "ANTIALIAS"):
+        _PILImage.ANTIALIAS = _PILImage.Resampling.LANCZOS
+except Exception:
+    pass
 
 import moviepy
 print(f"[Video] MoviePy version: {moviepy.__version__}")
