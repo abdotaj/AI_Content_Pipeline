@@ -423,6 +423,23 @@ def web_search(query: str, max_results: int = 5) -> str:
         return f"(search error: {e})"
 
 
+def search_current_status(topic: str) -> str:
+    """Search DuckDuckGo for the latest 2025/2026 news on a topic."""
+    query = f"{topic} 2025 2026 latest news"
+    try:
+        with DDGS() as ddgs:
+            results = list(ddgs.text(query, max_results=5))
+        summary = "\n".join(
+            f"- {r['title']}: {r.get('body', '')[:200]}"
+            for r in results
+        )
+        print(f"[Research] Current status search results:\n{summary}")
+        return summary or "(no recent results found)"
+    except Exception as e:
+        print(f"[Research] search_current_status failed: {e}")
+        return "(search error)"
+
+
 # ── Covered topics tracker ──────────────────────────────────
 
 def _load_covered() -> list[dict]:

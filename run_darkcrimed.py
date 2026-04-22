@@ -349,9 +349,9 @@ def run_pipeline():
     print("\n[3/5] Sending scripts to Telegram for review...")
     for fn, script, label in [
         (send_arabic_script_preview,  ar_short, "Arabic SHORT script (55 sec)"),
-        (send_arabic_script_preview,  ar_long,  "Arabic LONG script (10-12 min)"),
+        (send_arabic_script_preview,  ar_long,  "Arabic LONG script (10-14 min)"),
         (send_english_script_preview, en_short, "English SHORT script (55 sec)"),
-        (send_english_script_preview, en_long,  "English LONG script (10-12 min)"),
+        (send_english_script_preview, en_long,  "English LONG script (10-14 min)"),
     ]:
         try:
             fn(script, label=label)

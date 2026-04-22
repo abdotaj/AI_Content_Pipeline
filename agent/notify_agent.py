@@ -251,6 +251,11 @@ def send_for_manual_posting(video_path: str, script_data: dict, platforms: str) 
 
 def _add_section_headers(script: str, intro_label: str, main_label: str, conclusion_label: str) -> str:
     """Divide a continuous script into three labelled sections."""
+    import re
+    # If the script already has section markers, keep it as-is to avoid duplicated previews.
+    if re.search(r'(?im)^\s*[\[\{\(]\s*(?:section|chapter|part|القسم|قسم)\s*:', script or ""):
+        return (script or "").strip()
+
     paragraphs = [p.strip() for p in script.split("\n\n") if p.strip()]
     if not paragraphs:
         paragraphs = [script]

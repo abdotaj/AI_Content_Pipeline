@@ -251,6 +251,11 @@ def send_for_manual_posting(video_path: str, script_data: dict, platforms: str) 
 
 def _add_section_headers(script: str, intro_label: str, main_label: str, conclusion_label: str) -> str:
     """Divide a continuous script into three labelled sections."""
+    import re
+    # If the script already has section markers, keep it as-is to avoid duplicated previews.
+    if re.search(r'(?im)^\s*[\[\{\(]\s*(?:section|chapter|part|القسم|قسم)\s*:', script or ""):
+        return (script or "").strip()
+
     paragraphs = [p.strip() for p in script.split("\n\n") if p.strip()]
     if not paragraphs:
         paragraphs = [script]
@@ -288,31 +293,7 @@ def _send_long_text(text: str, max_len: int = 3900) -> None:
 
 
 def send_script_preview(en_script: dict, ar_script: dict | None = None) -> None:
-    """Send English script (and optionally Arabic) to Telegram, prefixed with stats."""
-    try:
-        from agents.script_agent import clean_word_count as _cwc
-    except ImportError:
-        try:
-            from script_agent import clean_word_count as _cwc
-        except ImportError:
-            _cwc = lambda t: len(t.split())
-
-    en_text  = en_script.get("script", "")
-    en_words = _cwc(en_text)
-    en_min   = round(en_words / 165)
-    en_max   = round(en_words / 150)
-
-    stats_lines = [f"📊 Script Stats:", f"English: {en_words} words (~{en_min}–{en_max} min)"]
-
-    if ar_script:
-        ar_text  = ar_script.get("script", "")
-        ar_words = _cwc(ar_text)
-        ar_min   = round(ar_words / 140)
-        ar_max   = round(ar_words / 130)
-        stats_lines.append(f"Arabic: {ar_words} words (~{ar_min}–{ar_max} min)")
-
-    send_message("\n".join(stats_lines))
-
+    """Send English script (and optionally Arabic) to Telegram."""
     send_english_script_preview(en_script)
     if ar_script:
         send_arabic_script_preview(ar_script)

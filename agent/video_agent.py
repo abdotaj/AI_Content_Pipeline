@@ -1,5 +1,5 @@
-# ============================================================
-#  agents/video_agent.py  —  AI-generated images + voiceover
+﻿# ============================================================
+#  agents/video_agent.py  â€”  AI-generated images + voiceover
 # ============================================================
 import os
 import json
@@ -16,7 +16,7 @@ if moviepy.__version__.startswith('2'):
     print("[Video] Using compatibility mode")
     MOVIEPY_V2 = True
 else:
-    print("[Video] MoviePy 1.x confirmed ✅")
+    print("[Video] MoviePy 1.x confirmed âœ…")
     MOVIEPY_V2 = False
 
 
@@ -42,14 +42,20 @@ from config import (
 )
 
 IMAGES_DIR = "output/images"
-for d in [AUDIO_DIR, VIDEO_DIR, FINAL_DIR, IMAGES_DIR]:
+STOCK_VIDEOS_DIR = "output/stock_videos"
+for d in [AUDIO_DIR, VIDEO_DIR, FINAL_DIR, IMAGES_DIR, STOCK_VIDEOS_DIR]:
     Path(d).mkdir(parents=True, exist_ok=True)
 
+# Unified TTS speed target across all engines/languages.
+TTS_SPEED = 1.20
+EDGETTS_RATE_120 = "+20%"
+_ELEVENLABS_DISABLED = False
 
-# ── Chapter / timestamp helpers ───────────────────────────────────────────────
+
+# â”€â”€ Chapter / timestamp helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def format_time(seconds: float) -> str:
-    """Convert seconds to MM:SS string (e.g. 105.3 → '01:45')."""
+    """Convert seconds to MM:SS string (e.g. 105.3 â†’ '01:45')."""
     m = int(seconds // 60)
     s = int(seconds % 60)
     return f"{m:02d}:{s:02d}"
@@ -80,12 +86,23 @@ def get_audio_duration(audio_path: str) -> float:
 
 
 def _strip_section_markers(text: str) -> str:
-    """Remove [SECTION: ...] markers so they are never spoken in TTS."""
+    """Remove section markers so they are never spoken in TTS."""
     import re
-    return re.sub(r'\[SECTION:[^\]]+\]\s*', '', text).strip()
+    marker_line = re.compile(
+        r'(?im)^\s*[\[\{\(]\s*(?:(?:section|chapter|part|Ù‚Ø³Ù…|Ø§Ù„Ù‚Ø³Ù…)\s*:\s*)?([^\]\}\)\n:]+?)\s*:?\s*[\]\}\)]\s*$'
+    )
+    text = marker_line.sub("", text or "")
+    text = re.sub(
+        r'(?im)^\s*(introduction|background|main story|shocking facts|conclusion|Ù…Ù‚Ø¯Ù…Ø©|Ø§Ù„Ø®Ù„ÙÙŠØ©|Ø§Ù„Ù‚ØµØ© Ø§Ù„Ø±Ø¦ÙŠØ³ÙŠØ©|Ø­Ù‚Ø§Ø¦Ù‚ ØµØ§Ø¯Ù…Ø©|Ø§Ù„Ø®Ø§ØªÙ…Ø©)\s*:\s*$',
+        "",
+        text,
+    )
+    # Backward-compatible cleanup for inline [SECTION: ...] markers.
+    text = re.sub(r'\[SECTION:[^\]]+\]\s*', '', text, flags=re.IGNORECASE)
+    return text.strip()
 
 
-# ── Voiceover ─────────────────────────────────────────────────────────────────
+# â”€â”€ Voiceover â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def get_voice(language: str) -> str:
     voices = {
@@ -105,10 +122,10 @@ def generate_voiceover_edgetts(script_text: str, filename: str, language: str = 
 
     if language.lower() == "arabic":
         voice = "ar-SA-ZariyahNeural"
-        rate  = "+15%"
+        rate  = EDGETTS_RATE_120
     else:
         voice = "en-US-ChristopherNeural"
-        rate  = "+20%"
+        rate  = EDGETTS_RATE_120
 
     audio_path = os.path.join(AUDIO_DIR, f"{filename}.mp3")
 
@@ -134,7 +151,7 @@ def generate_voiceover_openai(text: str, language: str, output_path: str,
 
     api_key = os.getenv("OPENAI_API_KEY", "").strip()
     if not api_key:
-        print("[Voice] OpenAI API key not set — skipping")
+        print("[Voice] OpenAI API key not set â€” skipping")
         return ""
 
     client = openai.OpenAI(
@@ -160,30 +177,30 @@ def generate_voiceover_openai(text: str, language: str, output_path: str,
             "Strong clear ending sentence. Maintain realism and credibility."
         ),
         "alloy_arabic": (
-            "أسلوب الأداء: راوٍ وثائقي عربي احترافي. "
-            "صوت عميق وواثق وهادئ. نبرة جادة وغامضة. إلقاء طبيعي جداً. "
-            "وضوح ممتاز للحروف. وقفات قصيرة بعد الجمل المهمة. "
-            "تصاعد تدريجي في التوتر أثناء الأحداث. "
-            "خفض النبرة عند المآسي والضحايا. "
-            "لا مبالغة، لا تمثيل زائد، لا صوت روبوتي. "
-            "الإحساس العام: هيبة، غموض، مصداقية، قوة هادئة، سرد سينمائي."
+            "Ø£Ø³Ù„ÙˆØ¨ Ø§Ù„Ø£Ø¯Ø§Ø¡: Ø±Ø§ÙˆÙ ÙˆØ«Ø§Ø¦Ù‚ÙŠ Ø¹Ø±Ø¨ÙŠ Ø§Ø­ØªØ±Ø§ÙÙŠ. "
+            "ØµÙˆØª Ø¹Ù…ÙŠÙ‚ ÙˆÙˆØ§Ø«Ù‚ ÙˆÙ‡Ø§Ø¯Ø¦. Ù†Ø¨Ø±Ø© Ø¬Ø§Ø¯Ø© ÙˆØºØ§Ù…Ø¶Ø©. Ø¥Ù„Ù‚Ø§Ø¡ Ø·Ø¨ÙŠØ¹ÙŠ Ø¬Ø¯Ø§Ù‹. "
+            "ÙˆØ¶ÙˆØ­ Ù…Ù…ØªØ§Ø² Ù„Ù„Ø­Ø±ÙˆÙ. ÙˆÙ‚ÙØ§Øª Ù‚ØµÙŠØ±Ø© Ø¨Ø¹Ø¯ Ø§Ù„Ø¬Ù…Ù„ Ø§Ù„Ù…Ù‡Ù…Ø©. "
+            "ØªØµØ§Ø¹Ø¯ ØªØ¯Ø±ÙŠØ¬ÙŠ ÙÙŠ Ø§Ù„ØªÙˆØªØ± Ø£Ø«Ù†Ø§Ø¡ Ø§Ù„Ø£Ø­Ø¯Ø§Ø«. "
+            "Ø®ÙØ¶ Ø§Ù„Ù†Ø¨Ø±Ø© Ø¹Ù†Ø¯ Ø§Ù„Ù…Ø¢Ø³ÙŠ ÙˆØ§Ù„Ø¶Ø­Ø§ÙŠØ§. "
+            "Ù„Ø§ Ù…Ø¨Ø§Ù„ØºØ©ØŒ Ù„Ø§ ØªÙ…Ø«ÙŠÙ„ Ø²Ø§Ø¦Ø¯ØŒ Ù„Ø§ ØµÙˆØª Ø±ÙˆØ¨ÙˆØªÙŠ. "
+            "Ø§Ù„Ø¥Ø­Ø³Ø§Ø³ Ø§Ù„Ø¹Ø§Ù…: Ù‡ÙŠØ¨Ø©ØŒ ØºÙ…ÙˆØ¶ØŒ Ù…ØµØ¯Ø§Ù‚ÙŠØ©ØŒ Ù‚ÙˆØ© Ù‡Ø§Ø¯Ø¦Ø©ØŒ Ø³Ø±Ø¯ Ø³ÙŠÙ†Ù…Ø§Ø¦ÙŠ."
         ),
     }
 
     if is_short:
         model = "gpt-4o-mini-tts"
         voice = "alloy"
-        speed = 1.05 if language == "arabic" else 1.10
+        speed = TTS_SPEED
         label = f"{'Arabic' if language == 'arabic' else 'English'} short"
     elif language == "arabic":
         model = "gpt-4o-mini-tts"
         voice = "alloy"
-        speed = 1.00
+        speed = TTS_SPEED
         label = "Arabic long"
     else:
         model = "gpt-4o-mini-tts"
         voice = "onyx"
-        speed = 1.05
+        speed = TTS_SPEED
         label = "English long"
 
     instr_key = "alloy_arabic" if language == "arabic" else voice
@@ -269,7 +286,7 @@ def generate_voiceover_openai(text: str, language: str, output_path: str,
 
 
 def _get_ffmpeg() -> str | None:
-    """Locate ffmpeg binary — imageio_ffmpeg (bundled with moviepy) first."""
+    """Locate ffmpeg binary â€” imageio_ffmpeg (bundled with moviepy) first."""
     try:
         import imageio_ffmpeg
         return imageio_ffmpeg.get_ffmpeg_exe()
@@ -324,7 +341,7 @@ def _split_text(text: str, max_chars: int = 4000) -> list[str]:
         else:
             if current:
                 chunks.append(current.strip())
-            # Paragraph itself too large — split on sentence boundaries
+            # Paragraph itself too large â€” split on sentence boundaries
             if len(para) > max_chars:
                 sentences = para.replace(". ", ".|").replace("! ", "!|").replace("? ", "?|").split("|")
                 sub = ""
@@ -345,7 +362,7 @@ def _split_text(text: str, max_chars: int = 4000) -> list[str]:
     chunked_words = sum(len(c.split()) for c in chunks)
     print(f"[TTS] Chunks: {len(chunks)} | Original: {original_words} words | Chunked: {chunked_words} words")
     if chunked_words < original_words * 0.95:
-        print("[TTS] ⚠️ Content lost in chunking!")
+        print("[TTS] âš ï¸ Content lost in chunking!")
     return chunks
 
 
@@ -365,7 +382,7 @@ def _elevenlabs_chunk(chunk: str, voice_id: str, api_key: str, chunk_path: str) 
             "similarity_boost": 0.85,
             "style": 0.4,
             "use_speaker_boost": True,
-            "speed": 1.0,
+            "speed": TTS_SPEED,
         },
         "output_format": "mp3_44100_192",
     }
@@ -376,7 +393,7 @@ def _elevenlabs_chunk(chunk: str, voice_id: str, api_key: str, chunk_path: str) 
                 f.write(response.content)
             return True
         if response.status_code == 401:
-            print(f"[Voice] ElevenLabs 401 Unauthorized — voice ID may be invalid or inaccessible")
+            print(f"[Voice] ElevenLabs 401 Unauthorized â€” voice ID may be invalid or inaccessible")
             return "401"
         print(f"[Voice] ElevenLabs chunk failed: {response.status_code}")
     except Exception as e:
@@ -385,7 +402,7 @@ def _elevenlabs_chunk(chunk: str, voice_id: str, api_key: str, chunk_path: str) 
 
 
 def generate_voiceover(script_text: str, filename: str, language: str = "english") -> str:
-    """Generate voiceover — ElevenLabs → OpenAI TTS → edge-tts priority chain."""
+    """Generate voiceover â€” ElevenLabs â†’ OpenAI TTS â†’ edge-tts priority chain."""
     script_text = _strip_section_markers(script_text)
     try:
         from agents.script_agent import format_for_tts as _fmt
@@ -398,10 +415,13 @@ def generate_voiceover(script_text: str, filename: str, language: str = "english
         script_text = _fmt(script_text)
     from config import ELEVENLABS_API_KEY, ELEVENLABS_VOICE_ID_EN, ELEVENLABS_VOICE_ID_AR, ELEVENLABS_VOICE_ID
 
-    # ── Priority 1: ElevenLabs ────────────────────────────────────────────────
+    # â”€â”€ Priority 1: ElevenLabs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    global _ELEVENLABS_DISABLED
+    if _ELEVENLABS_DISABLED:
+        print("[Voice] ElevenLabs disabled for this run â€” using OpenAI/edge fallback")
     api_key = ELEVENLABS_API_KEY
     print(f"[Voice] ElevenLabs key: {'set' if api_key and api_key != 'YOUR_ELEVENLABS_KEY' else 'MISSING'}")
-    if api_key and api_key != "YOUR_ELEVENLABS_KEY":
+    if (not _ELEVENLABS_DISABLED) and api_key and api_key != "YOUR_ELEVENLABS_KEY":
         voice_ids = {
             "english": ELEVENLABS_VOICE_ID_EN or ELEVENLABS_VOICE_ID,
             "arabic":  ELEVENLABS_VOICE_ID_AR or ELEVENLABS_VOICE_ID,
@@ -423,7 +443,8 @@ def generate_voiceover(script_text: str, filename: str, language: str = "english
                     for f in chunk_files:
                         try: os.remove(f)
                         except OSError: pass
-                    print("[Voice] ElevenLabs 401 — trying OpenAI TTS")
+                    print("[Voice] ElevenLabs 401 — disabling ElevenLabs for this run")
+                    _ELEVENLABS_DISABLED = True
                     el_failed = True
                     break
                 elif result:
@@ -435,7 +456,7 @@ def generate_voiceover(script_text: str, filename: str, language: str = "english
                     for f in chunk_files:
                         try: os.remove(f)
                         except OSError: pass
-                    print(f"[Voice] ElevenLabs chunk {i + 1} failed — trying OpenAI TTS")
+                    print(f"[Voice] ElevenLabs chunk {i + 1} failed â€” trying OpenAI TTS")
                     el_failed = True
                     break
 
@@ -479,7 +500,7 @@ def generate_voiceover(script_text: str, filename: str, language: str = "english
                 print(f"[Voice] ElevenLabs complete: {len(chunks)} chunk(s) -> {audio_path}")
                 return audio_path
 
-    # ── Priority 2: OpenAI TTS ────────────────────────────────────────────────
+    # â”€â”€ Priority 2: OpenAI TTS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     openai_key = os.getenv("OPENAI_API_KEY", "").strip()
     if openai_key:
         print("[Voice] Trying OpenAI TTS...")
@@ -488,20 +509,20 @@ def generate_voiceover(script_text: str, filename: str, language: str = "english
         result = generate_voiceover_openai(script_text, language, _oai_path, is_short=_is_short)
         if result:
             return result
-        print("[Voice] OpenAI TTS failed — falling back to edge-tts")
+        print("[Voice] OpenAI TTS failed â€” falling back to edge-tts")
 
-    # ── Priority 3: edge-tts (always available) ───────────────────────────────
+    # â”€â”€ Priority 3: edge-tts (always available) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     print("[Voice] Using edge-tts fallback")
     return generate_voiceover_edgetts(script_text, filename, language)
 
 
-# ── AI Image generation (Pollinations — free, no key) ─────────────────────────
+# â”€â”€ AI Image generation (Pollinations â€” free, no key) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-# Combined subject lookup — real criminals AND actor/character portraits.
+# Combined subject lookup â€” real criminals AND actor/character portraits.
 # extract_main_subject() returns up to 2 entries (longest key match first)
 # so Image 1 = real criminal, Image 2 = actor who played them.
 SUBJECTS = {
-    # ── Real criminals ──────────────────────────────────────────────────────────
+    # â”€â”€ Real criminals â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     "pablo escobar":    "Pablo Escobar real Colombian drug lord portrait cinematic",
     "escobar":          "Pablo Escobar real Colombian drug lord portrait cinematic",
     "al capone":        "Al Capone 1920s Chicago gangster portrait historical cinematic",
@@ -539,23 +560,23 @@ SUBJECTS = {
     "amanda knox":      "Amanda Knox Italy murder case portrait cinematic",
     "knox":             "Amanda Knox portrait cinematic dramatic",
 
-    # ── Series / movie actors ────────────────────────────────────────────────────
-    # Narcos — Wagner Moura + Pedro Pascal
+    # â”€â”€ Series / movie actors â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # Narcos â€” Wagner Moura + Pedro Pascal
     "narcos":              "Wagner Moura as Pablo Escobar Narcos Netflix portrait cinematic",
     "javier pena":         "Pedro Pascal as Javier Pena Narcos portrait cinematic",
 
-    # Scarface — Al Pacino
+    # Scarface â€” Al Pacino
     "scarface":            "Al Pacino as Tony Montana Scarface portrait cinematic dramatic",
     "tony montana":        "Al Pacino as Tony Montana Scarface portrait cinematic",
 
-    # Godfather — longest keys first ensures specific matches win
+    # Godfather â€” longest keys first ensures specific matches win
     "michael corleone":    "Al Pacino as Michael Corleone Godfather portrait cinematic",
     "vito corleone":       "Marlon Brando as Vito Corleone Godfather portrait cinematic",
     "don corleone":        "Marlon Brando as Don Vito Corleone portrait dramatic cinematic",
     "godfather":           "Marlon Brando Al Pacino Godfather Corleone family portrait cinematic",
     "corleone":            "Marlon Brando as Vito Corleone Godfather portrait cinematic",
 
-    # Breaking Bad — Cranston + Aaron Paul
+    # Breaking Bad â€” Cranston + Aaron Paul
     "breaking bad":        "Bryan Cranston Aaron Paul Breaking Bad portrait cinematic",
     "walter white":        "Bryan Cranston as Walter White portrait cinematic",
     "jesse pinkman":       "Aaron Paul as Jesse Pinkman portrait cinematic",
@@ -564,7 +585,7 @@ SUBJECTS = {
     "dexter morgan":       "Michael C Hall as Dexter Morgan portrait dark cinematic",
     "dexter":              "Michael C Hall as Dexter Morgan portrait dark cinematic",
 
-    # Peaky Blinders — Murphy + Hardy
+    # Peaky Blinders â€” Murphy + Hardy
     "peaky blinders":      "Cillian Murphy Tom Hardy Peaky Blinders portrait cinematic",
     "tommy shelby":        "Cillian Murphy as Tommy Shelby portrait dramatic cinematic",
     "alfie solomons":      "Tom Hardy as Alfie Solomons portrait cinematic",
@@ -573,27 +594,27 @@ SUBJECTS = {
     "la casa de papel":    "Alvaro Morte Ursula Corbero Money Heist portrait cinematic",
     "money heist":         "Alvaro Morte as The Professor Money Heist portrait cinematic",
 
-    # Ozark — Bateman + Linney
+    # Ozark â€” Bateman + Linney
     "ozark":               "Jason Bateman Laura Linney Ozark portrait cinematic",
 
-    # Goodfellas — Liotta + De Niro + Pesci
+    # Goodfellas â€” Liotta + De Niro + Pesci
     "goodfellas":          "Ray Liotta Robert De Niro Joe Pesci Goodfellas portrait cinematic",
     "henry hill":          "Ray Liotta as Henry Hill Goodfellas portrait cinematic",
     "jimmy conway":        "Robert De Niro as Jimmy Conway Goodfellas portrait",
 
-    # Casino — De Niro + Stone
+    # Casino â€” De Niro + Stone
     "casino":              "Robert De Niro Sharon Stone Casino portrait cinematic dramatic",
 
-    # Wolf of Wall Street — DiCaprio + Robbie
+    # Wolf of Wall Street â€” DiCaprio + Robbie
     "wolf of wall street": "Leonardo DiCaprio Margot Robbie Wolf of Wall Street portrait",
 
-    # American Gangster — Denzel + Crowe
+    # American Gangster â€” Denzel + Crowe
     "american gangster":   "Denzel Washington as Frank Lucas American Gangster portrait cinematic",
 
     # City of God
     "city of god":         "Alexandre Rodrigues City of God Brazil portrait cinematic",
 
-    # Sicario — Blunt + del Toro
+    # Sicario â€” Blunt + del Toro
     "sicario":             "Emily Blunt Benicio del Toro Sicario portrait cinematic",
 
     # Boardwalk Empire
@@ -601,7 +622,7 @@ SUBJECTS = {
     "nucky thompson":      "Steve Buscemi as Nucky Thompson portrait cinematic",
     "nucky":               "Steve Buscemi as Nucky Thompson portrait cinematic",
 
-    # Griselda — Sofia Vergara
+    # Griselda â€” Sofia Vergara
     "griselda":            "Sofia Vergara as Griselda Blanco portrait cinematic dramatic",
 
     # Night Stalker
@@ -610,24 +631,24 @@ SUBJECTS = {
     # Mindhunter
     "mindhunter":          "Jonathan Groff Mindhunter FBI agent portrait cinematic",
 
-    # Black Mass — Johnny Depp
+    # Black Mass â€” Johnny Depp
     "black mass":          "Johnny Depp as Whitey Bulger Black Mass portrait cinematic",
 
-    # Extremely Wicked — Zac Efron
+    # Extremely Wicked â€” Zac Efron
     "extremely wicked":    "Zac Efron as Ted Bundy portrait cinematic dramatic",
 
-    # The Wire — Idris Elba
+    # The Wire â€” Idris Elba
     "stringer bell":       "Idris Elba as Stringer Bell portrait cinematic dramatic",
     "the wire":            "Idris Elba as Stringer Bell The Wire portrait cinematic",
 
-    # Monster / Dahmer series — Evan Peters
+    # Monster / Dahmer series â€” Evan Peters
     "dahmer series":       "Evan Peters as Jeffrey Dahmer portrait dark cinematic",
     "monster":             "Evan Peters as Jeffrey Dahmer Monster Netflix portrait",
 
     # El Chapo series
     "el chapo series":     "Marco de la O as El Chapo portrait cinematic",
 
-    # BTK series — Rainn Wilson
+    # BTK series â€” Rainn Wilson
     "btk series":          "Rainn Wilson as BTK killer portrait dark cinematic",
 
     # Wentworth
@@ -642,16 +663,16 @@ SUBJECTS = {
     # Devil's Knot / West Memphis
     "devil's knot":        "West Memphis Three documentary portrait cinematic",
 
-    # Sudan — documentary topics
+    # Sudan â€” documentary topics
     "hemedti":             "Mohamed Hamdan Dagalo Hemedti RSF Sudan military general portrait cinematic",
-    "حميدتي":              "Sudanese military general RSF commander portrait dark cinematic dramatic",
+    "Ø­Ù…ÙŠØ¯ØªÙŠ":              "Sudanese military general RSF commander portrait dark cinematic dramatic",
     "dagalo":              "RSF Sudan military commander portrait cinematic dark dramatic",
-    "محمد حمدان دقلو":     "Sudanese military general portrait dark cinematic dramatic",
+    "Ù…Ø­Ù…Ø¯ Ø­Ù…Ø¯Ø§Ù† Ø¯Ù‚Ù„Ùˆ":     "Sudanese military general portrait dark cinematic dramatic",
     "omar bashir":         "Omar al-Bashir Sudan dictator president portrait cinematic",
-    "البشير":              "Sudan president portrait dark cinematic dramatic",
+    "Ø§Ù„Ø¨Ø´ÙŠØ±":              "Sudan president portrait dark cinematic dramatic",
 }
 
-# Keys sorted longest-first — computed once at import time
+# Keys sorted longest-first â€” computed once at import time
 _SUBJECTS_SORTED = sorted(SUBJECTS.items(), key=lambda x: len(x[0]), reverse=True)
 
 
@@ -679,14 +700,14 @@ def extract_main_subject(title: str, script: str) -> list[str]:
 
     portraits: list[str] = []
 
-    # Pass 1 — title
+    # Pass 1 â€” title
     for key, prompt in _SUBJECTS_SORTED:
         if key in title_lower and prompt not in portraits:
             portraits.append(prompt)
             if len(portraits) >= 2:
                 break
 
-    # Pass 2 — script (if we still need more)
+    # Pass 2 â€” script (if we still need more)
     if len(portraits) < 2:
         for key, prompt in _SUBJECTS_SORTED:
             if key in script_lower and prompt not in portraits:
@@ -737,7 +758,7 @@ _THEMES = {
 }
 
 
-# ── Wikipedia public-domain image fetcher ─────────────────────────────────────
+# â”€â”€ Wikipedia public-domain image fetcher â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def fetch_wikimedia_image(person_name: str) -> str | None:
     """Query Wikipedia API for the person's thumbnail. All results are public domain or CC."""
@@ -768,7 +789,7 @@ def fetch_wikimedia_image(person_name: str) -> str | None:
 
 
 def download_wikipedia_image(image_url: str, output_path: str) -> str | None:
-    """Download a Wikipedia image, smart-crop portrait/landscape → 1080x1920."""
+    """Download a Wikipedia image, smart-crop portrait/landscape â†’ 1080x1920."""
     import io
     from PIL import Image as PILImage
 
@@ -779,7 +800,7 @@ def download_wikipedia_image(image_url: str, output_path: str) -> str | None:
             return None
         img = PILImage.open(io.BytesIO(r.content)).convert("RGB")
         w, h = img.size
-        # Landscape → center-crop to square, then scale up
+        # Landscape â†’ center-crop to square, then scale up
         if w > h:
             left = (w - h) // 2
             img = img.crop((left, 0, left + h, h))
@@ -802,9 +823,9 @@ def _extract_person_name_from_topic(title: str, topic: str) -> str:
     combined = (title + " " + topic).lower()
     for key, _ in _SUBJECTS_SORTED:
         if key in combined:
-            return key.title()   # e.g. "pablo escobar" → "Pablo Escobar"
+            return key.title()   # e.g. "pablo escobar" â†’ "Pablo Escobar"
     # Fallback: first segment before an em-dash
-    return topic.split("—")[0].strip() if topic else ""
+    return topic.split("â€”")[0].strip() if topic else ""
 
 
 def transform_user_image(
@@ -817,8 +838,8 @@ def transform_user_image(
     Generate a cinematic AI version of a user image using its caption as the prompt.
 
     Pollinations is a text-to-image API so we use the caption as the seed text,
-    with a hash-derived seed for reproducibility (same caption → same image).
-    The result is 100% original AI art — no copyright concerns.
+    with a hash-derived seed for reproducibility (same caption â†’ same image).
+    The result is 100% original AI art â€” no copyright concerns.
     Returns the saved output path or None on failure.
     """
     import hashlib
@@ -832,7 +853,7 @@ def transform_user_image(
     seed = int(hashlib.md5(caption_clean.encode()).hexdigest()[:8], 16) % 99999
     output_path = os.path.join(IMAGES_DIR, f"{video_id}_transformed_{index}.png")
 
-    print(f"[Image] Transforming → AI cinematic: '{caption_clean[:60]}'")
+    print(f"[Image] Transforming â†’ AI cinematic: '{caption_clean[:60]}'")
     result = generate_ai_image(prompt, output_path, seed=seed)
     if result and os.path.exists(result):
         return result
@@ -845,11 +866,11 @@ def process_user_images(user_images: list[dict], video_id: str) -> list[dict]:
     then include the original.
 
     Returns expanded list in this order per image:
-      1. AI-transformed version (caption → Pollinations; tags include "portrait")
+      1. AI-transformed version (caption â†’ Pollinations; tags include "portrait")
       2. Original user image               (tags include "real", "photo")
 
     The AI version is listed first so _build_clip_pool_with_user_images places
-    it at the very opening of the video (portrait tag → position 0).
+    it at the very opening of the video (portrait tag â†’ position 0).
     """
     processed: list[dict] = []
 
@@ -863,7 +884,7 @@ def process_user_images(user_images: list[dict], video_id: str) -> list[dict]:
 
         print(f"[Image] Processing user image {i + 1}: '{caption[:60]}'")
 
-        # AI-transformed version (portrait tags → forces to opening position)
+        # AI-transformed version (portrait tags â†’ forces to opening position)
         transformed = transform_user_image(path, caption, video_id, i)
         if transformed:
             processed.append({
@@ -873,7 +894,7 @@ def process_user_images(user_images: list[dict], video_id: str) -> list[dict]:
                 "type":    "ai_transformed",
             })
 
-        # Original user image (real/photo tags → also at/near position 0)
+        # Original user image (real/photo tags â†’ also at/near position 0)
         processed.append({
             "path":    path,
             "tags":    ["real", "photo"] + [t for t in tags if t not in {"real", "photo"}],
@@ -913,19 +934,19 @@ Current part: Part {part_number or 1}
 
 Answer with ONLY one of these three options:
 
-USE_NOW — if the image shows:
+USE_NOW â€” if the image shows:
 - The real person ({topic})
 - Actors from {series_name}
 - Locations related to {topic}
 - Historical events related to {topic}
 - Documents or evidence related to {topic}
 
-SAVE_PART2 — if the image shows:
+SAVE_PART2 â€” if the image shows:
 - Events that belong to Part 2 of the story
 - Later timeline events not covered in Part 1
 - Related but different aspect of the story
 
-IGNORE — if the image shows:
+IGNORE â€” if the image shows:
 - Unrelated people or places
 - Random photos with no connection
 - Duplicate of another image sent
@@ -962,12 +983,12 @@ Reply with ONLY: USE_NOW or SAVE_PART2 or IGNORE"""
         if r.status_code == 200:
             answer = r.json()["choices"][0]["message"]["content"].strip().upper()
             if "USE_NOW" in answer:
-                print(f"[Image] ✅ Relevant: {image_path}")
+                print(f"[Image] âœ… Relevant: {image_path}")
                 return "use_now"
             if "SAVE_PART2" in answer:
-                print(f"[Image] 📦 Save for Part 2: {image_path}")
+                print(f"[Image] ðŸ“¦ Save for Part 2: {image_path}")
                 return "save_part2"
-            print(f"[Image] ❌ Not relevant: {image_path}")
+            print(f"[Image] âŒ Not relevant: {image_path}")
             return "ignore"
     except Exception as e:
         print(f"[Image] Vision check failed: {e}")
@@ -1047,9 +1068,9 @@ def process_user_images_smart(
             ignored.append(img)
 
     print(f"[Image] Smart filter results:")
-    print(f"  ✅ Use now: {len(use_now)}")
-    print(f"  📦 Save Part 2: {len(save_for_later)}")
-    print(f"  ❌ Ignored: {len(ignored)}")
+    print(f"  âœ… Use now: {len(use_now)}")
+    print(f"  ðŸ“¦ Save Part 2: {len(save_for_later)}")
+    print(f"  âŒ Ignored: {len(ignored)}")
 
     if save_for_later:
         save_images_for_part2(save_for_later, topic)
@@ -1066,7 +1087,7 @@ def get_person_images(
     Build the priority image list for a real person.
 
     Priority order (highest first):
-      1. User-uploaded images — each expanded to AI-transformed + original
+      1. User-uploaded images â€” each expanded to AI-transformed + original
       2. Wikipedia real photo (public domain, position 0 = opening shot)
 
     Returns list of {"path", "tags", "caption"} dicts compatible with
@@ -1075,13 +1096,13 @@ def get_person_images(
     """
     images: list[dict] = []
 
-    # 1 — User uploads → AI transform + original for each
+    # 1 â€” User uploads â†’ AI transform + original for each
     raw_uploads = [img for img in (user_images or []) if img.get("path") and os.path.exists(img["path"])]
     if raw_uploads:
         images.extend(process_user_images(raw_uploads, video_id))
-        print(f"[Image] Priority 1: {len(raw_uploads)} user image(s) → {len(images)} processed")
+        print(f"[Image] Priority 1: {len(raw_uploads)} user image(s) â†’ {len(images)} processed")
 
-    # 2 — Wikipedia real photo
+    # 2 â€” Wikipedia real photo
     if person_name:
         wiki_url = fetch_wikimedia_image(person_name)
         if wiki_url:
@@ -1107,7 +1128,7 @@ _IMAGE_PROMPT_SUFFIX = (
 
 
 def build_image_prompt(chunk_text: str) -> str:
-    """Ask OpenAI for a specific ≤20-word image prompt from a script chunk.
+    """Ask OpenAI for a specific â‰¤20-word image prompt from a script chunk.
     Falls back to a generic cinematic prompt if OpenAI is unavailable.
     """
     api_key = os.getenv("OPENAI_API_KEY", "").strip()
@@ -1273,10 +1294,10 @@ def generate_ai_image(prompt: str, output_path: str, seed: int = None) -> str:
     return output_path
 
 
-# ── Real-photo fetching ────────────────────────────────────────────────────────
+# â”€â”€ Real-photo fetching â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def download_real_image(url: str, output_path: str) -> str | None:
-    """Download image from URL, smart-crop to 1080×1920 portrait. Returns path or None."""
+    """Download image from URL, smart-crop to 1080Ã—1920 portrait. Returns path or None."""
     import io
     from PIL import Image as PILImage
 
@@ -1328,6 +1349,241 @@ def _download_first_valid(urls: list[str], output_path: str) -> str | None:
     return None
 
 
+def _is_video_file(path: str) -> bool:
+    ext = os.path.splitext(path or "")[1].lower()
+    return ext in {".mp4", ".mov", ".m4v", ".webm"}
+
+
+def _search_pexels_videos(query: str, per_page: int = 15) -> list[str]:
+    """Search Pexels videos and return direct MP4 URLs (watermark-safe source)."""
+    api_key = os.getenv("PEXELS_API_KEY", "").strip()
+    if not api_key or api_key.startswith("YOUR_"):
+        return []
+    try:
+        r = requests.get(
+            "https://api.pexels.com/videos/search",
+            headers={"Authorization": api_key},
+            params={"query": query, "per_page": per_page, "orientation": "portrait"},
+            timeout=30,
+        )
+        if r.status_code != 200:
+            print(f"[Stock] Pexels search failed ({r.status_code}) for '{query}'")
+            return []
+        data = r.json()
+        urls: list[str] = []
+        for video in data.get("videos", []):
+            files = video.get("video_files", [])
+            # Prefer medium portrait MP4 for faster download/render.
+            files = sorted(files, key=lambda f: (f.get("height", 0), f.get("width", 0)))
+            picked = None
+            for f in files:
+                link = f.get("link", "")
+                if f.get("file_type") == "video/mp4" and link:
+                    picked = link
+                    if (f.get("height") or 0) >= 720:
+                        break
+            if picked and "watermark" not in picked.lower():
+                urls.append(picked)
+        return urls
+    except Exception as e:
+        print(f"[Stock] Pexels error for '{query}': {e}")
+        return []
+
+
+def _search_pixabay_videos(query: str, per_page: int = 15) -> list[str]:
+    """Search Pixabay videos and return direct MP4 URLs (free licensed source)."""
+    api_key = os.getenv("PIXABAY_API_KEY", "").strip()
+    if not api_key or api_key.startswith("YOUR_"):
+        return []
+    try:
+        r = requests.get(
+            "https://pixabay.com/api/videos/",
+            params={
+                "key": api_key,
+                "q": query,
+                "per_page": per_page,
+                "safesearch": "true",
+            },
+            timeout=30,
+        )
+        if r.status_code != 200:
+            print(f"[Stock] Pixabay search failed ({r.status_code}) for '{query}'")
+            return []
+        data = r.json()
+        urls: list[str] = []
+        for hit in data.get("hits", []):
+            vids = hit.get("videos", {})
+            # Prefer medium/large MP4s for stable rendering quality.
+            for key in ("medium", "large", "small", "tiny"):
+                info = vids.get(key) or {}
+                u = info.get("url", "")
+                if u and "mp4" in u:
+                    urls.append(u)
+                    break
+        return urls
+    except Exception as e:
+        print(f"[Stock] Pixabay error for '{query}': {e}")
+        return []
+
+
+def _download_video_url(url: str, output_path: str) -> str | None:
+    """Download one stock video URL safely."""
+    try:
+        r = requests.get(
+            url,
+            timeout=90,
+            stream=True,
+            headers={"User-Agent": "DarkCrimeDecoded/1.0"},
+        )
+        if r.status_code != 200:
+            return None
+        with open(output_path, "wb") as f:
+            for chunk in r.iter_content(chunk_size=1024 * 128):
+                if chunk:
+                    f.write(chunk)
+        size = os.path.getsize(output_path)
+        if size < 250_000:
+            try:
+                os.remove(output_path)
+            except OSError:
+                pass
+            return None
+        return output_path
+    except Exception:
+        return None
+
+
+def _download_first_valid_video(urls: list[str], output_path: str) -> str | None:
+    for url in urls:
+        saved = _download_video_url(url, output_path)
+        if saved:
+            return saved
+    return None
+
+
+def _topic_stock_fallback_queries(topic: str) -> list[str]:
+    t = (topic or "").lower()
+    if "frank lucas" in t or "american gangster" in t:
+        return [
+            "1970s harlem street night",
+            "new york police investigation",
+            "courtroom trial scene",
+            "prison corridor bars",
+            "money counting cash table",
+            "vintage newspaper headlines",
+            "city skyline night traffic",
+            "detective evidence board",
+        ]
+    return [
+        "dark city street night",
+        "police lights crime scene",
+        "courtroom interior judge gavel",
+        "prison corridor bars",
+        "newspaper headlines closeup",
+        "investigation evidence board",
+    ]
+
+
+def _get_stock_video_query_for_chunk(chunk_text: str, topic: str = "") -> str | None:
+    """Generate stock-video-friendly B-roll query (no person/movie names)."""
+    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        return None
+
+    first_120 = " ".join((chunk_text or "").split()[:120])
+    prompt = f"""Create one stock video search query (3-6 English words) for this script chunk.
+
+Topic context: {topic}
+
+Rules:
+- Return only a visual B-roll phrase.
+- Do NOT use person names.
+- Do NOT use movie/series names.
+- Do NOT use brand names or logos.
+- Prefer generic scenes: courtroom, police raid, prison corridor, city night street, old newspaper.
+
+Text:
+{first_120}
+
+Return only the query."""
+    try:
+        r = requests.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": "gpt-4o-mini",
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": 20,
+                "temperature": 0.2,
+            },
+            timeout=20,
+        )
+        if r.status_code == 200:
+            q = r.json()["choices"][0]["message"]["content"].strip().strip('"\'')
+            if 2 <= len(q.split()) <= 8:
+                return q
+    except Exception as e:
+        print(f"[Stock] Query generation failed: {e}")
+    return None
+
+
+def fetch_stock_videos(script_text: str, count: int, video_id: str, topic: str = "") -> list[str]:
+    """
+    Build a stock-video pool from free licensed sources (Pexels).
+    Returns downloaded local MP4 paths; may return fewer than requested.
+    """
+    import re
+    import shutil
+
+    clean = re.sub(r'\[SECTION:[^\]]+\]\s*', '', script_text).strip()
+    words = clean.split()
+    if not words:
+        return []
+
+    chunk_size = max(1, len(words) // max(count, 1))
+    chunks = [
+        " ".join(words[i * chunk_size: (i + 1) * chunk_size if i < count - 1 else len(words)])
+        for i in range(count)
+    ]
+
+    results: list[str] = []
+    query_cache: dict[str, str] = {}
+
+    fallback_queries = _topic_stock_fallback_queries(topic)
+
+    for i, chunk in enumerate(chunks):
+        query = _get_stock_video_query_for_chunk(chunk, topic=topic) or fallback_queries[i % len(fallback_queries)]
+        out = os.path.join(STOCK_VIDEOS_DIR, f"{video_id}_stock_{i}.mp4")
+        saved = None
+        if query in query_cache and os.path.exists(query_cache[query]):
+            shutil.copy2(query_cache[query], out)
+            saved = out
+            print(f"[Stock] â™»ï¸ Reused video '{query}' for chunk {i}")
+        else:
+            urls = _search_pexels_videos(query)
+            if not urls:
+                urls = _search_pixabay_videos(query)
+            if not urls:
+                query = fallback_queries[i % len(fallback_queries)]
+                urls = _search_pexels_videos(query)
+                if not urls:
+                    urls = _search_pixabay_videos(query)
+            if urls:
+                saved = _download_first_valid_video(urls, out)
+                if saved:
+                    query_cache[query] = saved
+                    print(f"[Stock] âœ… Video: '{query}'")
+        if saved:
+            results.append(saved)
+        time.sleep(1)
+
+    print(f"[Stock] Videos fetched: {len(results)}/{count}")
+    return results
+
+
 def _translate_to_arabic_query(english_query: str) -> str | None:
     """Translate an English image search query to Arabic via OpenAI."""
     api_key = os.getenv("OPENAI_API_KEY", "").strip()
@@ -1370,7 +1626,7 @@ def search_real_image(query: str, output_path: str) -> str | None:
         return None
     saved = _download_first_valid(urls, output_path)
     if saved:
-        print(f"[Image] ✅ Real photo: '{query}'")
+        print(f"[Image] âœ… Real photo: '{query}'")
         return saved
     print(f"[Image] No real photo found for '{query}'")
     return None
@@ -1378,8 +1634,8 @@ def search_real_image(query: str, output_path: str) -> str | None:
 
 def _get_search_query_for_chunk(chunk_text: str) -> str | None:
     """Call OpenAI to get a specific 5-word English image search query for a script chunk.
-    Always returns English — works even when chunk_text is Arabic or any other language.
-    Works for any topic — crime, politics, war, science, business, sport, etc.
+    Always returns English â€” works even when chunk_text is Arabic or any other language.
+    Works for any topic â€” crime, politics, war, science, business, sport, etc.
     Returns None if OpenAI is unavailable or the chunk is too generic.
     """
     api_key = os.getenv("OPENAI_API_KEY", "").strip()
@@ -1429,15 +1685,15 @@ Return only the English search query, nothing else."""
 
 def fetch_real_images(script_text: str, count: int, video_id: str) -> list[str]:
     """
-    Universal image builder — works for any script topic.
+    Universal image builder â€” works for any script topic.
 
     For each of [count] equal script chunks:
       1. Ask OpenAI for the most specific searchable subject (max 5 words).
-      2. Search DuckDuckGo images for that query — try up to 3 URLs.
+      2. Search DuckDuckGo images for that query â€” try up to 3 URLs.
       3. Re-use a cached download when the same query appears again.
       4. Fall back to Pollinations AI generation if real search fails.
 
-    Logs each image as ✅ real photo or 🤖 AI generated.
+    Logs each image as âœ… real photo or ðŸ¤– AI generated.
     Returns list of image paths.
     """
     import re
@@ -1469,7 +1725,7 @@ def fetch_real_images(script_text: str, count: int, video_id: str) -> list[str]:
     ]
 
     image_paths:  list[str]      = []
-    query_cache:  dict[str, str] = {}   # query → saved path (avoid re-downloading)
+    query_cache:  dict[str, str] = {}   # query â†’ saved path (avoid re-downloading)
     real_count    = 0
     ai_count      = 0
 
@@ -1485,17 +1741,17 @@ def fetch_real_images(script_text: str, count: int, video_id: str) -> list[str]:
             if query in query_cache:
                 shutil.copy2(query_cache[query], img_path)
                 saved = img_path
-                print(f"[Image] ♻️  Reused '{query}' for chunk {i}")
+                print(f"[Image] â™»ï¸  Reused '{query}' for chunk {i}")
             else:
                 en_urls = _ddgs_image_results(query)
                 if len(en_urls) >= 2:
                     saved = _download_first_valid(en_urls, img_path)
                     if saved:
-                        print(f"[Image] ✅ Real photo (EN): '{query}'")
+                        print(f"[Image] âœ… Real photo (EN): '{query}'")
                         query_cache[query] = saved
                         real_count += 1
 
-                # Step 3: fewer than 2 English results → retry in Arabic
+                # Step 3: fewer than 2 English results â†’ retry in Arabic
                 if not saved:
                     ar_query = _translate_to_arabic_query(query)
                     if ar_query:
@@ -1507,7 +1763,7 @@ def fetch_real_images(script_text: str, count: int, video_id: str) -> list[str]:
                                 query_cache[query] = saved
                                 real_count += 1
 
-        # Step 4: AI fallback — Pollinations with script-matched prompt
+        # Step 4: AI fallback â€” Pollinations with script-matched prompt
         if not saved:
             print(f"[Image] chunk {i}: no real image found, using AI generation")
             ai_prompt = ai_prompts[i] if i < len(ai_prompts) else fallback_base
@@ -1525,7 +1781,7 @@ def fetch_real_images(script_text: str, count: int, video_id: str) -> list[str]:
     return image_paths
 
 
-# ── Title card helpers ────────────────────────────────────────────────────────
+# â”€â”€ Title card helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def _detect_font() -> str | None:
     """Find a usable bold TTF font on the system."""
@@ -1550,12 +1806,12 @@ def _detect_font() -> str | None:
 def _extract_series_from_title(title: str) -> str | None:
     """
     Extract 'Narcos Series' or 'Wolf of Wall Street Movie' from a title like
-    'Dark Crime Decoded: Pablo Escobar & Narcos Series — Hook Text'.
-    Returns the text between ' & ' and ' — ', or None.
+    'Dark Crime Decoded: Pablo Escobar & Narcos Series â€” Hook Text'.
+    Returns the text between ' & ' and ' â€” ', or None.
     """
-    if " & " in title and " — " in title:
+    if " & " in title and " â€” " in title:
         after_amp  = title.split(" & ", 1)[1]
-        before_dash = after_amp.split(" — ", 1)[0].strip()
+        before_dash = after_amp.split(" â€” ", 1)[0].strip()
         return before_dash
     return None
 
@@ -1621,19 +1877,19 @@ def create_title_card(main_line: str, sub_line: str, duration: float = 7.0):
     return VideoClip(make_frame=make_frame, duration=duration)
 
 
-# ── MoviePy clip helpers ───────────────────────────────────────────────────────
+# â”€â”€ MoviePy clip helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def image_to_clips(image_path: str, n_variations: int = 4) -> list:
     """Return n_variations animated zoom clips, all exactly 1080x1920.
 
     Root cause of 'width not divisible by 2' (libx264 error):
-      int(1080 * 1.04) = 1123 — odd width — libx264 refuses to encode.
+      int(1080 * 1.04) = 1123 â€” odd width â€” libx264 refuses to encode.
 
     Fix: use VideoClip(make_frame=fn) where make_frame rounds each dimension
     up to the next even number and then center-crops back to exactly 1080x1920.
     Output frames are always (1920, 1080, 3) regardless of zoom scale.
     MoviePy calls make_frame(0) on construction to set clip.size = (1080,1920),
-    which is what ffmpeg receives as the output resolution — no mismatch.
+    which is what ffmpeg receives as the output resolution â€” no mismatch.
     """
     import numpy as np
     from PIL import Image as PILImage
@@ -1653,7 +1909,7 @@ def image_to_clips(image_path: str, n_variations: int = 4) -> list:
         def make_frame(t):
             rate = (end_scale - start_scale) / max(duration, 0.001)
             scale = max(1.0, start_scale + rate * t)
-            # Round UP to even — libx264 requires even width & height
+            # Round UP to even â€” libx264 requires even width & height
             sw = int(TARGET_W * scale)
             if sw % 2:
                 sw += 1
@@ -1667,10 +1923,10 @@ def image_to_clips(image_path: str, n_variations: int = 4) -> list:
             return np.array(scaled.crop((x, y, x + TARGET_W, y + TARGET_H)))
         return make_frame
 
-    # (start_scale, end_scale, duration_s) — scale always stays >= 1.0
+    # (start_scale, end_scale, duration_s) â€” scale always stays >= 1.0
     specs = [
         (1.00, 1.08, 8.0),   # zoom in
-        (1.08, 1.00, 8.0),   # zoom out  (1.08 → 1.00, never < 1.0)
+        (1.08, 1.00, 8.0),   # zoom out  (1.08 â†’ 1.00, never < 1.0)
         (1.00, 1.06, 7.0),   # zoom in slow
         (1.06, 1.00, 7.0),   # zoom out slow
     ]
@@ -1678,7 +1934,7 @@ def image_to_clips(image_path: str, n_variations: int = 4) -> list:
     clips = []
     for start_s, end_s, dur in specs[:n_variations]:
         fn = _zoom_fn(start_s, end_s, dur)
-        # MoviePy calls fn(0) in __init__ → shape (1920,1080,3) → size=(1080,1920)
+        # MoviePy calls fn(0) in __init__ â†’ shape (1920,1080,3) â†’ size=(1080,1920)
         clips.append(VideoClip(make_frame=fn, duration=dur))
 
     return clips
@@ -1704,7 +1960,7 @@ def assemble_video(
     output_path = os.path.join(FINAL_DIR, f"{output_filename}.mp4")
     temp_audio  = os.path.join(FINAL_DIR, f"{output_filename}_tmp_audio.m4a")
 
-    # ── Load audio ────────────────────────────────────────────────────────────
+    # â”€â”€ Load audio â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     try:
         audio = AudioFileClip(audio_path)
         total_duration = audio.duration
@@ -1714,7 +1970,7 @@ def assemble_video(
         traceback.print_exc()
         return ""
 
-    # ── Build looped clip list (image portion only) ───────────────────────────
+    # â”€â”€ Build looped clip list (image portion only) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     fixed_before = sum(c.duration for c in (before_clips or []))
     fixed_after  = sum(c.duration for c in (after_clips  or []))
     image_target = max(1.0, total_duration - fixed_before - fixed_after)
@@ -1737,8 +1993,8 @@ def assemble_video(
         traceback.print_exc()
         return ""
 
-    # ── Concatenate ───────────────────────────────────────────────────────────
-    # method="chain": clips are identical 1080x1920 — faster and more reliable
+    # â”€â”€ Concatenate â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # method="chain": clips are identical 1080x1920 â€” faster and more reliable
     # than "compose" which tries to composite varying-size clips.
     try:
         all_video_clips = (before_clips or []) + looped + (after_clips or [])
@@ -1750,7 +2006,7 @@ def assemble_video(
         traceback.print_exc()
         return ""
 
-    # ── Write video ───────────────────────────────────────────────────────────
+    # â”€â”€ Write video â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     # Removed -profile:v baseline and -level 3.0: these can conflict with
     # libx264 on Ubuntu (GitHub Actions runner) and cause encoder init failures.
     try:
@@ -1780,24 +2036,24 @@ def assemble_video(
             except OSError:
                 time.sleep(0.5)
 
-    # ── Verify output ─────────────────────────────────────────────────────────
+    # â”€â”€ Verify output â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if not os.path.exists(output_path):
         print(f"[Video] ERROR: output file not created: {output_path}")
         return ""
     file_size = os.path.getsize(output_path)
     if file_size < 100_000:
-        print(f"[Video] ERROR: output file too small ({file_size} bytes) — likely corrupt")
+        print(f"[Video] ERROR: output file too small ({file_size} bytes) â€” likely corrupt")
         return ""
     print(f"[Video] Success: {output_path} ({file_size // 1024 // 1024}MB)")
     return output_path
 
 
-# ── Voice enhancement (for user-recorded audio) ───────────────────────────────
+# â”€â”€ Voice enhancement (for user-recorded audio) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def clean_voice(input_path: str, output_path: str) -> str:
     """
     Enhance a recorded voice file:
-      1. Convert OGG → WAV via ffmpeg
+      1. Convert OGG â†’ WAV via ffmpeg
       2. Noise reduction via noisereduce (first 0.5 s as noise profile)
       3. Apply ffmpeg audio filters (highpass, lowpass, denoiser, normalization)
       4. Output as MP3
@@ -1811,7 +2067,7 @@ def clean_voice(input_path: str, output_path: str) -> str:
     try:
         subprocess.run(["ffmpeg", "-y", "-i", input_path, wav_path], check=True, capture_output=True)
     except Exception as e:
-        print(f"[Voice] ffmpeg decode failed: {e} — skipping enhancement")
+        print(f"[Voice] ffmpeg decode failed: {e} â€” skipping enhancement")
         return input_path
 
     try:
@@ -1822,7 +2078,7 @@ def clean_voice(input_path: str, output_path: str) -> str:
         reduced = nr.reduce_noise(y=data, sr=rate, y_noise=noise_sample, prop_decrease=0.75, stationary=False)
         sf.write(clean_wav, reduced, rate)
     except Exception as e:
-        print(f"[Voice] Noise reduction failed: {e} — using raw WAV")
+        print(f"[Voice] Noise reduction failed: {e} â€” using raw WAV")
         clean_wav = wav_path
 
     try:
@@ -1834,7 +2090,7 @@ def clean_voice(input_path: str, output_path: str) -> str:
         )
         print(f"[Voice] Enhanced audio saved: {output_path}")
     except Exception as e:
-        print(f"[Voice] ffmpeg filter failed: {e} — using unfiltered input")
+        print(f"[Voice] ffmpeg filter failed: {e} â€” using unfiltered input")
         return input_path
 
     for f in [wav_path, clean_wav]:
@@ -1847,7 +2103,7 @@ def clean_voice(input_path: str, output_path: str) -> str:
     return output_path
 
 
-# ── Short clip cutter ──────────────────────────────────────────────────────────
+# â”€â”€ Short clip cutter â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 SHORTS_DIR = "output/shorts"
 Path(SHORTS_DIR).mkdir(parents=True, exist_ok=True)
@@ -1889,7 +2145,7 @@ def cut_short_clip(video_path: str, output_path: str, duration: int = 90) -> str
         size_kb = os.path.getsize(output_path) // 1024 if os.path.exists(output_path) else 0
         print(f"[Video] Short clip saved: {output_path} ({size_kb}KB)")
         if size_kb < 10:
-            print(f"[Video] WARNING: short clip too small ({size_kb}KB) — may be corrupt")
+            print(f"[Video] WARNING: short clip too small ({size_kb}KB) â€” may be corrupt")
         return output_path
     except Exception as e:
         print(f"[Video] Short clip error: {e}")
@@ -1910,10 +2166,10 @@ def cut_short_clip(video_path: str, output_path: str, duration: int = 90) -> str
                 time.sleep(0.5)
 
 
-# ── User image helpers ─────────────────────────────────────────────────────────
+# â”€â”€ User image helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def _find_keyword_position(script_text: str, tags: list[str]) -> float:
-    """Return 0.0–1.0 relative position where the first tag appears in the script.
+    """Return 0.0â€“1.0 relative position where the first tag appears in the script.
     Returns 0.0 when no tags are provided (opening shot).
     """
     if not tags or not script_text:
@@ -1941,8 +2197,8 @@ def _build_clip_pool_with_user_images(
     """
     Merge user image clips into the AI clip pool at script-matched positions.
 
-    - User images with face/portrait tags (real, photo, portrait, face) → position 0 (opening).
-    - Other user images → positioned proportionally where their tags appear in the script.
+    - User images with face/portrait tags (real, photo, portrait, face) â†’ position 0 (opening).
+    - Other user images â†’ positioned proportionally where their tags appear in the script.
     - AI clips fill the rest (shuffled).
     """
     if not user_images:
@@ -1964,7 +2220,7 @@ def _build_clip_pool_with_user_images(
             print(f"[Video] User image clip failed ({path}): {e}")
             continue
 
-        # Portrait/face tags → force to opening position
+        # Portrait/face tags â†’ force to opening position
         if any(t in _PORTRAIT_TAGS for t in tags):
             pos = 0.0
         else:
@@ -1978,7 +2234,7 @@ def _build_clip_pool_with_user_images(
         random.shuffle(ai_clips)
         return ai_clips
 
-    # Sort by position — opening shots come first
+    # Sort by position â€” opening shots come first
     user_clip_groups.sort(key=lambda x: x[0])
 
     # Shuffle AI clips so they're varied
@@ -1999,7 +2255,7 @@ def _build_clip_pool_with_user_images(
     return merged
 
 
-# ── Hook-aware assembly (long videos only) ────────────────────────────────────
+# â”€â”€ Hook-aware assembly (long videos only) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def assemble_video_with_hook(
     audio_path: str,
@@ -2009,16 +2265,16 @@ def assemble_video_with_hook(
 ) -> str:
     """Assemble long video with fast-cut hook (0-90 s) and slow main section.
 
-    Hook: all images cycle every 3-5 s — movie-trailer energy.
-    Main: each image shown for 8-12 s — calm documentary pace.
+    Hook: all images cycle every 3-5 s â€” movie-trailer energy.
+    Main: each image shown for 8-12 s â€” calm documentary pace.
     """
     import traceback
     import numpy as np
     from PIL import Image as PILImage
     try:
-        from moviepy.editor import AudioFileClip, VideoClip, concatenate_videoclips
+        from moviepy.editor import AudioFileClip, VideoClip, VideoFileClip, concatenate_videoclips
     except ImportError:
-        from moviepy import AudioFileClip, VideoClip, concatenate_videoclips
+        from moviepy import AudioFileClip, VideoClip, VideoFileClip, concatenate_videoclips
 
     TARGET_W, TARGET_H = 1080, 1920
     hook_duration = 90  # first 90 seconds
@@ -2028,7 +2284,7 @@ def assemble_video_with_hook(
     try:
         audio = AudioFileClip(audio_path)
         total_duration = audio.duration
-        print(f"[Video] Hook assembly — audio: {total_duration:.1f}s")
+        print(f"[Video] Hook assembly â€” audio: {total_duration:.1f}s")
     except Exception as e:
         print(f"[Video] CRASH loading audio: {e}")
         traceback.print_exc()
@@ -2042,6 +2298,18 @@ def assemble_video_with_hook(
         )
         return np.array(pil)
 
+    def _fit_vertical(clip):
+        """Resize + center crop to exact 1080x1920."""
+        c = clip.resize(height=TARGET_H)
+        if c.w < TARGET_W:
+            c = c.resize(width=TARGET_W)
+        return c.crop(
+            x_center=c.w / 2,
+            y_center=c.h / 2,
+            width=TARGET_W,
+            height=TARGET_H,
+        )
+
     def _zoom_clip(
         frame, dur: float,
         start_scale: float, end_scale: float,
@@ -2049,8 +2317,8 @@ def assemble_video_with_hook(
     ):
         """VideoClip with zoom + fade-in/out baked into make_frame.
 
-        Uses VideoClip(make_frame) so output is always exactly TARGET_W×TARGET_H
-        — avoids the libx264 "odd dimension" crash that ImageClip.resize() causes.
+        Uses VideoClip(make_frame) so output is always exactly TARGET_WÃ—TARGET_H
+        â€” avoids the libx264 "odd dimension" crash that ImageClip.resize() causes.
         """
         def make_frame(t):
             rate  = (end_scale - start_scale) / max(dur, 0.001)
@@ -2070,8 +2338,25 @@ def assemble_video_with_hook(
             return np.clip(rgb, 0, 255).astype("uint8")
         return VideoClip(make_frame=make_frame, duration=dur)
 
-    # ── HOOK SECTION (0:00 to 1:30): fast cuts every 3-5 s ───────────────────
-    # Cycle through ALL images repeatedly — movie-trailer energy
+    def _media_clip(src_path: str, dur: float, zoom_in: bool = True):
+        if _is_video_file(src_path):
+            v = VideoFileClip(src_path)
+            if v.duration <= 0:
+                v.close()
+                frame = _load_frame(src_path)
+                return _zoom_clip(frame, dur, 1.00, 1.06 if zoom_in else 1.00)
+            max_start = max(0.0, v.duration - dur)
+            start = random.uniform(0, max_start) if max_start > 0 else 0.0
+            c = v.subclip(start, min(v.duration, start + dur))
+            c = _fit_vertical(c)
+            if c.duration < dur:
+                c = c.set_duration(dur)
+            return c
+        frame = _load_frame(src_path)
+        return _zoom_clip(frame, dur, 1.00, 1.08 if zoom_in else 1.00, fade_in=0.2, fade_out=0.2)
+
+    # â”€â”€ HOOK SECTION (0:00 to 1:30): fast cuts every 3-5 s â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # Cycle through ALL images repeatedly â€” movie-trailer energy
     hook_clips = []
     hook_total = 0.0
     img_index  = 0
@@ -2079,14 +2364,10 @@ def assemble_video_with_hook(
     while hook_total < hook_duration:
         img_path = image_paths[img_index % len(image_paths)]
         try:
-            frame     = _load_frame(img_path)
             cut_dur   = random.uniform(3, 4)
             remaining = hook_duration - hook_total
             cut_dur   = min(cut_dur, remaining)
-            if img_index % 2 == 0:
-                clip = _zoom_clip(frame, cut_dur, 1.00, 1.08, fade_in=0.2, fade_out=0.2)
-            else:
-                clip = _zoom_clip(frame, cut_dur, 1.08, 1.00, fade_in=0.2, fade_out=0.2)
+            clip = _media_clip(img_path, cut_dur, zoom_in=(img_index % 2 == 0))
             hook_clips.append(clip)
             hook_total += cut_dur
         except Exception as e:
@@ -2095,16 +2376,15 @@ def assemble_video_with_hook(
 
     print(f"[Video] Hook: {len(hook_clips)} fast cuts in {hook_total:.1f}s")
 
-    # ── MAIN CONTENT (1:30 to end): slow cuts every 8-12 s ───────────────────
+    # â”€â”€ MAIN CONTENT (1:30 to end): slow cuts every 8-12 s â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     # Each image gets a zoom-in clip + zoom-out clip; then shuffled
     main_clips = []
     for img_path in image_paths:
         try:
-            frame = _load_frame(img_path)
             dur1  = random.uniform(6, 8)
-            main_clips.append(_zoom_clip(frame, dur1, 1.00, 1.06, fade_in=0.5, fade_out=0.5))
+            main_clips.append(_media_clip(img_path, dur1, zoom_in=True))
             dur2  = random.uniform(6, 8)
-            main_clips.append(_zoom_clip(frame, dur2, 1.06, 1.00, fade_in=0.5, fade_out=0.5))
+            main_clips.append(_media_clip(img_path, dur2, zoom_in=False))
         except Exception as e:
             print(f"[Video] Main clip error: {e}")
 
@@ -2114,7 +2394,10 @@ def assemble_video_with_hook(
     while sum(c.duration for c in main_clips) < main_duration + 20:
         src = image_paths[random.randint(0, len(image_paths) - 1)]
         dur = random.uniform(6, 8)
-        main_clips.append(_zoom_clip(_load_frame(src), dur, 1.00, 1.06, fade_in=0.5, fade_out=0.5))
+        try:
+            main_clips.append(_media_clip(src, dur, zoom_in=True))
+        except Exception:
+            pass
 
     # Trim to main_duration
     accumulated = 0.0
@@ -2172,7 +2455,7 @@ def assemble_video_with_hook(
     return output_path
 
 
-# ── Image count helpers ───────────────────────────────────────────────────────
+# â”€â”€ Image count helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def calculate_unique_images(is_short: bool = False) -> int:
     """Return number of unique AI images to generate (6 short / 20 long)."""
@@ -2203,7 +2486,7 @@ def build_image_list(user_images: list, ai_images: list[str]) -> list[str]:
     return final
 
 
-# ── Short video assembler ─────────────────────────────────────────────────────
+# â”€â”€ Short video assembler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def assemble_short_video(audio_path: str, image_paths: list[str], output_path: str) -> str:
     """Assemble short video: 2 zoom variations per image, loop to fill 60-90 s."""
@@ -2211,9 +2494,9 @@ def assemble_short_video(audio_path: str, image_paths: list[str], output_path: s
     import numpy as np
     from PIL import Image as PILImage
     try:
-        from moviepy.editor import AudioFileClip, VideoClip, concatenate_videoclips
+        from moviepy.editor import AudioFileClip, VideoClip, VideoFileClip, concatenate_videoclips
     except ImportError:
-        from moviepy import AudioFileClip, VideoClip, concatenate_videoclips
+        from moviepy import AudioFileClip, VideoClip, VideoFileClip, concatenate_videoclips
 
     TARGET_W, TARGET_H = 1080, 1920
     temp_audio = output_path.replace(".mp4", "_tmp.m4a")
@@ -2234,7 +2517,7 @@ def assemble_short_video(audio_path: str, image_paths: list[str], output_path: s
             print(f"[Video] Trimming to maximum 90s")
 
         total_duration = target_duration
-        print(f"[Video] Short assembly — target: {total_duration:.1f}s")
+        print(f"[Video] Short assembly â€” target: {total_duration:.1f}s")
     except Exception as e:
         print(f"[Video] CRASH loading audio: {e}")
         traceback.print_exc()
@@ -2245,6 +2528,17 @@ def assemble_short_video(audio_path: str, image_paths: list[str], output_path: s
             (TARGET_W, TARGET_H), PILImage.LANCZOS
         )
         return np.array(pil)
+
+    def _fit_vertical(clip):
+        c = clip.resize(height=TARGET_H)
+        if c.w < TARGET_W:
+            c = c.resize(width=TARGET_W)
+        return c.crop(
+            x_center=c.w / 2,
+            y_center=c.h / 2,
+            width=TARGET_W,
+            height=TARGET_H,
+        )
 
     def _zoom_clip(frame, start_scale: float, end_scale: float, dur: float):
         def make_frame(t):
@@ -2262,30 +2556,45 @@ def assemble_short_video(audio_path: str, image_paths: list[str], output_path: s
             return np.clip(rgb * max(0.0, min(1.0, fade)), 0, 255).astype("uint8")
         return VideoClip(make_frame=make_frame, duration=dur)
 
-    # Pre-load frames
-    frames = []
-    for img_path in image_paths:
-        try:
-            frames.append(_load_frame(img_path))
-        except Exception as e:
-            print(f"[Video] Short image load error: {e}")
+    def _media_clip(src_path: str, dur: float, zoom_in: bool = True):
+        if _is_video_file(src_path):
+            v = VideoFileClip(src_path)
+            if v.duration <= 0:
+                v.close()
+                return _zoom_clip(_load_frame(src_path), 1.00, 1.08 if zoom_in else 1.00, dur)
+            max_start = max(0.0, v.duration - dur)
+            start = random.uniform(0, max_start) if max_start > 0 else 0.0
+            c = v.subclip(start, min(v.duration, start + dur))
+            c = _fit_vertical(c)
+            if c.duration < dur:
+                c = c.set_duration(dur)
+            return c
+        frame = _load_frame(src_path)
+        return _zoom_clip(frame, 1.00, 1.08 if zoom_in else 1.00, dur)
 
-    if not frames:
-        print("[Video] No frames for short video, aborting")
+    media_sources = [p for p in image_paths if p and os.path.exists(p)]
+    if not media_sources:
+        print("[Video] No media for short video, aborting")
         return ""
 
-    # 2 variations per image: zoom in (5-7 s) + zoom out (5-7 s)
+    # 2 variations per media source.
     all_clips = []
-    for frame in frames:
-        all_clips.append(_zoom_clip(frame, 1.00, 1.08, random.uniform(6, 8)))
-        all_clips.append(_zoom_clip(frame, 1.08, 1.00, random.uniform(6, 8)))
+    for src in media_sources:
+        try:
+            all_clips.append(_media_clip(src, random.uniform(6, 8), zoom_in=True))
+            all_clips.append(_media_clip(src, random.uniform(6, 8), zoom_in=False))
+        except Exception as e:
+            print(f"[Video] Short media clip error: {e}")
 
     random.shuffle(all_clips)
 
-    # Loop by regenerating new clips from random frames until we have enough
+    # Loop by regenerating new clips from random media until we have enough
     while sum(c.duration for c in all_clips) < total_duration + 5:
-        frame = frames[random.randint(0, len(frames) - 1)]
-        all_clips.append(_zoom_clip(frame, 1.00, 1.08, random.uniform(5, 7)))
+        src = media_sources[random.randint(0, len(media_sources) - 1)]
+        try:
+            all_clips.append(_media_clip(src, random.uniform(5, 7), zoom_in=True))
+        except Exception:
+            pass
 
     # Trim to total_duration
     final_clips: list = []
@@ -2303,7 +2612,7 @@ def assemble_short_video(audio_path: str, image_paths: list[str], output_path: s
 
     try:
         final = concatenate_videoclips(final_clips, method="chain")
-        # Trim video to EXACT audio duration — prevents silence at end
+        # Trim video to EXACT audio duration â€” prevents silence at end
         exact_duration = audio.duration
         if final.duration > exact_duration:
             final = final.subclip(0, exact_duration)
@@ -2341,35 +2650,82 @@ def assemble_short_video(audio_path: str, image_paths: list[str], output_path: s
     return output_path
 
 
-# ── Music asset management ────────────────────────────────────────────────────
+# â”€â”€ Music asset management â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 _MUSIC_TRACKS = {
-    "assets/music/documentary_long.mp3":
+    "assets/music/documentary_long.mp3": [
         "https://cdn.pixabay.com/download/audio/2022/03/15/audio_8cb749612b.mp3",
-    "assets/music/documentary_short.mp3":
+    ],
+    "assets/music/documentary_short.mp3": [
         "https://cdn.pixabay.com/download/audio/2022/01/18/audio_d0c6ff1c23.mp3",
+    ],
 }
 
 
+def _create_silent_music_fallback(path: str, seconds: int) -> bool:
+    """Create a silent MP3 fallback track so pipeline never blocks on remote CDN errors."""
+    import subprocess
+
+    ffmpeg_bin = _get_ffmpeg()
+    if not ffmpeg_bin:
+        return False
+    try:
+        subprocess.run(
+            [
+                ffmpeg_bin,
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "anullsrc=r=44100:cl=stereo",
+                "-t",
+                str(seconds),
+                "-c:a",
+                "libmp3lame",
+                "-q:a",
+                "5",
+                path,
+            ],
+            check=True,
+            capture_output=True,
+        )
+        size_kb = os.path.getsize(path) // 1024 if os.path.exists(path) else 0
+        print(f"[Music] Fallback silent track created: {path} ({size_kb} KB)")
+        return os.path.exists(path)
+    except Exception as e:
+        print(f"[Music] Failed to generate fallback music {path}: {e}")
+        return False
+
+
 def ensure_music_assets() -> None:
-    """Download royalty-free background music tracks on first run if missing."""
+    """Ensure background music assets exist; download first, then generate local silent fallback."""
     os.makedirs("assets/music", exist_ok=True)
-    for path, url in _MUSIC_TRACKS.items():
+    for path, urls in _MUSIC_TRACKS.items():
         if os.path.exists(path):
             continue
         print(f"[Music] Downloading music: {path}...")
-        try:
-            r = requests.get(url, timeout=60, stream=True)
-            if r.status_code == 200:
-                with open(path, "wb") as f:
-                    for chunk in r.iter_content(chunk_size=65536):
-                        f.write(chunk)
-                size_kb = os.path.getsize(path) // 1024
-                print(f"[Music] Downloaded: {path} ({size_kb} KB) ✅")
-            else:
-                print(f"[Music] Failed to download {path} — HTTP {r.status_code} ⚠️")
-        except Exception as e:
-            print(f"[Music] Download error for {path}: {e} ⚠️")
+        downloaded = False
+        for url in urls:
+            try:
+                r = requests.get(url, timeout=60, stream=True)
+                if r.status_code == 200:
+                    with open(path, "wb") as f:
+                        for chunk in r.iter_content(chunk_size=65536):
+                            f.write(chunk)
+                    size_kb = os.path.getsize(path) // 1024
+                    print(f"[Music] Downloaded: {path} ({size_kb} KB) âœ…")
+                    downloaded = True
+                    break
+                print(f"[Music] Failed to download {path} from source â€” HTTP {r.status_code} âš ï¸")
+            except Exception as e:
+                print(f"[Music] Download error for {path}: {e} âš ï¸")
+        if downloaded:
+            continue
+
+        # CDN blocked (403/timeout/etc.) -> make local silent fallback to keep pipeline stable.
+        fallback_seconds = 60 if "short" in os.path.basename(path).lower() else 180
+        if not _create_silent_music_fallback(path, fallback_seconds):
+            print(f"[Music] No fallback generated for {path} â€” voice-only mode will be used")
 
 
 def mix_background_music(voice_path: str, is_short: bool = False) -> str:
@@ -2382,12 +2738,12 @@ def mix_background_music(voice_path: str, is_short: bool = False) -> str:
     )
 
     if not os.path.exists(music_file):
-        print(f"[Music] Music file missing ({music_file}) — skipping mix ⚠️")
+        print(f"[Music] Music file missing ({music_file}) â€” skipping mix âš ï¸")
         return voice_path
 
     ffmpeg_bin = _get_ffmpeg()
     if not ffmpeg_bin:
-        print("[Music] ffmpeg not found — skipping music mix")
+        print("[Music] ffmpeg not found â€” skipping music mix")
         return voice_path
 
     output = voice_path.replace(".mp3", "_with_music.mp3")
@@ -2403,14 +2759,14 @@ def mix_background_music(voice_path: str, is_short: bool = False) -> str:
             check=True, capture_output=True,
         )
         label = "short" if is_short else "long"
-        print(f"[Music] Music mixed at -24 dB ({label}): {output} ✅")
+        print(f"[Music] Music mixed at -24 dB ({label}): {output} âœ…")
         return output
     except Exception as e:
-        print(f"[Music] Mix failed: {e} — returning voice-only")
+        print(f"[Music] Mix failed: {e} â€” returning voice-only")
         return voice_path
 
 
-# ── Netflix-quality audio post-processing ─────────────────────────────────────
+# â”€â”€ Netflix-quality audio post-processing â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def process_audio_netflix(input_path: str) -> str:
     """
@@ -2423,24 +2779,24 @@ def process_audio_netflix(input_path: str) -> str:
 
     ffmpeg_bin = _get_ffmpeg()
     if not ffmpeg_bin:
-        print("[Audio] ffmpeg not found — skipping Netflix processing")
+        print("[Audio] ffmpeg not found â€” skipping Netflix processing")
         return input_path
 
     base   = input_path.replace(".mp3", "")
     steps  = [
-        # 1. Bass boost — warmth
+        # 1. Bass boost â€” warmth
         ([ffmpeg_bin, "-y", "-i", input_path,
           "-af", "equalizer=f=120:width_type=o:width=2:g=3",
           f"{base}_s1.mp3"], "bass boost"),
-        # 2. De-esser — tame harsh sibilants (Arabic س / ش)
+        # 2. De-esser â€” tame harsh sibilants (Arabic Ø³ / Ø´)
         ([ffmpeg_bin, "-y", "-i", f"{base}_s1.mp3",
           "-af", "highpass=f=80,lowpass=f=12000",
           f"{base}_s2.mp3"], "de-esser"),
-        # 3. Light compression — consistent volume
+        # 3. Light compression â€” consistent volume
         ([ffmpeg_bin, "-y", "-i", f"{base}_s2.mp3",
           "-af", "acompressor=threshold=0.5:ratio=4:attack=5:release=50",
           f"{base}_s3.mp3"], "compression"),
-        # 4. Subtle reverb — space and depth
+        # 4. Subtle reverb â€” space and depth
         ([ffmpeg_bin, "-y", "-i", f"{base}_s3.mp3",
           "-af", "aecho=0.8:0.9:40:0.3",
           f"{base}_s4.mp3"], "reverb"),
@@ -2458,7 +2814,7 @@ def process_audio_netflix(input_path: str) -> str:
             step_files.append(cmd[-1])
             prev = cmd[-1]
         except Exception as e:
-            print(f"[Audio] Netflix step '{label}' failed: {e} — stopping chain")
+            print(f"[Audio] Netflix step '{label}' failed: {e} â€” stopping chain")
             break
 
     if not step_files:
@@ -2489,15 +2845,117 @@ def process_audio_netflix(input_path: str) -> str:
     return input_path
 
 
-# ── Section-aware TTS + accurate chapter builder ──────────────────────────────
+# â”€â”€ Section-aware TTS + accurate chapter builder â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 _SECTION_DISPLAY = {
-    "Introduction":   "🎬 Introduction",
-    "Background":     "📺 Background & Context",
-    "Main Story":     "🔍 Main Story",
-    "Shocking Facts": "💀 Shocking Facts",
-    "Conclusion":     "🎯 Conclusion",
+    "Introduction":   "ðŸŽ¬ Introduction",
+    "Background":     "ðŸ“º Background & Context",
+    "Main Story":     "ðŸ” Main Story",
+    "Shocking Facts": "ðŸ’€ Shocking Facts",
+    "Conclusion":     "ðŸŽ¯ Conclusion",
+    "Ù…Ù‚Ø¯Ù…Ø©":          "ðŸŽ¬ Ù…Ù‚Ø¯Ù…Ø©",
+    "Ø§Ù„Ø®Ù„ÙÙŠØ©":         "ðŸ“º Ø§Ù„Ø®Ù„ÙÙŠØ© ÙˆØ§Ù„Ø³ÙŠØ§Ù‚",
+    "Ø§Ù„Ù‚ØµØ© Ø§Ù„Ø±Ø¦ÙŠØ³ÙŠØ©":  "ðŸ” Ø§Ù„Ù‚ØµØ© Ø§Ù„Ø±Ø¦ÙŠØ³ÙŠØ©",
+    "Ø­Ù‚Ø§Ø¦Ù‚ ØµØ§Ø¯Ù…Ø©":    "ðŸ’€ Ø­Ù‚Ø§Ø¦Ù‚ ØµØ§Ø¯Ù…Ø©",
+    "Ø§Ù„Ø®Ø§ØªÙ…Ø©":         "ðŸŽ¯ Ø§Ù„Ø®Ø§ØªÙ…Ø©",
 }
+
+
+def _canonical_section_name(name: str) -> str:
+    """Normalize section names to stable display keys."""
+    n = (name or "").strip().strip("-: ").lower()
+    if not n:
+        return "Introduction"
+    aliases = {
+        "introduction": "Introduction",
+        "intro": "Introduction",
+        "opening": "Introduction",
+        "background": "Background",
+        "background & context": "Background",
+        "context": "Background",
+        "main story": "Main Story",
+        "main events": "Main Story",
+        "story": "Main Story",
+        "shocking facts": "Shocking Facts",
+        "revelations": "Shocking Facts",
+        "conclusion": "Conclusion",
+        "ending": "Conclusion",
+        "Ù…Ù‚Ø¯Ù…Ø©": "Ù…Ù‚Ø¯Ù…Ø©",
+        "Ø§Ù„Ù…Ù‚Ø¯Ù…Ø©": "Ù…Ù‚Ø¯Ù…Ø©",
+        "Ø§Ù„Ø®Ù„ÙÙŠØ©": "Ø§Ù„Ø®Ù„ÙÙŠØ©",
+        "Ø§Ù„Ø®Ù„ÙÙŠØ© ÙˆØ§Ù„Ø³ÙŠØ§Ù‚": "Ø§Ù„Ø®Ù„ÙÙŠØ©",
+        "Ø§Ù„Ù‚ØµØ© Ø§Ù„Ø±Ø¦ÙŠØ³ÙŠØ©": "Ø§Ù„Ù‚ØµØ© Ø§Ù„Ø±Ø¦ÙŠØ³ÙŠØ©",
+        "Ø§Ù„Ù‚ØµØ©": "Ø§Ù„Ù‚ØµØ© Ø§Ù„Ø±Ø¦ÙŠØ³ÙŠØ©",
+        "Ø­Ù‚Ø§Ø¦Ù‚ ØµØ§Ø¯Ù…Ø©": "Ø­Ù‚Ø§Ø¦Ù‚ ØµØ§Ø¯Ù…Ø©",
+        "Ø§Ù„Ø­Ù‚Ø§Ø¦Ù‚ Ø§Ù„ØµØ§Ø¯Ù…Ø©": "Ø­Ù‚Ø§Ø¦Ù‚ ØµØ§Ø¯Ù…Ø©",
+        "Ø§Ù„Ø®Ø§ØªÙ…Ø©": "Ø§Ù„Ø®Ø§ØªÙ…Ø©",
+    }
+    return aliases.get(n, name.strip())
+
+
+def _parse_script_sections(script_text: str) -> list[tuple[str, str]]:
+    """
+    Parse sectioned scripts robustly across English/Arabic marker variants.
+
+    Supports:
+    - [SECTION: Name]
+    - [Ù‚Ø³Ù…: Name] / [Ø§Ù„Ù‚Ø³Ù…: Name]
+    - {SECTION: Name}
+    - {Ø§Ù„Ø®Ø§ØªÙ…Ø©:}
+    """
+    import re
+    marker_line = re.compile(
+        r'^\s*[\[\{\(]\s*(?:(?:section|chapter|part|Ù‚Ø³Ù…|Ø§Ù„Ù‚Ø³Ù…)\s*:\s*)?([^\]\}\)\n:]+?)\s*:?\s*[\]\}\)]\s*$',
+        flags=re.IGNORECASE,
+    )
+    plain_label_line = re.compile(
+        r'^\s*(introduction|background|main story|shocking facts|conclusion|Ù…Ù‚Ø¯Ù…Ø©|Ø§Ù„Ø®Ù„ÙÙŠØ©|Ø§Ù„Ù‚ØµØ© Ø§Ù„Ø±Ø¦ÙŠØ³ÙŠØ©|Ø­Ù‚Ø§Ø¦Ù‚ ØµØ§Ø¯Ù…Ø©|Ø§Ù„Ø®Ø§ØªÙ…Ø©)\s*:\s*$',
+        flags=re.IGNORECASE,
+    )
+
+    sections: list[tuple[str, str]] = []
+    current_name = "Introduction"
+    current_lines: list[str] = []
+    saw_marker = False
+
+    for raw_line in (script_text or "").splitlines():
+        line = raw_line.strip()
+        m = marker_line.match(line)
+        if m:
+            content = "\n".join(current_lines).strip()
+            if content:
+                sections.append((_canonical_section_name(current_name), content))
+            current_name = _canonical_section_name(m.group(1))
+            current_lines = []
+            saw_marker = True
+            continue
+        p = plain_label_line.match(line)
+        if p:
+            content = "\n".join(current_lines).strip()
+            if content:
+                sections.append((_canonical_section_name(current_name), content))
+            current_name = _canonical_section_name(p.group(1))
+            current_lines = []
+            saw_marker = True
+            continue
+        current_lines.append(raw_line)
+
+    tail = "\n".join(current_lines).strip()
+    if tail:
+        sections.append((_canonical_section_name(current_name), tail))
+
+    # If marker parsing failed or produced one large block, keep legacy behavior.
+    if not saw_marker or len(sections) <= 1:
+        raw = re.split(r'\[SECTION:\s*([^\]]+)\]', (script_text or "").strip(), flags=re.IGNORECASE)
+        legacy: list[tuple[str, str]] = []
+        for i in range(1, len(raw), 2):
+            name = _canonical_section_name(raw[i].strip())
+            content = raw[i + 1].strip() if i + 1 < len(raw) else ""
+            if content:
+                legacy.append((name, content))
+        if legacy:
+            return legacy
+    return sections
 
 
 def generate_tts_sections(script_text: str, video_id: str, language: str) -> tuple[str, str]:
@@ -2510,22 +2968,15 @@ def generate_tts_sections(script_text: str, video_id: str, language: str) -> tup
     Falls back to single full-script TTS when markers are absent or any
     section TTS call fails.
     """
-    import re
     import subprocess
 
     final_audio = os.path.join(AUDIO_DIR, f"{video_id}.mp3")
 
-    # Parse [SECTION: Name] markers
-    raw = re.split(r'\[SECTION:\s*([^\]]+)\]', script_text.strip())
-    sections: list[tuple[str, str]] = []
-    for i in range(1, len(raw), 2):
-        name    = raw[i].strip()
-        content = raw[i + 1].strip() if i + 1 < len(raw) else ""
-        if content:
-            sections.append((name, content))
+    # Parse section markers robustly (English + Arabic + braces).
+    sections = _parse_script_sections(script_text)
 
     if not sections:
-        print("[Video] No section markers — using single-call TTS")
+        print("[Video] No section markers â€” using single-call TTS")
         audio_path = generate_voiceover(script_text, video_id, language)
         return audio_path, ""
 
@@ -2538,7 +2989,7 @@ def generate_tts_sections(script_text: str, video_id: str, language: str) -> tup
         sec_id   = f"{video_id}_sec{i}"
         sec_path = generate_voiceover(content, sec_id, language)
         if not sec_path or not os.path.exists(sec_path):
-            print(f"[Video] Section {i + 1} TTS failed — falling back to full-script TTS")
+            print(f"[Video] Section {i + 1} TTS failed â€” falling back to full-script TTS")
             audio_path = generate_voiceover(script_text, video_id, language)
             return audio_path, ""
         dur = get_audio_duration(sec_path)
@@ -2585,9 +3036,9 @@ def generate_tts_sections(script_text: str, video_id: str, language: str) -> tup
 
     # Build chapter timestamps from cumulative durations
     cumulative = 0.0
-    chapter_lines = ["⏱️ CHAPTERS"]
+    chapter_lines = ["â±ï¸ CHAPTERS"]
     for i, (name, _) in enumerate(sections):
-        display = _SECTION_DISPLAY.get(name, f"📌 {name}")
+        display = _SECTION_DISPLAY.get(name, f"ðŸ“Œ {name}")
         chapter_lines.append(f"{format_time(cumulative)} {display}")
         cumulative += section_durations[i]
 
@@ -2597,7 +3048,7 @@ def generate_tts_sections(script_text: str, video_id: str, language: str) -> tup
     return final_audio, chapters
 
 
-# ── Main entry point ───────────────────────────────────────────────────────────
+# â”€â”€ Main entry point â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", user_images: list | None = None) -> str:
     import traceback
@@ -2606,7 +3057,7 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
     language = script_data.get("language", "english")
     print(f"[Video] Starting: {title} ({language})")
 
-    # ── Voiceover ─────────────────────────────────────────────────────────────
+    # â”€â”€ Voiceover â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     is_short = "short" in video_id
     try:
         if custom_audio_path and Path(custom_audio_path).exists():
@@ -2647,10 +3098,10 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
                 else:
                     print(f"[Video] Short duration OK: {_dur:.1f}s")
             else:
-                if _dur < 900:
-                    print(f"[Video] WARNING: Long audio too short: {_min:.1f} min (need 15-19 min)")
-                elif _dur > 1140:
-                    print(f"[Video] WARNING: Long audio too long: {_min:.1f} min (need 15-19 min)")
+                if _dur < 600:
+                    print(f"[Video] WARNING: Long audio too short: {_min:.1f} min (need 10-14 min)")
+                elif _dur > 840:
+                    print(f"[Video] WARNING: Long audio too long: {_min:.1f} min (need 10-14 min)")
                 else:
                     print(f"[Video] Long duration OK: {_min:.1f} min")
         except Exception:
@@ -2660,34 +3111,39 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
         traceback.print_exc()
         return ""
 
-    # ── Image / clip counts ───────────────────────────────────────────────────
+    # â”€â”€ Image / clip counts â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     n_images = calculate_unique_images(is_short=is_short)
     calculate_total_images(user_images)
-    print(f"[Video] Generating {n_images} AI images ({'short' if is_short else 'long'})")
+    print(f"[Video] Building {n_images} visuals ({'short' if is_short else 'long'})")
 
-    # ── Image generation (real photos + AI fallback per script chunk) ────────
+    # â”€â”€ Image generation (real photos + AI fallback per script chunk) â”€â”€â”€â”€â”€â”€â”€â”€
     try:
         script_text = script_data.get("script", "")
-        image_paths = fetch_real_images(script_text, n_images, video_id)
+        image_paths = fetch_stock_videos(script_text, n_images, video_id, topic=script_data.get("topic", ""))
+        if len(image_paths) < max(6, n_images // 2):
+            missing = max(0, n_images - len(image_paths))
+            if missing:
+                print(f"[Stock] Fallback: generating {missing} image visuals")
+                image_paths.extend(fetch_real_images(script_text, missing, video_id))
     except Exception as e:
-        print(f"[Video] CRASH at image generation: {e}")
+        print(f"[Video] CRASH at visual generation: {e}")
         traceback.print_exc()
         return ""
 
     if not image_paths:
-        print("[Video] No images generated, aborting")
+        print("[Video] No visuals generated, aborting")
         return ""
 
-    # ── Wikipedia real photo + user uploads (priority images) ────────────────
+    # â”€â”€ Wikipedia real photo + user uploads (priority images) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     person_name = _extract_person_name_from_topic(title, script_data.get("topic", ""))
     priority_images = get_person_images(person_name, video_id, user_images)
 
-    # ── Assembly ──────────────────────────────────────────────────────────────
+    # â”€â”€ Assembly â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     output_path = os.path.join(FINAL_DIR, f"{video_id}.mp4")
     all_image_paths = build_image_list(priority_images, image_paths)
 
     if is_short:
-        # Short: 8 AI images × 2 variations = 16 clips, loop to 60-90s
+        # Short: 8 AI images Ã— 2 variations = 16 clips, loop to 60-90s
         video_path = assemble_short_video(
             audio_path=audio_path,
             image_paths=all_image_paths,

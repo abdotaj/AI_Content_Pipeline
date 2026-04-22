@@ -176,6 +176,84 @@ def clean_word_count(text: str) -> int:
     return len([w for w in cleaned.split() if w.strip()])
 
 
+LONG_SCRIPT_MIN_WORDS = 1450
+LONG_SCRIPT_MAX_WORDS = 1900
+
+
+def _cap_script_max_words(script_text: str, max_words: int = LONG_SCRIPT_MAX_WORDS) -> str:
+    """
+    Hard-cap spoken script length by word count while preserving section marker lines.
+    Keeps long videos safely under publishing limits.
+    """
+    import re
+
+    if clean_word_count(script_text) <= max_words:
+        return script_text
+
+    kept: list[str] = []
+    used = 0
+
+    for raw_line in (script_text or "").splitlines():
+        line = raw_line.rstrip()
+        stripped = line.strip()
+
+        if not stripped:
+            kept.append("")
+            continue
+
+        if stripped.startswith("[SECTION:"):
+            kept.append(line)
+            continue
+
+        words = re.findall(r"[A-Za-z0-9\u0600-\u06FF']+", line)
+        if not words:
+            kept.append(line)
+            continue
+
+        remaining = max_words - used
+        if remaining <= 0:
+            break
+
+        if len(words) <= remaining:
+            kept.append(line)
+            used += len(words)
+            continue
+
+        trimmed = " ".join(words[:remaining]).strip()
+        if trimmed:
+            if trimmed[-1] not in ".!?؟":
+                trimmed += "."
+            kept.append(trimmed)
+            used += remaining
+        break
+
+    result = "\n".join(kept).strip()
+    result = re.sub(r"\n{3,}", "\n\n", result)
+    print(f"[Script] Length cap applied: {clean_word_count(result)} words (max {max_words})")
+    return result
+
+
+def _trim_plain_text_to_words(text: str, max_words: int) -> str:
+    """Trim plain text to at most max_words while preserving original punctuation."""
+    import re
+    src = (text or "").strip()
+    matches = list(re.finditer(r"[A-Za-z0-9\u0600-\u06FF']+", src))
+    if len(matches) <= max_words:
+        return src
+
+    cut_idx = matches[max_words - 1].end()
+    trimmed = src[:cut_idx].rstrip()
+
+    # Prefer ending at the next sentence boundary if it is close.
+    tail = src[cut_idx:cut_idx + 140]
+    m = re.search(r"[.!?؟]", tail)
+    if m:
+        trimmed = (src[:cut_idx + m.start() + 1]).rstrip()
+    elif trimmed and trimmed[-1] not in ".!?؟":
+        trimmed += "."
+    return trimmed
+
+
 def _groq_fallback(prompt: str, max_tokens: int, json_mode: bool) -> str:
     """Groq fallback with aggressive prompt truncation and 3-model retry chain."""
     import os
@@ -925,7 +1003,7 @@ Start immediately with the HOOK. Spoken words only."""
 
 
 def write_long_script_split(topic: dict, research: dict, series_info: tuple | None) -> str:
-    """Write 2,500–3,050 real-word script via 5 OpenAI calls → 15–18 min runtime."""
+    """Write 1,450–1,900 real-word script via 5 OpenAI calls → ~10–14 min runtime."""
     import time
 
     series = series_info[0] if series_info else topic.get("niche", topic.get("topic", ""))
@@ -940,11 +1018,11 @@ Key facts: {(research.get('research_facts') or research.get('what_show_got_right
 
     # (label, min_words, max_words, is_final)
     _SECTIONS_META = [
-        ("Hook + Intro",          450,  550,  False),
-        ("Background & Context",  550,  650,  False),
-        ("Main Events Deep Dive", 650,  800,  False),
-        ("Analysis & Aftermath",  550,  650,  False),
-        ("Conclusion",            300,  400,  True),
+        ("Hook + Intro",          300,  380,  False),
+        ("Background & Context",  320,  420,  False),
+        ("Main Events Deep Dive", 420,  560,  False),
+        ("Analysis & Aftermath",  320,  420,  False),
+        ("Conclusion",            180,  260,  True),
     ]
 
     _SECTION_LABELS = [
@@ -995,7 +1073,13 @@ Key facts: {(research.get('research_facts') or research.get('what_show_got_right
                 print(f"[Script] Section {call_num} retry: {r_real} real words {emoji2} "
                       f"(raw {r_raw})")
                 if r_real >= real:
-                    return retry
+                    result = retry
+                    real = r_real
+
+        # Hard cap per section to stop runaway outputs from pushing total runtime.
+        if real > max_w:
+            result = _trim_plain_text_to_words(result, max_w)
+            print(f"[Script] Section {call_num} trimmed to max {max_w} words")
         return result
 
     sections: list[str] = []
@@ -1005,12 +1089,12 @@ Key facts: {(research.get('research_facts') or research.get('what_show_got_right
         lambda: f"""{base_context}
 Write the hook and introduction for a crime documentary script about {name}.
 Hook must grab attention immediately. Build suspense.
-{_section_instruction(450, 550, False)}""",
+{_section_instruction(300, 380, False)}""",
 
         lambda: f"""{base_context}
 Continue the script. Write the background and context section.
 Cover history, key players, timeline of events.
-{_section_instruction(550, 650, False)}
+{_section_instruction(320, 420, False)}
 
 PREVIOUS SECTION:
 {sections[0]}""",
@@ -1018,7 +1102,7 @@ PREVIOUS SECTION:
         lambda: f"""{base_context}
 Continue the script. Write the main events section in full detail.
 Every key moment, dialogue, scene description.
-{_section_instruction(650, 800, False)}
+{_section_instruction(420, 560, False)}
 
 PREVIOUS SECTIONS:
 {sections[0]}
@@ -1028,7 +1112,7 @@ PREVIOUS SECTIONS:
         lambda: f"""{base_context}
 Continue the script. Write the analysis and aftermath section.
 What happened next, investigations, consequences, expert opinions.
-{_section_instruction(550, 650, False)}
+{_section_instruction(320, 420, False)}
 
 PREVIOUS SECTIONS:
 {sections[0]}
@@ -1039,7 +1123,7 @@ PREVIOUS SECTIONS:
 
         lambda: f"""{base_context}
 Continue the script. Write the final conclusion.
-{_section_instruction(300, 400, True)}
+{_section_instruction(180, 260, True)}
 
 PREVIOUS SECTIONS:
 {sections[0]}
@@ -1066,15 +1150,18 @@ PREVIOUS SECTIONS:
     )
 
     total_real = clean_word_count(full_script)
+    if total_real > LONG_SCRIPT_MAX_WORDS:
+        full_script = _cap_script_max_words(full_script, LONG_SCRIPT_MAX_WORDS)
+        total_real = clean_word_count(full_script)
     total_raw  = len(full_script.split())
     minutes    = total_real / 163  # ~163 wpm for documentary English narration
     print(f"[Script] Total English: {total_real} real words (raw {total_raw}) "
           f"→ Est. runtime: ~{minutes:.0f} min")
 
-    if total_real < 2450:
-        print(f"[Script] WARNING: English total {total_real} real words — below 2,450 target, consider regenerating")
-    elif total_real > 3150:
-        print(f"[Script] WARNING: English total {total_real} real words — above 3,150 cap, may run long")
+    if total_real < LONG_SCRIPT_MIN_WORDS:
+        print(f"[Script] WARNING: English total {total_real} real words — below {LONG_SCRIPT_MIN_WORDS:,} target, may be short")
+    elif total_real > LONG_SCRIPT_MAX_WORDS:
+        print(f"[Script] WARNING: English total {total_real} real words — above {LONG_SCRIPT_MAX_WORDS:,} cap, may run long")
 
     return full_script
 
@@ -1467,7 +1554,7 @@ The host found something most viewers don't know — celebrate that discovery.
 """
 
     part1_prompt = f"""You are a top true crime documentary writer for YouTube.
-Write a 2000-2500 word 16-18 minute documentary script about: {topic['topic']}
+Write a 1450-1900 word 10-14 minute documentary script about: {topic['topic']}
 The related series/movie is: {series_label}
 
 CRITICAL: Use ONLY these verified Wikipedia facts. Do NOT invent any information.
@@ -1496,31 +1583,31 @@ HOOK (100 words = ~46 seconds):
 - Something that makes the viewer want to know more
 - Example: "{series_label} introduced millions of people to this incredible true story. But the real events were even more extraordinary than anything the show could portray."
 
-SERIES INTRO (300 words = ~2.3 minutes):
+SERIES INTRO (220 words = ~1.4 minutes):
 - Celebrate what {series_label} showed the world — it is great television
 - Why millions of people loved it and why it matters
 - Build excitement: the real story that inspired it is even more incredible
 - Name {series_label} directly and what made it famous
 
-REAL BACKGROUND (500 words = ~3.8 minutes):
+REAL BACKGROUND (320 words = ~2.1 minutes):
 - Real person's early life with specific facts
 - Family, childhood, origins — real dates, real places, real names
 - The fascinating true events BEFORE the series timeline begins
 
-MAIN STORY (800 words = ~6.2 minutes):
+MAIN STORY (520 words = ~3.3 minutes):
 - Full chronological real story
 - Key events the series captured — what {series_label} got RIGHT with evidence
 - How history inspired {series_label} and why filmmakers made their creative choices
 - Real quotes from people involved
 - Specific dates and facts throughout
 
-SHOCKING REVELATIONS (400 words = ~3.1 minutes):
+SHOCKING REVELATIONS (220 words = ~1.4 minutes):
 - 3-4 fascinating real facts that make the true story even more incredible than {series_label}
 - Remarkable real details the show's runtime couldn't fully capture
 - Things that would amaze even the biggest fans of the show
 - Real impact on real people and real history
 
-REAL STORY VS SCREEN STORY (250 words = ~1.9 minutes):
+REAL STORY VS SCREEN STORY (80 words = ~0.5 minutes):
 ONLY write a comparison if you have a VERIFIED, SPECIFIC difference with different facts or numbers.
 Format: "In {series_label}, they showed X. In reality, Y happened."
 NEVER write the same number or fact twice as if they are different.
@@ -1534,14 +1621,14 @@ If no specific verified difference exists, use ONE of these universal film truth
 
 End this section with: "{series_label} may have taken creative liberties, but it captures the spirit of the real story. The real {wiki_real_person} was just as fascinating — if not more so — than the screen version."
 
-CONCLUSION (150 words = ~1.2 minutes):
+CONCLUSION (120 words = ~0.8 minutes):
 - What happened after the events {series_label} depicted
 - Where the real people are now
 - One question to tease the next video
 - End with: "Follow Dark Crime Decoded for more real stories behind your favourite crime series"
 
-TOTAL TARGET: 2000 words minimum, 2500 words maximum.
-SECTION TOTALS: 100+300+500+800+400+250+150 = 2500 words = ~19.2 minutes at 130 wpm.
+TOTAL TARGET: 1450 words minimum, 1900 words maximum.
+SECTION TOTALS: 100+220+320+520+220+80+120 = 1580 words = ~10-12 minutes at 150-160 wpm.
 
 PRISON SENTENCE RULE (critical for Arabic translation):
 Always write "served X years IN PRISON" or "spent X years BEHIND BARS" — never just "served X years".
@@ -1586,7 +1673,7 @@ Start immediately with the HOOK. Write spoken words only — no labels, no heade
 
     # Primary: 5-call split targeting 2,500–3,050 real words
     script_text = write_long_script_split(topic, research, _si_long)
-    if script_text and clean_word_count(script_text) >= 2000:
+    if script_text and clean_word_count(script_text) >= LONG_SCRIPT_MIN_WORDS:
         script_text = validate_script(script_text)
         print(f"[Script] ✅ Split method OK: {clean_word_count(script_text)} real words")
     else:
@@ -1600,7 +1687,7 @@ Start immediately with the HOOK. Write spoken words only — no labels, no heade
             if attempt > 0:
                 _prompt += f"""
 
-CRITICAL: Previous attempt was only {clean_word_count(script_text)} real words. MINIMUM REQUIRED: 1200 real words.
+CRITICAL: Previous attempt was only {clean_word_count(script_text)} real words. MINIMUM REQUIRED: {LONG_SCRIPT_MIN_WORDS} real words.
 You must EXPAND every section significantly:
 - HOOK: Add more shocking statistics
 - SERIES INTRO: Describe the show in more detail
@@ -1614,10 +1701,13 @@ Do not summarize — give full detailed information."""
             words   = clean_word_count(script_text)
             minutes = words / 163
             print(f"[Script] Attempt {attempt + 1}: {words} real words = ~{minutes:.1f} minutes")
-            if words >= 1200:
+            if words >= LONG_SCRIPT_MIN_WORDS:
                 print(f"[Script] ✅ Length OK: {words} real words")
                 break
             print(f"[Script] WARNING: Too short ({words} real words) — retrying...")
+
+    # Final hard cap for YouTube-safe runtime in draft/publish workflows.
+    script_text = _cap_script_max_words(script_text, LONG_SCRIPT_MAX_WORDS)
 
     # ── PART 2: Generate metadata only (title, hook, captions, etc.) ────────
     _series_info    = get_series_for_person(topic["topic"])
@@ -1940,8 +2030,11 @@ def format_for_tts_arabic(text: str) -> str:
     """
     import re
 
-    # Section markers go through unchanged; process section bodies separately
-    section_marker_re = re.compile(r'(\[SECTION:[^\]]+\])')
+    # Section markers go through unchanged; process section bodies separately.
+    section_marker_re = re.compile(
+        r'((?:^\s*[\[\{\(]\s*(?:section|chapter|part|القسم|قسم)\s*:[^\]\}\)\n]+[\]\}\)]\s*$))',
+        flags=re.IGNORECASE | re.MULTILINE,
+    )
     parts = section_marker_re.split(text)
     out_parts: list[str] = []
 
@@ -2023,7 +2116,9 @@ def translate_to_arabic_openai(english_text: str, topic: str = "") -> str:
         return translate_to_arabic_google(english_text)
 
     word_count = len(english_text.split())
-    min_ar_words = int(word_count * 0.9)
+    # Arabic can become too short if we allow aggressive compression.
+    # Keep Arabic at least equal to English word count for duration stability.
+    min_ar_words = int(word_count * 1.0)
 
     def _build_prompt(strong: bool = False) -> str:
         extra = (
@@ -2101,7 +2196,13 @@ Return ONLY the Arabic translation. No explanations, no notes."""
         en_words = word_count
         ratio = ar_words / max(en_words, 1)
         print(f"[Script] EN: {en_words} words | AR: {ar_words} words | Ratio: {ratio:.2f}")
-        if ratio < 0.8:
+        # Short fragments (titles/hooks/hashtags) naturally compress in Arabic.
+        # Skip expensive retry loops for short inputs to reduce pipeline wall time.
+        if en_words < 80:
+            print("[Script] Short fragment translation accepted")
+            print("[Script] OpenAI Arabic translation ✅")
+            return result
+        if ratio < 0.95:
             print("[Script] ⚠️ Arabic too short — retrying with stronger instruction")
             retry = _do_translate(_build_prompt(strong=True))
             if retry:
@@ -2110,8 +2211,18 @@ Return ONLY the Arabic translation. No explanations, no notes."""
                 if retry_words > ar_words:
                     print(f"[Script] Retry AR: {retry_words} words — using retry")
                     result = retry
+                    ar_words = retry_words
                 else:
                     print(f"[Script] Retry not longer ({retry_words} vs {ar_words}) — keeping original")
+            # Last resort: Google translation tends to preserve full source coverage.
+            final_ratio = ar_words / max(en_words, 1)
+            if final_ratio < 0.90:
+                print("[Script] ⚠️ Still short after retry — trying Google translation fallback")
+                google_result = _fix_arabic(translate_to_arabic_google(english_text))
+                google_words = len(google_result.split())
+                if google_words > ar_words:
+                    print(f"[Script] Google AR: {google_words} words — using Google fallback")
+                    result = google_result
         print("[Script] OpenAI Arabic translation ✅")
         return result
 
@@ -2156,12 +2267,13 @@ def translate_long_script_arabic(english_text: str, topic: str = "") -> str:
     ar_raw   = len(result.split())
     ar_min   = ar_real // 140
     ar_max   = ar_real // 130
-    if ar_real >= 2250:
+    min_expected_ar = int(total_en * 0.9)
+    if ar_real >= min_expected_ar:
         print(f"[Script] Total Arabic: {ar_real} real words (raw {ar_raw}) ✅ "
               f"→ Est. runtime: ~{ar_min}–{ar_max} min")
     else:
         print(f"[Script] Total Arabic: {ar_real} real words (raw {ar_raw}) ⚠️ "
-              f"below 2,250 target — consider regenerating")
+              f"below {min_expected_ar:,} target — consider regenerating")
     return result
 
 
@@ -2181,8 +2293,55 @@ def _build_hemedti_arabic_title(part_number: int | None) -> str:
     return "حميدتي: أخطر رجل لم تسمع عنه | فك رموز الجريمة المظلمة"
 
 
+_SECTION_ARABIC_LABELS = {
+    "introduction": "مقدمة",
+    "background": "الخلفية",
+    "main story": "القصة الرئيسية",
+    "shocking facts": "حقائق صادمة",
+    "conclusion": "الخاتمة",
+}
+
+
+def _split_english_sectioned_script(script_text: str) -> list[tuple[str, str]]:
+    """Split [SECTION: ...] script into ordered section tuples."""
+    import re
+    text = (script_text or "").strip()
+    raw = re.split(r'\[SECTION:\s*([^\]]+)\]', text, flags=re.IGNORECASE)
+    sections: list[tuple[str, str]] = []
+    if len(raw) >= 3:
+        for i in range(1, len(raw), 2):
+            name = raw[i].strip()
+            body = raw[i + 1].strip() if i + 1 < len(raw) else ""
+            if body:
+                sections.append((name, body))
+    if sections:
+        return sections
+    return [("Introduction", text)] if text else []
+
+
+def _to_arabic_section_name(name: str) -> str:
+    key = (name or "").strip().lower()
+    return _SECTION_ARABIC_LABELS.get(key, name.strip() or "مقدمة")
+
+
+def _translate_script_preserve_sections(english_script_text: str) -> str:
+    """
+    Translate sectioned script while preserving normalized markers.
+    Output marker format is always: [SECTION: <Arabic Label>]
+    """
+    sections = _split_english_sectioned_script(english_script_text)
+    if not sections:
+        return ""
+    translated_parts: list[str] = []
+    for name, content in sections:
+        ar_name = _to_arabic_section_name(name)
+        ar_body = translate_to_arabic(content)
+        translated_parts.append(f"[SECTION: {ar_name}]\n{ar_body.strip()}")
+    return "\n\n".join(translated_parts).strip()
+
+
 def translate_script(en_script: dict) -> dict:
-    """Translate an English script_data dict into Arabic using Google Translate."""
+    """Translate an English script_data dict into Arabic with stable section markers."""
     _topic_lower = en_script.get("topic", "").lower()
     _is_hemedti  = any(k in _topic_lower for k in ["hemedti", "حميدتي", "dagalo"])
 
@@ -2198,7 +2357,7 @@ def translate_script(en_script: dict) -> dict:
     ar_data = {
         "title":          ar_title,
         "hook":           translate_to_arabic(en_script.get("hook", "")),
-        "script":         fix_first_mention(translate_to_arabic(en_script["script"]), is_arabic=True),
+        "script":         fix_first_mention(_translate_script_preserve_sections(en_script["script"]), is_arabic=True),
         "on_screen_texts": [translate_to_arabic(t) for t in en_script["on_screen_texts"]],
         "caption":        translate_to_arabic(en_script["caption"]),
         "hashtags":       translate_to_arabic(en_script["hashtags"]),

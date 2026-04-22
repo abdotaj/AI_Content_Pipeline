@@ -92,6 +92,7 @@ jobs:
           ELEVENLABS_VOICE_ID_EN:            ${{ secrets.ELEVENLABS_VOICE_ID_EN }}
           ELEVENLABS_VOICE_ID_AR:            ${{ secrets.ELEVENLABS_VOICE_ID_AR }}
           PEXELS_API_KEY:                    ${{ secrets.PEXELS_API_KEY }}
+          PIXABAY_API_KEY:                   ${{ secrets.PIXABAY_API_KEY }}
           TELEGRAM_BOT_TOKEN:                ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID:                  ${{ secrets.TELEGRAM_CHAT_ID }}
           YOUTUBE_CLIENT_ID_AR:              ${{ secrets.YOUTUBE_CLIENT_ID_DARKCRIMED }}

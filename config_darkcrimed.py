@@ -16,6 +16,7 @@ ELEVENLABS_VOICE_ID   = os.getenv("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")
 ELEVENLABS_VOICE_ID_EN = os.getenv("ELEVENLABS_VOICE_ID_EN", "oHXsMWwdWLsNE9IdmbuT")
 ELEVENLABS_VOICE_ID_AR = os.getenv("ELEVENLABS_VOICE_ID_AR", "kVE76Ng0Z4kGR7oebETP")
 PEXELS_API_KEY        = os.getenv("PEXELS_API_KEY", "YOUR_PEXELS_KEY")
+PIXABAY_API_KEY       = os.getenv("PIXABAY_API_KEY", "YOUR_PIXABAY_KEY")
 TELEGRAM_BOT_TOKEN    = os.getenv("TELEGRAM_BOT_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID      = os.getenv("TELEGRAM_CHAT_ID", "YOUR_CHAT_ID")
 YOUTUBE_CLIENT_ID     = os.getenv("YOUTUBE_CLIENT_ID_DARKCRIMED", os.getenv("YOUTUBE_CLIENT_ID", "YOUR_YT_CLIENT_ID"))
@@ -76,7 +77,7 @@ NICHE_WEIGHTS = [0.10, 0.10, 0.10, 0.08, 0.08,
                  0.06, 0.05, 0.04, 0.01, 0.01]
 
 VIDEOS_PER_DAY = 1
-LONG_VIDEO_DURATION  = 1020  # 17 minutes target (15-19 min = 900-1140 s); audio drives actual length
+LONG_VIDEO_DURATION  = 3000  # 50 minutes max; actual duration set by audio length
 SHORT_VIDEO_DURATION = 75    # 75 seconds target (60-90 s range); audio drives actual length
 EDGETTS_RATE         = "+0%"   # edge-tts speaking rate for fallback TTS (+0% = normal speed)
 # Legacy aliases — kept for backward compatibility
