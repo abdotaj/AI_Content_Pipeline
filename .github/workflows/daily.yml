@@ -18,6 +18,9 @@ jobs:
       github.event_name == 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 480
+    concurrency:
+      group: dark-crime-pipeline
+      cancel-in-progress: true
 
     steps:
       - name: Checkout code

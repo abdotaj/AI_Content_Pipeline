@@ -53,6 +53,24 @@ from agent.publish_agent  import upload_to_youtube
 from agents.content_agent import ingest_content_files
 
 
+def _already_ran_today() -> bool:
+    """Return True if a manifest for today's date already exists."""
+    today = datetime.date.today().isoformat()
+    # Fast path: manifest file named with today's date
+    if glob.glob(f"output/dark_crime/manifest_{today}.json"):
+        return True
+    # Slow path: scan all manifests for a matching date field
+    for m in glob.glob("output/dark_crime/manifest_*.json"):
+        try:
+            with open(m) as f:
+                data = json.load(f)
+            if data.get("date") == today:
+                return True
+        except Exception:
+            pass
+    return False
+
+
 def check_24h_cooldown() -> bool:
     """Return True if pipeline should run, False if last run was < 24 hours ago."""
     manifests = glob.glob("output/dark_crime/manifest_*.json")
@@ -126,6 +144,17 @@ def run_pipeline():
     print(f"\n{'='*50}")
     print(f"  Dark Crime Decoded Pipeline — {today}")
     print(f"{'='*50}\n")
+
+    # ── Date-based cooldown (scheduled runs only) ──────────────
+    # workflow_dispatch and local runs always proceed regardless.
+    _event = os.getenv("GITHUB_EVENT_NAME", "")
+    if _event == "schedule":
+        if _already_ran_today():
+            print("[Pipeline] Already ran today — skipping")
+            return
+        print("[Pipeline] Scheduled run — no run today yet, proceeding")
+    else:
+        print(f"[Pipeline] Trigger: '{_event or 'local'}' — cooldown check skipped")
 
     # ── Ensure music assets are downloaded ────────────────────
     ensure_music_assets()
