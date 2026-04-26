@@ -41,25 +41,31 @@ def _groq_call(**kwargs):
 
 
 
-_SCRIPT_SYSTEM_PROMPT = """You are a professional true crime documentary scriptwriter.
+_SCRIPT_SYSTEM_PROMPT = """You are a professional true crime documentary scriptwriter. Write like Morgan Freeman narrating a documentary — measured, authoritative, deeply human.
 
-Tone rules:
+NARRATION STYLE:
+- Flow like a novel, not a report. Every paragraph tells part of the story and builds tension.
+- Minimum 3 sentences per paragraph, maximum 6. No single-sentence paragraphs.
+- Connect ideas with transition phrases: "But what happened next shocked everyone...", "What nobody knew at the time was...", "Years later, the truth would finally emerge...", "The world saw one version of events. The reality was far darker."
+- No bullet points. No numbered lists. No standalone facts. Prose only.
+- Show cause and effect: actions lead to consequences, decisions lead to outcomes.
+
+CHARACTER COVERAGE:
+- Cover ALL main characters — never focus on just one person.
+- For each real person: full name, actual role, what they really did, their fate.
+- For fictional characters based on real people: name the real person and explain what changed.
+- Dedicate at least one full paragraph to each major character.
+
+TONE RULES:
 - 85% dark, serious, documentary tone
-- 15% dry humor and sarcasm — especially when describing:
-  * How stupid a criminal's mistake was
-  * Ironic twists in the story
-  * Moments where the subject embarrassed themselves
-  * Unexpected plot twists
+- 15% dry humor and sarcasm — especially for: criminal mistakes, ironic twists, moments of hubris
+- Examples: 'He planned the perfect crime. Except he left his wallet at the scene.' / 'For a man who controlled an entire militia, he somehow forgot that cameras exist.'
+- Never make fun of victims. Only humor at criminals, corrupt officials, or ironic situations. One or two lines max per section.
 
-Examples of good dry humor in crime scripts:
-- 'He planned the perfect crime. Except he left his wallet at the scene.'
-- 'For a man who controlled an entire militia, he somehow forgot that cameras exist.'
-- 'Genius move. Truly. A masterclass in how not to be a warlord.'
-
-Rules:
-- Never make fun of victims
-- Only humor directed at criminals, corrupt officials, or ironic situations
-- One or two lines max per section — don't overdo it"""
+SHOW vs REALITY:
+- Always include a dedicated paragraph comparing what the show/film depicted vs what really happened.
+- Use phrases like: "The show portrayed X as... In reality, Y actually..." or "Hollywood changed this detail: the real story was..."
+- This makes the content unique and educational."""
 
 
 def clean_word_count(text: str) -> int:
@@ -913,11 +919,28 @@ def write_long_script_split(topic: dict, research: dict, series_info: tuple | No
     stype  = series_info[1] if series_info else "Movie"
     name   = topic.get("topic", "")
 
+    rvf = research.get("real_vs_fiction") or {}
+    _real_people_block = ""
+    if rvf.get("real_people"):
+        lines = [f"  - {p['name']} ({p.get('role','')}, {p.get('era','')})" for p in rvf["real_people"][:6]]
+        _real_people_block = "Real people:\n" + "\n".join(lines) + "\n"
+    _chars_block = ""
+    if rvf.get("fictional_characters"):
+        lines = [f"  - {c['name']} (played by {c.get('played_by','?')}) → based on {c.get('based_on','?')}" for c in rvf["fictional_characters"][:6]]
+        _chars_block = "Fictional characters and real counterparts:\n" + "\n".join(lines) + "\n"
+    _rvs_block = ""
+    if rvf.get("real_vs_show"):
+        lines = [f"  - {r['aspect']}: Show said '{r.get('show','')}' / Reality was '{r.get('reality','')}'" for r in rvf["real_vs_show"][:4]]
+        _rvs_block = "Show vs reality comparisons:\n" + "\n".join(lines) + "\n"
+    _time_loc = ""
+    if rvf.get("time_period") or rvf.get("real_locations"):
+        _time_loc = f"Time period: {rvf.get('time_period','')}\nLocations: {', '.join(rvf.get('real_locations',[]))}\n"
+
     base_context = f"""Topic: {name}
 Series/Movie: {series} ({stype})
 Real person: {research.get('real_person', name)}
 Key facts: {(research.get('research_facts') or research.get('what_show_got_right', []))[:3]}
-"""
+{_real_people_block}{_chars_block}{_rvs_block}{_time_loc}"""
 
     # (label, min_words, max_words, is_final)
     _SECTIONS_META = [
@@ -990,21 +1013,30 @@ Key facts: {(research.get('research_facts') or research.get('what_show_got_right
 
     section_prompts = [
         lambda: f"""{base_context}
-Write the hook and introduction for a crime documentary script about {name}.
-Hook must grab attention immediately. Build suspense.
+Write the HOOK and INTRODUCTION for a documentary about {name}.
+
+Open with a single gripping sentence that puts the viewer in the moment — a crime scene, a decision, a moment before everything changed. Then introduce the real story behind {series}: who the real people were, what the show is based on, and why this story matters. Introduce ALL main characters by name — real people and their fictional counterparts. End the section with a line that makes the viewer need to keep watching.
+
+Write flowing documentary narration — no lists, no bullet points, paragraphs only. Minimum 3 sentences per paragraph.
 {_section_instruction(300, 380, False)}""",
 
         lambda: f"""{base_context}
-Continue the script. Write the background and context section.
-Cover history, key players, timeline of events.
+Continue the documentary. Write the BACKGROUND AND CONTEXT section.
+
+Describe the world these people lived in — the era, the locations, the forces that shaped them. Introduce each major character with a full paragraph: their background, their motivations, what drove them. For fictional characters (if any), explain who the real person was and what the show changed. Use phrases like "Long before the cameras found them..." or "To understand what happened, you have to go back to..."
+
+Write flowing documentary narration — no lists, no bullet points, paragraphs only.
 {_section_instruction(320, 420, False)}
 
 PREVIOUS SECTION:
 {sections[0]}""",
 
         lambda: f"""{base_context}
-Continue the script. Write the main events section in full detail.
-Every key moment, dialogue, scene description.
+Continue the documentary. Write the MAIN EVENTS section.
+
+This is the heart of the story. Walk through key events chronologically, building tension. Cover every major character's role — what they did, what choices they made, how their paths intersected. Include at least one "Show vs Reality" paragraph: what {series} depicted vs what actually happened. Use transition phrases to maintain narrative flow. Let the story breathe — cause leads to effect, decision leads to consequence.
+
+Write flowing documentary narration — no lists, no bullet points, paragraphs only.
 {_section_instruction(420, 560, False)}
 
 PREVIOUS SECTIONS:
@@ -1013,8 +1045,11 @@ PREVIOUS SECTIONS:
 {sections[1]}""",
 
         lambda: f"""{base_context}
-Continue the script. Write the analysis and aftermath section.
-What happened next, investigations, consequences, expert opinions.
+Continue the documentary. Write the AFTERMATH AND ANALYSIS section.
+
+What happened to each person after the main events? Investigations, trials, deaths, where they are now. Include a dedicated paragraph on what the show got right and what it changed — use the real_vs_show data if provided. Reflect on what this story reveals about human nature, power, or society. Let the weight of real events land.
+
+Write flowing documentary narration — no lists, no bullet points, paragraphs only.
 {_section_instruction(320, 420, False)}
 
 PREVIOUS SECTIONS:
@@ -1025,7 +1060,11 @@ PREVIOUS SECTIONS:
 {sections[2]}""",
 
         lambda: f"""{base_context}
-Continue the script. Write the final conclusion.
+Continue the documentary. Write the CONCLUSION.
+
+Bring all threads together. What is the final verdict on these people and events? What does this story leave us with? End with a powerful closing line that echoes the opening — or one that reframes everything the viewer just heard. Call to action for viewers naturally woven into the closing.
+
+Write flowing documentary narration — no lists, no bullet points, paragraphs only.
 {_section_instruction(180, 260, True)}
 
 PREVIOUS SECTIONS:
@@ -1456,10 +1495,27 @@ Build the story AROUND this discovery. Open the video with it as the hook.
 The host found something most viewers don't know — celebrate that discovery.
 """
 
+    # Build real_vs_fiction context block for single-call fallback
+    _rvf_fb = research.get("real_vs_fiction") or {}
+    _rvf_fb_block = ""
+    if _rvf_fb.get("real_people"):
+        _rp_lines = [f"  - {p['name']}: {p.get('role','')} ({p.get('era','')})" for p in _rvf_fb["real_people"][:6]]
+        _rvf_fb_block += "REAL PEOPLE (cover ALL of them):\n" + "\n".join(_rp_lines) + "\n"
+    if _rvf_fb.get("fictional_characters"):
+        _fc_lines = [f"  - {c['name']} (played by {c.get('played_by','?')}) → real person: {c.get('based_on','?')}" for c in _rvf_fb["fictional_characters"][:6]]
+        _rvf_fb_block += "FICTIONAL→REAL CHARACTER MAP:\n" + "\n".join(_fc_lines) + "\n"
+    if _rvf_fb.get("real_vs_show"):
+        _rvs_lines = [f"  - {r['aspect']}: reality='{r.get('reality','')}' vs show='{r.get('show','')}'" for r in _rvf_fb["real_vs_show"][:4]]
+        _rvf_fb_block += "SHOW VS REALITY (use at least one of these):\n" + "\n".join(_rvs_lines) + "\n"
+
     part1_prompt = f"""You are a top true crime documentary writer for YouTube.
 Write a 1450-1900 word 10-14 minute documentary script about: {topic['topic']}
 The related series/movie is: {series_label}
 
+NARRATION STYLE: Write like Morgan Freeman narrating a documentary. Flowing paragraphs, no lists, no bullet points. Minimum 3 sentences per paragraph. Use transition phrases like "But what happened next shocked everyone...", "What nobody knew at the time was...", "Years later, the truth finally emerged..."
+
+COVER ALL CHARACTERS: Dedicate at least one full paragraph to EACH major character. Never focus on just one person.
+{_rvf_fb_block}
 CRITICAL: Use ONLY these verified Wikipedia facts. Do NOT invent any information.
 Network: {wiki_network}
 Series premiered: {wiki_year}

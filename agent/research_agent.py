@@ -610,6 +610,71 @@ Return ONLY this JSON:
     }
 
 
+# ── Real vs Fiction extractor ───────────────────────────────
+
+def extract_real_vs_fiction(topic: str, research_text: str) -> dict:
+    """
+    Analyse research text and extract structured real-people / fictional-characters
+    mapping plus show-vs-reality comparisons.
+
+    Works for ANY topic — crime docs, biopics, historical shows, sports, etc.
+    Returns a dict ready to be merged into script_data.
+    """
+    prompt = f"""Analyze this research about "{topic}".
+
+Extract the following and respond with valid JSON only, no markdown:
+
+1. Is this based on a true story?
+2. Who are the REAL people involved and what did they actually do?
+3. If it is a TV show or film, who are the fictional characters and which real person is each one based on?
+4. What did the show get right vs what did it change or dramatize?
+5. What time period and real locations?
+
+Research text:
+{research_text[:3000]}
+
+Return exactly this JSON structure:
+{{
+  "is_based_on_true_story": true,
+  "real_people": [
+    {{"name": "Real Person Name", "role": "what they actually did", "era": "time period"}}
+  ],
+  "fictional_characters": [
+    {{"name": "Character Name", "played_by": "Actor Name", "based_on": "Real Person Name", "show": "Show/Film Title"}}
+  ],
+  "real_vs_show": [
+    {{"aspect": "topic area", "reality": "what really happened", "show": "how show depicted it"}}
+  ],
+  "time_period": "e.g. 1970s-1980s",
+  "real_locations": ["Location 1", "Location 2"]
+}}
+
+Respond with valid JSON only, no markdown, no explanation."""
+
+    try:
+        raw = _ai_call(prompt, temperature=0.1, max_tokens=1500, json_mode=False)
+        # Strip markdown fences if model adds them despite instruction
+        import re as _re
+        raw = _re.sub(r'^```(?:json)?\s*', '', raw.strip())
+        raw = _re.sub(r'\s*```$', '', raw)
+        data = json.loads(raw)
+        rp  = data.get("real_people", [])
+        fc  = data.get("fictional_characters", [])
+        rvs = data.get("real_vs_show", [])
+        print(f"[Research] real_vs_fiction: {len(rp)} real people, {len(fc)} characters, {len(rvs)} comparisons")
+        return data
+    except Exception as e:
+        print(f"[Research] extract_real_vs_fiction failed: {e}")
+        return {
+            "is_based_on_true_story": True,
+            "real_people": [],
+            "fictional_characters": [],
+            "real_vs_show": [],
+            "time_period": "",
+            "real_locations": [],
+        }
+
+
 # ── Deep research on a specific series ─────────────────────
 
 def research_series(topic: str, series_name: str | None = None, user_note: str | None = None) -> dict | None:
@@ -783,6 +848,12 @@ Return ONLY valid JSON."""
         print(f"[Research] Combined extraction failed: {e} — using DuckDuckGo fallback")
         return research_series_duckduckgo(topic)
 
+    # ── STEP 4: Extract real vs fiction structured data ─────────
+    _rvf_text = f"{person_wiki or ''}\n{series_wiki or ''}\n{ddg_combined.get('real_story', '')}"
+    real_vs_fiction = extract_real_vs_fiction(topic, _rvf_text)
+    print(f"[Research] Real vs fiction: {len(real_vs_fiction.get('real_people', []))} real people, "
+          f"{len(real_vs_fiction.get('fictional_characters', []))} fictional chars")
+
     facts_out    = info.get("real_facts") or []
     inspired_out = info.get("how_show_inspired") or []
     shocking_out = info.get("shocking_real_facts") or []
@@ -817,6 +888,8 @@ Return ONLY valid JSON."""
         "what_show_got_wrong":           inspired_out,
         "shocking_real_facts":           shocking_out,
         "real_people_behind_characters": info.get("real_people_in_show", {}),
+        # Real vs fiction structured data for script_agent
+        "real_vs_fiction": real_vs_fiction,
         # Full structured block
         "wiki": {
             "real_person":         info.get("real_person"),
