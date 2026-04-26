@@ -58,6 +58,7 @@ for d in [AUDIO_DIR, VIDEO_DIR, FINAL_DIR, IMAGES_DIR, STOCK_VIDEOS_DIR]:
 TTS_SPEED = 1.20
 EDGETTS_RATE_120 = "+20%"
 _ELEVENLABS_DISABLED = False
+_OPENAI_QUOTA_EXCEEDED = False  # set True on first 429 — skips all subsequent OpenAI TTS calls
 
 
 # â"€â"€ Chapter / timestamp helpers â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
@@ -154,12 +155,16 @@ def generate_voiceover_edgetts(script_text: str, filename: str, language: str = 
 def generate_voiceover_openai(text: str, language: str, output_path: str,
                               is_short: bool = False) -> str:
     """Generate voiceover using OpenAI TTS (tts-1) with timeout and per-chunk retry."""
+    global _OPENAI_QUOTA_EXCEEDED
     import openai
     import httpx
 
     api_key = os.getenv("OPENAI_API_KEY", "").strip()
     if not api_key:
         print("[Voice] OpenAI API key not set — skipping")
+        return None
+    if _OPENAI_QUOTA_EXCEEDED:
+        print("[Voice] OpenAI quota exceeded this run — skipping directly to edge-tts")
         return None
 
     client = openai.OpenAI(
@@ -241,6 +246,14 @@ def generate_voiceover_openai(text: str, language: str, output_path: str,
                     audio_files.append(chunk_path)
                     break
                 except Exception as e:
+                    err_str = str(e)
+                    if "429" in err_str or "quota" in err_str.lower() or "rate" in err_str.lower():
+                        print(f"[Voice] OpenAI 429/quota error — disabling OpenAI TTS for this run")
+                        _OPENAI_QUOTA_EXCEEDED = True
+                        for f in audio_files:
+                            try: os.remove(f)
+                            except OSError: pass
+                        return None
                     print(f"[Voice] OpenAI chunk attempt {attempt + 1} failed: {e}")
                     time.sleep(5)
             else:
@@ -510,7 +523,7 @@ def generate_voiceover(script_text: str, filename: str, language: str = "english
 
     # â"€â"€ Priority 2: OpenAI TTS â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
     openai_key = os.getenv("OPENAI_API_KEY", "").strip()
-    if openai_key:
+    if openai_key and not _OPENAI_QUOTA_EXCEEDED:
         print("[Voice] Trying OpenAI TTS...")
         _oai_path = os.path.join(AUDIO_DIR, f"{filename}.mp3")
         _is_short = "short" in filename.lower()
@@ -868,49 +881,75 @@ def transform_user_image(
     return None
 
 
-def process_user_images(user_images: list[dict], video_id: str) -> list[dict]:
+def process_user_images(user_images: list[dict], video_id: str,
+                        script_text: str = "") -> list[dict]:
     """
     For each user image: generate an AI-cinematic version from its caption,
     then include the original.
 
-    Returns expanded list in this order per image:
-      1. AI-transformed version (caption → Pollinations; tags include "portrait")
-      2. Original user image               (tags include "real", "photo")
+    Tags are derived from:
+      1. The actual filename stem (not generic "cinematic dark portrait")
+      2. First 5 meaningful words from the corresponding script section at image position i
 
-    The AI version is listed first so _build_clip_pool_with_user_images places
-    it at the very opening of the video (portrait tag → position 0).
+    Returns expanded list in this order per image:
+      1. AI-transformed version
+      2. Original user image
     """
+    import re as _re
+
+    # Pre-parse script sections to source keywords per image position
+    section_texts: list[str] = []
+    if script_text:
+        try:
+            sections = _parse_script_sections(script_text)
+            section_texts = [content for _, content in sections]
+        except Exception:
+            section_texts = []
+
+    def _section_keywords(idx: int) -> list[str]:
+        if not section_texts:
+            return []
+        text = section_texts[idx % len(section_texts)]
+        words = [w.lower() for w in text.split()[:12] if len(w) > 3 and w.isalpha()]
+        return words[:5]
+
     processed: list[dict] = []
 
     for i, img_info in enumerate(user_images):
         path    = img_info.get("path", "")
-        caption = (img_info.get("caption") or "cinematic dark portrait").strip()
-        tags    = img_info.get("tags", [])
+        # Use filename stem as caption — never the generic "cinematic dark portrait"
+        fname   = os.path.splitext(os.path.basename(path))[0]
+        caption = (img_info.get("caption") or fname or "documentary scene").strip()
+        if caption in ("cinematic dark portrait", "documentary scene", ""):
+            caption = fname or f"image {i + 1}"
+        base_tags = img_info.get("tags", [])
 
         if not path or not os.path.exists(path):
             continue
 
-        print(f"[Image] Processing user image {i + 1}: '{caption[:60]}'")
+        # Keywords from the script section this image will appear in
+        sec_kws = _section_keywords(i)
+        print(f"[Image] Processing user image {i + 1}: '{caption[:60]}' section_kws={sec_kws}")
 
-        # AI-transformed version (portrait tags → forces to opening position)
+        # AI-transformed version
         transformed = transform_user_image(path, caption, video_id, i)
         if transformed:
             processed.append({
                 "path":    transformed,
-                "tags":    ["portrait", "cinematic"] + [t for t in tags if t not in {"portrait", "cinematic"}],
+                "tags":    ["portrait", "cinematic"] + sec_kws + [t for t in base_tags if t not in {"portrait", "cinematic"}],
                 "caption": f"cinematic {caption}",
                 "type":    "ai_transformed",
             })
 
-        # Original user image (real/photo tags → also at/near position 0)
+        # Original user image
         processed.append({
             "path":    path,
-            "tags":    ["real", "photo"] + [t for t in tags if t not in {"real", "photo"}],
+            "tags":    ["real", "photo"] + sec_kws + [t for t in base_tags if t not in {"real", "photo"}],
             "caption": caption,
             "type":    "user_original",
         })
 
-        print(f"[Image] User image {i + 1}: AI transform + original queued")
+        print(f"[Image] User image {i + 1}: AI transform + original queued (section tags: {sec_kws})")
 
     return processed
 
@@ -1090,6 +1129,7 @@ def get_person_images(
     person_name: str,
     video_id: str,
     user_images: list[dict] | None = None,
+    script_text: str = "",
 ) -> list[dict]:
     """
     Build the priority image list for a real person.
@@ -1107,7 +1147,7 @@ def get_person_images(
     # 1 — User uploads → AI transform + original for each
     raw_uploads = [img for img in (user_images or []) if img.get("path") and os.path.exists(img["path"])]
     if raw_uploads:
-        images.extend(process_user_images(raw_uploads, video_id))
+        images.extend(process_user_images(raw_uploads, video_id, script_text=script_text))
         print(f"[Image] Priority 1: {len(raw_uploads)} user image(s) → {len(images)} processed")
 
     # 2 — Wikipedia real photo
@@ -1459,7 +1499,7 @@ def _groq_query_for_chunk(chunk_text: str, topic: str = "", for_video: bool = Fa
     try:
         result = _groq_call(
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=20, temperature=0.2, json_mode=False,
+            max_tokens=20, temperature=0.2,
         ).choices[0].message.content.strip().strip('"\'')
         if 2 <= len(result.split()) <= 8:
             return result
@@ -1502,7 +1542,7 @@ def _extract_script_keywords(script_text: str, topic: str = "", count: int = 8) 
             )
             raw = _groq_call(
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=200, temperature=0.3, json_mode=False,
+                max_tokens=200, temperature=0.3,
             ).choices[0].message.content.strip()
             queries = [q.strip().lstrip("-•123456789. ").strip()
                        for q in raw.splitlines() if q.strip() and len(q.strip()) > 3][:count]
@@ -1918,6 +1958,24 @@ def _topic_stock_fallback_queries(topic: str, script_text: str = "") -> list[str
     ]
 
 
+# Section-index → query template for when Groq fails per chunk.
+# Uses actual topic name at runtime — NOT the word "mindhunter" hardcoded.
+_SECTION_QUERY_TEMPLATES = [
+    "{topic} real story documentary",          # section 0 / Hook
+    "{topic} history background",              # section 1 / Background
+    "{topic} crime investigation evidence",    # section 2 / Main Story
+    "{topic} arrest trial verdict",            # section 3 / Shocking Facts
+    "{topic} legacy impact today",             # section 4 / Conclusion
+]
+
+
+def _section_fallback_query(section_idx: int, topic: str) -> str:
+    """Return a section-specific fallback query using the actual topic name."""
+    t = (topic or "crime documentary").strip()
+    template = _SECTION_QUERY_TEMPLATES[section_idx % len(_SECTION_QUERY_TEMPLATES)]
+    return template.format(topic=t)
+
+
 def _get_stock_video_query_for_chunk(chunk_text: str, topic: str = "") -> str | None:
     """Generate stock-video-friendly B-roll query from script chunk. OpenAI → Groq fallback."""
     first_120 = " ".join((chunk_text or "").split()[:120])
@@ -2003,9 +2061,12 @@ def fetch_stock_videos(script_text: str, count: int, video_id: str, topic: str =
 
     for i, chunk in enumerate(chunks):
         primary_query = _get_stock_video_query_for_chunk(chunk, topic=topic)
+        # Section-based fallback: uses actual topic name and maps section index to template
+        section_q = _section_fallback_query(i, topic)
         fb_a = fallback_queries[i % len(fallback_queries)]
         fb_b = fallback_queries[(i + 1) % len(fallback_queries)]
-        queries_to_try = list(dict.fromkeys(filter(None, [primary_query, fb_a, fb_b])))
+        # Priority: Groq query → section template → keyword fallback A → keyword fallback B
+        queries_to_try = list(dict.fromkeys(filter(None, [primary_query, section_q, fb_a, fb_b])))
 
         out = os.path.join(STOCK_VIDEOS_DIR, f"{video_id}_stock_{i}.mp4")
         saved = None
@@ -3304,8 +3365,8 @@ _MUSIC_TRACKS = {
 }
 
 
-def _create_silent_music_fallback(path: str, seconds: int) -> bool:
-    """Create a silent MP3 fallback track so pipeline never blocks on remote CDN errors."""
+def _create_ambient_music_fallback(path: str, seconds: int) -> bool:
+    """Generate a low-volume brown-noise ambient track as music fallback."""
     import subprocess
 
     ffmpeg_bin = _get_ffmpeg()
@@ -3314,62 +3375,66 @@ def _create_silent_music_fallback(path: str, seconds: int) -> bool:
     try:
         subprocess.run(
             [
-                ffmpeg_bin,
-                "-y",
-                "-f",
-                "lavfi",
-                "-i",
-                "anullsrc=r=44100:cl=stereo",
-                "-t",
-                str(seconds),
-                "-c:a",
-                "libmp3lame",
-                "-q:a",
-                "5",
+                ffmpeg_bin, "-y",
+                "-f", "lavfi",
+                "-i", f"anoisesrc=color=brown:r=44100",
+                "-t", str(seconds),
+                "-af", "volume=0.05",
+                "-c:a", "libmp3lame", "-q:a", "5",
                 path,
             ],
             check=True,
             capture_output=True,
         )
         size_kb = os.path.getsize(path) // 1024 if os.path.exists(path) else 0
-        print(f"[Music] Fallback silent track created: {path} ({size_kb} KB)")
-        return os.path.exists(path)
+        print(f"[Music] Brown-noise ambient track created: {path} ({size_kb} KB)")
+        return os.path.exists(path) and size_kb > 0
     except Exception as e:
-        print(f"[Music] Failed to generate fallback music {path}: {e}")
+        print(f"[Music] Failed to generate ambient music {path}: {e}")
         return False
 
 
 def ensure_music_assets() -> None:
-    """Ensure background music assets exist; download first, then generate local silent fallback."""
+    """Ensure background music assets exist; generate ambient fallback if CDN unavailable."""
     os.makedirs("assets/music", exist_ok=True)
     for path, urls in _MUSIC_TRACKS.items():
-        if os.path.exists(path):
+        # Skip if file exists and is non-empty
+        if os.path.exists(path) and os.path.getsize(path) > 1024:
             continue
-        print(f"[Music] Downloading music: {path}...")
+        # Remove zero-byte or corrupt file before regenerating
+        if os.path.exists(path):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+        print(f"[Music] Music file missing/empty: {path} -- attempting download...")
         downloaded = False
         for url in urls:
             try:
-                r = requests.get(url, timeout=60, stream=True)
+                r = requests.get(url, timeout=30, stream=True)
                 if r.status_code == 200:
                     with open(path, "wb") as f:
                         for chunk in r.iter_content(chunk_size=65536):
                             f.write(chunk)
                     size_kb = os.path.getsize(path) // 1024
-                    print(f"[Music] Downloaded: {path} ({size_kb} KB) âœ…")
-                    downloaded = True
-                    break
-                print(f"[Music] Failed to download {path} from source — HTTP {r.status_code} âš ï¸")
+                    if size_kb > 10:
+                        print(f"[Music] Downloaded: {path} ({size_kb} KB)")
+                        downloaded = True
+                        break
+                    print(f"[Music] Downloaded file too small ({size_kb} KB) -- likely blocked")
+                    os.remove(path)
+                else:
+                    print(f"[Music] HTTP {r.status_code} for {url} -- skipping CDN")
             except Exception as e:
-                print(f"[Music] Download error for {path}: {e} âš ï¸")
+                print(f"[Music] Download error: {e}")
         if downloaded:
             continue
 
-        # CDN blocked (403/timeout/etc.) -> make local silent fallback to keep pipeline stable.
-        fallback_seconds = 60 if "short" in os.path.basename(path).lower() else 180
-        if not _create_silent_music_fallback(path, fallback_seconds):
-            print(f"[Music] No fallback generated for {path} — voice-only mode will be used")
-
-
+        # CDN 403/blocked -- generate brown-noise ambient track locally
+        fallback_seconds = 90 if "short" in os.path.basename(path).lower() else 660
+        print(f"[Music] Generating {fallback_seconds}s brown-noise ambient track: {path}")
+        if not _create_ambient_music_fallback(path, fallback_seconds):
+            print(f"[Music] Could not generate ambient track for {path} -- voice-only mode")
 def mix_background_music(voice_path: str, is_short: bool = False) -> str:
     """Mix looping background music under the voice track at -24 dB (volume=0.06)."""
     import subprocess
@@ -3778,7 +3843,8 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
 
     # â"€â"€ Wikipedia real photo + user uploads (priority images) â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
     person_name = _extract_person_name_from_topic(title, script_data.get("topic", ""))
-    priority_images = get_person_images(person_name, video_id, user_images)
+    priority_images = get_person_images(person_name, video_id, user_images,
+                                        script_text=script_data.get("script", ""))
 
     # â"€â"€ Script-moment visual matching â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
     script_text = script_data.get("script", "")

@@ -162,6 +162,11 @@ def _groq_fallback(prompt: str, max_tokens: int, json_mode: bool,
     from groq import Groq
     groq_client = Groq(api_key=groq_key)
 
+    # For JSON mode: instruct in the prompt instead of using response_format
+    # (response_format is only supported on select Groq models)
+    if json_mode and "valid JSON" not in prompt:
+        prompt = prompt + "\n\nRespond with valid JSON only, no markdown, no explanation."
+
     # Keep beginning + end to preserve context within 3000-char limit
     max_chars = 3000
     if len(prompt) > max_chars:
@@ -185,7 +190,7 @@ def _groq_fallback(prompt: str, max_tokens: int, json_mode: bool,
                 max_tokens=min(max_tokens, model_max),
                 temperature=0.7,
             )
-            print(f"[Script] Groq {model} success ✅")
+            print(f"[Script] Groq {model} success")
             return resp.choices[0].message.content
         except Exception as e:
             print(f"[Script] Groq {model} failed: {e}")
