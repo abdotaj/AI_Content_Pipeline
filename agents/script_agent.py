@@ -40,112 +40,6 @@ def _groq_call(**kwargs):
     raise last_err
 
 
-def _openai_direct_call(prompt: str, max_tokens: int = 4000,
-                        json_mode: bool = False,
-                        system_prompt: str | None = None) -> str | None:
-    import os
-    import requests
-    import json
-
-    api_key = os.getenv("OPENAI_API_KEY", "").strip()
-    if not api_key:
-        print("[OpenAI] No API key")
-        return None
-
-    _system = system_prompt or "You are a professional true crime documentary scriptwriter."
-
-    print("=== SYSTEM PROMPT ===")
-    print(_system)
-    print("=== END SYSTEM PROMPT ===")
-
-    payload = {
-        "model": "gpt-4o-mini",
-        "messages": [
-            {
-                "role": "system",
-                "content": _system,
-            },
-            {
-                "role": "user",
-                "content": prompt
-            }
-        ],
-        "max_tokens": max_tokens,
-        "temperature": 0.7,
-    }
-
-    if json_mode:
-        payload["response_format"] = {"type": "json_object"}
-
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-        "User-Agent": "python-requests/2.31.0",
-    }
-
-    # Attempt 1: Standard requests
-    try:
-        print("[OpenAI] Attempt 1: standard requests")
-        r = requests.post(
-            "https://api.openai.com/v1/chat/completions",
-            headers=headers,
-            json=payload,
-            timeout=60,
-            verify=True,
-        )
-        print(f"[OpenAI] Status: {r.status_code}")
-        if r.status_code == 200:
-            return r.json()["choices"][0]["message"]["content"]
-        else:
-            print(f"[OpenAI] Error: {r.text[:200]}")
-    except Exception as e:
-        print(f"[OpenAI] Attempt 1 failed: {e}")
-
-    # Attempt 2: No SSL verification
-    try:
-        print("[OpenAI] Attempt 2: no SSL verify")
-        import urllib3
-        urllib3.disable_warnings()
-        r = requests.post(
-            "https://api.openai.com/v1/chat/completions",
-            headers=headers,
-            json=payload,
-            timeout=60,
-            verify=False,
-        )
-        print(f"[OpenAI] Status: {r.status_code}")
-        if r.status_code == 200:
-            return r.json()["choices"][0]["message"]["content"]
-    except Exception as e:
-        print(f"[OpenAI] Attempt 2 failed: {e}")
-
-    # Attempt 3: urllib with custom SSL context
-    try:
-        print("[OpenAI] Attempt 3: urllib")
-        import urllib.request
-        import ssl
-
-        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-
-        data = json.dumps(payload).encode("utf-8")
-        req = urllib.request.Request(
-            "https://api.openai.com/v1/chat/completions",
-            data=data,
-            headers=headers,
-            method="POST",
-        )
-
-        with urllib.request.urlopen(req, timeout=60, context=ctx) as resp:
-            result = json.loads(resp.read().decode())
-            return result["choices"][0]["message"]["content"]
-    except Exception as e:
-        print(f"[OpenAI] Attempt 3 failed: {e}")
-
-    print("[OpenAI] All connection attempts failed")
-    return None
-
 
 _SCRIPT_SYSTEM_PROMPT = """You are a professional true crime documentary scriptwriter.
 
@@ -254,8 +148,9 @@ def _trim_plain_text_to_words(text: str, max_words: int) -> str:
     return trimmed
 
 
-def _groq_fallback(prompt: str, max_tokens: int, json_mode: bool) -> str:
-    """Groq fallback with aggressive prompt truncation and 3-model retry chain."""
+def _groq_fallback(prompt: str, max_tokens: int, json_mode: bool,
+                   system_prompt: str | None = None) -> str:
+    """Groq with aggressive prompt truncation and 3-model retry chain."""
     import os
     import time
 
@@ -274,6 +169,11 @@ def _groq_fallback(prompt: str, max_tokens: int, json_mode: bool) -> str:
         prompt = prompt[:half] + "\n...\n" + prompt[-half:]
         print(f"[Script] Prompt truncated to {max_chars} chars for Groq")
 
+    messages = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    messages.append({"role": "user", "content": prompt})
+
     for model, model_max in [
         ("llama-3.3-70b-versatile", 2000),
         ("llama-3.1-8b-instant",    1000),
@@ -281,7 +181,7 @@ def _groq_fallback(prompt: str, max_tokens: int, json_mode: bool) -> str:
         try:
             resp = groq_client.chat.completions.create(
                 model=model,
-                messages=[{"role": "user", "content": prompt}],
+                messages=messages,
                 max_tokens=min(max_tokens, model_max),
                 temperature=0.7,
             )
@@ -295,12 +195,10 @@ def _groq_fallback(prompt: str, max_tokens: int, json_mode: bool) -> str:
 
 
 def _ai_script_call(prompt: str, max_tokens: int = 1000,
-                    json_mode: bool = False, temperature: float = 0.7) -> str:
-    """OpenAI gpt-4o-mini first (requests-based), fall back to Groq."""
-    result = _openai_direct_call(prompt, max_tokens=max_tokens, json_mode=json_mode)
-    if result:
-        return result
-    return _groq_fallback(prompt, max_tokens, json_mode)
+                    json_mode: bool = False, temperature: float = 0.7,
+                    system_prompt: str | None = None) -> str:
+    """Use Groq for all script AI calls."""
+    return _groq_fallback(prompt, max_tokens, json_mode, system_prompt=system_prompt)
 
 
 title_format = "Dark Crime Decoded: {person} & {series} — {curiosity_hook}"
@@ -1050,8 +948,8 @@ Key facts: {(research.get('research_facts') or research.get('what_show_got_right
 
     def _call_section(prompt: str, label: str, min_w: int, max_w: int,
                       call_num: int) -> str | None:
-        result = _openai_direct_call(prompt, max_tokens=1200,
-                                     system_prompt=_SCRIPT_SYSTEM_PROMPT)
+        result = _ai_script_call(prompt, max_tokens=1200,
+                                  system_prompt=_SCRIPT_SYSTEM_PROMPT)
         if not result:
             print(f"[Script] Section {call_num} ({label}): call failed")
             return None
@@ -1064,8 +962,8 @@ Key facts: {(research.get('research_facts') or research.get('what_show_got_right
         if real < min_w:
             print(f"[Script] Section {call_num}: below minimum — retrying once")
             time.sleep(4)
-            retry = _openai_direct_call(prompt, max_tokens=1200,
-                                        system_prompt=_SCRIPT_SYSTEM_PROMPT)
+            retry = _ai_script_call(prompt, max_tokens=1200,
+                                     system_prompt=_SCRIPT_SYSTEM_PROMPT)
             if retry:
                 r_real = clean_word_count(retry)
                 r_raw  = len(retry.split())
@@ -1186,7 +1084,7 @@ Shocking facts: {(research.get('research_shocking') or research.get('shocking_re
 
     # SECTION 1 — Hook + Series Intro + Real Background (800 words)
     print("[Script] Writing Section 1/6...")
-    s1 = _openai_direct_call(f"""{base}
+    s1 = _ai_script_call(f"""{base}
 Write SECTION 1 of a true crime documentary. Exactly 800 words.
 
 HOOK (100 words):
@@ -1222,7 +1120,7 @@ RULES:
 
     # SECTION 2 — Early Life + Rise to Power (800 words)
     print("[Script] Writing Section 2/6...")
-    s2 = _openai_direct_call(f"""{base}
+    s2 = _ai_script_call(f"""{base}
 Write SECTION 2 of a true crime documentary. Exactly 800 words. Continue from early life.
 DO NOT repeat anything from Section 1.
 
@@ -1252,7 +1150,7 @@ RULES:
 
     # SECTION 3 — Main Story + Turning Point (900 words)
     print("[Script] Writing Section 3/6...")
-    s3 = _openai_direct_call(f"""{base}
+    s3 = _ai_script_call(f"""{base}
 Write SECTION 3 of a true crime documentary. Exactly 900 words. The main events.
 DO NOT repeat anything from previous sections.
 
@@ -1283,7 +1181,7 @@ RULES:
 
     # SECTION 4 — Shocking Revelations + International Connections (800 words)
     print("[Script] Writing Section 4/6...")
-    s4 = _openai_direct_call(f"""{base}
+    s4 = _ai_script_call(f"""{base}
 Write SECTION 4 of a true crime documentary. Exactly 800 words. Shocking facts.
 DO NOT repeat anything from previous sections.
 
@@ -1364,7 +1262,7 @@ RULES:
 - Specific scene references
 - Respectful of filmmakers' creative choices
 """
-    s5 = _openai_direct_call(s5_prompt, max_tokens=1200, system_prompt=_SCRIPT_SYSTEM_PROMPT)
+    s5 = _ai_script_call(s5_prompt, max_tokens=1200, system_prompt=_SCRIPT_SYSTEM_PROMPT)
     if s5:
         sections.append(s5)
         print(f"[Script] S5: {clean_word_count(s5)} real words")
@@ -1372,7 +1270,7 @@ RULES:
 
     # SECTION 6 — Conclusion (500 words)
     print("[Script] Writing Section 6/6...")
-    s6 = _openai_direct_call(f"""{base}
+    s6 = _ai_script_call(f"""{base}
 Write SECTION 6 — THE CONCLUSION of a true crime documentary. Exactly 500 words.
 DO NOT repeat anything from previous sections.
 
@@ -1411,7 +1309,7 @@ RULES:
         min_w = SECTION_MINS[i] if i < len(SECTION_MINS) else 400
         if clean_word_count(section) < min_w:
             print(f"[Script] Expanding section {i + 1} (below {min_w} word min)...")
-            expanded = _openai_direct_call(
+            expanded = _ai_script_call(
                 f"Expand this section to minimum {min_w} words. "
                 f"Add more specific facts, dates, storytelling. "
                 f"Keep same topic and style.\n\n{section}",
@@ -1988,7 +1886,7 @@ def _clean_arabic_with_openai(section_text: str) -> str:
 
     api_key = _os.getenv("OPENAI_API_KEY", "").strip()
     if not api_key:
-        return section_text
+        raise Exception("No OpenAI key")
 
     prompt = (
         "أعد كتابة هذا النص العربي بأسلوب فصيح حديث ومباشر.\n"
@@ -2019,10 +1917,30 @@ def _clean_arabic_with_openai(section_text: str) -> str:
     return section_text
 
 
+def _groq_clean_arabic(section_text: str) -> str:
+    """Groq fallback: rewrite Arabic section in clean fusha."""
+    prompt = (
+        "أعد كتابة هذا النص العربي بأسلوب فصيح حديث ومباشر.\n"
+        "جمل قصيرة وقوية. أفعال قوية. احذف الحشو والتكرار.\n"
+        "حافظ على نفس المعنى والوقائع تماماً.\n"
+        "أعد النص المعاد صياغته فقط بدون تعليق.\n\n"
+        f"{section_text}"
+    )
+    resp = _groq_call(
+        messages=[
+            {"role": "system", "content": "أنت محرر نصوص وثائقية عربية محترف."},
+            {"role": "user", "content": prompt},
+        ],
+        max_tokens=2000,
+        temperature=0.4,
+    )
+    return resp.choices[0].message.content.strip()
+
+
 def format_for_tts_arabic(text: str) -> str:
     """
     Format Arabic script for natural TTS delivery.
-    - OpenAI cleanup pass (fusha, no filler).
+    - OpenAI cleanup pass (fusha, no filler), falling back to Groq or as-is.
     - Each sentence on its own line.
     - Shocking facts / numbers → trailing "..."
     - Short punchy clauses each on own line.
@@ -2046,8 +1964,17 @@ def format_for_tts_arabic(text: str) -> str:
             out_parts.append(part)
             continue
 
-        # OpenAI cleanup per section (skip tiny fragments)
-        cleaned = _clean_arabic_with_openai(part) if clean_word_count(part) > 20 else part
+        # Cleanup pass: OpenAI → Groq → as-is
+        if clean_word_count(part) > 20:
+            try:
+                cleaned = _clean_arabic_with_openai(part)
+            except Exception:
+                try:
+                    cleaned = _groq_clean_arabic(part)
+                except Exception:
+                    cleaned = part
+        else:
+            cleaned = part
 
         lines_out: list[str] = []
         line_count_since_break = 0
@@ -2106,6 +2033,72 @@ def translate_to_arabic_google(text: str) -> str:
     return _fix_arabic(translated)
 
 
+def _groq_translate_arabic(english_text: str, topic: str = "") -> str:
+    """Translate to Arabic using Groq with detailed documentary prompt."""
+    word_count   = len(english_text.split())
+    min_ar_words = int(word_count * 1.0)
+    prompt = f"""Translate this English script to Arabic.
+
+CRITICAL RULES:
+1. DO NOT shorten or summarize anything
+2. Every English paragraph = one Arabic paragraph
+3. Keep ALL sentences — do not skip any
+4. Maintain dramatic pacing and storytelling
+5. Arabic should be SAME LENGTH as English
+6. If English has {word_count} words → Arabic must have minimum {min_ar_words} words
+7. Do not combine sentences
+8. Keep all specific facts, dates, numbers
+9. RSF = قوات الدعم السريع (NEVER مراسلون بلا حدود)
+10. Keep "Dark Crime Decoded" in English
+11. Keep series/movie names in English
+12. This is serious investigative journalism — translate formally and accurately
+
+English text:
+{english_text}
+
+Return ONLY the Arabic translation. No explanations, no notes."""
+    resp = _groq_call(
+        messages=[
+            {"role": "system", "content": "أنت مترجم عربي محترف متخصص في الجريمة الحقيقية والصحافة الاستقصائية."},
+            {"role": "user", "content": prompt},
+        ],
+        max_tokens=6000,
+        temperature=0.3,
+    )
+    return _fix_arabic(resp.choices[0].message.content.strip())
+
+
+def try_translate_arabic(text: str, topic: str = "") -> str:
+    """Translate to Arabic with fallback chain: OpenAI → Groq → Google → English (with warning)."""
+    # 1. OpenAI (raises if no key)
+    try:
+        result = translate_to_arabic_openai(text, topic=topic)
+        print("[Script] Arabic translation via OpenAI ✅")
+        return result
+    except Exception as e:
+        print(f"[Script] OpenAI translation unavailable: {e}")
+
+    # 2. Groq
+    try:
+        result = _groq_translate_arabic(text, topic=topic)
+        print("[Script] Arabic translation via Groq ✅")
+        return result
+    except Exception as e:
+        print(f"[Script] Groq translation failed: {e}")
+
+    # 3. Google Translate
+    try:
+        result = translate_to_arabic_google(text)
+        print("[Script] Arabic translation via Google ✅")
+        return result
+    except Exception as e:
+        print(f"[Script] Google translation failed: {e}")
+
+    # 4. Return original English with warning
+    print("[Script] ⚠️ All translation services failed — returning original English text")
+    return text
+
+
 def translate_to_arabic_openai(english_text: str, topic: str = "") -> str:
     """Translate to Arabic via OpenAI gpt-4o-mini with correct RSF terminology. Falls back to Google."""
     import os as _os
@@ -2113,7 +2106,7 @@ def translate_to_arabic_openai(english_text: str, topic: str = "") -> str:
 
     api_key = _os.getenv("OPENAI_API_KEY", "").strip()
     if not api_key:
-        return translate_to_arabic_google(english_text)
+        raise Exception("No OpenAI key")
 
     word_count = len(english_text.split())
     # Arabic can become too short if we allow aggressive compression.
@@ -2257,7 +2250,7 @@ def translate_long_script_arabic(english_text: str, topic: str = "") -> str:
     translated: list[str] = []
     for i, chunk in enumerate(chunks):
         print(f"[Script] Translating chunk {i + 1}/{len(chunks)}...")
-        ar_chunk = translate_to_arabic_openai(chunk, topic=topic)
+        ar_chunk = try_translate_arabic(chunk, topic=topic)
         translated.append(ar_chunk)
         if i < len(chunks) - 1:
             _time.sleep(2)
@@ -2278,10 +2271,10 @@ def translate_long_script_arabic(english_text: str, topic: str = "") -> str:
 
 
 def translate_to_arabic(text: str) -> str:
-    """Public entry point — chunked for long scripts, otherwise single OpenAI call."""
+    """Public entry point — chunked for long scripts, otherwise single call with fallback chain."""
     if clean_word_count(text) > 1000:
         return translate_long_script_arabic(text)
-    return translate_to_arabic_openai(text)
+    return try_translate_arabic(text)
 
 
 def _build_hemedti_arabic_title(part_number: int | None) -> str:

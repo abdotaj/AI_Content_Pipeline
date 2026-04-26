@@ -157,10 +157,10 @@ def generate_voiceover_openai(text: str, language: str, output_path: str,
     import openai
     import httpx
 
-    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    api_key = os.getenv(“OPENAI_API_KEY”, “”).strip()
     if not api_key:
-        print("[Voice] OpenAI API key not set â€” skipping")
-        return ""
+        print(“[Voice] OpenAI API key not set — skipping”)
+        return None
 
     client = openai.OpenAI(
         api_key=api_key,
@@ -248,7 +248,7 @@ def generate_voiceover_openai(text: str, language: str, output_path: str,
                 for f in audio_files:
                     try: os.remove(f)
                     except OSError: pass
-                return ""
+                return None
 
         # Merge chunks
         if len(audio_files) == 1:
@@ -290,7 +290,7 @@ def generate_voiceover_openai(text: str, language: str, output_path: str,
 
     except Exception as e:
         print(f"[Voice] OpenAI TTS failed: {e}")
-        return ""
+        return None
 
 
 def _get_ffmpeg() -> str | None:
