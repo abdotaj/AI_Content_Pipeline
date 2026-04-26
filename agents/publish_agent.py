@@ -1,17 +1,17 @@
 # ============================================================
-#  agents/publish_agent.py  —  Posts to YouTube, TikTok, Instagram & Facebook
-#  X/Twitter removed (requires paid plan)
+#  agents/publish_agent.py  —  YouTube auto-publish + Telegram short delivery
+#
+#  Long videos  → auto-upload to YouTube (EN or AR channel)
+#  Short videos → sent to Telegram for manual TikTok/Instagram posting
+#  All other platforms (TikTok, Instagram, Facebook, X) → skipped with log
 # ============================================================
 import os
 import config as _cfg
-from config import (
-    TIKTOK_SESSION_ID, YOUTUBE_CLIENT_ID, YOUTUBE_CLIENT_SECRET,
-    INSTAGRAM_ACCESS_TOKEN, INSTAGRAM_BUSINESS_ID,
-    FACEBOOK_ACCESS_TOKEN, FACEBOOK_PAGE_ID,
-)
+from config import YOUTUBE_CLIENT_ID, YOUTUBE_CLIENT_SECRET
 
-# Token file: channel configs expose YOUTUBE_TOKEN_FILE; fall back to default
-_YOUTUBE_TOKEN_FILE = getattr(_cfg, "YOUTUBE_TOKEN_FILE", "youtube_token.json")
+# Token files for each Dark Crime Decoded channel
+_TOKEN_EN = "youtube_token_darkcrimed_en.json"
+_TOKEN_AR = "youtube_token_darkcrimed_ar.json"
 
 
 # ── YOUTUBE ─────────────────────────────────────────────────
@@ -26,13 +26,13 @@ def build_youtube_description(script_data: dict, chapters: str) -> str:
     return (
         f"{caption}\n\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"⏱️ CHAPTERS\n"
+        f"CHAPTERS\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"{chapters.strip()}\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"🔔 Subscribe for daily true crime documentaries\n"
-        f"📱 TikTok: @DarkCrimeDecoded\n"
-        f"📸 Instagram: @DarkCrimeDecoded\n"
+        f"Subscribe for daily true crime documentaries\n"
+        f"TikTok: @DarkCrimeDecoded\n"
+        f"Instagram: @DarkCrimeDecoded\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"{hashtags}\n\n"
         f"#DarkCrimeDecoded #TrueCrime #Documentary"
@@ -50,6 +50,7 @@ def _get_video_duration(video_path: str) -> float:
 
 
 def upload_to_youtube(video_path: str, script_data: dict, token_file: str = None) -> str:
+    """Upload a long-form video to YouTube. Returns the video URL or ''."""
     import traceback as _tb
 
     try:
@@ -61,21 +62,25 @@ def upload_to_youtube(video_path: str, script_data: dict, token_file: str = None
         print("[Publish] Install: pip install google-api-python-client google-auth")
         return ""
 
-    TOKEN_FILE = token_file or _YOUTUBE_TOKEN_FILE
-    print(f"[Publish] Starting upload: {video_path}")
-    print(f"[Publish] Token file: {TOKEN_FILE}")
+    # Choose token file by language if not explicitly provided
+    if token_file is None:
+        lang = script_data.get("language", "english").lower()
+        token_file = _TOKEN_AR if lang == "arabic" else _TOKEN_EN
+
+    print(f"[Publish] Starting YouTube upload: {video_path}")
+    print(f"[Publish] Token file: {token_file}")
 
     if not os.path.exists(video_path):
         print(f"[Publish] ERROR: Video file not found: {video_path}")
         return ""
-    if not os.path.exists(TOKEN_FILE):
-        print(f"[Publish] ERROR: Token file not found: {TOKEN_FILE}")
+    if not os.path.exists(token_file):
+        print(f"[Publish] ERROR: Token file not found: {token_file}")
         return ""
 
     # Inspect token before loading credentials
     try:
         import json as _json
-        with open(TOKEN_FILE, encoding="utf-8") as _f:
+        with open(token_file, encoding="utf-8") as _f:
             _peek = _json.load(_f)
         print(f"[Publish] Token channel_id: {_peek.get('channel_id', 'MISSING')}")
         print(f"[Publish] Token has refresh_token: {'refresh_token' in _peek}")
@@ -83,21 +88,23 @@ def upload_to_youtube(video_path: str, script_data: dict, token_file: str = None
     except Exception as _e:
         print(f"[Publish] WARNING: Could not inspect token file: {_e}")
 
-    # Select client credentials based on which token file is in use
-    if "ar" in os.path.basename(TOKEN_FILE):
+    # Select OAuth client credentials matching the token file
+    if "ar" in os.path.basename(token_file):
         client_id     = os.getenv("YOUTUBE_CLIENT_ID_AR", YOUTUBE_CLIENT_ID)
         client_secret = os.getenv("YOUTUBE_CLIENT_SECRET_AR", YOUTUBE_CLIENT_SECRET)
+        print("[Publish] YouTube credentials: AR channel")
     else:
         client_id     = os.getenv("YOUTUBE_CLIENT_ID_EN", YOUTUBE_CLIENT_ID)
         client_secret = os.getenv("YOUTUBE_CLIENT_SECRET_EN", YOUTUBE_CLIENT_SECRET)
-    print(f"[Publish] YouTube credentials: {'AR' if 'ar' in os.path.basename(TOKEN_FILE) else 'EN'} channel")
-    print(f"[Publish] client_id set: {bool(client_id and client_id != 'YOUR_YT_CLIENT_ID')}")
+        print("[Publish] YouTube credentials: EN channel")
+
+    print(f"[Publish] client_id set: {bool(client_id and client_id not in ('', 'YOUR_YT_CLIENT_ID'))}")
 
     try:
         import json as _json
 
         creds = Credentials.from_authorized_user_file(
-            TOKEN_FILE,
+            token_file,
             ["https://www.googleapis.com/auth/youtube.upload"]
         )
         print(f"[Publish] Credentials loaded — expired: {creds.expired}, valid: {creds.valid}")
@@ -105,8 +112,7 @@ def upload_to_youtube(video_path: str, script_data: dict, token_file: str = None
         if creds.expired and creds.refresh_token:
             print("[Publish] YouTube token expired — refreshing...")
             creds.refresh(Request())
-            # Preserve channel_id when re-saving refreshed token
-            with open(TOKEN_FILE, "r+", encoding="utf-8") as f:
+            with open(token_file, "r+", encoding="utf-8") as f:
                 existing = _json.load(f)
                 updated  = _json.loads(creds.to_json())
                 if "channel_id" in existing:
@@ -115,56 +121,35 @@ def upload_to_youtube(video_path: str, script_data: dict, token_file: str = None
                 _json.dump(updated, f, indent=2)
             print("[Publish] YouTube token refreshed.")
 
-        # Read channel_id saved during auth flow
-        with open(TOKEN_FILE, encoding="utf-8") as f:
+        with open(token_file, encoding="utf-8") as f:
             _token_meta = _json.load(f)
         _channel_id = _token_meta.get("channel_id", "")
         if _channel_id:
             print(f"[Publish] Uploading to YouTube channel: {_channel_id}")
 
         youtube = build("youtube", "v3", credentials=creds)
-        print(f"[Publish] YouTube API client built successfully")
-
-        # Detect Shorts vs long-form by duration
-        duration = _get_video_duration(video_path)
-        is_short = duration <= 60
-        print(f"[Publish] Video duration: {duration:.1f}s → {'Shorts' if is_short else 'long-form'}")
+        print("[Publish] YouTube API client built successfully")
 
         title    = script_data.get("title", "Untitled")
         hashtags = script_data.get("hashtags", "")
         keywords = script_data.get("keywords", [])
 
-        # Add #Shorts tag for short videos so YouTube classifies them
-        if is_short and "#Shorts" not in hashtags:
-            hashtags = f"#Shorts {hashtags}".strip()
-
-        # SEO tags: base keywords + standard true crime terms
-        topic_str  = script_data.get("topic", "")
-        niche_str  = script_data.get("niche", "")
-        seo_tags = list(keywords) + [
+        topic_str = script_data.get("topic", "")
+        niche_str = script_data.get("niche", "")
+        seo_tags  = list(keywords) + [
             topic_str, niche_str,
             "true crime", "documentary", "dark crime decoded",
             "real story", "netflix", "crime series",
             "what really happened", "based on true story",
         ]
-        seo_tags = [t for t in seo_tags if t]  # drop empty strings
+        seo_tags = [t for t in seo_tags if t]
 
-        # Build description
-        if is_short:
-            caption   = script_data.get("caption", title)
-            long_url  = script_data.get("long_video_url", "")
-            link_line = (
-                f"Full story → {long_url}\nWatch the full documentary on our channel"
-                if long_url else "Watch the full documentary on our channel"
-            )
-            description = f"{caption}\n\n{link_line}\n\n{hashtags}".strip()
-        else:
-            chapters    = script_data.get("chapters", "")
-            description = (
-                build_youtube_description(script_data, chapters)
-                if chapters
-                else f"{script_data.get('caption', title)}\n\n{hashtags}".strip()
-            )
+        chapters    = script_data.get("chapters", "")
+        description = (
+            build_youtube_description(script_data, chapters)
+            if chapters
+            else f"{script_data.get('caption', title)}\n\n{hashtags}".strip()
+        )
 
         body = {
             "snippet": {
@@ -193,172 +178,144 @@ def upload_to_youtube(video_path: str, script_data: dict, token_file: str = None
                 print(f"[Publish] YouTube {int(status.progress() * 100)}%")
 
         video_id = response["id"]
-        url = f"https://youtube.com/shorts/{video_id}" if is_short else f"https://youtube.com/watch?v={video_id}"
-        print(f"[Publish] YouTube: {url}")
+        url = f"https://youtube.com/watch?v={video_id}"
+        print(f"[Publish] YouTube upload complete: {url}")
         return url
 
     except Exception as e:
-        print(f"[Publish] UPLOAD ERROR: {e}")
+        print(f"[Publish] YouTube upload ERROR: {e}")
         _tb.print_exc()
         return ""
 
 
-# ── TIKTOK ──────────────────────────────────────────────────
+# ── TELEGRAM SHORT DELIVERY ──────────────────────────────────
+
+def send_short_to_telegram(short_video_path: str, script_data: dict) -> bool:
+    """
+    Send the short video file to Telegram for manual posting to TikTok/Instagram.
+    Returns True on success.
+    """
+    try:
+        import requests as _req
+        from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+    except ImportError:
+        print("[Publish] Telegram config not available — skipping short delivery")
+        return False
+
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print("[Publish] Skipping Telegram delivery: bot token or chat ID not configured")
+        return False
+
+    if not os.path.exists(short_video_path):
+        print(f"[Publish] Short video not found, skipping Telegram delivery: {short_video_path}")
+        return False
+
+    title    = script_data.get("title", "Untitled")
+    lang     = script_data.get("language", "english").title()
+    caption  = script_data.get("caption", title)
+    hashtags = script_data.get("hashtags", "")
+    if isinstance(hashtags, list):
+        hashtags = " ".join(hashtags)
+
+    msg = (
+        f"Short video ready for manual publish ({lang})\n\n"
+        f"{title}\n\n"
+        f"{caption}\n\n"
+        f"{hashtags}"
+    ).strip()[:1024]
+
+    base_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
+
+    try:
+        with open(short_video_path, "rb") as vf:
+            r = _req.post(
+                f"{base_url}/sendVideo",
+                data={"chat_id": TELEGRAM_CHAT_ID, "caption": msg},
+                files={"video": vf},
+                timeout=120,
+            )
+        if r.ok:
+            print(f"[Publish] Short video sent to Telegram: {short_video_path}")
+            return True
+        else:
+            print(f"[Publish] Telegram sendVideo failed ({r.status_code}): {r.text[:200]}")
+    except Exception as e:
+        print(f"[Publish] Telegram delivery error: {e}")
+
+    # Fallback: send as document if sendVideo fails (large files)
+    try:
+        with open(short_video_path, "rb") as df:
+            r = _req.post(
+                f"{base_url}/sendDocument",
+                data={"chat_id": TELEGRAM_CHAT_ID, "caption": msg},
+                files={"document": df},
+                timeout=120,
+            )
+        if r.ok:
+            print(f"[Publish] Short video sent to Telegram as document: {short_video_path}")
+            return True
+        else:
+            print(f"[Publish] Telegram sendDocument failed ({r.status_code}): {r.text[:200]}")
+    except Exception as e:
+        print(f"[Publish] Telegram document fallback error: {e}")
+
+    return False
+
+
+# ── SKIPPED PLATFORMS ────────────────────────────────────────
 
 def upload_to_tiktok(video_path: str, script_data: dict) -> str:
-    """Upload to TikTok using official API."""
-    try:
-        import requests
-        
-        # Initialize upload
-        init_url = "https://open.tiktokapis.com/v2/post/publish/video/init/"
-        headers = {
-            "Authorization": f"Bearer {TIKTOK_SESSION_ID}",
-            "Content-Type": "application/json"
-        }
+    print("[Publish] Manual publish: TikTok - skipping (send short to Telegram instead)")
+    return ""
 
-        video_size = os.path.getsize(video_path)
-        _caption  = script_data.get("caption", script_data.get("title", ""))
-        _hashtags = script_data.get("hashtags", "")
-        caption = f"{_caption} {_hashtags}".strip()[:2200]
-
-        init_payload = {
-            "post_info": {
-                "title": caption,
-                "privacy_level": "PUBLIC_TO_EVERYONE",
-                "disable_duet": False,
-                "disable_comment": False,
-                "disable_stitch": False,
-                "video_cover_timestamp_ms": 1000
-            },
-            "source_info": {
-                "source": "FILE_UPLOAD",
-                "video_size": video_size,
-                "chunk_size": video_size,
-                "total_chunk_count": 1
-            }
-        }
-
-        init_r = requests.post(init_url, headers=headers, json=init_payload)
-        init_r.raise_for_status()
-        init_data = init_r.json()["data"]
-        publish_id = init_data["publish_id"]
-        upload_url = init_data["upload_url"]
-
-        with open(video_path, "rb") as f:
-            video_data = f.read()
-
-        upload_headers = {
-            "Content-Range": f"bytes 0-{video_size-1}/{video_size}",
-            "Content-Type": "video/mp4"
-        }
-        requests.put(upload_url, data=video_data, headers=upload_headers)
-        print(f"[Publish] TikTok posted: {publish_id}")
-        return f"TikTok: {publish_id}"
-
-    except Exception as e:
-        print(f"[Publish] TikTok failed: {e}")
-        return ""
-
-
-# ── INSTAGRAM ───────────────────────────────────────────────
 
 def upload_to_instagram(video_path: str, script_data: dict) -> str:
-    """Upload video to Instagram Reels via Instagram Graph API."""
-    try:
-        import requests
+    print("[Publish] Manual publish: Instagram - skipping (send short to Telegram instead)")
+    return ""
 
-        _caption  = script_data.get("caption", script_data.get("title", ""))
-        _hashtags = script_data.get("hashtags", "")
-        caption = f"{_caption} {_hashtags}".strip()[:2200]
-        base_url = f"https://graph.facebook.com/v19.0/{INSTAGRAM_BUSINESS_ID}"
-
-        # Step 1: Create media container
-        container_r = requests.post(
-            f"{base_url}/media",
-            params={
-                "media_type": "REELS",
-                "video_url": video_path,
-                "caption": caption,
-                "access_token": INSTAGRAM_ACCESS_TOKEN,
-            }
-        )
-        container_r.raise_for_status()
-        container_id = container_r.json()["id"]
-
-        # Step 2: Publish the container
-        publish_r = requests.post(
-            f"{base_url}/media_publish",
-            params={
-                "creation_id": container_id,
-                "access_token": INSTAGRAM_ACCESS_TOKEN,
-            }
-        )
-        publish_r.raise_for_status()
-        media_id = publish_r.json()["id"]
-
-        url = f"https://www.instagram.com/p/{media_id}/"
-        print(f"[Publish] Instagram: {url}")
-        return url
-
-    except Exception as e:
-        print(f"[Publish] Instagram failed: {e}")
-        return ""
-
-
-# ── FACEBOOK ────────────────────────────────────────────────
 
 def upload_to_facebook(video_path: str, script_data: dict) -> str:
-    """Upload video to a Facebook Page via Graph API (graph-video endpoint)."""
-    try:
-        import requests
-
-        _caption  = script_data.get("caption", script_data.get("title", ""))
-        _hashtags = script_data.get("hashtags", "")
-        description = f"{_caption} {_hashtags}".strip()[:63206]
-        upload_url = f"https://graph-video.facebook.com/v18.0/{FACEBOOK_PAGE_ID}/videos"
-
-        with open(video_path, "rb") as video_file:
-            upload_r = requests.post(
-                upload_url,
-                data={
-                    "title": script_data.get("title", "Untitled"),
-                    "description": description,
-                    "access_token": FACEBOOK_ACCESS_TOKEN,
-                },
-                files={"source": video_file}
-            )
-
-        print(f"[Publish] Facebook response HTTP {upload_r.status_code}: {upload_r.text}")
-
-        upload_r.raise_for_status()
-        video_id = upload_r.json()["id"]
-
-        url = f"https://www.facebook.com/video/{video_id}/"
-        print(f"[Publish] Facebook: {url}")
-        return url
-
-    except Exception as e:
-        print(f"[Publish] Facebook failed: {e}")
-        return ""
+    print("[Publish] Manual publish: Facebook - skipping")
+    return ""
 
 
-# ── COMBINED ────────────────────────────────────────────────
+def upload_to_x(video_path: str, script_data: dict) -> str:
+    print("[Publish] Manual publish: X/Twitter - skipping")
+    return ""
 
-def publish_video(video_path: str, script_data: dict) -> dict:
-    """Publish based on language: English → YouTube + Facebook, Arabic → TikTok + Instagram."""
+
+# ── MAIN PUBLISH ENTRY POINT ─────────────────────────────────
+
+def publish_video(video_path: str, script_data: dict,
+                  short_video_path: str = None) -> dict:
+    """
+    Publish a long video to YouTube for the correct channel (EN or AR).
+    Then send the short video (if provided) to Telegram for manual posting.
+
+    short_video_path can also be supplied via script_data['short_video_path'].
+    """
     results = {}
-    language = script_data.get("language", "english")
+    lang = script_data.get("language", "english").lower()
 
-    if language == "english":
-        results["youtube"] = upload_to_youtube(video_path, script_data)
-        results["facebook"] = upload_to_facebook(video_path, script_data)
+    # ── Auto-upload long video to YouTube ────────────────────
+    print(f"[Publish] Publishing {lang} long video to YouTube...")
+    results["youtube"] = upload_to_youtube(video_path, script_data)
+
+    # ── Log skipped platforms ─────────────────────────────────
+    for platform in ("TikTok", "Instagram", "Facebook", "X/Twitter"):
+        print(f"[Publish] Manual publish: {platform} - skipping")
+
+    # ── Send short clip to Telegram ───────────────────────────
+    short_path = short_video_path or script_data.get("short_video_path", "")
+    if short_path:
+        results["telegram_short"] = send_short_to_telegram(short_path, script_data)
     else:
-        results["tiktok"] = upload_to_tiktok(video_path, script_data)
-        results["instagram"] = upload_to_instagram(video_path, script_data)
+        print("[Publish] No short video path provided — skipping Telegram delivery")
 
     return results
 
+
+# ── AUTH FLOWS (local setup only) ────────────────────────────
 
 def tiktok_auth_flow():
     """Interactive TikTok OAuth flow with PKCE — single run, saves tiktok_token.json."""
@@ -371,20 +328,28 @@ def tiktok_auth_flow():
     from urllib.parse import urlparse, parse_qs
     from config import TIKTOK_CLIENT_KEY, TIKTOK_CLIENT_SECRET
 
-    # Step 1: Generate PKCE values (RFC 7636 S256)
-    code_verifier = base64.urlsafe_b64encode(_os.urandom(32)).rstrip(b'=').decode()
-    code_challenge = base64.urlsafe_b64encode(hashlib.sha256(code_verifier.encode('ascii')).digest()).rstrip(b'=').decode()
+    code_verifier  = base64.urlsafe_b64encode(_os.urandom(32)).rstrip(b'=').decode()
+    code_challenge = base64.urlsafe_b64encode(
+        hashlib.sha256(code_verifier.encode('ascii')).digest()
+    ).rstrip(b'=').decode()
 
-    # Step 2: Build and print auth URL
     is_sandbox = TIKTOK_CLIENT_KEY.startswith("sb")
-    env_label = "SANDBOX" if is_sandbox else "PRODUCTION"
+    env_label  = "SANDBOX" if is_sandbox else "PRODUCTION"
     redirect_uri = (
         "http://localhost:8080/"
         if is_sandbox else
         "https://abdotaj.github.io/AI_Content_Pipeline/"
     )
 
-    auth_url = f"https://www.tiktok.com/v2/auth/authorize/?client_key={TIKTOK_CLIENT_KEY}&scope=user.info.basic,video.publish,video.upload&response_type=code&redirect_uri={redirect_uri}&code_challenge={code_challenge}&code_challenge_method=S256"
+    auth_url = (
+        f"https://www.tiktok.com/v2/auth/authorize/"
+        f"?client_key={TIKTOK_CLIENT_KEY}"
+        f"&scope=user.info.basic,video.publish,video.upload"
+        f"&response_type=code"
+        f"&redirect_uri={redirect_uri}"
+        f"&code_challenge={code_challenge}"
+        f"&code_challenge_method=S256"
+    )
 
     print(f"\n[TikTok Auth] Starting OAuth flow... ({env_label})")
     print(f"[TikTok Auth] Client key:      {TIKTOK_CLIENT_KEY}")
@@ -396,7 +361,6 @@ def tiktok_auth_flow():
     if is_sandbox:
         print("   (Sandbox: browser will redirect to http://localhost:8080/?code=...)")
 
-    # Step 3: Get code from user (accepts raw code or full redirect URL)
     raw = input("\n2. Paste the 'code' or the full redirect URL: ").strip()
     if "?" in raw or "&" in raw:
         params = parse_qs(urlparse(raw).query)
@@ -407,10 +371,16 @@ def tiktok_auth_flow():
     code = urllib.parse.unquote(code)
     print(f"[TikTok Auth] code (after unquote):  {code}")
     code = urllib.parse.unquote(code)
-    print(f"[TikTok Auth] code (after unquote²): {code}")
+    print(f"[TikTok Auth] code (after unquote2): {code}")
 
-    # Step 4: Exchange code for token
-    raw_body = f"client_key={TIKTOK_CLIENT_KEY}&client_secret={TIKTOK_CLIENT_SECRET}&code={urllib.parse.quote(code, safe='')}&grant_type=authorization_code&redirect_uri={redirect_uri}&code_verifier={code_verifier}"
+    raw_body = (
+        f"client_key={TIKTOK_CLIENT_KEY}"
+        f"&client_secret={TIKTOK_CLIENT_SECRET}"
+        f"&code={urllib.parse.quote(code, safe='')}"
+        f"&grant_type=authorization_code"
+        f"&redirect_uri={redirect_uri}"
+        f"&code_verifier={code_verifier}"
+    )
     print(f"\n[TikTok Auth] Raw POST body:\n  {raw_body}")
 
     token_r = requests.post(
@@ -423,30 +393,25 @@ def tiktok_auth_flow():
     token_r.raise_for_status()
     token_data = token_r.json()
 
-    # Step 5: Save token
     with open("tiktok_token.json", "w") as f:
         json.dump(token_data, f, indent=2)
 
     access_token = token_data.get("access_token", "")
     print(f"\n[Auth] TikTok token saved to tiktok_token.json")
     print(f"       Access token expires in {token_data.get('expires_in', '?')} seconds")
-    if access_token:
-        print(f"       Set TIKTOK_SESSION_ID={access_token} in your .env")
-    else:
+    if not access_token:
         print(f"       Warning: no access_token in response: {token_data}")
 
 
 def youtube_auth_flow(token_file: str = "youtube_token.json") -> None:
     """
     Full YouTube OAuth flow with channel selection.
-    Lists all channels on the authenticated Google account,
-    prompts the user to pick one, saves credentials + channel_id
-    to token_file.
+    Saves credentials + channel_id to token_file.
 
     Usage:
         python agents/publish_agent.py --auth-youtube
-        python agents/publish_agent.py --auth-youtube --channel darkcrimed
-        python agents/publish_agent.py --auth-youtube --channel shopmart
+        python agents/publish_agent.py --auth-youtube --channel darkcrimed_en
+        python agents/publish_agent.py --auth-youtube --channel darkcrimed_ar
     """
     import json
     from google_auth_oauthlib.flow import InstalledAppFlow
@@ -462,7 +427,7 @@ def youtube_auth_flow(token_file: str = "youtube_token.json") -> None:
         }
     }
 
-    print(f"\n[Auth] Starting YouTube OAuth flow → will save to: {token_file}")
+    print(f"\n[Auth] Starting YouTube OAuth flow -> will save to: {token_file}")
     print("[Auth] A browser window will open. Sign in and grant access.\n")
 
     flow = InstalledAppFlow.from_client_config(
@@ -474,7 +439,6 @@ def youtube_auth_flow(token_file: str = "youtube_token.json") -> None:
     )
     creds = flow.run_local_server(port=0)
 
-    # ── List channels on this account ────────────────────────
     youtube = build("youtube", "v3", credentials=creds)
     resp = youtube.channels().list(
         part="snippet", mine=True, maxResults=50
@@ -485,15 +449,13 @@ def youtube_auth_flow(token_file: str = "youtube_token.json") -> None:
 
     if not channels:
         print("[Auth] No YouTube channels found on this account.")
-
     elif len(channels) == 1:
-        ch = channels[0]
+        ch         = channels[0]
         channel_id = ch["id"]
-        name   = ch["snippet"]["title"]
-        handle = ch["snippet"].get("customUrl", channel_id)
+        name       = ch["snippet"]["title"]
+        handle     = ch["snippet"].get("customUrl", channel_id)
         print(f"\n[Auth] One channel found: {name} ({handle})")
         print(f"       Channel ID: {channel_id}")
-
     else:
         print("\n[Auth] Channels on this Google account:")
         for i, ch in enumerate(channels, 1):
@@ -511,9 +473,8 @@ def youtube_auth_flow(token_file: str = "youtube_token.json") -> None:
                 print(f"[Auth] Selected: {name} ({handle})")
                 print(f"       Channel ID: {channel_id}")
                 break
-            print(f"  Invalid — enter a number between 1 and {len(channels)}.")
+            print(f"  Invalid -- enter a number between 1 and {len(channels)}.")
 
-    # ── Save credentials + channel_id ────────────────────────
     token_data = json.loads(creds.to_json())
     if channel_id:
         token_data["channel_id"] = channel_id
@@ -529,16 +490,14 @@ def youtube_auth_flow(token_file: str = "youtube_token.json") -> None:
 if __name__ == "__main__":
     import sys
 
-    # ── Parse --channel argument ─────────────────────────────
     _CHANNEL_TOKEN_MAP = {
-        "darkcrimed":    "youtube_token_darkcrimed_en.json",
-        "darkcrimed_en": "youtube_token_darkcrimed_en.json",
-        "darkcrimed_ar": "youtube_token_darkcrimed_ar.json",
+        "darkcrimed":    _TOKEN_EN,
+        "darkcrimed_en": _TOKEN_EN,
+        "darkcrimed_ar": _TOKEN_AR,
         "shopmart":      "youtube_token_shopmart.json",
     }
 
     def _get_arg(flag: str) -> str:
-        """Return the value after `flag` in sys.argv, or ''."""
         try:
             return sys.argv[sys.argv.index(flag) + 1]
         except (ValueError, IndexError):
