@@ -180,6 +180,19 @@ def upload_to_youtube(video_path: str, script_data: dict, token_file: str = None
         video_id = response["id"]
         url = f"https://youtube.com/watch?v={video_id}"
         print(f"[Publish] YouTube upload complete: {url}")
+
+        # Upload thumbnail extracted from first frame of the video
+        thumb_path = script_data.get("thumbnail_path", "")
+        if thumb_path and os.path.exists(thumb_path):
+            try:
+                youtube.thumbnails().set(
+                    videoId=video_id,
+                    media_body=MediaFileUpload(thumb_path, mimetype="image/jpeg"),
+                ).execute()
+                print(f"[Publish] Thumbnail uploaded: {thumb_path}")
+            except Exception as _te:
+                print(f"[Publish] Thumbnail upload failed (non-fatal): {_te}")
+
         return url
 
     except Exception as e:

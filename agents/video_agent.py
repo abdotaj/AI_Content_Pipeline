@@ -1536,21 +1536,39 @@ def _extract_script_keywords(script_text: str, topic: str = "", count: int = 8) 
 def _load_user_images_from_folders(topic: str = "") -> list[dict]:
     """
     Auto-detect user-provided images in standard locations before fetching stock images.
-    Checks: assets/images/, content/images/, content/pending/images/
+    Checks: assets/images/, content/images/, content/pending/images/, content/images/<topic>/
+    Supports .jpg/.jpeg/.png/.webp/.jfif — JFIF files are auto-converted via Pillow.
     Returns list of {"path", "caption", "tags"} dicts.
     """
     search_dirs = ["assets/images", "content/images", "content/pending/images"]
-    image_exts  = {".jpg", ".jpeg", ".png", ".webp"}
+    # Also check topic-specific subfolder
+    if topic:
+        slug = topic.lower().replace(" ", "_").replace("-", "_")[:30]
+        search_dirs.append(f"content/images/{slug}")
+    image_exts = {".jpg", ".jpeg", ".png", ".webp", ".jfif"}
     found: list[dict] = []
 
     for d in search_dirs:
         if not os.path.isdir(d):
             continue
         for fname in sorted(os.listdir(d)):
-            if os.path.splitext(fname)[1].lower() not in image_exts:
+            ext = os.path.splitext(fname)[1].lower()
+            if ext not in image_exts:
                 continue
-            path  = os.path.join(d, fname)
-            stem  = os.path.splitext(fname)[0].replace("_", " ").replace("-", " ")
+            path = os.path.join(d, fname)
+            # Convert JFIF → JPEG so MoviePy/Pillow can load it reliably
+            if ext == ".jfif":
+                try:
+                    from PIL import Image as _PIL
+                    converted = os.path.join(d, os.path.splitext(fname)[0] + "_converted.jpg")
+                    if not os.path.exists(converted):
+                        _PIL.open(path).convert("RGB").save(converted, "JPEG")
+                        print(f"[Image] Converted JFIF → JPG: {fname}")
+                    path = converted
+                except Exception as e:
+                    print(f"[Image] JFIF conversion failed ({fname}): {e}")
+                    continue
+            stem = os.path.splitext(fname)[0].replace("_", " ").replace("-", " ")
             found.append({
                 "path":    path,
                 "caption": stem or topic or "documentary scene",
@@ -1586,7 +1604,11 @@ def _search_internet_archive(query: str, max_results: int = 5) -> list[str]:
         video_urls: list[str] = []
         for doc in docs:
             identifier = doc.get("identifier", "")
+            title = doc.get("title", "")
             if not identifier:
+                continue
+            if _is_blacklisted_source(identifier) or _is_blacklisted_source(title):
+                print(f"[Stock] Archive: skipping blacklisted: {identifier}")
                 continue
             try:
                 fr = requests.get(
@@ -1762,11 +1784,60 @@ def _download_video_url(url: str, output_path: str) -> str | None:
         return None
 
 
+_SOURCE_BLACKLIST = {"agc", "chronicle", "reaction", "review", "compilation"}
+
+
+def _is_blacklisted_source(url_or_title: str) -> bool:
+    """Return True if the URL or title belongs to a channel/type we want to skip."""
+    text = (url_or_title or "").lower()
+    return any(kw in text for kw in _SOURCE_BLACKLIST)
+
+
+def _validate_clip(path: str) -> bool:
+    """Return True if path is a valid video file with duration 3-60 s."""
+    if not path or not os.path.exists(path):
+        return False
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_streams", path],
+            capture_output=True, text=True, timeout=15,
+        )
+        if result.returncode == 0 and result.stdout:
+            import json as _json
+            data = _json.loads(result.stdout)
+            for stream in data.get("streams", []):
+                if stream.get("codec_type") == "video":
+                    dur = float(stream.get("duration", 0) or 0)
+                    return 3.0 <= dur <= 60.0
+    except Exception:
+        pass
+    # MoviePy fallback
+    try:
+        try:
+            from moviepy.editor import VideoFileClip as _VFC
+        except ImportError:
+            from moviepy import VideoFileClip as _VFC
+        with _VFC(path) as c:
+            return 3.0 <= c.duration <= 60.0
+    except Exception:
+        return False
+
+
 def _download_first_valid_video(urls: list[str], output_path: str) -> str | None:
     for url in urls:
+        if _is_blacklisted_source(url):
+            print(f"[Stock] Skipping blacklisted source: {url[:80]}")
+            continue
         saved = _download_video_url(url, output_path)
         if saved:
-            return saved
+            if _validate_clip(saved):
+                return saved
+            print(f"[Stock] Clip failed validation (duration out of 3-60s range): {url[:60]}")
+            try:
+                os.remove(saved)
+            except OSError:
+                pass
     return None
 
 
@@ -2638,6 +2709,192 @@ def _build_clip_pool_with_user_images(
     total_user = sum(len(c) for _, c in user_clip_groups)
     print(f"[Video] Clip pool: {len(merged)} total ({total_user} user + {n_ai} AI)")
     return merged
+
+
+# â"€â"€ Script moment parsing & visual matching â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+
+_KILLER_KWS     = {"killer", "murderer", "crime", "shot", "kill", "murder", "cartel", "drug", "trafficking"}
+_LAW_KWS        = {"fbi", "police", "detective", "arrest", "investigation", "dea", "court", "trial", "agent", "officer"}
+_VICTIM_KWS     = {"victim", "disappeared", "missing", "found dead", "body", "hostage"}
+_LOCATION_MAP   = {
+    "new york": "new york city", "chicago": "chicago", "medellin": "colombia",
+    "colombia": "colombia", "mexico": "mexico", "miami": "miami",
+    "los angeles": "los angeles", "london": "london", "prison": "prison",
+    "court": "courtroom", "fbi": "fbi headquarters",
+}
+
+
+def parse_script_moments(script_text: str, topic: str = "") -> list[dict]:
+    """
+    Split script into 2-3 sentence chunks, extract WHO/WHAT/WHERE/WHEN context.
+    Returns list of {"text", "who", "where", "when", "tags", "categories"} dicts.
+    """
+    import re
+    clean = re.sub(r'\[SECTION:[^\]]+\]\s*', '', script_text).strip()
+    sentences = re.split(r'(?<=[.!?])\s+', clean)
+    sentences = [s.strip() for s in sentences if len(s.strip()) > 20]
+
+    chunk_size = 3
+    chunks = []
+    for i in range(0, len(sentences), chunk_size):
+        text = " ".join(sentences[i: i + chunk_size])
+        if text:
+            chunks.append(text)
+
+    moments = []
+    for text in chunks:
+        text_lower = text.lower()
+
+        # WHO: two-word capitalized names
+        who_matches = re.findall(r'\b([A-Z][a-z]+ [A-Z][a-z]+)\b', text)
+        who = who_matches[0] if who_matches else ""
+
+        # WHERE: known location keywords
+        where = next((v for k, v in _LOCATION_MAP.items() if k in text_lower), "")
+
+        # WHEN: year references
+        years = re.findall(r'\b(19[4-9]\d|20[0-2]\d)\b', text)
+        when = years[0] if years else ""
+
+        # Category tags
+        categories: list[str] = []
+        if any(k in text_lower for k in _KILLER_KWS):
+            categories.append("crime")
+        if any(k in text_lower for k in _LAW_KWS):
+            categories.append("law_enforcement")
+        if any(k in text_lower for k in _VICTIM_KWS):
+            categories.append("victim")
+
+        tags: list[str] = []
+        if who:
+            tags.extend(who.lower().split())
+        if where:
+            tags.append(where)
+        if when:
+            tags.append(when)
+        tags.extend(categories)
+
+        moments.append({
+            "text": text, "who": who, "where": where,
+            "when": when, "tags": tags, "categories": categories,
+        })
+
+    print(f"[Visual] Parsed {len(moments)} script moments from {len(sentences)} sentences")
+    return moments
+
+
+def match_images_to_moments(
+    moments: list[dict],
+    user_images: list[dict],
+    ai_image_paths: list[str],
+) -> list[str]:
+    """
+    Contextually assign an image to each script moment.
+
+    Rules:
+    - User images matched to their best-fit moment by tag overlap
+    - FORBIDDEN: law-enforcement-tagged image on a pure crime/killer moment
+    - Image rotation window: no repeat within last 5 placements
+    - Alternates user/stock where possible
+    - Logs every decision with reason
+    """
+    if not moments:
+        all_paths = [img.get("path", "") if isinstance(img, dict) else img
+                     for img in (user_images or []) + (ai_image_paths or [])]
+        return [p for p in all_paths if p and os.path.exists(p)]
+
+    user_pool = [img for img in (user_images or [])
+                 if isinstance(img, dict) and img.get("path") and os.path.exists(img["path"])]
+    ai_pool   = [p for p in (ai_image_paths or []) if p and os.path.exists(p)]
+
+    def _score(img_tags: list[str], m_tags: list[str]) -> int:
+        img_lower = {t.lower() for t in img_tags}
+        return sum(1 for t in m_tags if t.lower() in img_lower)
+
+    def _is_forbidden(img_tags: list[str], moment: dict) -> bool:
+        img_lower = {t.lower() for t in img_tags}
+        has_law = any(t in img_lower for t in {"fbi", "police", "detective", "law_enforcement", "dea", "cop", "officer"})
+        cats = moment.get("categories", [])
+        # Forbidden: law-enforcement image when describing killer/crime but NOT investigation context
+        return has_law and "crime" in cats and "law_enforcement" not in cats
+
+    recent_used: list[str] = []  # rotation window (last 5 paths)
+    result: list[str] = []
+    use_user = True
+    ai_idx = 0
+
+    for m_idx, moment in enumerate(moments):
+        chosen: str | None = None
+        reason = "no match"
+
+        if use_user and user_pool:
+            best_score = -1
+            best_img = None
+            for img in user_pool:
+                img_tags = img.get("tags", [])
+                if img["path"] in recent_used:
+                    continue
+                if _is_forbidden(img_tags, moment):
+                    print(f"[Visual] Chunk {m_idx}: FORBIDDEN — skipping {os.path.basename(img['path'])} (law_enforcement + crime-only moment)")
+                    continue
+                score = _score(img_tags, moment.get("tags", []))
+                if score > best_score:
+                    best_score = score
+                    best_img = img
+            if best_img:
+                chosen = best_img["path"]
+                reason = f"user_image score={best_score}"
+
+        if not chosen and ai_pool:
+            for _ in range(len(ai_pool)):
+                candidate = ai_pool[ai_idx % len(ai_pool)]
+                ai_idx += 1
+                if candidate not in recent_used:
+                    chosen = candidate
+                    reason = "ai_stock"
+                    break
+            if not chosen:
+                chosen = ai_pool[ai_idx % len(ai_pool)]
+                ai_idx += 1
+                reason = "ai_stock (rotation full)"
+
+        if not chosen and user_pool:
+            chosen = user_pool[0]["path"]
+            reason = "user_image (no ai available)"
+
+        if chosen:
+            preview = moment["text"][:50].replace("\n", " ")
+            print(f"[Visual] Chunk {m_idx}: '{preview}...' → {os.path.basename(chosen)} [{reason}]")
+            result.append(chosen)
+            recent_used.append(chosen)
+            if len(recent_used) > 5:
+                recent_used.pop(0)
+
+        use_user = not use_user
+
+    # Pad if moments > images available
+    if ai_pool:
+        while len(result) < len(moments):
+            result.append(ai_pool[len(result) % len(ai_pool)])
+
+    return result
+
+
+def extract_first_frame(video_path: str, output_path: str) -> str:
+    """Extract the first frame of a video as a JPEG thumbnail. Returns path or ''."""
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["ffmpeg", "-y", "-ss", "2", "-i", video_path,
+             "-frames:v", "1", "-q:v", "2", output_path],
+            capture_output=True, timeout=30,
+        )
+        if result.returncode == 0 and os.path.exists(output_path):
+            print(f"[Video] Thumbnail extracted: {output_path}")
+            return output_path
+    except Exception as e:
+        print(f"[Video] Thumbnail extraction failed: {e}")
+    return ""
 
 
 # â"€â"€ Hook-aware assembly (long videos only) â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
@@ -3523,19 +3780,30 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
     person_name = _extract_person_name_from_topic(title, script_data.get("topic", ""))
     priority_images = get_person_images(person_name, video_id, user_images)
 
+    # â"€â"€ Script-moment visual matching â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+    script_text = script_data.get("script", "")
+    topic_str   = script_data.get("topic", "")
+    try:
+        moments = parse_script_moments(script_text, topic=topic_str)
+        if moments and (priority_images or image_paths):
+            matched = match_images_to_moments(moments, priority_images, image_paths)
+            all_image_paths = matched if matched else build_image_list(priority_images, image_paths)
+        else:
+            all_image_paths = build_image_list(priority_images, image_paths)
+    except Exception as e:
+        print(f"[Visual] Moment matching failed ({e}), using default image order")
+        all_image_paths = build_image_list(priority_images, image_paths)
+
     # â"€â"€ Assembly â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
     output_path = os.path.join(FINAL_DIR, f"{video_id}.mp4")
-    all_image_paths = build_image_list(priority_images, image_paths)
 
     if is_short:
-        # Short: 8 AI images Ã— 2 variations = 16 clips, loop to 60-90s
         video_path = assemble_short_video(
             audio_path=audio_path,
             image_paths=all_image_paths,
             output_path=output_path,
         )
     else:
-        # Long: 12 AI images, hook-aware assembly (fast cuts 0-90s, slow after)
         video_path = assemble_video_with_hook(
             audio_path=audio_path,
             image_paths=all_image_paths,
@@ -3546,4 +3814,9 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
     if video_path:
         short_out = os.path.join(SHORTS_DIR, f"{video_id}_short.mp4")
         script_data["short_clip_path"] = cut_short_clip(video_path, short_out)
+        # Extract first frame for YouTube thumbnail (actual content, not AI portrait)
+        thumb_path = os.path.join(FINAL_DIR, f"{video_id}_thumb.jpg")
+        extracted = extract_first_frame(video_path, thumb_path)
+        if extracted:
+            script_data["thumbnail_path"] = extracted
     return video_path
