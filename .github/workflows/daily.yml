@@ -60,10 +60,11 @@ jobs:
           pip install --upgrade pip setuptools wheel
           pip uninstall moviepy -y || true
           pip install moviepy==1.0.3
+          pip install yt-dlp
           pip install -r requirements.txt
           python3 -c "import moviepy; print('MoviePy version:', moviepy.__version__)"
           echo "=== Installed packages ==="
-          pip show openai groq httpx moviepy edge-tts
+          pip show openai groq httpx moviepy edge-tts yt-dlp
 
       - name: Write YouTube token (Arabic channel)
         env:

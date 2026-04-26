@@ -1369,7 +1369,7 @@ def download_real_image(url: str, output_path: str) -> str | None:
         return None
 
 
-def _ddgs_image_results(query: str, max_results: int = 5) -> list[str]:
+def _ddgs_image_results(query: str, max_results: int = 15) -> list[str]:
     """Return list of image URLs from DuckDuckGo. Returns empty list on any failure."""
     try:
         from duckduckgo_search import DDGS
@@ -1385,6 +1385,23 @@ def _ddgs_image_results(query: str, max_results: int = 5) -> list[str]:
         return [r["image"] for r in results if r.get("image")]
     except Exception as e:
         print(f"[Image] DDGS search failed '{query}': {e}")
+        return []
+
+
+def _google_image_results(query: str, max_results: int = 5) -> list[str]:
+    """Google Images scrape fallback when DuckDuckGo returns nothing."""
+    try:
+        import re
+        url = f"https://www.google.com/search?q={requests.utils.quote(query)}&tbm=isch"
+        r = requests.get(
+            url,
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
+            timeout=15,
+        )
+        urls = re.findall(r'https?://[^"]+\.(?:jpg|jpeg|png|webp)', r.text)
+        return list(dict.fromkeys(urls))[:max_results]
+    except Exception as e:
+        print(f"[Image] Google search failed '{query}': {e}")
         return []
 
 
@@ -1487,13 +1504,25 @@ def _groq_query_for_chunk(chunk_text: str, topic: str = "", for_video: bool = Fa
     if for_video:
         prompt = (
             f"Create one stock B-roll video search query (3-6 English words).\n"
-            f"Topic: {topic}\nRules: no person names, no movie names, generic visual scenes.\n"
+            f"Topic: {topic}\n"
+            f"Be as specific as possible. Use real names, real places, real time periods from the text.\n"
+            f"GOOD: 'John Douglas FBI agent 1977'\n"
+            f"GOOD: 'Edmund Kemper prison interview 1979'\n"
+            f"GOOD: 'FBI Quantico Behavioral Science Unit'\n"
+            f"BAD: 'crime story background'\n"
+            f"BAD: 'dark street night'\n"
             f"Text: {first_120}\nReturn only the query."
         )
     else:
         prompt = (
             f"What is the most specific searchable image subject in this text?\n"
             f"Return only a short English search query (max 5 words).\n"
+            f"Be as specific as possible. Use real names, real places, real time periods from the text.\n"
+            f"GOOD: 'John Douglas FBI agent 1977'\n"
+            f"GOOD: 'Edmund Kemper prison interview 1979'\n"
+            f"GOOD: 'FBI Quantico Behavioral Science Unit'\n"
+            f"BAD: 'crime story background'\n"
+            f"BAD: 'dark street night'\n"
             f"Text: {first_120}\nReturn only the query."
         )
     try:
@@ -1944,6 +1973,17 @@ def _topic_stock_fallback_queries(topic: str, script_text: str = "") -> list[str
             "military checkpoint Africa", "International Criminal Court",
             "conflict zone aerial view", "African militia armed group",
         ]
+    if "mindhunter" in t or "behavioral science" in t or "criminal profiling" in t or "john douglas" in t:
+        return [
+            "FBI Quantico academy 1970s",
+            "serial killer prison interview 1970s",
+            "FBI agents investigation 1970s",
+            "Edmund Kemper mugshot arrest",
+            "Charles Manson prison interview",
+            "FBI behavioral science unit",
+            "criminal profiling evidence board",
+            "prison interview room 1970s",
+        ]
 
     # Generic crime documentary fallbacks
     return [
@@ -1982,7 +2022,13 @@ def _get_stock_video_query_for_chunk(chunk_text: str, topic: str = "") -> str | 
     prompt = (
         f"Create one stock video search query (3-6 English words) for this script chunk.\n"
         f"Topic context: {topic}\n"
-        f"Rules: visual B-roll only, no person names, no movie names.\n"
+        f"Be as specific as possible. Use real names, real places, real time periods from the text.\n"
+        f"GOOD: 'John Douglas FBI agent 1977'\n"
+        f"GOOD: 'Edmund Kemper prison interview 1979'\n"
+        f"GOOD: 'FBI Quantico Behavioral Science Unit'\n"
+        f"GOOD: 'Mindhunter Netflix cast three agents'\n"
+        f"BAD: 'crime story background'\n"
+        f"BAD: 'dark street night'\n"
         f"Text: {first_120}\nReturn only the query."
     )
 
@@ -2007,6 +2053,131 @@ def _get_stock_video_query_for_chunk(chunk_text: str, topic: str = "") -> str | 
 
     # Groq fallback
     return _groq_query_for_chunk(chunk_text, topic=topic, for_video=True)
+
+
+# ── yt-dlp availability check ────────────────────────────────────────────────
+def _ensure_ytdlp() -> bool:
+    """Return True if yt-dlp is available, install it if not."""
+    import subprocess
+    try:
+        subprocess.run(["yt-dlp", "--version"], capture_output=True, timeout=5)
+        return True
+    except FileNotFoundError:
+        print("[Stock] yt-dlp not found — installing...")
+        os.system("pip install yt-dlp -q")
+        try:
+            subprocess.run(["yt-dlp", "--version"], capture_output=True, timeout=5)
+            return True
+        except FileNotFoundError:
+            return False
+
+
+_YT_CC_BLACKLIST_TITLES = {
+    "tutorial", "how to", "review", "reaction", "gaming", "minecraft",
+    "fortnite", "cooking", "recipe", "workout", "yoga", "meditation",
+    "unboxing", "haul", "vlog", "prank", "challenge",
+    "compilation of compilations",
+}
+_YT_CC_BLACKLIST_CHANNELS = {"music", "songs", "beats", "gaming", "kids"}
+
+
+def _search_youtube_cc(query: str, max_results: int = 5) -> list[str]:
+    """Search YouTube for Creative Commons licensed videos (10-120s duration)."""
+    import subprocess
+    if not _ensure_ytdlp():
+        return []
+    cmd = [
+        "yt-dlp",
+        f"ytsearch{max_results * 3}:{query}",
+        "--match-filter", "license = Creative Commons Attribution license",
+        "--print", "%(id)s|%(title)s|%(duration)s|%(channel)s",
+        "--no-download",
+        "--quiet",
+        "--no-warnings",
+    ]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        urls: list[str] = []
+        for line in result.stdout.splitlines():
+            parts = line.strip().split("|")
+            if len(parts) < 3:
+                continue
+            vid_id, title, duration_str = parts[0], parts[1], parts[2]
+            channel = parts[3] if len(parts) > 3 else ""
+            title_lower  = title.lower()
+            channel_lower = channel.lower()
+            # Skip blacklisted titles
+            if any(b in title_lower for b in _YT_CC_BLACKLIST_TITLES):
+                continue
+            # Skip blacklisted channels
+            if any(b in channel_lower for b in _YT_CC_BLACKLIST_CHANNELS):
+                continue
+            # Duration filter: 10–120 seconds
+            try:
+                dur = int(duration_str)
+                if not (10 <= dur <= 120):
+                    continue
+            except (ValueError, TypeError):
+                continue
+            urls.append(f"https://www.youtube.com/watch?v={vid_id}")
+            if len(urls) >= max_results:
+                break
+        if urls:
+            print(f"[Stock] YouTube CC: {len(urls)} result(s) for '{query}'")
+        return urls
+    except Exception as e:
+        print(f"[Stock] YouTube CC search error for '{query}': {e}")
+        return []
+
+
+def _download_youtube_cc(url: str, output_path: str) -> str | None:
+    """Download a YouTube CC video via yt-dlp. Returns path if successful."""
+    import subprocess
+    if not _ensure_ytdlp():
+        return None
+    cmd = [
+        "yt-dlp",
+        url,
+        "--match-filter", "license = Creative Commons Attribution license",
+        "-f", "mp4[height<=720]/best[ext=mp4]/best",
+        "-o", output_path,
+        "--quiet",
+        "--no-warnings",
+        "--max-filesize", "50m",
+    ]
+    try:
+        subprocess.run(cmd, timeout=60)
+        if os.path.exists(output_path) and os.path.getsize(output_path) > 10_000:
+            return output_path
+    except Exception as e:
+        print(f"[Stock] YouTube CC download error for '{url}': {e}")
+    return None
+
+
+def _search_vimeo_free(query: str, max_results: int = 5) -> list[str]:
+    """Search Vimeo public API for CC-licensed free videos."""
+    try:
+        r = requests.get(
+            "https://api.vimeo.com/videos",
+            params={"query": query, "filter": "CC", "per_page": max_results},
+            headers={"User-Agent": "DarkCrimeDecoded/1.0"},
+            timeout=15,
+        )
+        if r.status_code != 200:
+            return []
+        urls: list[str] = []
+        for item in r.json().get("data", []):
+            for dl in item.get("download", []):
+                link = dl.get("link", "")
+                if link and dl.get("type") == "source":
+                    urls.append(link)
+                    break
+        if urls:
+            print(f"[Stock] Vimeo CC: {len(urls)} result(s) for '{query}'")
+        return urls
+    except Exception as e:
+        print(f"[Stock] Vimeo error for '{query}': {e}")
+        return []
 
 
 def fetch_stock_videos(script_text: str, count: int, video_id: str, topic: str = "") -> list[str]:
@@ -2044,19 +2215,26 @@ def fetch_stock_videos(script_text: str, count: int, video_id: str, topic: str =
     query_cache: dict[str, str] = {}
 
     def _try_all_sources(query: str, out_path: str) -> str | None:
-        for src_name, src_fn in [
-            ("Internet Archive", _search_internet_archive),
-            ("Wikimedia",        _search_wikimedia_videos),
-            ("Coverr",           _search_coverr),
-            ("Pexels",           _search_pexels_videos),
-            ("Pixabay",          _search_pixabay_videos),
+        # YouTube CC uses its own downloader; all others use _download_first_valid_video
+        for src_name, src_fn, use_ytdlp in [
+            ("Internet Archive", _search_internet_archive, False),
+            ("YouTube CC",       _search_youtube_cc,       True),
+            ("Wikimedia",        _search_wikimedia_videos, False),
+            ("Vimeo CC",         _search_vimeo_free,       False),
+            ("Coverr",           _search_coverr,           False),
+            ("Pexels",           _search_pexels_videos,    False),
+            ("Pixabay",          _search_pixabay_videos,   False),
         ]:
             urls = src_fn(query)
-            if urls:
+            if not urls:
+                continue
+            if use_ytdlp:
+                saved = _download_youtube_cc(urls[0], out_path)
+            else:
                 saved = _download_first_valid_video(urls, out_path)
-                if saved:
-                    print(f"[Stock] {src_name}: '{query}'")
-                    return saved
+            if saved:
+                print(f"[Stock] {src_name}: '{query}'")
+                return saved
         return None
 
     for i, chunk in enumerate(chunks):
@@ -2127,14 +2305,16 @@ def _translate_to_arabic_query(english_query: str) -> str | None:
 
 
 def search_real_image(query: str, output_path: str) -> str | None:
-    """DuckDuckGo image search. Tries up to 5 result URLs. Returns saved path or None."""
+    """DuckDuckGo then Google image search. Returns saved path or None."""
     urls = _ddgs_image_results(query)
+    if not urls:
+        urls = _google_image_results(query)
     if not urls:
         print(f"[Image] No real photo found for '{query}'")
         return None
     saved = _download_first_valid(urls, output_path)
     if saved:
-        print(f"[Image] âœ… Real photo: '{query}'")
+        print(f"[Image] Real photo: '{query}'")
         return saved
     print(f"[Image] No real photo found for '{query}'")
     return None
@@ -2258,17 +2438,47 @@ def fetch_real_images(script_text: str, count: int, video_id: str,
             if query in query_cache:
                 shutil.copy2(query_cache[query], img_path)
                 saved = img_path
-                print(f"[Image] â™»ï¸  Reused '{query}' for chunk {i}")
+                print(f"[Image] Reused '{query}' for chunk {i}")
             else:
                 en_urls = _ddgs_image_results(query)
-                if len(en_urls) >= 2:
+                if en_urls:
                     saved = _download_first_valid(en_urls, img_path)
                     if saved:
-                        print(f"[Image] âœ… Real photo (EN): '{query}'")
+                        print(f"[Image] Real photo (EN DDGS): '{query}'")
                         query_cache[query] = saved
                         real_count += 1
 
-                # Step 3: fewer than 2 English results → retry in Arabic
+                # Step 2b: DuckDuckGo returned nothing -> try Google Images
+                if not saved:
+                    g_urls = _google_image_results(query)
+                    if g_urls:
+                        saved = _download_first_valid(g_urls, img_path)
+                        if saved:
+                            print(f"[Image] Real photo (Google): '{query}'")
+                            query_cache[query] = saved
+                            real_count += 1
+
+                # Step 3: still nothing -> try additional specific queries
+                if not saved:
+                    extra_queries = [
+                        f"{topic} real photo",
+                        f"{topic} historical photo",
+                        f"{topic} documentary footage",
+                        f"{query} photograph",
+                    ]
+                    for eq in extra_queries:
+                        if eq == query:
+                            continue
+                        eq_urls = _ddgs_image_results(eq) or _google_image_results(eq)
+                        if eq_urls:
+                            saved = _download_first_valid(eq_urls, img_path)
+                            if saved:
+                                print(f"[Image] Real photo (extra query): '{eq}'")
+                                query_cache[query] = saved
+                                real_count += 1
+                                break
+
+                # Step 4: retry in Arabic
                 if not saved:
                     ar_query = _translate_to_arabic_query(query)
                     if ar_query:
@@ -2280,7 +2490,7 @@ def fetch_real_images(script_text: str, count: int, video_id: str,
                                 query_cache[query] = saved
                                 real_count += 1
 
-        # Step 4: AI fallback — Pollinations with script-matched prompt
+        # Step 5: AI fallback — Pollinations with script-matched prompt
         if not saved:
             print(f"[Image] chunk {i}: no real image found, using AI generation")
             ai_prompt = ai_prompts[i] if i < len(ai_prompts) else fallback_base
