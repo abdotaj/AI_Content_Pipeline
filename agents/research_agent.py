@@ -160,6 +160,129 @@ GLOBAL_NICHES = [
 ]
 
 
+# ── Known show → character/real-person map ─────────────────
+# Used when Wikipedia extraction fails or as a seed for the prompt.
+_KNOWN_SHOW_CHARACTERS: dict[str, list[dict]] = {
+    "mindhunter": [
+        {"character": "Holden Ford",  "actor": "Jonathan Groff",  "based_on": "John Douglas",   "real_role": "FBI agent who pioneered criminal profiling"},
+        {"character": "Bill Tench",   "actor": "Holt McCallany",  "based_on": "Robert Ressler",  "real_role": "FBI agent and co-creator of criminal profiling"},
+        {"character": "Wendy Carr",   "actor": "Anna Torv",       "based_on": "Ann Burgess",     "real_role": "Criminologist and academic partner to the BSU"},
+    ],
+    "narcos": [
+        {"character": "Pablo Escobar", "actor": "Wagner Moura",   "based_on": "Pablo Escobar",   "real_role": "Medellín Cartel founder"},
+        {"character": "Steve Murphy",  "actor": "Boyd Holbrook",  "based_on": "Steve Murphy",    "real_role": "DEA agent who hunted Escobar"},
+        {"character": "Javier Peña",   "actor": "Pedro Pascal",   "based_on": "Javier Peña",     "real_role": "DEA agent, partner of Murphy"},
+    ],
+    "boardwalk empire": [
+        {"character": "Nucky Thompson", "actor": "Steve Buscemi",  "based_on": "Enoch 'Nucky' Johnson", "real_role": "Atlantic City political boss and bootlegger"},
+        {"character": "Jimmy Darmody",  "actor": "Michael Pitt",   "based_on": "Various real figures",  "real_role": "Composite character"},
+    ],
+    "griselda": [
+        {"character": "Griselda Blanco", "actor": "Sofía Vergara", "based_on": "Griselda Blanco", "real_role": "Medellín Cartel cocaine trafficker, 'Godmother of Cocaine'"},
+    ],
+    "dahmer": [
+        {"character": "Jeffrey Dahmer", "actor": "Evan Peters",    "based_on": "Jeffrey Dahmer",  "real_role": "Serial killer who murdered 17 men 1978–1991"},
+    ],
+    "wolf of wall street": [
+        {"character": "Jordan Belfort",  "actor": "Leonardo DiCaprio", "based_on": "Jordan Belfort",  "real_role": "Stockbroker convicted of securities fraud"},
+        {"character": "Donnie Azoff",    "actor": "Jonah Hill",         "based_on": "Danny Porush",    "real_role": "Belfort's business partner at Stratton Oakmont"},
+    ],
+    "american gangster": [
+        {"character": "Frank Lucas",     "actor": "Denzel Washington", "based_on": "Frank Lucas",     "real_role": "Harlem drug trafficker who imported heroin from Southeast Asia"},
+        {"character": "Richie Roberts",  "actor": "Russell Crowe",     "based_on": "Richie Roberts",  "real_role": "NBNDD detective who built the case against Lucas"},
+    ],
+    "black mass": [
+        {"character": "Whitey Bulger",  "actor": "Johnny Depp",      "based_on": "James 'Whitey' Bulger", "real_role": "Winter Hill Gang boss and FBI informant"},
+        {"character": "John Connolly",  "actor": "Joel Edgerton",    "based_on": "John Connolly",          "real_role": "FBI agent who protected Bulger"},
+    ],
+    "donnie brasco": [
+        {"character": "Donnie Brasco",  "actor": "Johnny Depp",       "based_on": "Joseph D. Pistone", "real_role": "FBI undercover agent who infiltrated the Bonanno crime family"},
+        {"character": "Lefty Ruggiero", "actor": "Al Pacino",         "based_on": "Benjamin Ruggiero", "real_role": "Bonanno crime family member who sponsored Pistone"},
+    ],
+    "tokyo vice": [
+        {"character": "Jake Adelstein", "actor": "Ansel Elgort",     "based_on": "Jake Adelstein",    "real_role": "American journalist at Yomiuri Shimbun who covered yakuza"},
+    ],
+}
+
+_SHOW_TRIGGER_KEYWORDS = {"netflix", "hbo", "amazon", "show", "series", "season", "episode", "tv show", "streaming"}
+
+
+def _detect_show_topic(topic: str) -> tuple[bool, str | None]:
+    """
+    Return (is_show_topic, canonical_show_name).
+    True when topic is a known show name or contains streaming/TV keywords.
+    """
+    t = topic.lower().strip()
+    # Exact match against known shows
+    for show_key in _KNOWN_SHOW_CHARACTERS:
+        if show_key in t:
+            return True, show_key
+    # Check REAL_STORY_SHOWS list
+    for show in REAL_STORY_SHOWS:
+        if show in t:
+            return True, show
+    # Keyword triggers
+    if any(kw in t for kw in _SHOW_TRIGGER_KEYWORDS):
+        return True, None
+    return False, None
+
+
+def _fetch_show_cast_from_wikipedia(show_name: str) -> list[dict]:
+    """
+    Fetch show Wikipedia page and use Groq to extract fictional characters
+    and the real people they are based on.
+    Returns list of {character, actor, based_on, real_role} dicts.
+    """
+    # Check hardcoded map first
+    show_key = show_name.lower()
+    for k, chars in _KNOWN_SHOW_CHARACTERS.items():
+        if k in show_key or show_key in k:
+            print(f"[Research] Using hardcoded cast map for '{show_name}': {len(chars)} characters")
+            return chars
+
+    # Fall back to Wikipedia + Groq extraction
+    wiki = fetch_wikipedia(f"{show_name} TV series") or fetch_wikipedia(show_name)
+    if not wiki:
+        return []
+
+    prompt = f"""Extract the main characters from this Wikipedia article about the TV show/film "{show_name}".
+For each main character (up to 6), identify:
+1. The fictional character name
+2. The actor/actress who plays them
+3. The real person they are based on (if any)
+4. What that real person actually did in real life
+
+Return ONLY valid JSON in this format:
+{{
+  "characters": [
+    {{
+      "character": "Fictional Character Name",
+      "actor": "Actor Name",
+      "based_on": "Real Person Name or null",
+      "real_role": "What the real person actually did"
+    }}
+  ]
+}}
+
+Wikipedia content:
+{wiki[:3000]}
+
+Respond with valid JSON only, no markdown."""
+
+    try:
+        raw = _ai_call(prompt, temperature=0.1, max_tokens=1000, json_mode=False)
+        import re as _re
+        raw = _re.sub(r'^```(?:json)?\s*', '', raw.strip())
+        raw = _re.sub(r'\s*```$', '', raw)
+        data = json.loads(raw)
+        chars = data.get("characters", [])
+        print(f"[Research] Extracted {len(chars)} characters from '{show_name}' Wikipedia")
+        return chars
+    except Exception as e:
+        print(f"[Research] Cast extraction failed for '{show_name}': {e}")
+        return []
+
+
 def is_fictional(topic: str, series_name: str | None = None) -> bool:
     """Return True if the topic appears to be a purely fictional show/character."""
     topic_lower  = topic.lower()
@@ -718,9 +841,33 @@ def research_series(topic: str, series_name: str | None = None, user_note: str |
     if user_note:
         print(f"[Research] User note: {user_note[:100]}")
 
+    # ── STEP 0: Detect if topic is a TV show and extract cast ─
+    _is_show, _show_key = _detect_show_topic(topic)
+    _effective_show = series_name or (_show_key and _show_key.title()) or None
+    show_characters: list[dict] = []
+
+    if _is_show and _effective_show:
+        print(f"[Research] TV show detected: '{_effective_show}' — fetching cast")
+        show_characters = _fetch_show_cast_from_wikipedia(_effective_show)
+        # Also search Wikipedia for each real person behind the characters
+        _real_person_wikis: list[str] = []
+        for char in show_characters[:4]:
+            real = char.get("based_on") or ""
+            if real and real.lower() not in ("null", "none", "various", "composite"):
+                rw = fetch_wikipedia(real)
+                if rw:
+                    _real_person_wikis.append(f"=== {real} ===\n{rw[:1000]}")
+                    print(f"[Research] Fetched Wikipedia for real person: {real}")
+        _real_people_combined = "\n\n".join(_real_person_wikis)
+    else:
+        _real_people_combined = ""
+
     # ── STEP 1: Wikipedia (accurate facts) ─────────────────
     person_wiki = fetch_wikipedia(topic)
     series_wiki = fetch_wikipedia(f"{series_name} TV series") if series_name else None
+    # Supplement series_wiki with show Wikipedia if fetched above
+    if not series_wiki and _is_show and _effective_show:
+        series_wiki = fetch_wikipedia(_effective_show)
     print(f"[Research] Wikipedia: {'found' if person_wiki else 'not found'}")
 
     # ── STEP 2: DuckDuckGo (additional details) ────────────
@@ -774,12 +921,26 @@ ADDITIONAL RESEARCH ON HOST DISCOVERY:
 {ddg_combined['user_note'][:800]}
 """
 
+    # Build show characters context block for the Groq prompt
+    _show_cast_section = ""
+    if show_characters:
+        lines = [
+            f"  - {c['character']} ({c.get('actor','?')}) → based on {c.get('based_on','?')}: {c.get('real_role','')}"
+            for c in show_characters
+        ]
+        _show_cast_section = (
+            "\nSHOW CHARACTERS AND REAL COUNTERPARTS (cover ALL of them):\n"
+            + "\n".join(lines) + "\n"
+        )
+    if _real_people_combined:
+        _show_cast_section += f"\nREAL PEOPLE WIKIPEDIA PAGES:\n{_real_people_combined[:2000]}\n"
+
     prompt = f"""You are a true crime documentary researcher.
 Combine Wikipedia facts with web research to create accurate research data.
 The goal is to tell the REAL story that inspired {series_name or topic}.
 Not to criticize the show — it is great entertainment. But the real story is
 even more fascinating and needs to be told.
-{user_note_section}
+{user_note_section}{_show_cast_section}
 WIKIPEDIA (primary - most accurate):
 Person: {(person_wiki or "Not found")[:2000]}
 Series: {(series_wiki or "Not found")[:1500]}
@@ -888,6 +1049,9 @@ Return ONLY valid JSON."""
         "what_show_got_wrong":           inspired_out,
         "shocking_real_facts":           shocking_out,
         "real_people_behind_characters": info.get("real_people_in_show", {}),
+        # TV show cast: fictional characters + real counterparts (populated for show topics)
+        "show_characters": show_characters,
+        "is_show_topic":   _is_show,
         # Real vs fiction structured data for script_agent
         "real_vs_fiction": real_vs_fiction,
         # Full structured block

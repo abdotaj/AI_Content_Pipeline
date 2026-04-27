@@ -936,11 +936,33 @@ def write_long_script_split(topic: dict, research: dict, series_info: tuple | No
     if rvf.get("time_period") or rvf.get("real_locations"):
         _time_loc = f"Time period: {rvf.get('time_period','')}\nLocations: {', '.join(rvf.get('real_locations',[]))}\n"
 
+    # Build show_characters block from research (populated by research_agent Step 0)
+    _show_chars = research.get("show_characters") or []
+    _is_show_topic = research.get("is_show_topic", False) or bool(_show_chars)
+    _show_chars_block = ""
+    _mandatory_instruction = ""
+    if _show_chars:
+        sc_lines = [
+            f"  - {c['character']} (played by {c.get('actor','?')}) → real person: {c.get('based_on','?')} — {c.get('real_role','')}"
+            for c in _show_chars
+        ]
+        _show_chars_block = "SHOW CAST (cover EVERY character below):\n" + "\n".join(sc_lines) + "\n"
+        char_names = ", ".join(c['character'] for c in _show_chars)
+        real_names = ", ".join(c.get('based_on','?') for c in _show_chars if c.get('based_on') and c.get('based_on','').lower() not in ('null','none','various'))
+        _mandatory_instruction = (
+            f"\nMANDATORY — THIS VIDEO IS ABOUT A TV SHOW BASED ON TRUE EVENTS:\n"
+            f"You MUST cover ALL {len(_show_chars)} main characters: {char_names}\n"
+            f"AND their real counterparts: {real_names}\n"
+            f"Give each character at least one full paragraph.\n"
+            f"Include: what the show got right vs what really happened.\n"
+            f"Never focus on just one character or just the real story — show BOTH worlds.\n"
+        )
+
     base_context = f"""Topic: {name}
 Series/Movie: {series} ({stype})
 Real person: {research.get('real_person', name)}
 Key facts: {(research.get('research_facts') or research.get('what_show_got_right', []))[:3]}
-{_real_people_block}{_chars_block}{_rvs_block}{_time_loc}"""
+{_show_chars_block}{_real_people_block}{_chars_block}{_rvs_block}{_time_loc}{_mandatory_instruction}"""
 
     # (label, min_words, max_words, is_final)
     _SECTIONS_META = [
@@ -1508,6 +1530,25 @@ The host found something most viewers don't know — celebrate that discovery.
         _rvs_lines = [f"  - {r['aspect']}: reality='{r.get('reality','')}' vs show='{r.get('show','')}'" for r in _rvf_fb["real_vs_show"][:4]]
         _rvf_fb_block += "SHOW VS REALITY (use at least one of these):\n" + "\n".join(_rvs_lines) + "\n"
 
+    # Inject show_characters (populated by research_agent STEP 0)
+    _sc_fb = research.get("show_characters") or []
+    _mandatory_fb = ""
+    if _sc_fb:
+        sc_lines_fb = [
+            f"  - {c['character']} ({c.get('actor','?')}) → {c.get('based_on','?')}: {c.get('real_role','')}"
+            for c in _sc_fb
+        ]
+        _rvf_fb_block += "SHOW CAST — cover EVERY character:\n" + "\n".join(sc_lines_fb) + "\n"
+        char_names_fb = ", ".join(c['character'] for c in _sc_fb)
+        real_names_fb = ", ".join(c.get('based_on','?') for c in _sc_fb if c.get('based_on','').lower() not in ('null','none','various',''))
+        _mandatory_fb = (
+            f"\nMANDATORY — THIS VIDEO IS ABOUT A TV SHOW BASED ON TRUE EVENTS:\n"
+            f"You MUST cover ALL {len(_sc_fb)} main characters: {char_names_fb}\n"
+            f"AND their real counterparts: {real_names_fb}\n"
+            f"Give each character at least one full paragraph. Show BOTH worlds — the show and reality.\n"
+            f"Include what the show got right vs what really happened.\n"
+        )
+
     part1_prompt = f"""You are a top true crime documentary writer for YouTube.
 Write a 1450-1900 word 10-14 minute documentary script about: {topic['topic']}
 The related series/movie is: {series_label}
@@ -1515,7 +1556,7 @@ The related series/movie is: {series_label}
 NARRATION STYLE: Write like Morgan Freeman narrating a documentary. Flowing paragraphs, no lists, no bullet points. Minimum 3 sentences per paragraph. Use transition phrases like "But what happened next shocked everyone...", "What nobody knew at the time was...", "Years later, the truth finally emerged..."
 
 COVER ALL CHARACTERS: Dedicate at least one full paragraph to EACH major character. Never focus on just one person.
-{_rvf_fb_block}
+{_mandatory_fb}{_rvf_fb_block}
 CRITICAL: Use ONLY these verified Wikipedia facts. Do NOT invent any information.
 Network: {wiki_network}
 Series premiered: {wiki_year}
