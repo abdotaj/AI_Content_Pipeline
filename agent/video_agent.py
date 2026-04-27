@@ -1403,11 +1403,44 @@ def _wikimedia_image_results(query: str, max_results: int = 5) -> list[str]:
         return []
 
 
+def _search_wikimedia_commons(query: str, max_results: int = 3) -> list[str]:
+    """Search Wikimedia Commons by MIME type — broader than mediatype filter."""
+    try:
+        r = requests.get(
+            'https://commons.wikimedia.org/w/api.php',
+            params={
+                'action': 'query',
+                'generator': 'search',
+                'gsrsearch': query,
+                'gsrnamespace': 6,
+                'gsrlimit': max_results * 3,
+                'prop': 'imageinfo',
+                'iiprop': 'url|mime',
+                'format': 'json',
+            },
+            timeout=15,
+            headers={'User-Agent': 'DarkCrimeDecoded/1.0'},
+        )
+        urls = []
+        pages = r.json().get('query', {}).get('pages', {})
+        for page in pages.values():
+            for info in page.get('imageinfo', []):
+                mime = info.get('mime', '')
+                url = info.get('url', '')
+                if mime.startswith('image/') and url:
+                    urls.append(url)
+        print(f'[Image] Wikimedia Commons: {len(urls)} results for "{query}"')
+        return urls[:max_results]
+    except Exception as e:
+        print(f'[Image] Wikimedia Commons error: {e}')
+        return []
+
+
 def _search_images_openai(query: str, max_results: int = 5) -> list[str]:
     """Use OpenAI web search to find real image URLs.
 
-    Tries Responses API first (gpt-4o-mini + web_search_preview tool),
-    falls back to Chat Completions with gpt-4o-mini-search-preview model.
+    Primary: Chat Completions with gpt-4o-mini-search-preview (grounded web search).
+    Fallback: Responses API with web_search_preview tool.
     """
     import re as _re
 
@@ -1415,13 +1448,42 @@ def _search_images_openai(query: str, max_results: int = 5) -> list[str]:
     if not api_key:
         return []
 
+    print(f'[Image] OpenAI web search query: {query}')
     headers = {'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json'}
     url_pattern = r'https?://\S+\.(?:jpg|jpeg|png|webp|gif)'
 
     def _extract_urls(text: str) -> list[str]:
         return _re.findall(url_pattern, text or '')
 
-    # ── Attempt 1: Responses API (gpt-4o-mini + web_search_preview) ──────────
+    # ── Attempt 1: Chat Completions with gpt-4o-mini-search-preview ──────────
+    try:
+        r = requests.post(
+            'https://api.openai.com/v1/chat/completions',
+            headers=headers,
+            json={
+                'model': 'gpt-4o-mini-search-preview',
+                'messages': [{'role': 'user', 'content': (
+                    f'Find direct image URLs (ending in .jpg .jpeg .png .webp) of real '
+                    f'photographs of {query}. Return only the URLs, one per line.'
+                )}],
+                'max_tokens': 500,
+            },
+            timeout=30,
+        )
+        print(f'[Image] OpenAI response status: {r.status_code}')
+        if r.status_code == 200:
+            text = r.json()['choices'][0]['message']['content']
+            urls = _extract_urls(text)
+            if urls:
+                print(f'[Image] OpenAI Chat search: {len(urls)} URLs for "{query}"')
+                return urls[:max_results]
+            print(f'[Image] OpenAI Chat search: no URLs in response')
+        else:
+            print(f'[Image] OpenAI response keys: {list(r.json().keys())}')
+    except Exception as e:
+        print(f'[Image] OpenAI Chat search failed: {e}')
+
+    # ── Attempt 2: Responses API (gpt-4o-mini + web_search_preview tool) ─────
     try:
         r = requests.post(
             'https://api.openai.com/v1/responses',
@@ -1436,8 +1498,10 @@ def _search_images_openai(query: str, max_results: int = 5) -> list[str]:
             },
             timeout=30,
         )
+        print(f'[Image] OpenAI Responses status: {r.status_code}')
         if r.status_code == 200:
             data = r.json()
+            print(f'[Image] OpenAI Responses keys: {list(data.keys())}')
             for item in data.get('output', []):
                 if item.get('type') == 'message':
                     for part in item.get('content', []):
@@ -1446,37 +1510,9 @@ def _search_images_openai(query: str, max_results: int = 5) -> list[str]:
                             if urls:
                                 print(f'[Image] OpenAI Responses API: {len(urls)} URLs for "{query}"')
                                 return urls[:max_results]
-            print(f'[Image] OpenAI Responses API: no URLs found (keys={list(data.keys())})')
-        else:
-            print(f'[Image] OpenAI Responses API: status {r.status_code}')
+            print(f'[Image] OpenAI Responses API: no URLs found')
     except Exception as e:
         print(f'[Image] OpenAI Responses API failed: {e}')
-
-    # ── Attempt 2: Chat Completions with search-preview model ────────────────
-    try:
-        r = requests.post(
-            'https://api.openai.com/v1/chat/completions',
-            headers=headers,
-            json={
-                'model': 'gpt-4o-mini-search-preview',
-                'messages': [{'role': 'user', 'content': (
-                    f'Find real photo URLs of {query}. '
-                    f'Return only direct image URLs ending in .jpg .jpeg .png or .webp.'
-                )}],
-            },
-            timeout=30,
-        )
-        if r.status_code == 200:
-            text = r.json()['choices'][0]['message']['content']
-            urls = _extract_urls(text)
-            if urls:
-                print(f'[Image] OpenAI Chat search: {len(urls)} URLs for "{query}"')
-                return urls[:max_results]
-            print(f'[Image] OpenAI Chat search: no URLs in response')
-        else:
-            print(f'[Image] OpenAI Chat search: status {r.status_code}')
-    except Exception as e:
-        print(f'[Image] OpenAI Chat search failed: {e}')
 
     return []
 
@@ -1517,29 +1553,43 @@ _KNOWN_CRIME_PERSONS = {
 
 
 def _search_wikimedia_person_photo(person_name: str) -> str | None:
-    """Fetch the Wikipedia thumbnail for a real person. Returns URL or None."""
+    """Fetch Wikipedia thumbnail for a real person via two endpoints."""
+    print(f'[Image] Wikimedia person search: {person_name}')
+    encoded = requests.utils.quote(person_name)
+
+    # Endpoint 1: REST summary API (simpler, more reliable)
     try:
-        r = requests.get(
-            'https://en.wikipedia.org/w/api.php',
-            params={
-                'action': 'query',
-                'titles': person_name,
-                'prop': 'pageimages',
-                'pithumbsize': 800,
-                'format': 'json',
-            },
-            timeout=10,
-            headers={'User-Agent': 'DarkCrimeDecoded/1.0'},
-        )
-        if r.status_code != 200:
-            return None
-        pages = r.json().get('query', {}).get('pages', {})
-        for page in pages.values():
-            thumb = page.get('thumbnail', {}).get('source', '')
+        url = f'https://en.wikipedia.org/api/rest_v1/page/summary/{encoded}'
+        print(f'[Image] Wikimedia URL: {url}')
+        r = requests.get(url, timeout=10, headers={'User-Agent': 'DarkCrimeDecoded/1.0'})
+        print(f'[Image] Wikimedia response status: {r.status_code}')
+        if r.status_code == 200:
+            data = r.json()
+            thumb = data.get('thumbnail', {}).get('source', '')
             if thumb:
+                print(f'[Image] Wikimedia REST found: {thumb[:80]}')
                 return thumb
+            print(f'[Image] Wikimedia REST: no thumbnail in response keys={list(data.keys())}')
     except Exception as e:
-        print(f'[Image] Wikimedia person photo failed for "{person_name}": {e}')
+        print(f'[Image] Wikimedia REST failed for "{person_name}": {e}')
+
+    # Endpoint 2: pageimages API
+    try:
+        url = f'https://en.wikipedia.org/w/api.php?action=query&titles={encoded}&prop=pageimages&pithumbsize=800&format=json'
+        print(f'[Image] Wikimedia URL: {url}')
+        r = requests.get(url, timeout=10, headers={'User-Agent': 'DarkCrimeDecoded/1.0'})
+        print(f'[Image] Wikimedia response status: {r.status_code}')
+        if r.status_code == 200:
+            resp_data = r.json()
+            print(f'[Image] Wikimedia response: {resp_data}')
+            pages = resp_data.get('query', {}).get('pages', {})
+            for page in pages.values():
+                thumb = page.get('thumbnail', {}).get('source', '')
+                if thumb:
+                    return thumb
+    except Exception as e:
+        print(f'[Image] Wikimedia pageimages failed for "{person_name}": {e}')
+
     return None
 
 
@@ -2733,7 +2783,7 @@ def fetch_real_images(script_text: str, count: int, video_id: str,
                     print(f"[Image] Wikimedia person photo: '{person}'")
                     real_count += 1
 
-        # Step 2: Wikimedia Commons general search
+        # Step 2: Wikimedia Commons general search + OpenAI web search
         if not saved:
             query = _get_search_query_for_chunk(chunk)
             if query:
@@ -2742,13 +2792,26 @@ def fetch_real_images(script_text: str, count: int, video_id: str,
                     saved = img_path
                     print(f"[Image] Reused '{query}' for chunk {i}")
                 else:
-                    wiki_urls = _wikimedia_image_results(query)
+                    # Step 2a: Wikimedia Commons (mime-filtered, broader results)
+                    wiki_urls = _search_wikimedia_commons(query)
+                    if not wiki_urls:
+                        wiki_urls = _wikimedia_image_results(query)
                     if wiki_urls:
                         saved = _download_first_valid(wiki_urls, img_path)
                         if saved:
                             print(f"[Image] Real photo (Wikimedia): '{query}'")
                             query_cache[query] = saved
                             real_count += 1
+
+                    # Step 2b: OpenAI web search
+                    if not saved:
+                        oai_urls = _search_images_openai(query)
+                        if oai_urls:
+                            saved = _download_first_valid(oai_urls, img_path)
+                            if saved:
+                                print(f"[Image] Real photo (OpenAI search): '{query}'")
+                                query_cache[query] = saved
+                                real_count += 1
 
         # Step 3: AI fallback — Pollinations with topic-specific prompt
         if not saved:
