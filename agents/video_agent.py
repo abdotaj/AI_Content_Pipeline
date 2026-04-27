@@ -1130,7 +1130,7 @@ def build_image_prompt(chunk_text: str) -> str:
     first_200 = " ".join(chunk_text.split()[:200])
 
     if not api_key:
-        return f"dark crime documentary scene, cinematic{_IMAGE_PROMPT_SUFFIX}"
+        return f"true crime historical documentary scene cinematic dark{_IMAGE_PROMPT_SUFFIX}"
 
     prompt = f"""Read this script excerpt and write a specific visual image generation prompt (max 20 words) that represents the exact subject being described.
 
@@ -1171,7 +1171,7 @@ Return only the image prompt, nothing else."""
     except Exception as e:
         print(f"[Image] build_image_prompt failed: {e}")
 
-    return f"dark crime documentary scene, cinematic{_IMAGE_PROMPT_SUFFIX}"
+    return f"true crime historical documentary scene cinematic dark{_IMAGE_PROMPT_SUFFIX}"
 
 
 SCENE_PROMPTS: dict[str, list[str]] = {
@@ -1221,7 +1221,7 @@ def generate_image_prompts(script_text: str, count: int, topic: str = "", resear
     words = clean.split()
 
     if not words:
-        return [f"dark crime documentary cinematic{_IMAGE_PROMPT_SUFFIX}"] * count
+        return [f"true crime historical documentary scene cinematic dark{_IMAGE_PROMPT_SUFFIX}"] * count
 
     chunk_size = max(1, len(words) // count)
     prompts: list[str] = []
@@ -2495,8 +2495,6 @@ def fetch_stock_videos(script_text: str, count: int, video_id: str, topic: str =
         for src_name, src_fn, use_ytdlp, mb_override in [
             ("Internet Archive", _search_internet_archive, False, _ARCHIVE_VIDEO_MAX_BYTES),
             ("YouTube CC",       _search_youtube_cc,       True,  None),
-            ("Wikimedia",        _search_wikimedia_videos, False, None),
-            ("Pexels",           _search_pexels_videos,    False, None),
         ]:
             urls = src_fn(query)
             if not urls:
@@ -2640,10 +2638,11 @@ def fetch_real_images(script_text: str, count: int, video_id: str,
 
     Priority order:
       1. User images from Telegram (always first)
-      2. Wikimedia Commons (free, works from servers)
-      3. OpenAI web search (finds real photos)
-      4. Internet Archive
-      5. Pollinations AI generation (last resort)
+      2. Wikimedia person photo (if person detected in chunk)
+      3. Wikimedia Commons general search
+      4. Pollinations AI generation with topic-specific prompt (last resort)
+
+    Pexels is never used (returns irrelevant content for specific queries).
 
     Logs each image as real photo or AI generated.
     Returns list of image paths.
@@ -2654,8 +2653,27 @@ def fetch_real_images(script_text: str, count: int, video_id: str,
     clean = re.sub(r'\[SECTION:[^\]]+\]\s*', '', script_text).strip()
     words = clean.split()
 
-    seed          = random.randint(1, 99999)
-    fallback_base = f"dark cinematic documentary scene{_IMAGE_PROMPT_SUFFIX}"
+    seed = random.randint(1, 99999)
+
+    # Topic-specific fallback: never use generic "dark portrait dramatic lighting"
+    if topic:
+        _t = topic.lower()
+        if any(k in _t for k in ("mindhunter", "behavioral", "bsu", "fbi", "douglas", "ressler")):
+            fallback_base = f"FBI Behavioral Science Unit office 1970s dark cinematic documentary style{_IMAGE_PROMPT_SUFFIX}"
+        elif any(k in _t for k in ("narcos", "escobar", "medellin")):
+            fallback_base = f"1980s Colombia Medellin cartel cinematic documentary dark{_IMAGE_PROMPT_SUFFIX}"
+        elif any(k in _t for k in ("manson", "cult", "helter")):
+            fallback_base = f"1960s California cult commune cinematic documentary dark{_IMAGE_PROMPT_SUFFIX}"
+        elif any(k in _t for k in ("godfather", "mafia", "luciano", "gotti", "capone")):
+            fallback_base = f"1940s New York mafia meeting dark cinematic documentary{_IMAGE_PROMPT_SUFFIX}"
+        elif any(k in _t for k in ("scarface", "cocaine", "miami")):
+            fallback_base = f"1980s Miami drug trafficking cinematic documentary dark{_IMAGE_PROMPT_SUFFIX}"
+        elif any(k in _t for k in ("goodfellas", "henry hill", "wiseguy")):
+            fallback_base = f"1970s New York organized crime cinematic dark documentary{_IMAGE_PROMPT_SUFFIX}"
+        else:
+            fallback_base = f"{topic} real historical documentary cinematic dark{_IMAGE_PROMPT_SUFFIX}"
+    else:
+        fallback_base = f"true crime historical documentary scene cinematic dark{_IMAGE_PROMPT_SUFFIX}"
 
     if not words:
         paths = []
@@ -2715,7 +2733,7 @@ def fetch_real_images(script_text: str, count: int, video_id: str,
                     print(f"[Image] Wikimedia person photo: '{person}'")
                     real_count += 1
 
-        # Step 2: get query then try image sources
+        # Step 2: Wikimedia Commons general search
         if not saved:
             query = _get_search_query_for_chunk(chunk)
             if query:
@@ -2724,7 +2742,6 @@ def fetch_real_images(script_text: str, count: int, video_id: str,
                     saved = img_path
                     print(f"[Image] Reused '{query}' for chunk {i}")
                 else:
-                    # Step 3: Wikimedia Commons (works from server IPs, free)
                     wiki_urls = _wikimedia_image_results(query)
                     if wiki_urls:
                         saved = _download_first_valid(wiki_urls, img_path)
@@ -2733,27 +2750,7 @@ def fetch_real_images(script_text: str, count: int, video_id: str,
                             query_cache[query] = saved
                             real_count += 1
 
-                    # Step 4: OpenAI web search
-                    if not saved:
-                        oai_urls = _search_images_openai(query)
-                        if oai_urls:
-                            saved = _download_first_valid(oai_urls, img_path)
-                            if saved:
-                                print(f"[Image] Real photo (OpenAI search): '{query}'")
-                                query_cache[query] = saved
-                                real_count += 1
-
-                    # Step 5: Internet Archive
-                    if not saved:
-                        ia_urls = _internet_archive_image_results(query)
-                        if ia_urls:
-                            saved = _download_first_valid(ia_urls, img_path)
-                            if saved:
-                                print(f"[Image] Real photo (Internet Archive): '{query}'")
-                                query_cache[query] = saved
-                                real_count += 1
-
-        # Step 6: AI fallback — Pollinations with script-matched prompt
+        # Step 3: AI fallback — Pollinations with topic-specific prompt
         if not saved:
             print(f"[Image] chunk {i}: no real image found, using AI generation")
             ai_prompt = ai_prompts[i] if i < len(ai_prompts) else fallback_base
