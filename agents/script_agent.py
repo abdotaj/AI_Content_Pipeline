@@ -221,10 +221,38 @@ def _groq_fallback(prompt: str, max_tokens: int, json_mode: bool,
     return ""
 
 
+_OPENAI_QUOTA_EXCEEDED = False
+
+
 def _ai_script_call(prompt: str, max_tokens: int = 1000,
                     json_mode: bool = False, temperature: float = 0.7,
                     system_prompt: str | None = None) -> str:
-    """Use Groq for all script AI calls."""
+    """Try OpenAI gpt-4o-mini first, fall back to Groq."""
+    import requests as _req
+    global _OPENAI_QUOTA_EXCEEDED
+
+    api_key = os.getenv('OPENAI_API_KEY', '').strip()
+    if api_key and not _OPENAI_QUOTA_EXCEEDED:
+        try:
+            messages = []
+            if system_prompt:
+                messages.append({'role': 'system', 'content': system_prompt})
+            messages.append({'role': 'user', 'content': prompt})
+            r = _req.post(
+                'https://api.openai.com/v1/chat/completions',
+                headers={'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json'},
+                json={'model': 'gpt-4o-mini', 'messages': messages,
+                      'max_tokens': max_tokens, 'temperature': temperature},
+                timeout=60,
+            )
+            if r.status_code == 200:
+                return r.json()['choices'][0]['message']['content'].strip()
+            elif r.status_code == 429:
+                _OPENAI_QUOTA_EXCEEDED = True
+                print('[Script] OpenAI quota exceeded — switching to Groq')
+        except Exception as e:
+            print(f'[Script] OpenAI failed: {e}')
+
     return _groq_fallback(prompt, max_tokens, json_mode, system_prompt=system_prompt)
 
 
