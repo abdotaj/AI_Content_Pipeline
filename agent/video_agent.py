@@ -897,6 +897,11 @@ def check_image_relevance(
     """Use OpenAI Vision to decide image relevance. Returns 'use_now', 'save_part2', or 'ignore'."""
     import base64
 
+    # User-uploaded images (Telegram) are always relevant — user chose them intentionally.
+    if "user_images" in (image_path or "").replace("\\", "/"):
+        print(f"[Image] User image — always USE_NOW: {os.path.basename(image_path)}")
+        return "use_now"
+
     api_key = os.getenv("OPENAI_API_KEY", "").strip()
     if not api_key:
         return "use_now"

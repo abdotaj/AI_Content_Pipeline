@@ -2240,32 +2240,33 @@ Return ONLY the Arabic translation. No explanations, no notes."""
 
 
 def try_translate_arabic(text: str, topic: str = "") -> str:
-    """Translate to Arabic with fallback chain: OpenAI → Groq → Google → English (with warning)."""
-    # 1. OpenAI (raises if no key)
+    """Translate to Arabic: OpenAI → Groq → Google. Accept first success, never retry twice."""
+    # 1. OpenAI (primary — best quality)
     try:
         result = translate_to_arabic_openai(text, topic=topic)
-        print("[Script] Arabic translation via OpenAI ✅")
-        return result
+        if result:
+            return result
     except Exception as e:
         print(f"[Script] OpenAI translation unavailable: {e}")
 
-    # 2. Groq
+    # 2. Groq (fallback — faster, no per-word ratio enforcement)
     try:
         result = _groq_translate_arabic(text, topic=topic)
-        print("[Script] Arabic translation via Groq ✅")
-        return result
+        if result:
+            print("[Script] Arabic translation via Groq ✅")
+            return result
     except Exception as e:
         print(f"[Script] Groq translation failed: {e}")
 
-    # 3. Google Translate
+    # 3. Google Translate (final fallback)
     try:
         result = translate_to_arabic_google(text)
-        print("[Script] Arabic translation via Google ✅")
-        return result
+        if result:
+            print("[Script] Arabic translation via Google ✅")
+            return result
     except Exception as e:
         print(f"[Script] Google translation failed: {e}")
 
-    # 4. Return original English with warning
     print("[Script] ⚠️ All translation services failed — returning original English text")
     return text
 
@@ -2360,14 +2361,14 @@ Return ONLY the Arabic translation. No explanations, no notes."""
         en_words = word_count
         ratio = ar_words / max(en_words, 1)
         print(f"[Script] EN: {en_words} words | AR: {ar_words} words | Ratio: {ratio:.2f}")
-        # Short fragments (titles/hooks/hashtags) naturally compress in Arabic.
-        # Skip expensive retry loops for short inputs to reduce pipeline wall time.
+        # Short fragments naturally compress in Arabic — accept immediately.
         if en_words < 80:
-            print("[Script] Short fragment translation accepted")
+            print("[Script] Short fragment — accepted without ratio check")
             print("[Script] OpenAI Arabic translation ✅")
             return result
-        if ratio < 0.95:
-            print("[Script] ⚠️ Arabic too short — retrying with stronger instruction")
+        # One optional retry if very short; then accept whatever we get.
+        if ratio < 0.75:
+            print("[Script] ⚠️ Ratio low — one retry with stronger instruction")
             retry = _do_translate(_build_prompt(strong=True))
             if retry:
                 retry = _fix_arabic(retry)
@@ -2378,18 +2379,17 @@ Return ONLY the Arabic translation. No explanations, no notes."""
                     ar_words = retry_words
                 else:
                     print(f"[Script] Retry not longer ({retry_words} vs {ar_words}) — keeping original")
-            # Last resort: Google translation tends to preserve full source coverage.
             final_ratio = ar_words / max(en_words, 1)
-            if final_ratio < 0.90:
-                print("[Script] ⚠️ Still short after retry — trying Google translation fallback")
-                google_result = _fix_arabic(translate_to_arabic_google(english_text))
-                google_words = len(google_result.split())
-                if google_words > ar_words:
-                    print(f"[Script] Google AR: {google_words} words — using Google fallback")
-                    result = google_result
+            if final_ratio < 0.75:
+                print(f"[Script] ⚠️ Ratio still {final_ratio:.2f} after retry — accepting and continuing")
         print("[Script] OpenAI Arabic translation ✅")
         return result
 
+    print("[Script] Falling back to Groq translation")
+    try:
+        return _groq_translate_arabic(english_text, topic=topic)
+    except Exception as e:
+        print(f"[Script] Groq fallback failed: {e}")
     print("[Script] Falling back to Google Translate")
     return translate_to_arabic_google(english_text)
 
