@@ -46,15 +46,29 @@ _SCRIPT_SYSTEM_PROMPT = """You are a professional true crime documentary scriptw
 NARRATION STYLE:
 - Flow like a novel, not a report. Every paragraph tells part of the story and builds tension.
 - Minimum 3 sentences per paragraph, maximum 6. No single-sentence paragraphs.
-- Connect ideas with transition phrases: "But what happened next shocked everyone...", "What nobody knew at the time was...", "Years later, the truth would finally emerge...", "The world saw one version of events. The reality was far darker."
 - No bullet points. No numbered lists. No standalone facts. Prose only.
 - Show cause and effect: actions lead to consequences, decisions lead to outcomes.
+- Always write COMPLETE sentences. Never end mid-sentence or mid-thought. If approaching the end, wrap up gracefully with a full closing sentence.
 
-CHARACTER COVERAGE:
+TRANSITION PHRASES — pick a DIFFERENT one for each section, never repeat:
+- "What nobody expected was..."
+- "The truth was far more disturbing..."
+- "Behind closed doors, however..."
+- "What the cameras never showed..."
+- "Decades later, the full picture finally emerged..."
+- "The official story was only half the truth..."
+- "What they never spoke about publicly was..."
+- "The case files told a different story..."
+- "What would later emerge changed everything..."
+- "The reality was far darker than anyone knew..."
+FORBIDDEN: Never use "But what happened next shocked everyone" more than once per script. Never repeat the same transition phrase twice.
+
+CHARACTER COVERAGE — universal rule for ALL topics:
 - Cover ALL main characters — never focus on just one person.
+- Every key person in the research gets their OWN dedicated paragraph with: who they are, what they specifically contributed, their unique challenge or perspective.
 - For each real person: full name, actual role, what they really did, their fate.
 - For fictional characters based on real people: name the real person and explain what changed.
-- Dedicate at least one full paragraph to each major character.
+- Women, minorities, and supporting figures get EQUAL coverage — never relegate them to a mention.
 
 TONE RULES:
 - 85% dark, serious, documentary tone
@@ -62,10 +76,12 @@ TONE RULES:
 - Examples: 'He planned the perfect crime. Except he left his wallet at the scene.' / 'For a man who controlled an entire militia, he somehow forgot that cameras exist.'
 - Never make fun of victims. Only humor at criminals, corrupt officials, or ironic situations. One or two lines max per section.
 
-SHOW vs REALITY:
-- Always include a dedicated paragraph comparing what the show/film depicted vs what really happened.
+SHOW vs REALITY — applies to ALL biopics, true crime shows, historical dramas:
+- Section 3 (Main Story) MUST contain two dedicated paragraphs:
+  Paragraph A: "Here is what [show/film name] got RIGHT about the real story: ..."
+  Paragraph B: "And here is what they changed or left out: ..."
 - Use phrases like: "The show portrayed X as... In reality, Y actually..." or "Hollywood changed this detail: the real story was..."
-- This makes the content unique and educational."""
+- This structure is MANDATORY for any topic based on true events."""
 
 
 def clean_word_count(text: str) -> int:
@@ -1050,47 +1066,63 @@ Key facts: {(research.get('research_facts') or research.get('what_show_got_right
     prompts_ctx: list[str] = []  # accumulate previous sections for context
 
     import random as _random
-    _tp = _TRANSITION_PHRASES  # shorthand
+
+    def _prev_summary(n: int) -> str:
+        """Extract first sentence of each completed section as a 'what was covered' summary."""
+        if not sections:
+            return ""
+        lines = []
+        for idx, sec in enumerate(sections[:n]):
+            first = sec.strip().split(".")[0].strip()
+            if first:
+                lines.append(f"Section {idx + 1}: {first}.")
+        if not lines:
+            return ""
+        return (
+            "IMPORTANT — topics already covered in previous sections "
+            "(do NOT repeat any of this, only introduce NEW information):\n"
+            + "\n".join(lines)
+        )
 
     section_prompts = [
         lambda: f"""{base_context}
 Write the HOOK and INTRODUCTION for a documentary about {name}.
 
-Open with a single gripping sentence that puts the viewer in the moment — a crime scene, a decision, a moment before everything changed. Then introduce the real story behind {series}: who the real people were, what the show is based on, and why this story matters. Introduce ALL main characters by name — real people and their fictional counterparts. End the section with a line that makes the viewer need to keep watching.
+Open with a single gripping sentence that puts the viewer in the moment — a crime scene, a decision, a moment before everything changed. Then introduce the real story behind {series}: who the real people were, what the show is based on, and why this story matters. Introduce ALL main characters by name — real people and their fictional counterparts. End with a line that makes the viewer need to keep watching.
 
-Use this transition phrase somewhere in this section: "{_random.choice(_tp)}"
-
-Write flowing documentary narration — no lists, no bullet points, paragraphs only. Minimum 3 sentences per paragraph.
+Write flowing documentary narration — no lists, no bullet points, paragraphs only. Minimum 3 sentences per paragraph. Always write complete sentences — never end mid-thought.
 {_section_instruction(300, 380, False)}""",
 
         lambda: f"""{base_context}
 Continue the documentary. Write the BACKGROUND AND CONTEXT section.
 
-DO NOT REPEAT information already covered in the previous section. This section introduces NEW content only: the world these people lived in — the era, the locations, the forces that shaped them. Give each major character their own full paragraph: their background, their motivations, what drove them. For fictional characters, explain who the real person was and what the show changed.
+{_prev_summary(1)}
 
-Use this transition phrase somewhere in this section: "{_random.choice(_tp)}"
+This section introduces NEW content: the world these people lived in — the era, the locations, the forces that shaped each character. Give every key person their own full paragraph: background, motivations, what drove them. For fictional characters, explain who the real person was and what the show changed.
 
-Write flowing documentary narration — no lists, no bullet points, paragraphs only. Minimum 3 sentences per paragraph.
+Write flowing documentary narration — no lists, no bullet points, paragraphs only. Minimum 3 sentences per paragraph. Always write complete sentences — never end mid-thought.
 {_section_instruction(320, 420, False)}
 
-PREVIOUS SECTION (do NOT repeat this):
+PREVIOUS SECTION:
 {sections[0]}""",
 
         lambda: f"""{base_context}
 Continue the documentary. Write the MAIN EVENTS section.
 
-DO NOT REPEAT information already covered in previous sections. This section covers NEW material: the key events chronologically, building tension. Cover every major character's role — what they did, what choices they made, how their paths intersected.
+{_prev_summary(2)}
 
-MANDATORY: Include a dedicated paragraph for Wendy Carr / Ann Burgess (or the equivalent female lead) — her specific research contributions, what she discovered independently, how she challenged the establishment as a woman in a male-dominated field. She is NOT just a supporting character.
+This section covers NEW material: walk through key events chronologically, building tension. Cover every major character's role — what they did, what choices they made, how their paths intersected.
 
-Include at least one "Show vs Reality" paragraph: what {series} depicted vs what actually happened.
+UNIVERSAL RULE — SUPPORTING CHARACTERS: Every key person in the research gets their OWN dedicated paragraph. Do not relegate any character to a passing mention. Women, minorities, and supporting figures get equal full coverage.
 
-Use this transition phrase somewhere in this section: "{_random.choice(_tp)}"
+SHOW vs REALITY (MANDATORY for all true-story topics): Include two dedicated paragraphs:
+- Starting with: "Here is what {series} got RIGHT about the real story:"
+- Starting with: "And here is what they changed or left out:"
 
-Write flowing documentary narration — no lists, no bullet points, paragraphs only. Minimum 3 sentences per paragraph.
+Write flowing documentary narration — no lists, no bullet points, paragraphs only. Minimum 3 sentences per paragraph. Always write complete sentences — never end mid-thought.
 {_section_instruction(420, 560, False)}
 
-PREVIOUS SECTIONS (do NOT repeat these):
+PREVIOUS SECTIONS:
 {sections[0]}
 
 {sections[1]}""",
@@ -1098,14 +1130,14 @@ PREVIOUS SECTIONS (do NOT repeat these):
         lambda: f"""{base_context}
 Continue the documentary. Write the AFTERMATH AND ANALYSIS section.
 
-DO NOT REPEAT information already covered in previous sections. This section covers NEW material: what happened to each person after the main events — investigations, trials, deaths, legacies. Include a dedicated paragraph on what the show got right and what it changed. Reflect on what this story reveals about human nature, power, or justice.
+{_prev_summary(3)}
 
-Use this transition phrase somewhere in this section: "{_random.choice(_tp)}"
+This section covers NEW material: what happened to each person after the main events — investigations, trials, deaths, legacies. Reflect on what this story reveals about human nature, power, or justice.
 
-Write flowing documentary narration — no lists, no bullet points, paragraphs only. Minimum 3 sentences per paragraph.
+Write flowing documentary narration — no lists, no bullet points, paragraphs only. Minimum 3 sentences per paragraph. Always write complete sentences — never end mid-thought.
 {_section_instruction(320, 420, False)}
 
-PREVIOUS SECTIONS (do NOT repeat these):
+PREVIOUS SECTIONS:
 {sections[0]}
 
 {sections[1]}
@@ -1115,16 +1147,16 @@ PREVIOUS SECTIONS (do NOT repeat these):
         lambda: f"""{base_context}
 Continue the documentary. Write the CONCLUSION.
 
-DO NOT REPEAT information already covered in previous sections. This section is the emotional landing: bring all threads together, deliver the final verdict, and close with power. End with a complete, memorable sentence — never cut off mid-thought. Naturally weave in a call to action for viewers.
+{_prev_summary(4)}
 
-CRITICAL: Write a COMPLETE conclusion. Your final sentence must be a full, finished sentence. Do not end mid-sentence.
+This section is the emotional landing: bring all threads together, deliver the final verdict, close with power. Naturally weave in a call to action for viewers.
 
-Use this transition phrase somewhere in this section: "{_random.choice(_tp)}"
+CRITICAL: Write a COMPLETE conclusion with a proper ending sentence. Your final sentence must be fully finished. Never end mid-sentence or mid-thought. If approaching the token limit, wrap up gracefully — do not stop abruptly.
 
 Write flowing documentary narration — no lists, no bullet points, paragraphs only.
 {_section_instruction(180, 260, True)}
 
-PREVIOUS SECTIONS (do NOT repeat these):
+PREVIOUS SECTIONS:
 {sections[0]}
 
 {sections[1]}
@@ -2513,7 +2545,7 @@ def write_short_script(en_long_script: dict) -> dict:
     _si    = get_series_for_person(topic)
     series = f"{_si[0]}" if _si else en_long_script.get("niche", "the series")
 
-    # Build show characters line from research data if available
+    # Build characters line — show cast if available, else key figures from long script
     _show_chars = en_long_script.get("show_characters") or []
     if _show_chars:
         _chars_line = ", ".join(
@@ -2521,30 +2553,38 @@ def write_short_script(en_long_script: dict) -> dict:
             for c in _show_chars[:4]
         )
     else:
-        _chars_line = topic
+        # Extract first names mentioned in the long script as key figures
+        import re as _re
+        _script_excerpt = en_long_script.get("script", "")[:800]
+        _caps = _re.findall(r'\b[A-Z][a-z]+ [A-Z][a-z]+\b', _script_excerpt)
+        _unique = list(dict.fromkeys(_caps))[:4]
+        _chars_line = ", ".join(_unique) if _unique else topic
 
     prompt = f"""Write a 55-second hook script for a crime documentary short video.
 Topic: {topic}
 Related series/movie: {series}
-Show characters: {_chars_line}
+Key characters/people: {_chars_line}
 
-RULES:
+UNIVERSAL RULES (apply to ALL topics — crime, biopics, historical, TV shows):
 1. Write like a movie trailer narrator — dramatic, mysterious, gripping
-2. Start with a shocking hook question or statement that stops the viewer cold
-3. Mention ALL main characters briefly — never focus on just one person
-4. NO bullet facts. NO numbers like salary, years served, or birth dates. NO list format.
-5. End with a cliffhanger line + "Follow Dark Crime Decoded to uncover the truth."
-6. MINIMUM 120 words, MAXIMUM 140 words — count carefully
-7. Must feel like a 55-second teaser, not a biography summary
-8. Flowing sentences only — minimum 2 sentences per paragraph
+2. FIRST SENTENCE must be a shocking hook question or bold statement — not a biography fact
+3. Mention ALL main characters in the first 3 sentences — never focus on just one person
+4. NO bullet facts. NO numbers (no salary, years served, birth dates, ages). NO list format.
+5. End with a cliffhanger + "Follow Dark Crime Decoded to uncover the truth."
+6. MINIMUM 120 words, MAXIMUM 140 words — count carefully before finishing
+7. Must feel like a 55-second TEASER, not a biography summary
+8. Flowing prose only — minimum 2 sentences per paragraph, no standalone lines
 
-GOOD EXAMPLE (Mindhunter):
+GOOD EXAMPLE (Mindhunter — 3 characters, TV show):
 In the 1970s, three people changed criminal justice forever. Holden Ford, a young FBI agent obsessed with understanding evil. Bill Tench, a seasoned investigator who had seen too much. And Wendy Carr, a psychologist who dared to study the darkest minds in history. Together they built something that had never existed before — a unit dedicated to getting inside the heads of serial killers. But the real story behind Mindhunter is far darker than Netflix ever showed. The men they interviewed, the killers they faced, the price they paid. Follow Dark Crime Decoded to uncover the truth.
 
-BAD EXAMPLE — NEVER do this:
+GOOD EXAMPLE (Pablo Escobar — single person, Narcos):
+What does it take to become the most wanted man on the planet? Pablo Escobar did not rise to power through luck — he built an empire through fear, money, and ruthless strategy that governments struggled to contain. His story is not just about cocaine or cartels. It is the story of a Colombia torn apart by a man who genuinely believed he could buy his way out of anything. The show Narcos captured his violence. But the full truth of what happened — the deals made, the lives destroyed, the legacy he left — goes far deeper than any camera ever showed. Follow Dark Crime Decoded to uncover the truth.
+
+BAD EXAMPLE — NEVER do this (any topic):
 John E. Douglas was born June 18 1945. He joined FBI in 1970. He made 135000 dollars per year. He interviewed 36 killers. He retired in 1995.
 
-Context from full script (use for tone, not facts):
+Context from full script (use only for tone and story direction, not individual facts):
 {en_long_script.get('script', '')[:400]}
 
 Output ONLY the spoken script text, nothing else."""
