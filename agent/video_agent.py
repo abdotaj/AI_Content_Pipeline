@@ -2496,10 +2496,7 @@ def fetch_stock_videos(script_text: str, count: int, video_id: str, topic: str =
             ("Internet Archive", _search_internet_archive, False, _ARCHIVE_VIDEO_MAX_BYTES),
             ("YouTube CC",       _search_youtube_cc,       True,  None),
             ("Wikimedia",        _search_wikimedia_videos, False, None),
-            ("Vimeo CC",         _search_vimeo_free,       False, None),
-            ("Coverr",           _search_coverr,           False, None),
             ("Pexels",           _search_pexels_videos,    False, None),
-            ("Pixabay",          _search_pixabay_videos,   False, None),
         ]:
             urls = src_fn(query)
             if not urls:
@@ -2708,57 +2705,55 @@ def fetch_real_images(script_text: str, count: int, video_id: str,
         img_path = os.path.join(IMAGES_DIR, f"{video_id}_img_{i}.png")
         saved    = None
 
-        # Step 1: get specific search query for this chunk
-        query = _get_search_query_for_chunk(chunk)
+        # Step 1: person photo — runs on raw chunk, highest priority, before query gate
+        person = _detect_person_in_chunk(chunk)
+        if person:
+            photo_url = _search_wikimedia_person_photo(person)
+            if photo_url:
+                saved = _download_first_valid([photo_url], img_path)
+                if saved:
+                    print(f"[Image] Wikimedia person photo: '{person}'")
+                    real_count += 1
 
-        # Step 2: English DuckDuckGo search
-        if query:
-            if query in query_cache:
-                shutil.copy2(query_cache[query], img_path)
-                saved = img_path
-                print(f"[Image] Reused '{query}' for chunk {i}")
-            else:
-                # Step 1b: real person photo from Wikipedia (highest priority)
-                person = _detect_person_in_chunk(chunk)
-                if person:
-                    photo_url = _search_wikimedia_person_photo(person)
-                    if photo_url:
-                        saved = _download_first_valid([photo_url], img_path)
+        # Step 2: get query then try image sources
+        if not saved:
+            query = _get_search_query_for_chunk(chunk)
+            if query:
+                if query in query_cache:
+                    shutil.copy2(query_cache[query], img_path)
+                    saved = img_path
+                    print(f"[Image] Reused '{query}' for chunk {i}")
+                else:
+                    # Step 3: Wikimedia Commons (works from server IPs, free)
+                    wiki_urls = _wikimedia_image_results(query)
+                    if wiki_urls:
+                        saved = _download_first_valid(wiki_urls, img_path)
                         if saved:
-                            print(f"[Image] Wikimedia photo found for '{person}'")
+                            print(f"[Image] Real photo (Wikimedia): '{query}'")
                             query_cache[query] = saved
                             real_count += 1
 
-                # Step 2: Wikimedia Commons (works from server IPs, free)
-                wiki_urls = _wikimedia_image_results(query) if not saved else []
-                if wiki_urls:
-                    saved = _download_first_valid(wiki_urls, img_path)
-                    if saved:
-                        print(f"[Image] Real photo (Wikimedia): '{query}'")
-                        query_cache[query] = saved
-                        real_count += 1
+                    # Step 4: OpenAI web search
+                    if not saved:
+                        oai_urls = _search_images_openai(query)
+                        if oai_urls:
+                            saved = _download_first_valid(oai_urls, img_path)
+                            if saved:
+                                print(f"[Image] Real photo (OpenAI search): '{query}'")
+                                query_cache[query] = saved
+                                real_count += 1
 
-                # Step 3: OpenAI web search
-                if not saved:
-                    oai_urls = _search_images_openai(query)
-                    if oai_urls:
-                        saved = _download_first_valid(oai_urls, img_path)
-                        if saved:
-                            print(f"[Image] Real photo (OpenAI search): '{query}'")
-                            query_cache[query] = saved
-                            real_count += 1
+                    # Step 5: Internet Archive
+                    if not saved:
+                        ia_urls = _internet_archive_image_results(query)
+                        if ia_urls:
+                            saved = _download_first_valid(ia_urls, img_path)
+                            if saved:
+                                print(f"[Image] Real photo (Internet Archive): '{query}'")
+                                query_cache[query] = saved
+                                real_count += 1
 
-                # Step 4: Internet Archive
-                if not saved:
-                    ia_urls = _internet_archive_image_results(query)
-                    if ia_urls:
-                        saved = _download_first_valid(ia_urls, img_path)
-                        if saved:
-                            print(f"[Image] Real photo (Internet Archive): '{query}'")
-                            query_cache[query] = saved
-                            real_count += 1
-
-        # Step 5: AI fallback — Pollinations with script-matched prompt
+        # Step 6: AI fallback — Pollinations with script-matched prompt
         if not saved:
             print(f"[Image] chunk {i}: no real image found, using AI generation")
             ai_prompt = ai_prompts[i] if i < len(ai_prompts) else fallback_base
