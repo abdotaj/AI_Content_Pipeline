@@ -3189,6 +3189,8 @@ def match_images_to_moments(
                  if isinstance(img, dict) and img.get("path") and os.path.exists(img["path"])]
     ai_pool   = [p for p in (ai_image_paths or []) if p and os.path.exists(p)]
 
+    print(f"[Visual] match_images_to_moments: {len(user_pool)} user images, {len(ai_pool)} stock/AI images, {len(moments)} moments")
+
     def _score(img_tags: list[str], m_tags: list[str]) -> int:
         img_lower = {t.lower() for t in img_tags}
         return sum(1 for t in m_tags if t.lower() in img_lower)
@@ -3197,68 +3199,53 @@ def match_images_to_moments(
         img_lower = {t.lower() for t in img_tags}
         has_law = any(t in img_lower for t in {"fbi", "police", "detective", "law_enforcement", "dea", "cop", "officer"})
         cats = moment.get("categories", [])
-        # Forbidden: law-enforcement image when describing killer/crime but NOT investigation context
         return has_law and "crime" in cats and "law_enforcement" not in cats
 
-    recent_used: list[str] = []  # rotation window (last 5 paths)
     result: list[str] = []
-    use_user = True
     ai_idx = 0
 
-    for m_idx, moment in enumerate(moments):
-        chosen: str | None = None
-        reason = "no match"
+    # PHASE 1: Fill ALL user images into their best-matching moments first.
+    # User images are NEVER interleaved with stock — they fill first N slots.
+    remaining_user = list(user_pool)
+    user_slots = min(len(remaining_user), len(moments))
 
-        if use_user and user_pool:
-            best_score = -1
-            best_img = None
-            for img in user_pool:
-                img_tags = img.get("tags", [])
-                if img["path"] in recent_used:
-                    continue
-                if _is_forbidden(img_tags, moment):
-                    print(f"[Visual] Chunk {m_idx}: FORBIDDEN — skipping {os.path.basename(img['path'])} (law_enforcement + crime-only moment)")
-                    continue
-                score = _score(img_tags, moment.get("tags", []))
-                if score > best_score:
-                    best_score = score
-                    best_img = img
-            if best_img:
-                chosen = best_img["path"]
-                reason = f"user_image score={best_score}"
-
-        if not chosen and ai_pool:
-            for _ in range(len(ai_pool)):
-                candidate = ai_pool[ai_idx % len(ai_pool)]
-                ai_idx += 1
-                if candidate not in recent_used:
-                    chosen = candidate
-                    reason = "ai_stock"
-                    break
-            if not chosen:
-                chosen = ai_pool[ai_idx % len(ai_pool)]
-                ai_idx += 1
-                reason = "ai_stock (rotation full)"
-
-        if not chosen and user_pool:
-            chosen = user_pool[0]["path"]
-            reason = "user_image (no ai available)"
-
-        if chosen:
+    for m_idx in range(user_slots):
+        moment = moments[m_idx]
+        best_score = -1
+        best_img = None
+        for img in remaining_user:
+            img_tags = img.get("tags", [])
+            if _is_forbidden(img_tags, moment):
+                continue
+            score = _score(img_tags, moment.get("tags", []))
+            if score > best_score:
+                best_score = score
+                best_img = img
+        if not best_img and remaining_user:
+            best_img = remaining_user[0]
+            best_score = 0
+        if best_img:
+            remaining_user.remove(best_img)
             preview = moment["text"][:50].replace("\n", " ")
-            print(f"[Visual] Chunk {m_idx}: '{preview}...' → {os.path.basename(chosen)} [{reason}]")
+            print(f"[Visual] Slot {m_idx}: '{preview}...' → {os.path.basename(best_img['path'])} [user_image score={best_score}]")
+            result.append(best_img["path"])
+
+    # PHASE 2: Fill remaining moment slots with stock/AI images
+    for m_idx in range(user_slots, len(moments)):
+        if ai_pool:
+            chosen = ai_pool[ai_idx % len(ai_pool)]
+            ai_idx += 1
+            preview = moments[m_idx]["text"][:50].replace("\n", " ")
+            print(f"[Visual] Slot {m_idx}: '{preview}...' → {os.path.basename(chosen)} [stock/AI]")
             result.append(chosen)
-            recent_used.append(chosen)
-            if len(recent_used) > 5:
-                recent_used.pop(0)
 
-        use_user = not use_user
-
-    # Pad if moments > images available
+    # Pad if still short
     if ai_pool:
         while len(result) < len(moments):
-            result.append(ai_pool[len(result) % len(ai_pool)])
+            result.append(ai_pool[ai_idx % len(ai_pool)])
+            ai_idx += 1
 
+    print(f"[Visual] Final slot assignment: {len([r for r in result if 'user_' in r or 'transformed' in r])} user, {len(result)} total")
     return result
 
 
@@ -3473,6 +3460,18 @@ def assemble_video_with_hook(
         from moviepy.editor import AudioFileClip, VideoClip, VideoFileClip, concatenate_videoclips
     except ImportError:
         from moviepy import AudioFileClip, VideoClip, VideoFileClip, concatenate_videoclips
+
+    # BUG 5: user images check at assembly start
+    _ui_dir = "output/user_images"
+    _ui_on_disk = [f for f in (os.listdir(_ui_dir) if os.path.isdir(_ui_dir) else [])
+                   if f.lower().endswith((".jpg", ".jpeg", ".png", ".jfif", ".webp"))]
+    print(f"[Video] User images available at long assembly start: {len(_ui_on_disk)}")
+    if not _ui_on_disk:
+        print("[Video] WARNING: No user images on disk at assembly time")
+    _user_in_pool = [p for p in image_paths if "user_" in os.path.basename(p) or "_ui_" in os.path.basename(p)]
+    print(f"[DEBUG] Image pool at long assembly: {len(_user_in_pool)} user images, {len(image_paths) - len(_user_in_pool)} stock/AI images")
+    print(f"[DEBUG] User image paths in pool: {[os.path.basename(p) for p in _user_in_pool]}")
+    print(f"[DEBUG] First 5 images for long video: {[os.path.basename(p) for p in image_paths[:5]]}")
 
     TARGET_W, TARGET_H = 1080, 1920
     hook_duration = 90  # first 90 seconds
@@ -3695,6 +3694,18 @@ def assemble_short_video(audio_path: str, image_paths: list[str], output_path: s
         from moviepy.editor import AudioFileClip, VideoClip, VideoFileClip, concatenate_videoclips
     except ImportError:
         from moviepy import AudioFileClip, VideoClip, VideoFileClip, concatenate_videoclips
+
+    # BUG 5: user images check at assembly start
+    _ui_dir = "output/user_images"
+    _ui_on_disk = [f for f in (os.listdir(_ui_dir) if os.path.isdir(_ui_dir) else [])
+                   if f.lower().endswith((".jpg", ".jpeg", ".png", ".jfif", ".webp"))]
+    print(f"[Video] User images available at short assembly start: {len(_ui_on_disk)}")
+    if not _ui_on_disk:
+        print("[Video] WARNING: No user images on disk at assembly time")
+    _user_in_pool = [p for p in image_paths if "user_" in os.path.basename(p) or "_ui_" in os.path.basename(p)]
+    print(f"[DEBUG] Image pool at short assembly: {len(_user_in_pool)} user images, {len(image_paths) - len(_user_in_pool)} stock/AI images")
+    print(f"[DEBUG] User image paths in pool: {[os.path.basename(p) for p in _user_in_pool]}")
+    print(f"[DEBUG] First 5 images for short video: {[os.path.basename(p) for p in image_paths[:5]]}")
 
     TARGET_W, TARGET_H = 1080, 1920
     temp_audio = output_path.replace(".mp4", "_tmp.m4a")
@@ -4328,11 +4339,38 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
     script_text = script_data.get("script", "")
     topic_str   = script_data.get("topic", "")
 
+    # BUG 5 check: how many user images are on disk right now
+    _ui_dir = "output/user_images"
+    _ui_on_disk = [f for f in (os.listdir(_ui_dir) if os.path.isdir(_ui_dir) else [])
+                   if f.lower().endswith((".jpg", ".jpeg", ".png", ".jfif", ".webp"))]
+    print(f"[Video] User images available on disk at assembly start: {len(_ui_on_disk)}")
+    if not _ui_on_disk and not (user_images or user_videos):
+        print("[Video] WARNING: No user images found on disk — check if cleared too early or none were sent")
+
     # Auto-load user content from disk (Telegram downloads land here)
     folder_videos = _load_user_videos_from_folder()
     folder_images = _load_user_images_from_folders(topic_str)
-    all_user_videos = list(user_videos or []) + folder_videos
-    all_user_images = list(user_images or []) + folder_images
+
+    # Deduplicate: merge passed-in lists with folder-loaded lists by path
+    _seen_paths: set[str] = set()
+    all_user_videos: list[dict] = []
+    for _uv in list(user_videos or []) + folder_videos:
+        _p = _uv.get("path", "")
+        if _p and _p not in _seen_paths:
+            _seen_paths.add(_p)
+            all_user_videos.append(_uv)
+
+    _seen_paths = set()
+    all_user_images: list[dict] = []
+    for _ui in list(user_images or []) + folder_images:
+        _p = _ui.get("path", "")
+        if _p and _p not in _seen_paths and os.path.exists(_p):
+            _seen_paths.add(_p)
+            all_user_images.append(_ui)
+
+    print(f"[DEBUG] User content: {len(all_user_images)} unique images, {len(all_user_videos)} unique videos")
+    if all_user_images:
+        print(f"[DEBUG] User image paths: {[img['path'] for img in all_user_images]}")
 
     # Detect assembly mode
     mode = _detect_assembly_mode(all_user_images, all_user_videos)
@@ -4340,6 +4378,7 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
     try:
         if mode == "user_content":
             # MODE 1: User-provided content
+            # Step A: copy user videos to clip pool
             image_paths: list[str] = []
             for uv in all_user_videos:
                 path = uv.get("path", "")
@@ -4349,9 +4388,25 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
                         import shutil as _shutil
                         _shutil.copy2(path, dest)
                         image_paths.append(dest)
-                        print(f"[Video] User video: {uv.get('caption','')[:60]}")
+                        print(f"[Video] User video added: {uv.get('caption','')[:60]}")
                     except Exception as _e:
                         print(f"[Video] Could not copy user video {path}: {_e}")
+
+            # Step B: copy user images directly into clip pool (BEFORE stock)
+            for i, ui in enumerate(all_user_images):
+                path = ui.get("path", "")
+                if path and os.path.exists(path):
+                    ext = os.path.splitext(path)[1] or ".jpg"
+                    dest = os.path.join(IMAGES_DIR, f"{video_id}_ui_{i}{ext}")
+                    try:
+                        import shutil as _shutil
+                        _shutil.copy2(path, dest)
+                        image_paths.append(dest)
+                        print(f"[Video] User image added: {ui.get('caption','')[:60]} → {dest}")
+                    except Exception as _e:
+                        print(f"[Video] Could not copy user image {path}: {_e}")
+
+            # Step C: fill remaining slots with real image search
             if len(image_paths) < n_images:
                 missing = n_images - len(image_paths)
                 print(f"[Video] MODE 1: filling {missing} gap(s) with image search")
@@ -4373,15 +4428,17 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
         print("[Video] No visuals generated, aborting")
         return ""
 
-    # Wikipedia real photo + user uploads (priority images)
+    # Wikipedia real photo + processed user images (for moment matching)
     person_name = _extract_person_name_from_topic(title, topic_str)
     priority_images = get_person_images(
         person_name, video_id,
+        # In MODE 1 user images are already in image_paths; only pass to get_person_images
+        # for Wikipedia portrait + AI-transform expansion
         all_user_images if all_user_images else None,
         script_text=script_text,
     )
 
-    # Sort user images by keyword timestamp from Whisper segments (Improvement 2)
+    # Sort priority images by keyword timestamp from Whisper segments
     if whisper_segments and priority_images:
         def _img_ts(img):
             tags = img.get("tags", []) or img.get("caption", "").split()
@@ -4390,17 +4447,33 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
         priority_images.sort(key=_img_ts)
         print("[Visual] User images sorted by audio keyword timestamp")
 
-    # Script-moment visual matching
-    try:
-        moments = parse_script_moments(script_text, topic=topic_str)
-        if moments and (priority_images or image_paths):
-            matched = match_images_to_moments(moments, priority_images, image_paths)
-            all_image_paths = matched if matched else build_image_list(priority_images, image_paths)
-        else:
+    # BUG 2 fix: In MODE 1, image_paths already has user images first.
+    # build_image_list puts priority_images before stock; match_images_to_moments
+    # now exhausts user images before stock (fixed above).
+    # For MODE 1, skip moment matching — user images are already ordered correctly.
+    if mode == "user_content":
+        # User images are first in image_paths; just append any extra priority images
+        # (Wikipedia photo, AI-transformed versions) that aren't already present
+        extra_paths = [img["path"] for img in priority_images
+                       if isinstance(img, dict) and img.get("path")
+                       and img["path"] not in image_paths
+                       and os.path.exists(img["path"])]
+        all_image_paths = image_paths + extra_paths
+        print(f"[DEBUG] MODE 1 final pool: {len(image_paths)} direct + {len(extra_paths)} extra priority = {len(all_image_paths)} total")
+    else:
+        # MODE 2: use moment matching (user images exhausted first per fix above)
+        try:
+            moments = parse_script_moments(script_text, topic=topic_str)
+            if moments and (priority_images or image_paths):
+                matched = match_images_to_moments(moments, priority_images, image_paths)
+                all_image_paths = matched if matched else build_image_list(priority_images, image_paths)
+            else:
+                all_image_paths = build_image_list(priority_images, image_paths)
+        except Exception as e:
+            print(f"[Visual] Moment matching failed ({e}), using default image order")
             all_image_paths = build_image_list(priority_images, image_paths)
-    except Exception as e:
-        print(f"[Visual] Moment matching failed ({e}), using default image order")
-        all_image_paths = build_image_list(priority_images, image_paths)
+
+    print(f"[DEBUG] First 5 images selected for video: {[os.path.basename(p) for p in all_image_paths[:5]]}")
 
     # â"€â"€ Assembly â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
     output_path = os.path.join(FINAL_DIR, f"{video_id}.mp4")
