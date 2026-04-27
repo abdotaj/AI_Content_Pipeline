@@ -917,19 +917,45 @@ def process_user_images(user_images: list[dict], video_id: str,
 
     for i, img_info in enumerate(user_images):
         path    = img_info.get("path", "")
-        # Use filename stem as caption — never the generic "cinematic dark portrait"
         fname   = os.path.splitext(os.path.basename(path))[0]
-        caption = (img_info.get("caption") or fname or "documentary scene").strip()
+
+        # Caption priority:
+        # 1. Telegram caption (user-provided, most specific)
+        # 2. Sidecar .txt file saved by notify_agent at download time
+        # 3. Filename stem
+        # 4. Script section keywords fallback
+        telegram_caption = (img_info.get("caption") or "").strip()
+        if not telegram_caption:
+            # Check for sidecar .txt written by notify_agent
+            txt_path = _re.sub(r'\.[^.]+$', '.txt', path)
+            if os.path.exists(txt_path):
+                try:
+                    with open(txt_path, encoding="utf-8") as _tf:
+                        telegram_caption = _tf.read().strip()
+                    if telegram_caption:
+                        print(f"[Image] Loaded caption from sidecar: '{telegram_caption[:80]}'")
+                except Exception:
+                    pass
+
+        caption = telegram_caption or fname or "documentary scene"
         if caption in ("cinematic dark portrait", "documentary scene", ""):
             caption = fname or f"image {i + 1}"
-        base_tags = img_info.get("tags", [])
 
+        # Tags: if Telegram caption present, use it directly (most specific);
+        # otherwise fall back to script section keywords
+        base_tags = img_info.get("tags", [])
         if not path or not os.path.exists(path):
             continue
 
-        # Keywords from the script section this image will appear in
-        sec_kws = _section_keywords(i)
-        print(f"[Image] Processing user image {i + 1}: '{caption[:60]}' section_kws={sec_kws}")
+        if telegram_caption:
+            # Caption words ARE the tags — no need for script section guessing
+            caption_tags = [w.lower() for w in telegram_caption.split() if len(w) > 3]
+            sec_kws = caption_tags[:8]
+            print(f"[Image] Processing user image {i + 1}: caption='{caption[:80]}' (Telegram-tagged)")
+        else:
+            # Fall back to script section keywords
+            sec_kws = _section_keywords(i)
+            print(f"[Image] Processing user image {i + 1}: '{caption[:60]}' section_kws={sec_kws}")
 
         # AI-transformed version
         transformed = transform_user_image(path, caption, video_id, i)
@@ -1638,10 +1664,26 @@ def _load_user_images_from_folders(topic: str = "") -> list[dict]:
                     print(f"[Image] JFIF conversion failed ({fname}): {e}")
                     continue
             stem = os.path.splitext(fname)[0].replace("_", " ").replace("-", " ")
+            # Check for sidecar .txt caption (written by notify_agent for Telegram images)
+            sidecar_caption = ""
+            txt_sidecar = os.path.join(d, os.path.splitext(fname)[0] + ".txt")
+            if os.path.exists(txt_sidecar):
+                try:
+                    with open(txt_sidecar, encoding="utf-8") as _sf:
+                        sidecar_caption = _sf.read().strip()
+                except Exception:
+                    pass
+            caption = sidecar_caption or stem or topic or "documentary scene"
+            tags = (
+                [w.lower() for w in sidecar_caption.split() if len(w) > 3]
+                if sidecar_caption else ["user_provided"]
+            )
+            if sidecar_caption:
+                print(f"[Image] Folder image with caption: '{caption[:80]}'")
             found.append({
                 "path":    path,
-                "caption": stem or topic or "documentary scene",
-                "tags":    ["user_provided"],
+                "caption": caption,
+                "tags":    tags,
             })
 
     if found:

@@ -554,6 +554,16 @@ def download_telegram_photo(file_id: str, caption: str | None = None) -> dict | 
     tags: list[str] = []
     if caption:
         tags = [w.lower() for w in caption.split() if len(w) > 3]
+        # Save caption as sidecar .txt so video_agent can read it without re-downloading
+        txt_path = local_path.replace(".jpg", ".txt")
+        try:
+            with open(txt_path, "w", encoding="utf-8") as tf:
+                tf.write(caption)
+        except Exception as e:
+            print(f"[Notify] Could not save caption sidecar: {e}")
+        print(f"[Notify] Image downloaded with caption: '{caption}'")
+    else:
+        print(f"[Notify] Image downloaded (no caption): {local_path}")
 
     return {"path": local_path, "tags": tags, "caption": caption or ""}
 
@@ -617,7 +627,10 @@ def check_telegram_for_images(after_timestamp: float = 0.0) -> list[dict]:
         img_info = download_telegram_photo(best["file_id"], caption=caption)
         if img_info:
             user_images.append(img_info)
-            print(f"[Notify] User image downloaded: {img_info['path']} (tags: {img_info['tags'][:4]})")
+            if caption:
+                print(f"[Notify] Image downloaded with caption: '{caption}' → {img_info['path']}")
+            else:
+                print(f"[Notify] Image downloaded (no caption) → {img_info['path']}")
 
     return user_images
 
