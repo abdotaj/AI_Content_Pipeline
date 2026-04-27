@@ -4026,12 +4026,8 @@ def process_audio_netflix(input_path: str) -> str:
         ([ffmpeg_bin, "-y", "-i", input_path,
           "-af", "equalizer=f=120:width_type=o:width=2:g=3",
           f"{base}_s1.mp3"], "bass boost"),
-        # 2. De-esser — tame harsh sibilants (Arabic Ø³ / Ø´)
-        ([ffmpeg_bin, "-y", "-i", f"{base}_s1.mp3",
-          "-af", "highpass=f=80,lowpass=f=12000",
-          f"{base}_s2.mp3"], "de-esser"),
         # 3. Light compression — consistent volume
-        ([ffmpeg_bin, "-y", "-i", f"{base}_s2.mp3",
+        ([ffmpeg_bin, "-y", "-i", f"{base}_s1.mp3",
           "-af", "acompressor=threshold=0.5:ratio=4:attack=5:release=50",
           f"{base}_s3.mp3"], "compression"),
         # 4. Subtle reverb — space and depth
