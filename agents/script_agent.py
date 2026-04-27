@@ -996,9 +996,25 @@ Key facts: {(research.get('research_facts') or research.get('what_show_got_right
             + conclude
         )
 
+    # 10 distinct transition phrases — one picked per section to avoid repetition
+    _TRANSITION_PHRASES = [
+        "What nobody expected was...",
+        "The truth was far more disturbing...",
+        "Behind closed doors, however...",
+        "What the cameras never showed...",
+        "Decades later, the full picture finally emerged...",
+        "The official story, however, was only half the truth...",
+        "What the case files revealed changed everything...",
+        "The reality they faced was far darker than anyone knew...",
+        "But something else was happening that the world never saw...",
+        "What happened next would shock even the most seasoned investigators...",
+    ]
+
     def _call_section(prompt: str, label: str, min_w: int, max_w: int,
                       call_num: int) -> str | None:
-        result = _ai_script_call(prompt, max_tokens=1200,
+        # Conclusion gets more tokens to prevent mid-sentence cutoff
+        _max_tok = 800 if call_num == 5 else 1200
+        result = _ai_script_call(prompt, max_tokens=_max_tok,
                                   system_prompt=_SCRIPT_SYSTEM_PROMPT)
         if not result:
             print(f"[Script] Section {call_num} ({label}): call failed")
@@ -1012,7 +1028,7 @@ Key facts: {(research.get('research_facts') or research.get('what_show_got_right
         if real < min_w:
             print(f"[Script] Section {call_num}: below minimum — retrying once")
             time.sleep(4)
-            retry = _ai_script_call(prompt, max_tokens=1200,
+            retry = _ai_script_call(prompt, max_tokens=_max_tok,
                                      system_prompt=_SCRIPT_SYSTEM_PROMPT)
             if retry:
                 r_real = clean_word_count(retry)
@@ -1033,11 +1049,16 @@ Key facts: {(research.get('research_facts') or research.get('what_show_got_right
     sections: list[str] = []
     prompts_ctx: list[str] = []  # accumulate previous sections for context
 
+    import random as _random
+    _tp = _TRANSITION_PHRASES  # shorthand
+
     section_prompts = [
         lambda: f"""{base_context}
 Write the HOOK and INTRODUCTION for a documentary about {name}.
 
 Open with a single gripping sentence that puts the viewer in the moment — a crime scene, a decision, a moment before everything changed. Then introduce the real story behind {series}: who the real people were, what the show is based on, and why this story matters. Introduce ALL main characters by name — real people and their fictional counterparts. End the section with a line that makes the viewer need to keep watching.
+
+Use this transition phrase somewhere in this section: "{_random.choice(_tp)}"
 
 Write flowing documentary narration — no lists, no bullet points, paragraphs only. Minimum 3 sentences per paragraph.
 {_section_instruction(300, 380, False)}""",
@@ -1045,23 +1066,31 @@ Write flowing documentary narration — no lists, no bullet points, paragraphs o
         lambda: f"""{base_context}
 Continue the documentary. Write the BACKGROUND AND CONTEXT section.
 
-Describe the world these people lived in — the era, the locations, the forces that shaped them. Introduce each major character with a full paragraph: their background, their motivations, what drove them. For fictional characters (if any), explain who the real person was and what the show changed. Use phrases like "Long before the cameras found them..." or "To understand what happened, you have to go back to..."
+DO NOT REPEAT information already covered in the previous section. This section introduces NEW content only: the world these people lived in — the era, the locations, the forces that shaped them. Give each major character their own full paragraph: their background, their motivations, what drove them. For fictional characters, explain who the real person was and what the show changed.
 
-Write flowing documentary narration — no lists, no bullet points, paragraphs only.
+Use this transition phrase somewhere in this section: "{_random.choice(_tp)}"
+
+Write flowing documentary narration — no lists, no bullet points, paragraphs only. Minimum 3 sentences per paragraph.
 {_section_instruction(320, 420, False)}
 
-PREVIOUS SECTION:
+PREVIOUS SECTION (do NOT repeat this):
 {sections[0]}""",
 
         lambda: f"""{base_context}
 Continue the documentary. Write the MAIN EVENTS section.
 
-This is the heart of the story. Walk through key events chronologically, building tension. Cover every major character's role — what they did, what choices they made, how their paths intersected. Include at least one "Show vs Reality" paragraph: what {series} depicted vs what actually happened. Use transition phrases to maintain narrative flow. Let the story breathe — cause leads to effect, decision leads to consequence.
+DO NOT REPEAT information already covered in previous sections. This section covers NEW material: the key events chronologically, building tension. Cover every major character's role — what they did, what choices they made, how their paths intersected.
 
-Write flowing documentary narration — no lists, no bullet points, paragraphs only.
+MANDATORY: Include a dedicated paragraph for Wendy Carr / Ann Burgess (or the equivalent female lead) — her specific research contributions, what she discovered independently, how she challenged the establishment as a woman in a male-dominated field. She is NOT just a supporting character.
+
+Include at least one "Show vs Reality" paragraph: what {series} depicted vs what actually happened.
+
+Use this transition phrase somewhere in this section: "{_random.choice(_tp)}"
+
+Write flowing documentary narration — no lists, no bullet points, paragraphs only. Minimum 3 sentences per paragraph.
 {_section_instruction(420, 560, False)}
 
-PREVIOUS SECTIONS:
+PREVIOUS SECTIONS (do NOT repeat these):
 {sections[0]}
 
 {sections[1]}""",
@@ -1069,12 +1098,14 @@ PREVIOUS SECTIONS:
         lambda: f"""{base_context}
 Continue the documentary. Write the AFTERMATH AND ANALYSIS section.
 
-What happened to each person after the main events? Investigations, trials, deaths, where they are now. Include a dedicated paragraph on what the show got right and what it changed — use the real_vs_show data if provided. Reflect on what this story reveals about human nature, power, or society. Let the weight of real events land.
+DO NOT REPEAT information already covered in previous sections. This section covers NEW material: what happened to each person after the main events — investigations, trials, deaths, legacies. Include a dedicated paragraph on what the show got right and what it changed. Reflect on what this story reveals about human nature, power, or justice.
 
-Write flowing documentary narration — no lists, no bullet points, paragraphs only.
+Use this transition phrase somewhere in this section: "{_random.choice(_tp)}"
+
+Write flowing documentary narration — no lists, no bullet points, paragraphs only. Minimum 3 sentences per paragraph.
 {_section_instruction(320, 420, False)}
 
-PREVIOUS SECTIONS:
+PREVIOUS SECTIONS (do NOT repeat these):
 {sections[0]}
 
 {sections[1]}
@@ -1084,12 +1115,16 @@ PREVIOUS SECTIONS:
         lambda: f"""{base_context}
 Continue the documentary. Write the CONCLUSION.
 
-Bring all threads together. What is the final verdict on these people and events? What does this story leave us with? End with a powerful closing line that echoes the opening — or one that reframes everything the viewer just heard. Call to action for viewers naturally woven into the closing.
+DO NOT REPEAT information already covered in previous sections. This section is the emotional landing: bring all threads together, deliver the final verdict, and close with power. End with a complete, memorable sentence — never cut off mid-thought. Naturally weave in a call to action for viewers.
+
+CRITICAL: Write a COMPLETE conclusion. Your final sentence must be a full, finished sentence. Do not end mid-sentence.
+
+Use this transition phrase somewhere in this section: "{_random.choice(_tp)}"
 
 Write flowing documentary narration — no lists, no bullet points, paragraphs only.
 {_section_instruction(180, 260, True)}
 
-PREVIOUS SECTIONS:
+PREVIOUS SECTIONS (do NOT repeat these):
 {sections[0]}
 
 {sections[1]}
