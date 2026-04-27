@@ -47,7 +47,7 @@ from agent.notify_agent   import (
     send_message, send_for_manual_posting, send_daily_report,
     send_video_to_telegram, clear_telegram_queue,
     listen_for_content, send_arabic_script_preview, send_english_script_preview,
-    check_telegram_for_script, check_telegram_for_images,
+    check_telegram_for_script, check_telegram_for_images, check_telegram_for_videos,
     send_topic_confirmation,
 )
 from agent.publish_agent  import upload_to_youtube
@@ -175,6 +175,7 @@ def run_pipeline():
 
     topic = None
     user_images: list = []
+    user_videos: list = []
     _part_number:       int | None = None
     _series_name_for_filter: str | None = None
 
@@ -242,8 +243,11 @@ def run_pipeline():
             print("[1/5] Waiting 3 minutes for photos...")
             time.sleep(180)
 
-            # ── 1E: Collect images sent AFTER pipeline start ──────────────────
+            # ── 1E: Collect images + videos sent AFTER pipeline start ────────
             user_images = check_telegram_for_images(after_timestamp=pipeline_start_time)
+            user_videos = check_telegram_for_videos(after_timestamp=pipeline_start_time)
+            if user_videos:
+                print(f"[1/5] Found {len(user_videos)} video(s) from Telegram")
             if user_images:
                 print(f"[1/5] Found {len(user_images)} image(s) for '{topic_text}' — checking relevance...")
                 _use_now, _save_later, _ignored = process_user_images_smart(
@@ -408,27 +412,27 @@ def run_pipeline():
 
     # OUTPUT 1 — English long-form
     en_long_id   = f"{today}_{uuid.uuid4().hex[:8]}_english_long"
-    en_long_path = _make_video(en_long, en_long_id, stats, user_images=user_images)
+    en_long_path = _make_video(en_long, en_long_id, stats, user_images=user_images, user_videos=user_videos)
 
     # OUTPUT 2 — Arabic long-form
     ar_long_id   = f"{today}_{uuid.uuid4().hex[:8]}_arabic_long"
-    ar_long_path = _make_video(ar_long, ar_long_id, stats, user_images=user_images)
+    ar_long_path = _make_video(ar_long, ar_long_id, stats, user_images=user_images, user_videos=user_videos)
 
     # OUTPUT 3 — Arabic short
     ar_short_id   = f"{today}_{uuid.uuid4().hex[:8]}_arabic_short"
-    ar_short_path = _make_video(ar_short, ar_short_id, stats, user_images=user_images)
+    ar_short_path = _make_video(ar_short, ar_short_id, stats, user_images=user_images, user_videos=user_videos)
 
     # OUTPUT 4 — English short
     en_short_id   = f"{today}_{uuid.uuid4().hex[:8]}_english_short"
-    en_short_path = _make_video(en_short, en_short_id, stats, user_images=user_images)
+    en_short_path = _make_video(en_short, en_short_id, stats, user_images=user_images, user_videos=user_videos)
 
-    # Clear user images so they don't bleed into the next run
+    # Clear user images + videos so they don't bleed into the next run
     import shutil as _shutil
-    _img_dir = "output/user_images"
-    if os.path.exists(_img_dir):
-        _shutil.rmtree(_img_dir)
-        os.makedirs(_img_dir)
-        print("[Pipeline] User images cleared for next run")
+    for _clear_dir in ("output/user_images", "output/user_videos"):
+        if os.path.exists(_clear_dir):
+            _shutil.rmtree(_clear_dir)
+            os.makedirs(_clear_dir)
+    print("[Pipeline] User images + videos cleared for next run")
 
     # ── STEP 5: Upload long videos to YouTube, then send shorts to Telegram ──
     print("\n[5/5] Publishing videos...")
@@ -569,10 +573,10 @@ def get_duration(video_path: str) -> str:
         return "unknown"
 
 
-def _make_video(script_data: dict, video_id: str, stats: dict, user_images: list | None = None) -> str:
+def _make_video(script_data: dict, video_id: str, stats: dict, user_images: list | None = None, user_videos: list | None = None) -> str:
     """Create a video using ElevenLabs + Pollinations, update stats, return path."""
     try:
-        path = create_video(script_data, video_id, user_images=user_images)
+        path = create_video(script_data, video_id, user_images=user_images, user_videos=user_videos)
         if path and Path(path).exists():
             stats["generated"] += 1
             print(f"  Video ready: {path}")

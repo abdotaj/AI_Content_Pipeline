@@ -635,6 +635,105 @@ def check_telegram_for_images(after_timestamp: float = 0.0) -> list[dict]:
     return user_images
 
 
+def check_telegram_for_videos(after_timestamp: float = 0.0) -> list[dict]:
+    """
+    Check for video messages sent after `after_timestamp` (Unix time).
+    Detects message.video and message.document with video mime_type.
+    Downloads to output/user_videos/, reads caption, saves .txt sidecar.
+    Returns list of {"path", "tags", "caption"} dicts, newest-first.
+    Telegram bot API limits downloads to 20 MB per file.
+    """
+    from pathlib import Path as _Path
+
+    current_time = time.time()
+    cutoff = after_timestamp if after_timestamp > 0 else current_time - 600
+
+    try:
+        r = requests.get(f"{BASE_URL}/getUpdates", params={"limit": 100}, timeout=20)
+        updates = r.json().get("result", [])
+    except Exception as e:
+        print(f"[Notify] check_telegram_for_videos failed: {e}")
+        return []
+
+    _Path("output/user_videos").mkdir(parents=True, exist_ok=True)
+    user_videos: list[dict] = []
+
+    for update in reversed(updates):
+        message = update.get("message", {})
+        chat_id = str(message.get("chat", {}).get("id", ""))
+        msg_time = message.get("date", 0)
+        caption = message.get("caption", "") or ""
+
+        if chat_id != str(TELEGRAM_CHAT_ID):
+            continue
+        if msg_time < cutoff:
+            print(f"[Notify] Skipping old video (before cutoff): {caption[:40]!r}")
+            continue
+
+        # Detect video: message.video OR message.document with video mime_type
+        file_id = None
+        file_size = 0
+        video_msg = message.get("video")
+        doc_msg = message.get("document")
+
+        if video_msg:
+            file_id = video_msg.get("file_id")
+            file_size = video_msg.get("file_size", 0)
+        elif doc_msg and (doc_msg.get("mime_type", "")).startswith("video/"):
+            file_id = doc_msg.get("file_id")
+            file_size = doc_msg.get("file_size", 0)
+
+        if not file_id:
+            continue
+
+        # Telegram bot API hard limit: 20 MB
+        if file_size > 20 * 1024 * 1024:
+            print(f"[Notify] Video too large ({file_size // (1024*1024)}MB > 20MB limit), skipping")
+            continue
+
+        try:
+            r2 = requests.get(f"{BASE_URL}/getFile", params={"file_id": file_id}, timeout=10)
+            info = r2.json()
+            if not info.get("ok"):
+                continue
+            tg_file_path = info["result"]["file_path"]
+        except Exception as e:
+            print(f"[Notify] getFile for video failed: {e}")
+            continue
+
+        try:
+            dl_r = requests.get(
+                f"https://api.telegram.org/file/bot{TELEGRAM_BOT_TOKEN}/{tg_file_path}",
+                timeout=120,
+            )
+            if dl_r.status_code != 200:
+                continue
+        except Exception as e:
+            print(f"[Notify] Video download failed: {e}")
+            continue
+
+        local_path = f"output/user_videos/user_{int(time.time())}_{file_id[:8]}.mp4"
+        with open(local_path, "wb") as f:
+            f.write(dl_r.content)
+
+        tags: list[str] = []
+        if caption:
+            tags = [w.lower() for w in caption.split() if len(w) > 3]
+            txt_path = local_path.replace(".mp4", ".txt")
+            try:
+                with open(txt_path, "w", encoding="utf-8") as tf:
+                    tf.write(caption)
+            except Exception:
+                pass
+            print(f"[Notify] Video downloaded with caption: '{caption}' → {local_path}")
+        else:
+            print(f"[Notify] Video downloaded (no caption) → {local_path}")
+
+        user_videos.append({"path": local_path, "tags": tags, "caption": caption})
+
+    return user_videos
+
+
 def send_video_to_telegram(video_path: str, caption: str, label: str) -> dict:
     """Send a video to Telegram. Uses sendVideo under 50 MB, sendDocument above."""
     import os

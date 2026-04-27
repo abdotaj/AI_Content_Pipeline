@@ -61,6 +61,7 @@ jobs:
           pip uninstall moviepy -y || true
           pip install moviepy==1.0.3
           pip install yt-dlp
+          pip install openai-whisper
           pip install -r requirements.txt
           python3 -c "import moviepy; print('MoviePy version:', moviepy.__version__)"
           echo "=== Installed packages ==="

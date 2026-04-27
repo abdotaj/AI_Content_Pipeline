@@ -200,24 +200,18 @@ def generate_voiceover_openai(text: str, language: str, output_path: str,
         ),
     }
 
-    if is_short:
-        model = "gpt-4o-mini-tts"
+    if language == "arabic":
+        model = "tts-1-hd"
         voice = "alloy"
         speed = TTS_SPEED
-        label = f"{'Arabic' if language == 'arabic' else 'English'} short"
-    elif language == "arabic":
-        model = "gpt-4o-mini-tts"
-        voice = "alloy"
-        speed = TTS_SPEED
-        label = "Arabic long"
+        label = "Arabic"
     else:
-        model = "gpt-4o-mini-tts"
+        model = "tts-1-hd"
         voice = "onyx"
         speed = TTS_SPEED
-        label = "English long"
+        label = "English"
 
-    instr_key = "alloy_arabic" if language == "arabic" else voice
-    tts_instructions = _INSTRUCTIONS.get(instr_key)
+    tts_instructions = None  # tts-1-hd does not support instructions param
 
     print(f"[Voice] TTS speed: {speed} ({label}) | model={model} voice={voice}")
 
@@ -423,7 +417,7 @@ def _elevenlabs_chunk(chunk: str, voice_id: str, api_key: str, chunk_path: str) 
 
 
 def generate_voiceover(script_text: str, filename: str, language: str = "english") -> str:
-    """Generate voiceover — ElevenLabs → OpenAI TTS → edge-tts priority chain."""
+    """Generate voiceover — OpenAI TTS (tts-1-hd) → edge-tts fallback."""
     script_text = _strip_section_markers(script_text)
     try:
         from agents.script_agent import format_for_tts as _fmt
@@ -434,97 +428,11 @@ def generate_voiceover(script_text: str, filename: str, language: str = "english
             _fmt = None
     if _fmt:
         script_text = _fmt(script_text)
-    from config import ELEVENLABS_API_KEY, ELEVENLABS_VOICE_ID_EN, ELEVENLABS_VOICE_ID_AR, ELEVENLABS_VOICE_ID
 
-    # â"€â"€ Priority 1: ElevenLabs â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
-    global _ELEVENLABS_DISABLED
-    if _ELEVENLABS_DISABLED:
-        print("[Voice] ElevenLabs disabled for this run — using OpenAI/edge fallback")
-    api_key = ELEVENLABS_API_KEY
-    print(f"[Voice] ElevenLabs key: {'set' if api_key and api_key != 'YOUR_ELEVENLABS_KEY' else 'MISSING'}")
-    if (not _ELEVENLABS_DISABLED) and api_key and api_key != "YOUR_ELEVENLABS_KEY":
-        voice_ids = {
-            "english": ELEVENLABS_VOICE_ID_EN or ELEVENLABS_VOICE_ID,
-            "arabic":  ELEVENLABS_VOICE_ID_AR or ELEVENLABS_VOICE_ID,
-        }
-        voice_id = voice_ids.get(language.lower(), ELEVENLABS_VOICE_ID)
-        print(f"[Voice] Voice ID ({language}): {'set' if voice_id else 'MISSING'}")
-
-        if voice_id:
-            audio_path = os.path.join(AUDIO_DIR, f"{filename}.mp3")
-            chunks = _split_text(script_text, max_chars=2000)
-            print(f"[Voice] ElevenLabs: {len(chunks)} chunk(s) for {language}")
-
-            chunk_files: list[str] = []
-            el_failed = False
-            for i, chunk in enumerate(chunks):
-                chunk_path = os.path.join(AUDIO_DIR, f"{filename}_chunk_{i}.mp3")
-                result = _elevenlabs_chunk(chunk, voice_id, api_key, chunk_path)
-                if result == "401":
-                    for f in chunk_files:
-                        try: os.remove(f)
-                        except OSError: pass
-                    print("[Voice] ElevenLabs 401 — disabling ElevenLabs for this run")
-                    _ELEVENLABS_DISABLED = True
-                    el_failed = True
-                    break
-                elif result:
-                    chunk_files.append(chunk_path)
-                    print(f"[Voice] ElevenLabs chunk {i + 1}/{len(chunks)} done")
-                    if i < len(chunks) - 1:
-                        time.sleep(2)
-                else:
-                    for f in chunk_files:
-                        try: os.remove(f)
-                        except OSError: pass
-                    print(f"[Voice] ElevenLabs chunk {i + 1} failed — trying OpenAI TTS")
-                    el_failed = True
-                    break
-
-            if not el_failed:
-                if len(chunk_files) == 1:
-                    import shutil
-                    shutil.move(chunk_files[0], audio_path)
-                else:
-                    merged = False
-                    import subprocess
-                    list_path = os.path.join(AUDIO_DIR, f"{filename}_list.txt")
-                    with open(list_path, "w", encoding="utf-8") as lf:
-                        for cf in chunk_files:
-                            lf.write(f"file '{os.path.abspath(cf)}'\n")
-                    ffmpeg_bin = _get_ffmpeg()
-                    if ffmpeg_bin:
-                        try:
-                            subprocess.run(
-                                [ffmpeg_bin, "-y", "-f", "concat", "-safe", "0",
-                                 "-i", list_path, "-c", "copy", audio_path],
-                                check=True, capture_output=True,
-                            )
-                            merged = True
-                            print("[Voice] Chunks merged with ffmpeg")
-                        except Exception as e:
-                            print(f"[Voice] ffmpeg concat failed: {e}")
-                    if not merged:
-                        if _merge_chunks_pydub(chunk_files, audio_path):
-                            merged = True
-                            print("[Voice] Chunks merged with pydub")
-                    if not merged:
-                        import shutil
-                        shutil.copy(chunk_files[0], audio_path)
-                        print("[Voice] Using first chunk only (merge failed)")
-                    for f in chunk_files:
-                        try: os.remove(f)
-                        except OSError: pass
-                    try: os.remove(list_path)
-                    except OSError: pass
-
-                print(f"[Voice] ElevenLabs complete: {len(chunks)} chunk(s) -> {audio_path}")
-                return audio_path
-
-    # â"€â"€ Priority 2: OpenAI TTS â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+    # Priority 1: OpenAI TTS (tts-1-hd)
     openai_key = os.getenv("OPENAI_API_KEY", "").strip()
     if openai_key and not _OPENAI_QUOTA_EXCEEDED:
-        print("[Voice] Trying OpenAI TTS...")
+        print("[Voice] Trying OpenAI TTS (tts-1-hd)...")
         _oai_path = os.path.join(AUDIO_DIR, f"{filename}.mp3")
         _is_short = "short" in filename.lower()
         result = generate_voiceover_openai(script_text, language, _oai_path, is_short=_is_short)
@@ -532,7 +440,7 @@ def generate_voiceover(script_text: str, filename: str, language: str = "english
             return result
         print("[Voice] OpenAI TTS failed — falling back to edge-tts")
 
-    # â"€â"€ Priority 3: edge-tts (always available) â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+    # Priority 2: edge-tts (always available)
     print("[Voice] Using edge-tts fallback")
     return generate_voiceover_edgetts(script_text, filename, language)
 
@@ -1752,6 +1660,48 @@ def _load_user_images_from_folders(topic: str = "") -> list[dict]:
     if found:
         print(f"[Image] Found {len(found)} user-provided image(s) in assets/content folders")
     return found
+
+
+def _load_user_videos_from_folder() -> list[dict]:
+    """
+    Load user-provided videos from output/user_videos/ (downloaded from Telegram).
+    Reads sidecar .txt caption written by notify_agent at download time.
+    Returns list of {"path", "tags", "caption"} dicts.
+    """
+    folder = "output/user_videos"
+    if not os.path.isdir(folder):
+        return []
+    video_exts = {".mp4", ".mov", ".avi", ".mkv", ".webm"}
+    found: list[dict] = []
+    for fname in sorted(os.listdir(folder)):
+        ext = os.path.splitext(fname)[1].lower()
+        if ext not in video_exts:
+            continue
+        path = os.path.join(folder, fname)
+        if not os.path.exists(path):
+            continue
+        txt_path = os.path.splitext(path)[0] + ".txt"
+        caption = ""
+        if os.path.exists(txt_path):
+            try:
+                with open(txt_path, encoding="utf-8") as f:
+                    caption = f.read().strip()
+            except Exception:
+                pass
+        stem = os.path.splitext(fname)[0].replace("_", " ").replace("-", " ")
+        caption = caption or stem
+        tags = [w.lower() for w in caption.split() if len(w) > 3]
+        found.append({"path": path, "tags": tags, "caption": caption})
+    if found:
+        print(f"[Video] Found {len(found)} user-provided video(s) in {folder}")
+    return found
+
+
+def _detect_assembly_mode(user_images: list | None, user_videos: list | None) -> str:
+    """Return 'user_content' if user provided any images or videos, else 'auto'."""
+    mode = "user_content" if (user_images or user_videos) else "auto"
+    print(f"[Video] Assembly mode: {mode.upper()}")
+    return mode
 
 
 def _search_internet_archive(query: str, max_results: int = 5) -> list[str]:
@@ -3312,6 +3262,180 @@ def match_images_to_moments(
     return result
 
 
+
+def _secs_to_ass_time(s: float) -> str:
+    """Convert seconds to ASS timestamp format H:MM:SS.cc"""
+    h = int(s // 3600)
+    m = int((s % 3600) // 60)
+    sec = s % 60
+    return f"{h}:{m:02d}:{sec:05.2f}"
+
+
+def generate_subtitles(audio_path: str, language: str) -> list[dict]:
+    """
+    Transcribe audio with word-level timestamps using openai-whisper.
+    Returns list of Whisper segments (each with 'words' list).
+    Auto-installs openai-whisper if missing.
+    """
+    try:
+        import whisper
+    except ImportError:
+        print("[Subtitle] openai-whisper not installed, installing...")
+        os.system("pip install openai-whisper -q")
+        try:
+            import whisper
+        except ImportError:
+            print("[Subtitle] Could not install openai-whisper")
+            return []
+
+    lang_code = "ar" if language == "arabic" else "en"
+    try:
+        print(f"[Subtitle] Loading Whisper base model for {language}...")
+        model = whisper.load_model("base")
+        result = model.transcribe(audio_path, language=lang_code, word_timestamps=True)
+        segments = result.get("segments", [])
+        print(f"[Subtitle] Transcribed {len(segments)} segment(s)")
+        return segments
+    except Exception as e:
+        print(f"[Subtitle] Whisper transcription failed: {e}")
+        return []
+
+
+def find_keyword_timestamp(segments: list[dict], caption_keywords: list[str]) -> float | None:
+    """
+    Search Whisper segments for the first occurrence of any caption keyword.
+    Returns the start timestamp (seconds) of the earliest match, or None.
+    """
+    if not segments or not caption_keywords:
+        return None
+    keywords_lower = [kw.lower().strip(".,!?") for kw in caption_keywords if len(kw) > 2]
+    for seg in segments:
+        for w in seg.get("words", []):
+            word_text = w.get("word", "").strip().lower().strip(".,!?")
+            if any(kw in word_text or word_text in kw for kw in keywords_lower):
+                ts = w.get("start")
+                if ts is not None:
+                    return float(ts)
+    return None
+
+
+def burn_subtitles_ffmpeg(
+    video_path: str,
+    segments: list[dict],
+    output_path: str,
+    language: str,
+) -> str | None:
+    """
+    Build word-level karaoke ASS subtitle file and burn it into the video.
+
+    Each subtitle event highlights the current word in YELLOW; all other
+    words in the same line (up to 4) are WHITE. Outline is black.
+    Arabic text is bottom-center with size 20; English with size 18.
+    """
+    import subprocess
+
+    # Build flat word list from all segments
+    words: list[dict] = []
+    for seg in segments:
+        for w in seg.get("words", []):
+            text = w.get("word", "").strip()
+            if not text:
+                continue
+            words.append({
+                "word":  text,
+                "start": float(w.get("start", 0)),
+                "end":   float(w.get("end", 0)),
+            })
+
+    if not words:
+        print("[Subtitle] No words found in segments, skipping subtitles")
+        return None
+
+    is_arabic = language == "arabic"
+    font     = "Arial"
+    fontsize = 20 if is_arabic else 18
+    # ASS colours are &HAABBGGRR
+    white  = "&H00FFFFFF"
+    yellow = "&H0000FFFF"  # RGB yellow = FF FF 00 -> BGR = 00 FF FF -> hex 00FFFF
+    black  = "&H00000000"
+
+    # Group into lines of max 4 words
+    lines: list[list[dict]] = []
+    for i in range(0, len(words), 4):
+        lines.append(words[i:i + 4])
+
+    # Build ASS events: one per word, showing full line with highlighted word
+    events: list[tuple[float, float, str]] = []
+    for line in lines:
+        for j, word in enumerate(line):
+            parts = []
+            for k, w in enumerate(line):
+                if k == j:
+                    parts.append("{" + f"\\c{yellow}" + "}" + w["word"] + "{" + f"\\c{white}" + "}")
+                else:
+                    parts.append(w["word"])
+            text = " ".join(parts)
+            t_start = word["start"]
+            t_end   = word["end"] if word["end"] > word["start"] else word["start"] + 0.4
+            events.append((t_start, t_end, text))
+
+    # Write ASS file
+    ass_path = output_path.replace(".mp4", "_subs.ass")
+    style_line = (
+        f"Style: Default,{font},{fontsize},{white},&H000000FF,{black},&H80000000,"
+        f"-1,0,0,0,100,100,0,0,1,2,0,2,10,10,50,1"
+    )
+    ass_header = [
+        "[Script Info]",
+        "ScriptType: v4.00+",
+        "PlayResX: 1080",
+        "PlayResY: 1920",
+        "ScaledBorderAndShadow: yes",
+        "",
+        "[V4+ Styles]",
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
+        style_line,
+        "",
+        "[Events]",
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
+    ]
+    event_lines = [
+        f"Dialogue: 0,{_secs_to_ass_time(s)},{_secs_to_ass_time(e)},Default,,0,0,0,,{txt}"
+        for s, e, txt in events
+    ]
+    try:
+        with open(ass_path, "w", encoding="utf-8-sig") as f:
+            f.write("
+".join(ass_header + event_lines))
+        print(f"[Subtitle] ASS file written: {len(events)} events")
+    except Exception as ex:
+        print(f"[Subtitle] Could not write ASS file: {ex}")
+        return None
+
+    # Burn subtitles into video
+    ffmpeg = _get_ffmpeg()
+    if not ffmpeg:
+        print("[Subtitle] ffmpeg not found, skipping subtitle burn")
+        return None
+
+    ass_escaped = ass_path.replace("\\", "/").replace(":", "\\:")
+    try:
+        result = subprocess.run(
+            [ffmpeg, "-y", "-i", video_path, "-vf", f"ass={ass_escaped}",
+             "-c:a", "copy", output_path],
+            capture_output=True, timeout=600,
+        )
+        if result.returncode == 0:
+            print(f"[Subtitle] Subtitles burned: {output_path}")
+            return output_path
+        else:
+            print(f"[Subtitle] ffmpeg burn failed (rc={result.returncode}): {result.stderr[-300:].decode(errors='replace')}")
+            return None
+    except Exception as e:
+        print(f"[Subtitle] Subtitle burn error: {e}")
+        return None
+
+
 def extract_first_frame(video_path: str, output_path: str) -> str:
     """Extract the first frame of a video as a JPEG thumbnail. Returns path or ''."""
     try:
@@ -4128,7 +4252,7 @@ def generate_tts_sections(script_text: str, video_id: str, language: str) -> tup
 
 # â"€â"€ Main entry point â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
-def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", user_images: list | None = None) -> str:
+def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", user_images: list | None = None, user_videos: list | None = None) -> str:
     import traceback
     title    = script_data.get("title", "")
     niche    = script_data.get("niche", "")
@@ -4190,19 +4314,56 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
         return ""
 
     # â"€â"€ Image / clip counts â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+    # Whisper subtitles (word-level, for burning + timestamp sync)
+    whisper_segments: list[dict] = []
+    try:
+        whisper_segments = generate_subtitles(audio_path, language)
+    except Exception as _ws_e:
+        print(f"[Subtitle] Skipping Whisper (non-fatal): {_ws_e}")
+
     n_images = calculate_unique_images(is_short=is_short)
     calculate_total_images(user_images)
     print(f"[Video] Building {n_images} visuals ({'short' if is_short else 'long'})")
 
-    # â"€â"€ Image generation (real photos + AI fallback per script chunk) â"€â"€â"€â"€â"€â"€â"€â"€
+    script_text = script_data.get("script", "")
+    topic_str   = script_data.get("topic", "")
+
+    # Auto-load user content from disk (Telegram downloads land here)
+    folder_videos = _load_user_videos_from_folder()
+    folder_images = _load_user_images_from_folders(topic_str)
+    all_user_videos = list(user_videos or []) + folder_videos
+    all_user_images = list(user_images or []) + folder_images
+
+    # Detect assembly mode
+    mode = _detect_assembly_mode(all_user_images, all_user_videos)
+
     try:
-        script_text = script_data.get("script", "")
-        image_paths = fetch_stock_videos(script_text, n_images, video_id, topic=script_data.get("topic", ""))
-        if len(image_paths) < max(6, n_images // 2):
-            missing = max(0, n_images - len(image_paths))
-            if missing:
-                print(f"[Stock] Fallback: generating {missing} image visuals")
-                image_paths.extend(fetch_real_images(script_text, missing, video_id))
+        if mode == "user_content":
+            # MODE 1: User-provided content
+            image_paths: list[str] = []
+            for uv in all_user_videos:
+                path = uv.get("path", "")
+                if path and os.path.exists(path):
+                    dest = os.path.join(IMAGES_DIR, f"{video_id}_uv_{len(image_paths)}.mp4")
+                    try:
+                        import shutil as _shutil
+                        _shutil.copy2(path, dest)
+                        image_paths.append(dest)
+                        print(f"[Video] User video: {uv.get('caption','')[:60]}")
+                    except Exception as _e:
+                        print(f"[Video] Could not copy user video {path}: {_e}")
+            if len(image_paths) < n_images:
+                missing = n_images - len(image_paths)
+                print(f"[Video] MODE 1: filling {missing} gap(s) with image search")
+                image_paths.extend(fetch_real_images(script_text, missing, video_id, topic=topic_str))
+        else:
+            # MODE 2: Auto (no user content)
+            image_paths = fetch_stock_videos(script_text, n_images, video_id, topic=topic_str)
+            if len(image_paths) < max(6, n_images // 2):
+                missing = max(0, n_images - len(image_paths))
+                if missing:
+                    print(f"[Stock] Fallback: generating {missing} image visuals")
+                    image_paths.extend(fetch_real_images(script_text, missing, video_id, topic=topic_str))
     except Exception as e:
         print(f"[Video] CRASH at visual generation: {e}")
         traceback.print_exc()
@@ -4212,14 +4373,24 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
         print("[Video] No visuals generated, aborting")
         return ""
 
-    # â"€â"€ Wikipedia real photo + user uploads (priority images) â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
-    person_name = _extract_person_name_from_topic(title, script_data.get("topic", ""))
-    priority_images = get_person_images(person_name, video_id, user_images,
-                                        script_text=script_data.get("script", ""))
+    # Wikipedia real photo + user uploads (priority images)
+    person_name = _extract_person_name_from_topic(title, topic_str)
+    priority_images = get_person_images(
+        person_name, video_id,
+        all_user_images if all_user_images else None,
+        script_text=script_text,
+    )
 
-    # â"€â"€ Script-moment visual matching â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
-    script_text = script_data.get("script", "")
-    topic_str   = script_data.get("topic", "")
+    # Sort user images by keyword timestamp from Whisper segments (Improvement 2)
+    if whisper_segments and priority_images:
+        def _img_ts(img):
+            tags = img.get("tags", []) or img.get("caption", "").split()
+            ts = find_keyword_timestamp(whisper_segments, tags)
+            return ts if ts is not None else float("inf")
+        priority_images.sort(key=_img_ts)
+        print("[Visual] User images sorted by audio keyword timestamp")
+
+    # Script-moment visual matching
     try:
         moments = parse_script_moments(script_text, topic=topic_str)
         if moments and (priority_images or image_paths):
@@ -4249,6 +4420,17 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
         )
 
     if video_path:
+        # Burn subtitles onto final video
+        if whisper_segments:
+            try:
+                subbed_path = video_path.replace(".mp4", "_subbed.mp4")
+                burned = burn_subtitles_ffmpeg(video_path, whisper_segments, subbed_path, language)
+                if burned and os.path.exists(burned):
+                    os.replace(burned, video_path)
+                    print("[Subtitle] Subtitles burned into final video")
+            except Exception as _sub_e:
+                print(f"[Subtitle] Burn failed (non-fatal): {_sub_e}")
+
         short_out = os.path.join(SHORTS_DIR, f"{video_id}_short.mp4")
         script_data["short_clip_path"] = cut_short_clip(video_path, short_out)
         # Extract first frame for YouTube thumbnail (actual content, not AI portrait)
