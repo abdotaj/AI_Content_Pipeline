@@ -1506,6 +1506,53 @@ def _internet_archive_image_results(query: str, max_results: int = 5) -> list[st
         return []
 
 
+_KNOWN_CRIME_PERSONS = {
+    "john douglas", "robert ressler", "ann burgess", "edmund kemper",
+    "charles manson", "david berkowitz", "ted bundy", "jeffrey dahmer",
+    "pablo escobar", "el chapo", "griselda blanco", "frank lucas",
+    "henry hill", "al capone", "lucky luciano", "whitey bulger",
+    "richard ramirez", "john wayne gacy", "btk", "dennis rader",
+    "henry lee lucas", "aileen wuornos",
+}
+
+
+def _search_wikimedia_person_photo(person_name: str) -> str | None:
+    """Fetch the Wikipedia thumbnail for a real person. Returns URL or None."""
+    try:
+        r = requests.get(
+            'https://en.wikipedia.org/w/api.php',
+            params={
+                'action': 'query',
+                'titles': person_name,
+                'prop': 'pageimages',
+                'pithumbsize': 800,
+                'format': 'json',
+            },
+            timeout=10,
+            headers={'User-Agent': 'DarkCrimeDecoded/1.0'},
+        )
+        if r.status_code != 200:
+            return None
+        pages = r.json().get('query', {}).get('pages', {})
+        for page in pages.values():
+            thumb = page.get('thumbnail', {}).get('source', '')
+            if thumb:
+                return thumb
+    except Exception as e:
+        print(f'[Image] Wikimedia person photo failed for "{person_name}": {e}')
+    return None
+
+
+def _detect_person_in_chunk(chunk: str) -> str | None:
+    """Return the first known crime figure name found in the text chunk, or None."""
+    chunk_lower = chunk.lower()
+    for name in _KNOWN_CRIME_PERSONS:
+        if name in chunk_lower:
+            return name
+    return None
+
+
+
 def _download_first_valid(urls: list[str], output_path: str) -> str | None:
     """Try each URL in order, return path of the first that downloads successfully."""
     for url in urls:
@@ -1845,16 +1892,28 @@ def _search_internet_archive(query: str, max_results: int = 5) -> list[str]:
                     headers={"User-Agent": "DarkCrimeDecoded/1.0"},
                 )
                 if fr.status_code == 200:
-                    for f in fr.json().get("result", []):
-                        name = f.get("name", "")
-                        if (name.lower().endswith(".mp4")
-                                and "512kb" not in name.lower()
-                                and "thumbnail" not in name.lower()):
-                            video_urls.append(
-                                f"https://archive.org/download/{identifier}/"
-                                f"{requests.utils.quote(name)}"
-                            )
-                            break
+                    all_mp4s = [
+                        f.get("name", "") for f in fr.json().get("result", [])
+                        if f.get("name", "").lower().endswith(".mp4")
+                        and "thumbnail" not in f.get("name", "").lower()
+                    ]
+                    # Prefer smaller compressed versions: 512kb > 256kb > h264 > full
+                    def _archive_score(n: str) -> int:
+                        nl = n.lower()
+                        if "512kb" in nl or "256kb" in nl:
+                            return 0
+                        if "h264" in nl or "_512" in nl:
+                            return 1
+                        if "ia." in nl:
+                            return 2
+                        return 3
+                    all_mp4s.sort(key=_archive_score)
+                    if all_mp4s:
+                        name = all_mp4s[0]
+                        video_urls.append(
+                            f"https://archive.org/download/{identifier}/"
+                            f"{requests.utils.quote(name)}"
+                        )
             except Exception:
                 pass
             if len(video_urls) >= max_results:
@@ -1985,12 +2044,15 @@ def _filter_relevant_results(urls: list[str], topic_keywords: list[str]) -> list
     return relevant if relevant else urls
 
 
-_VIDEO_MIN_BYTES = 100_000     # 100 KB
-_VIDEO_MAX_BYTES = 80_000_000  # 80 MB
+_VIDEO_MIN_BYTES = 100_000              # 100 KB
+_VIDEO_MAX_BYTES = 80_000_000           # 80 MB  (general sources)
+_ARCHIVE_VIDEO_MAX_BYTES = 200_000_000  # 200 MB (Internet Archive — large archival files)
 
 
-def _download_video_url(url: str, output_path: str) -> str | None:
+def _download_video_url(url: str, output_path: str,
+                        max_bytes: int | None = None) -> str | None:
     """Download one stock video URL with Content-Type + size validation."""
+    limit = max_bytes or _VIDEO_MAX_BYTES
     try:
         # Check Content-Type via HEAD before downloading the full file
         ct = ""
@@ -1998,7 +2060,7 @@ def _download_video_url(url: str, output_path: str) -> str | None:
             head = requests.head(url, timeout=8, headers={"User-Agent": "DarkCrimeDecoded/1.0"}, allow_redirects=True)
             ct = head.headers.get("Content-Type", "").lower()
             content_length = int(head.headers.get("Content-Length", 0) or 0)
-            if content_length > _VIDEO_MAX_BYTES:
+            if content_length > limit:
                 print(f"[Stock] Skipping oversized video ({content_length // 1_000_000} MB): {url[:60]}")
                 return None
         except Exception:
@@ -2023,8 +2085,8 @@ def _download_video_url(url: str, output_path: str) -> str | None:
                 if chunk:
                     f.write(chunk)
                     downloaded += len(chunk)
-                    if downloaded > _VIDEO_MAX_BYTES:
-                        print(f"[Stock] Aborted oversized download (>{_VIDEO_MAX_BYTES // 1_000_000} MB): {url[:60]}")
+                    if downloaded > limit:
+                        print(f"[Stock] Aborted oversized download (>{limit // 1_000_000} MB): {url[:60]}")
                         break
 
         size = os.path.getsize(output_path)
@@ -2095,12 +2157,13 @@ def _ffprobe_duration(path: str) -> float:
     return 0.0
 
 
-def _download_first_valid_video(urls: list[str], output_path: str) -> str | None:
+def _download_first_valid_video(urls: list[str], output_path: str,
+                                max_bytes: int | None = None) -> str | None:
     for url in urls:
         if _is_blacklisted_source(url):
             print(f"[Stock] Skipping blacklisted source: {url[:80]}")
             continue
-        saved = _download_video_url(url, output_path)
+        saved = _download_video_url(url, output_path, max_bytes=max_bytes)
         if not saved:
             continue
         # ffprobe duration check
@@ -2428,15 +2491,15 @@ def fetch_stock_videos(script_text: str, count: int, video_id: str, topic: str =
     query_cache: dict[str, str] = {}
 
     def _try_all_sources(query: str, out_path: str) -> str | None:
-        # YouTube CC uses its own downloader; all others use _download_first_valid_video
-        for src_name, src_fn, use_ytdlp in [
-            ("Internet Archive", _search_internet_archive, False),
-            ("YouTube CC",       _search_youtube_cc,       True),
-            ("Wikimedia",        _search_wikimedia_videos, False),
-            ("Vimeo CC",         _search_vimeo_free,       False),
-            ("Coverr",           _search_coverr,           False),
-            ("Pexels",           _search_pexels_videos,    False),
-            ("Pixabay",          _search_pixabay_videos,   False),
+        # (src_name, search_fn, use_ytdlp, max_bytes_override)
+        for src_name, src_fn, use_ytdlp, mb_override in [
+            ("Internet Archive", _search_internet_archive, False, _ARCHIVE_VIDEO_MAX_BYTES),
+            ("YouTube CC",       _search_youtube_cc,       True,  None),
+            ("Wikimedia",        _search_wikimedia_videos, False, None),
+            ("Vimeo CC",         _search_vimeo_free,       False, None),
+            ("Coverr",           _search_coverr,           False, None),
+            ("Pexels",           _search_pexels_videos,    False, None),
+            ("Pixabay",          _search_pixabay_videos,   False, None),
         ]:
             urls = src_fn(query)
             if not urls:
@@ -2444,7 +2507,7 @@ def fetch_stock_videos(script_text: str, count: int, video_id: str, topic: str =
             if use_ytdlp:
                 saved = _download_youtube_cc(urls[0], out_path)
             else:
-                saved = _download_first_valid_video(urls, out_path)
+                saved = _download_first_valid_video(urls, out_path, max_bytes=mb_override)
             if saved:
                 print(f"[Stock] {src_name}: '{query}'")
                 return saved
@@ -2655,8 +2718,19 @@ def fetch_real_images(script_text: str, count: int, video_id: str,
                 saved = img_path
                 print(f"[Image] Reused '{query}' for chunk {i}")
             else:
+                # Step 1b: real person photo from Wikipedia (highest priority)
+                person = _detect_person_in_chunk(chunk)
+                if person:
+                    photo_url = _search_wikimedia_person_photo(person)
+                    if photo_url:
+                        saved = _download_first_valid([photo_url], img_path)
+                        if saved:
+                            print(f"[Image] Wikimedia photo found for '{person}'")
+                            query_cache[query] = saved
+                            real_count += 1
+
                 # Step 2: Wikimedia Commons (works from server IPs, free)
-                wiki_urls = _wikimedia_image_results(query)
+                wiki_urls = _wikimedia_image_results(query) if not saved else []
                 if wiki_urls:
                     saved = _download_first_valid(wiki_urls, img_path)
                     if saved:
