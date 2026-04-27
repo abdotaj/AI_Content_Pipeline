@@ -762,6 +762,7 @@ def transform_user_image(
     caption: str,
     video_id: str,
     index: int,
+    section_tags: list[str] | None = None,
 ) -> str | None:
     """
     Generate a cinematic AI version of a user image using its caption as the prompt.
@@ -774,11 +775,18 @@ def transform_user_image(
     import hashlib
 
     caption_clean = (caption or "cinematic dark portrait").strip()
-    prompt = (
-        f"{caption_clean} cinematic portrait dramatic lighting "
-        f"dark background professional 4k photography "
-        f"documentary style vertical"
-    )
+    if section_tags:
+        tags_str = " ".join(section_tags)
+        prompt = (
+            f"{tags_str} cinematic documentary dark dramatic "
+            f"professional 4k photography documentary style vertical"
+        )
+    else:
+        prompt = (
+            f"{caption_clean} cinematic portrait dramatic lighting "
+            f"dark background professional 4k photography "
+            f"documentary style vertical"
+        )
     seed = int(hashlib.md5(caption_clean.encode()).hexdigest()[:8], 16) % 99999
     output_path = os.path.join(IMAGES_DIR, f"{video_id}_transformed_{index}.png")
 
@@ -866,7 +874,7 @@ def process_user_images(user_images: list[dict], video_id: str,
             print(f"[Image] Processing user image {i + 1}: '{caption[:60]}' section_kws={sec_kws}")
 
         # AI-transformed version
-        transformed = transform_user_image(path, caption, video_id, i)
+        transformed = transform_user_image(path, caption, video_id, i, section_tags=sec_kws)
         if transformed:
             processed.append({
                 "path":    transformed,
@@ -1416,8 +1424,30 @@ def _search_images_openai(query: str, max_results: int = 5) -> list[str]:
             timeout=30,
         )
         if r.status_code == 200:
-            content = r.json()['output'][0]['content'][0]['text']
-            urls = _re.findall(r'https?://\S+\.(?:jpg|jpeg|png|webp)', content)
+            data = r.json()
+            text = None
+            try:
+                text = data['output'][0]['content'][0]['text']
+            except (KeyError, IndexError, TypeError):
+                pass
+            if text is None:
+                try:
+                    text = data['choices'][0]['message']['content']
+                except (KeyError, IndexError, TypeError):
+                    pass
+            if text is None:
+                for item in data.get('output', []):
+                    if item.get('type') == 'message':
+                        for part in item.get('content', []):
+                            if part.get('type') == 'output_text':
+                                text = part.get('text', '')
+                                break
+                    if text:
+                        break
+            if text is None:
+                print(f'[Image] OpenAI search response keys: {list(data.keys())}')
+                return []
+            urls = _re.findall(r'https?://\S+\.(?:jpg|jpeg|png|webp)', text)
             return urls[:max_results]
     except Exception as e:
         print(f'[Image] OpenAI search failed: {e}')
@@ -4412,6 +4442,16 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
                         print(f"[Video] User video added: {uv.get('caption','')[:60]}")
                     except Exception as _e:
                         print(f"[Video] Could not copy user video {path}: {_e}")
+
+            # Step A2: no user videos — auto-search archive and YouTube CC
+            if not all_user_videos:
+                print("[Video] No user videos — searching archive and YouTube CC automatically")
+                auto_vids = fetch_stock_videos(
+                    script_text, min(4, max(2, n_images // 3)), video_id, topic=topic_str
+                )
+                for vpath in auto_vids:
+                    if vpath not in image_paths:
+                        image_paths.append(vpath)
 
             # Step B: copy user images directly into clip pool (BEFORE stock)
             for i, ui in enumerate(all_user_images):
