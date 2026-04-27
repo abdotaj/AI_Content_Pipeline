@@ -1370,15 +1370,75 @@ def generate_ai_image(prompt: str, output_path: str, seed: int = None) -> str:
 
 # â"€â"€ Real-photo fetching â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
+_IMAGE_MAGIC = {
+    b"\xff\xd8\xff":         "jpeg",
+    b"\x89\x50\x4e\x47":    "png",
+    b"\x52\x49\x46\x46":    "webp",
+    b"\x47\x49\x46\x38":    "gif",
+}
+_IMAGE_MIN_BYTES = 15_000   # 15 KB — reject placeholder/error images
+_BLOCKED_IMAGE_DOMAINS = {"pinterest.com", "instagram.com", "facebook.com", "twitter.com", "x.com"}
+_BLOCKED_URL_PATTERNS  = {".html", ".php", ".aspx", "/blog/", "/article/", "/post/"}
+_VALID_IMAGE_EXTS      = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".jfif"}
+
+
+def _is_valid_image_url(url: str) -> bool:
+    """Pre-filter: skip obviously non-image URLs before attempting any download."""
+    u = url.lower()
+    if any(d in u for d in _BLOCKED_IMAGE_DOMAINS):
+        return False
+    if any(p in u for p in _BLOCKED_URL_PATTERNS):
+        return False
+    # Must end in a known image extension OR contain one in the path
+    from urllib.parse import urlparse, unquote
+    path = unquote(urlparse(url).path).lower()
+    return any(path.endswith(ext) for ext in _VALID_IMAGE_EXTS)
+
+
+def _check_image_bytes(data: bytes) -> bool:
+    """Return True if first bytes match a known image magic signature."""
+    for magic in _IMAGE_MAGIC:
+        if data[:len(magic)] == magic:
+            return True
+    return False
+
+
 def download_real_image(url: str, output_path: str) -> str | None:
-    """Download image from URL, smart-crop to 1080Ã—1920 portrait. Returns path or None."""
+    """Download image from URL, validate content type + magic bytes, smart-crop to 1080x1920."""
     import io
     from PIL import Image as PILImage
 
+    if not _is_valid_image_url(url):
+        print(f"[Image] Skipped non-image URL (pre-filter): {url[:80]}")
+        return None
+
     try:
+        # HEAD first to check Content-Type cheaply
+        ct = ""
+        try:
+            head = requests.head(url, timeout=8, headers={"User-Agent": "Mozilla/5.0"}, allow_redirects=True)
+            ct = head.headers.get("Content-Type", "").lower()
+        except Exception:
+            pass
+
+        if ct and not ct.startswith("image/"):
+            print(f"[Image] Rejected non-image URL ({ct.split(';')[0].strip()}): {url[:80]}")
+            return None
+
         r = requests.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
         if r.status_code != 200:
             return None
+
+        # Validate magic bytes when Content-Type was unknown
+        if not ct or not ct.startswith("image/"):
+            if not _check_image_bytes(r.content[:12]):
+                print(f"[Image] Rejected (bad magic bytes): {url[:80]}")
+                return None
+
+        if len(r.content) < _IMAGE_MIN_BYTES:
+            print(f"[Image] Rejected tiny image ({len(r.content)} bytes): {url[:80]}")
+            return None
+
         img = PILImage.open(io.BytesIO(r.content)).convert("RGB")
         w, h = img.size
         target_ratio = 9 / 16
@@ -1396,7 +1456,7 @@ def download_real_image(url: str, output_path: str) -> str | None:
 
 
 def _ddgs_image_results(query: str, max_results: int = 15) -> list[str]:
-    """Return list of image URLs from DuckDuckGo. Returns empty list on any failure."""
+    """Return pre-filtered image URLs from DuckDuckGo. Returns empty list on any failure."""
     try:
         from duckduckgo_search import DDGS
     except ImportError:
@@ -1407,15 +1467,17 @@ def _ddgs_image_results(query: str, max_results: int = 15) -> list[str]:
             return []
     try:
         with DDGS() as ddgs:
-            results = list(ddgs.images(query, max_results=max_results, safesearch="moderate"))
-        return [r["image"] for r in results if r.get("image")]
+            results = list(ddgs.images(query, max_results=max_results * 2, safesearch="moderate"))
+        raw = [r["image"] for r in results if r.get("image")]
+        filtered = [u for u in raw if _is_valid_image_url(u)]
+        return filtered[:max_results]
     except Exception as e:
         print(f"[Image] DDGS search failed '{query}': {e}")
         return []
 
 
 def _google_image_results(query: str, max_results: int = 5) -> list[str]:
-    """Google Images scrape fallback when DuckDuckGo returns nothing."""
+    """Google Images scrape fallback when DuckDuckGo returns nothing. Pre-filters URLs."""
     try:
         import re
         url = f"https://www.google.com/search?q={requests.utils.quote(query)}&tbm=isch"
@@ -1424,8 +1486,9 @@ def _google_image_results(query: str, max_results: int = 5) -> list[str]:
             headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
             timeout=15,
         )
-        urls = re.findall(r'https?://[^"]+\.(?:jpg|jpeg|png|webp)', r.text)
-        return list(dict.fromkeys(urls))[:max_results]
+        raw = re.findall(r'https?://[^"]+\.(?:jpg|jpeg|png|webp)', r.text)
+        filtered = [u for u in dict.fromkeys(raw) if _is_valid_image_url(u)]
+        return filtered[:max_results]
     except Exception as e:
         print(f"[Image] Google search failed '{query}': {e}")
         return []
@@ -1868,9 +1931,29 @@ def _filter_relevant_results(urls: list[str], topic_keywords: list[str]) -> list
     return relevant if relevant else urls
 
 
+_VIDEO_MIN_BYTES = 100_000     # 100 KB
+_VIDEO_MAX_BYTES = 80_000_000  # 80 MB
+
+
 def _download_video_url(url: str, output_path: str) -> str | None:
-    """Download one stock video URL safely."""
+    """Download one stock video URL with Content-Type + size validation."""
     try:
+        # Check Content-Type via HEAD before downloading the full file
+        ct = ""
+        try:
+            head = requests.head(url, timeout=8, headers={"User-Agent": "DarkCrimeDecoded/1.0"}, allow_redirects=True)
+            ct = head.headers.get("Content-Type", "").lower()
+            content_length = int(head.headers.get("Content-Length", 0) or 0)
+            if content_length > _VIDEO_MAX_BYTES:
+                print(f"[Stock] Skipping oversized video ({content_length // 1_000_000} MB): {url[:60]}")
+                return None
+        except Exception:
+            pass
+
+        if ct and not (ct.startswith("video/") or "octet-stream" in ct or "mp4" in ct):
+            print(f"[Stock] Rejected non-video Content-Type ({ct.split(';')[0].strip()}): {url[:60]}")
+            return None
+
         r = requests.get(
             url,
             timeout=90,
@@ -1879,12 +1962,19 @@ def _download_video_url(url: str, output_path: str) -> str | None:
         )
         if r.status_code != 200:
             return None
+
         with open(output_path, "wb") as f:
+            downloaded = 0
             for chunk in r.iter_content(chunk_size=1024 * 128):
                 if chunk:
                     f.write(chunk)
+                    downloaded += len(chunk)
+                    if downloaded > _VIDEO_MAX_BYTES:
+                        print(f"[Stock] Aborted oversized download (>{_VIDEO_MAX_BYTES // 1_000_000} MB): {url[:60]}")
+                        break
+
         size = os.path.getsize(output_path)
-        if size < 250_000:
+        if size < _VIDEO_MIN_BYTES:
             try:
                 os.remove(output_path)
             except OSError:
@@ -1935,20 +2025,47 @@ def _validate_clip(path: str) -> bool:
         return False
 
 
+def _ffprobe_duration(path: str) -> float:
+    """Return video duration in seconds via ffprobe, or 0.0 on failure."""
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", path],
+            capture_output=True, text=True, timeout=15,
+        )
+        if result.returncode == 0:
+            return float(result.stdout.strip() or 0)
+    except Exception:
+        pass
+    return 0.0
+
+
 def _download_first_valid_video(urls: list[str], output_path: str) -> str | None:
     for url in urls:
         if _is_blacklisted_source(url):
             print(f"[Stock] Skipping blacklisted source: {url[:80]}")
             continue
         saved = _download_video_url(url, output_path)
-        if saved:
-            if _validate_clip(saved):
-                return saved
+        if not saved:
+            continue
+        # ffprobe duration check
+        dur = _ffprobe_duration(saved)
+        if dur < 2.0:
+            print(f"[Stock] Rejected invalid video (ffprobe duration={dur:.1f}s): {url[:60]}")
+            try:
+                os.remove(saved)
+            except OSError:
+                pass
+            continue
+        if not _validate_clip(saved):
             print(f"[Stock] Clip failed validation (duration out of 3-60s range): {url[:60]}")
             try:
                 os.remove(saved)
             except OSError:
                 pass
+            continue
+        return saved
     return None
 
 
@@ -2500,22 +2617,24 @@ def fetch_real_images(script_text: str, count: int, video_id: str,
                             query_cache[query] = saved
                             real_count += 1
 
-                # Step 3: still nothing -> try additional specific queries
+                # Step 3: still nothing -> try suffix variants of query
                 if not saved:
                     extra_queries = [
+                        f"{query} photograph",
+                        f"{query} historical photo",
+                        f"{query} documentary still",
                         f"{topic} real photo",
                         f"{topic} historical photo",
                         f"{topic} documentary footage",
-                        f"{query} photograph",
                     ]
                     for eq in extra_queries:
-                        if eq == query:
+                        if eq.strip() == query.strip():
                             continue
                         eq_urls = _ddgs_image_results(eq) or _google_image_results(eq)
                         if eq_urls:
                             saved = _download_first_valid(eq_urls, img_path)
                             if saved:
-                                print(f"[Image] Real photo (extra query): '{eq}'")
+                                print(f"[Image] Real photo (suffix query): '{eq}'")
                                 query_cache[query] = saved
                                 real_count += 1
                                 break
