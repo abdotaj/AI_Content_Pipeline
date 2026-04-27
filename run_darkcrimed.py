@@ -151,8 +151,8 @@ def run_pipeline():
     _event = os.getenv("GITHUB_EVENT_NAME", "")
     if _event == "schedule":
         if _already_ran_today():
-            print("[Pipeline] Already ran today — skipping")
-            return
+            print("[Pipeline] Already ran today — exiting")
+            sys.exit(0)
         print("[Pipeline] Scheduled run — no run today yet, proceeding")
     else:
         print(f"[Pipeline] Trigger: '{_event or 'local'}' — cooldown check skipped")
