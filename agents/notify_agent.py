@@ -671,6 +671,80 @@ def send_video_to_telegram(video_path: str, caption: str, label: str) -> dict:
     return result
 
 
+def send_topic_confirmation(
+    topic_text: str,
+    series_name: str | None = None,
+    show_characters: list | None = None,
+    is_show_topic: bool = False,
+) -> None:
+    """
+    Send a structured topic-confirmed message to Telegram.
+    When show_characters is available, lists each character with their real counterpart
+    and suggests specific photo captions to maximise image-script matching.
+    """
+    chars = show_characters or []
+
+    if chars:
+        # ── TV show / film with known cast ──────────────────────────────────
+        display_name = series_name or topic_text
+        char_lines = "\n".join(
+            f"- {c['character']} \u2192 {c.get('based_on', '?')} ({c.get('real_role', '')})"
+            for c in chars[:5]
+        )
+
+        # Build suggested photo captions from the cast
+        all_chars  = " ".join(c["character"] for c in chars[:3])
+        real_names = " ".join(c.get("based_on", "") for c in chars[:3] if c.get("based_on"))
+        first_char = chars[0]["character"]
+        first_real = chars[0].get("based_on", "")
+        second_char = chars[1]["character"] if len(chars) > 1 else ""
+        second_real = chars[1].get("based_on", "") if len(chars) > 1 else ""
+        # Pick female character for dedicated caption suggestion if present
+        female_line = ""
+        for c in chars:
+            role = (c.get("real_role") or "").lower()
+            name = c.get("character", "")
+            real = c.get("based_on", "")
+            if any(w in role for w in ("criminologist", "psychologist", "analyst", "researcher", "woman")):
+                female_line = f"- Woman character \u2192 caption: {real} real life vs {name}\n"
+                break
+
+        msg = (
+            f"\u2705 Topic confirmed: {display_name}\n"
+            f"\U0001f3ac Show: {series_name or 'TV series'} based on true story\n\n"
+            f"\U0001f465 Main characters detected:\n{char_lines}\n\n"
+            f"\U0001f4f8 Send photos now (3 minutes) with captions:\n"
+            f"- Cast together \u2192 caption: {all_chars} {series_name or ''} cast\n"
+            f"- Real vs actor \u2192 caption: {first_real} real vs {first_char}\n"
+        )
+        if second_char and second_real:
+            msg += f"- Real vs actor 2 \u2192 caption: {second_real} real vs {second_char}\n"
+        if female_line:
+            msg += female_line
+        msg += (
+            f"- Historical \u2192 caption: {real_names} real photo 1970s\n\n"
+            f"\u23f1 No photos = AI generates automatically"
+        )
+    else:
+        # ── Regular crime topic or unknown show ──────────────────────────────
+        display_name = topic_text
+        if series_name and series_name.lower() not in topic_text.lower():
+            display_name = f"{topic_text} {series_name}"
+
+        msg = (
+            f"\u2705 Topic confirmed: {display_name}\n\n"
+            f"\U0001f4f8 Send photos now (3 minutes) with captions describing exactly "
+            f"what is in each photo.\n"
+            f"Example: {topic_text} mugshot real photo\n"
+            f"Example: {series_name or topic_text} poster cast\n\n"
+            f"\u23f1 No photos = AI generates automatically"
+        )
+
+    send_message(msg)
+    print(f"[Notify] Topic confirmation sent: '{display_name}' "
+          f"({'with cast' if chars else 'no cast data'})")
+
+
 def send_daily_report(stats: dict) -> None:
     msg = (
         f"Daily Report\n\n"

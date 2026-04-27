@@ -40,7 +40,7 @@ from config_darkcrimed import (
 # Token files are written by daily.yml steps before pipeline runs (CI)
 # Local: use existing youtube_token_darkcrimed_en/ar.json files
 
-from agent.research_agent import research_topics, research_series, mark_covered, is_fictional
+from agent.research_agent import research_topics, research_series, mark_covered, is_fictional, _detect_show_topic, _fetch_show_cast_from_wikipedia
 from agent.script_agent   import write_script, write_short_script, translate_script, detect_part_number, generate_chapters
 from agent.video_agent    import create_video, process_user_images_smart, load_part2_images, ensure_music_assets
 from agent.notify_agent   import (
@@ -48,6 +48,7 @@ from agent.notify_agent   import (
     send_video_to_telegram, clear_telegram_queue,
     listen_for_content, send_arabic_script_preview, send_english_script_preview,
     check_telegram_for_script, check_telegram_for_images,
+    send_topic_confirmation,
 )
 from agent.publish_agent  import upload_to_youtube
 from agents.content_agent import ingest_content_files
@@ -227,12 +228,16 @@ def run_pipeline():
                 print(f"[Pipeline] Part {_part_number} detected in user note")
 
             # ── 1D: Ask for photos now that topic is confirmed ────────────────
-            send_message(
-                f"Topic confirmed: {topic_text}\n\n"
-                f"Send photos now (3 minutes):\n"
-                f"  Photo + caption '{topic_text} real photo'\n"
-                f"  Photo + caption '{series_name or topic_text} poster'\n\n"
-                f"No photos = AI generates automatically"
+            # Quick show_characters lookup (uses hardcoded map — no API call for known shows)
+            _is_show, _show_key = _detect_show_topic(topic_text)
+            _quick_chars: list = []
+            if _is_show:
+                _quick_chars = _fetch_show_cast_from_wikipedia(series_name or _show_key or topic_text)
+            send_topic_confirmation(
+                topic_text=topic_text,
+                series_name=series_name,
+                show_characters=_quick_chars,
+                is_show_topic=_is_show,
             )
             print("[1/5] Waiting 3 minutes for photos...")
             time.sleep(180)
