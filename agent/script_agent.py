@@ -1769,6 +1769,8 @@ Return ONLY this JSON with no extra text:
     # Carry discovery fields so Telegram preview can show them
     script_data["user_discovery"]          = user_discovery
     script_data["user_discovery_expanded"] = discovery_expanded
+    # Carry show_characters forward so write_short_script can use them
+    script_data["show_characters"]         = research.get("show_characters", [])
     print(f"[Script] Written (english): '{script_data['title']}'")
     return script_data
 
@@ -2471,55 +2473,44 @@ def translate_script(en_script: dict) -> dict:
 
 
 def write_short_script(en_long_script: dict) -> dict:
-    """Generate a ~130-word two-part script for a 55-second short video."""
+    """Generate a 120-140 word trailer-style hook script for a 55-second short video."""
     topic  = en_long_script.get("topic", "")
     _si    = get_series_for_person(topic)
-    series = f"{_si[0]} {_si[1]}" if _si else en_long_script.get("niche", "the series")
+    series = f"{_si[0]}" if _si else en_long_script.get("niche", "the series")
 
-    prompt = f"""Write a 60-90 second true crime short script about: {topic}
+    # Build show characters line from research data if available
+    _show_chars = en_long_script.get("show_characters") or []
+    if _show_chars:
+        _chars_line = ", ".join(
+            f"{c['character']} ({c.get('based_on', '?')})"
+            for c in _show_chars[:4]
+        )
+    else:
+        _chars_line = topic
+
+    prompt = f"""Write a 55-second hook script for a crime documentary short video.
+Topic: {topic}
 Related series/movie: {series}
+Show characters: {_chars_line}
 
-MUST BE 150-180 WORDS TOTAL. Count every single word before finishing.
+RULES:
+1. Write like a movie trailer narrator — dramatic, mysterious, gripping
+2. Start with a shocking hook question or statement that stops the viewer cold
+3. Mention ALL main characters briefly — never focus on just one person
+4. NO bullet facts. NO numbers like salary, years served, or birth dates. NO list format.
+5. End with a cliffhanger line + "Follow Dark Crime Decoded to uncover the truth."
+6. MINIMUM 120 words, MAXIMUM 140 words — count carefully
+7. Must feel like a 55-second teaser, not a biography summary
+8. Flowing sentences only — minimum 2 sentences per paragraph
 
-PART 1 — REAL PERSON (90 words):
-- Open with most shocking fact + specific number
-- 4-5 facts with real dates and dollar amounts
-- Short sentences — maximum 12 words each
-- No vague phrases like "rose to infamy" or "criminal mastermind"
+GOOD EXAMPLE (Mindhunter):
+In the 1970s, three people changed criminal justice forever. Holden Ford, a young FBI agent obsessed with understanding evil. Bill Tench, a seasoned investigator who had seen too much. And Wendy Carr, a psychologist who dared to study the darkest minds in history. Together they built something that had never existed before — a unit dedicated to getting inside the heads of serial killers. But the real story behind Mindhunter is far darker than Netflix ever showed. The men they interviewed, the killers they faced, the price they paid. Follow Dark Crime Decoded to uncover the truth.
 
-PART 2 — SERIES CONNECTION (70 words):
-- Name "{series}" directly
-- One specific difference real events vs screen
-- What the movie/show got right
-- End with exactly: "Follow Dark Crime Decoded for the full story"
+BAD EXAMPLE — NEVER do this:
+John E. Douglas was born June 18 1945. He joined FBI in 1970. He made 135000 dollars per year. He interviewed 36 killers. He retired in 1995.
 
-EXAMPLE (Jordan Belfort):
-Jordan Belfort was born July 9, 1962 in Queens.
-By age 26 he made 49 million dollars in one year.
-He ran Stratton Oakmont with 1,000 employees.
-The FBI estimated he defrauded investors of 200 million dollars.
-He served only 14 months in Otisville Prison.
-He drove a Ferrari and owned a 167-foot yacht.
-His wife left him while he was in prison.
-
-Wolf of Wall Street showed Leonardo DiCaprio as Belfort.
-The film said he served 22 months — actually it was 14.
-Margot Robbie played his real wife Nadine Caridi.
-The film captured his excess perfectly.
-But the real story has even more shocking twists.
-Follow Dark Crime Decoded for the full story.
-
-PRISON SENTENCE RULE: Always write "served X years in prison" — never just "served X years".
-TOTAL TARGET: 150-180 words for 70-83 seconds.
-STRICT RULES:
-- Count words — output must be 150-180 words total
-- Every sentence = one specific fact (name, number, date, or place)
-- Never start two consecutive sentences with the same word
-- No headers, no bullet points — spoken words only
-- Series name stays in English
-
-Use this context from the full script:
-{en_long_script.get('script', '')[:500]}
+Context from full script (use for tone, not facts):
+{en_long_script.get('script', '')[:400]}
 
 Output ONLY the spoken script text, nothing else."""
 
@@ -2527,21 +2518,20 @@ Output ONLY the spoken script text, nothing else."""
     for attempt in range(2):
         _short_prompt = prompt
         if attempt > 0:
-            _short_prompt += f"\n\nCRITICAL: Previous attempt was only {clean_word_count(script_text)} real words. Write MORE. Need 150-180 words."
-        script_text = _ai_script_call(_short_prompt, max_tokens=500, temperature=0.85).strip()
+            _short_prompt += f"\n\nCRITICAL: Previous attempt was {clean_word_count(script_text)} words. Must be 120-140 words. Expand the story — add more dramatic detail, cover more characters, build more tension."
+        script_text = _ai_script_call(_short_prompt, max_tokens=400, temperature=0.88).strip()
         words   = clean_word_count(script_text)
-        seconds = (words / 130) * 60
-        print(f"[Script] Short attempt {attempt + 1}: {words} real words = ~{seconds:.0f}s")
-        if words >= 130:
+        seconds = round(words / 2.5)  # ~150wpm for dramatic narration
+        print(f"[Script] Short attempt {attempt + 1}: {words} real words = ~{seconds}s")
+        if words >= 120:
             print(f"[Script] Short length OK: {words} real words")
             break
         print(f"[Script] Short too short ({words} real words) — retrying...")
 
-    # Trim if over 200 real words
-    words_list = script_text.split()
-    if clean_word_count(script_text) > 200:
-        script_text = " ".join(words_list[:180])
-        print(f"[Script] Short trimmed to ~180 words")
+    # Trim if over 150 real words (keep it tight for 55-second delivery)
+    if clean_word_count(script_text) > 150:
+        script_text = _trim_plain_text_to_words(script_text, 140)
+        print(f"[Script] Short trimmed to 140 words")
 
     short_data = {
         "title":           en_long_script.get("title", ""),  # overwritten below
