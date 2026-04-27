@@ -1368,42 +1368,84 @@ def download_real_image(url: str, output_path: str) -> str | None:
         return None
 
 
-def _ddgs_image_results(query: str, max_results: int = 15) -> list[str]:
-    """Return pre-filtered image URLs from DuckDuckGo. Returns empty list on any failure."""
+def _wikimedia_image_results(query: str, max_results: int = 5) -> list[str]:
+    """Search Wikimedia Commons for real photos -- works from server IPs."""
     try:
-        from duckduckgo_search import DDGS
-    except ImportError:
-        os.system("pip install duckduckgo-search -q")
-        try:
-            from duckduckgo_search import DDGS
-        except Exception:
+        params = {
+            'action': 'query', 'format': 'json', 'generator': 'search',
+            'gsrnamespace': '6', 'gsrsearch': query, 'gsrlimit': max_results * 3,
+            'prop': 'imageinfo', 'iiprop': 'url|mediatype', 'iiurlwidth': 1080,
+        }
+        r = requests.get('https://commons.wikimedia.org/w/api.php', params=params, timeout=15)
+        if r.status_code != 200:
             return []
-    try:
-        with DDGS() as ddgs:
-            results = list(ddgs.images(query, max_results=max_results * 2, safesearch="moderate"))
-        raw = [r["image"] for r in results if r.get("image")]
-        filtered = [u for u in raw if _is_valid_image_url(u)]
-        return filtered[:max_results]
+        pages = r.json().get('query', {}).get('pages', {}).values()
+        urls = []
+        for page in pages:
+            ii = page.get('imageinfo', [{}])[0]
+            url = ii.get('thumburl') or ii.get('url', '')
+            mtype = ii.get('mediatype', '')
+            if url and mtype in ('BITMAP', 'DRAWING') and _is_valid_image_url(url):
+                urls.append(url)
+            if len(urls) >= max_results:
+                break
+        return urls
     except Exception as e:
-        print(f"[Image] DDGS search failed '{query}': {e}")
+        print(f'[Image] Wikimedia search failed: {e}')
         return []
 
 
-def _google_image_results(query: str, max_results: int = 5) -> list[str]:
-    """Google Images scrape fallback when DuckDuckGo returns nothing. Pre-filters URLs."""
+def _search_images_openai(query: str, max_results: int = 5) -> list[str]:
+    """Use OpenAI web search to find real image URLs."""
+    api_key = os.getenv('OPENAI_API_KEY', '').strip()
+    if not api_key:
+        return []
     try:
-        import re
-        url = f"https://www.google.com/search?q={requests.utils.quote(query)}&tbm=isch"
-        r = requests.get(
-            url,
-            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
-            timeout=15,
+        import re as _re
+        r = requests.post(
+            'https://api.openai.com/v1/responses',
+            headers={'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json'},
+            json={
+                'model': 'gpt-4o-mini',
+                'tools': [{'type': 'web_search_preview'}],
+                'input': (
+                    f'Find real photographs of {query}. Return only direct image URLs '
+                    f'ending in .jpg .jpeg .png or .webp. List the URLs only, one per line.'
+                ),
+            },
+            timeout=30,
         )
-        raw = re.findall(r'https?://[^"]+\.(?:jpg|jpeg|png|webp)', r.text)
-        filtered = [u for u in dict.fromkeys(raw) if _is_valid_image_url(u)]
-        return filtered[:max_results]
+        if r.status_code == 200:
+            content = r.json()['output'][0]['content'][0]['text']
+            urls = _re.findall(r'https?://\S+\.(?:jpg|jpeg|png|webp)', content)
+            return urls[:max_results]
     except Exception as e:
-        print(f"[Image] Google search failed '{query}': {e}")
+        print(f'[Image] OpenAI search failed: {e}')
+    return []
+
+
+def _internet_archive_image_results(query: str, max_results: int = 5) -> list[str]:
+    """Search Internet Archive for historical images."""
+    try:
+        params = {
+            'q': f'{query} AND mediatype:image',
+            'fl': 'identifier', 'rows': max_results * 2,
+            'output': 'json', 'page': 1,
+        }
+        r = requests.get('https://archive.org/advancedsearch.php', params=params, timeout=15)
+        if r.status_code != 200:
+            return []
+        docs = r.json().get('response', {}).get('docs', [])
+        urls = []
+        for doc in docs:
+            ident = doc.get('identifier', '')
+            if ident:
+                urls.append(f'https://archive.org/download/{ident}/{ident}.jpg')
+            if len(urls) >= max_results:
+                break
+        return urls
+    except Exception as e:
+        print(f'[Image] Internet Archive search failed: {e}')
         return []
 
 
@@ -2480,9 +2522,11 @@ def fetch_real_images(script_text: str, count: int, video_id: str,
     Universal image builder — works for any script topic.
 
     Priority order:
-      0. User-provided images from assets/images/, content/images/ — used FIRST
-      1. Script-specific DuckDuckGo search (OpenAI/Groq generated queries)
-      2. Pollinations AI generation as fallback
+      1. User images from Telegram (always first)
+      2. Wikimedia Commons (free, works from servers)
+      3. OpenAI web search (finds real photos)
+      4. Internet Archive
+      5. Pollinations AI generation (last resort)
 
     Logs each image as real photo or AI generated.
     Returns list of image paths.
@@ -2522,7 +2566,7 @@ def fetch_real_images(script_text: str, count: int, video_id: str,
         print(f"[Image] Using {count} user-provided images (skipping stock search)")
         return preloaded_paths[:count]
 
-    # Remaining slots to fill from DuckDuckGo / Pollinations
+    # Remaining slots to fill from Wikimedia / OpenAI / Archive / Pollinations
     remaining = count - len(preloaded_paths)
 
     # AI fallback prompts (one per chunk)
@@ -2554,57 +2598,34 @@ def fetch_real_images(script_text: str, count: int, video_id: str,
                 saved = img_path
                 print(f"[Image] Reused '{query}' for chunk {i}")
             else:
-                en_urls = _ddgs_image_results(query)
-                if en_urls:
-                    saved = _download_first_valid(en_urls, img_path)
+                # Step 2: Wikimedia Commons (works from server IPs, free)
+                wiki_urls = _wikimedia_image_results(query)
+                if wiki_urls:
+                    saved = _download_first_valid(wiki_urls, img_path)
                     if saved:
-                        print(f"[Image] Real photo (EN DDGS): '{query}'")
+                        print(f"[Image] Real photo (Wikimedia): '{query}'")
                         query_cache[query] = saved
                         real_count += 1
 
-                # Step 2b: DuckDuckGo returned nothing -> try Google Images
+                # Step 3: OpenAI web search
                 if not saved:
-                    g_urls = _google_image_results(query)
-                    if g_urls:
-                        saved = _download_first_valid(g_urls, img_path)
+                    oai_urls = _search_images_openai(query)
+                    if oai_urls:
+                        saved = _download_first_valid(oai_urls, img_path)
                         if saved:
-                            print(f"[Image] Real photo (Google): '{query}'")
+                            print(f"[Image] Real photo (OpenAI search): '{query}'")
                             query_cache[query] = saved
                             real_count += 1
 
-                # Step 3: still nothing -> try suffix variants of query
+                # Step 4: Internet Archive
                 if not saved:
-                    extra_queries = [
-                        f"{query} photograph",
-                        f"{query} historical photo",
-                        f"{query} documentary still",
-                        f"{topic} real photo",
-                        f"{topic} historical photo",
-                        f"{topic} documentary footage",
-                    ]
-                    for eq in extra_queries:
-                        if eq.strip() == query.strip():
-                            continue
-                        eq_urls = _ddgs_image_results(eq) or _google_image_results(eq)
-                        if eq_urls:
-                            saved = _download_first_valid(eq_urls, img_path)
-                            if saved:
-                                print(f"[Image] Real photo (suffix query): '{eq}'")
-                                query_cache[query] = saved
-                                real_count += 1
-                                break
-
-                # Step 4: retry in Arabic
-                if not saved:
-                    ar_query = _translate_to_arabic_query(query)
-                    if ar_query:
-                        ar_urls = _ddgs_image_results(ar_query)
-                        if ar_urls:
-                            print(f"[Image] chunk {i}: retried in Arabic, found {len(ar_urls)} results")
-                            saved = _download_first_valid(ar_urls, img_path)
-                            if saved:
-                                query_cache[query] = saved
-                                real_count += 1
+                    ia_urls = _internet_archive_image_results(query)
+                    if ia_urls:
+                        saved = _download_first_valid(ia_urls, img_path)
+                        if saved:
+                            print(f"[Image] Real photo (Internet Archive): '{query}'")
+                            query_cache[query] = saved
+                            real_count += 1
 
         # Step 5: AI fallback — Pollinations with script-matched prompt
         if not saved:
