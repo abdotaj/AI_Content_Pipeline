@@ -3392,8 +3392,7 @@ def burn_subtitles_ffmpeg(
     ]
     try:
         with open(ass_path, "w", encoding="utf-8-sig") as f:
-            f.write("
-".join(ass_header + event_lines))
+            f.write("\n".join(ass_header + event_lines))
         print(f"[Subtitle] ASS file written: {len(events)} events")
     except Exception as ex:
         print(f"[Subtitle] Could not write ASS file: {ex}")
