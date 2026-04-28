@@ -1,14 +1,12 @@
 # ============================================================
 #  run_darkcrimed.py  —  Pipeline entry point for Dark Crime Decoded
 #
-#  Daily output (1 topic, 4 videos):
+#  Daily output (1 topic, 12 pieces):
 #
-#  Daily output (1 topic, 4 videos):
-#
-#    OUTPUT 1 — English long-form (12-20 min) → auto YouTube upload → YouTube link to Telegram
-#    OUTPUT 2 — Arabic long-form  (12-20 min) → auto YouTube upload → YouTube link to Telegram
-#    OUTPUT 3 — English short (60-90 sec)     → Telegram → post to TikTok / Instagram / Shorts
-#    OUTPUT 4 — Arabic short  (60-90 sec)     → Telegram → post to TikTok Arabic / Instagram
+#    OUTPUT 1  — English long-form (12-20 min) → auto YouTube upload
+#    OUTPUT 2  — Arabic long-form  (12-20 min) → auto YouTube upload
+#    OUTPUTS 3-7  — 5 English chapter shorts (55-90s each) → Telegram
+#    OUTPUTS 8-12 — 5 Arabic  chapter shorts (55-90s each) → Telegram
 # ============================================================
 import os
 import sys
@@ -41,8 +39,8 @@ from config_darkcrimed import (
 # Local: use existing youtube_token_darkcrimed_en/ar.json files
 
 from agent.research_agent import research_topics, research_series, mark_covered, is_fictional, _detect_show_topic, _fetch_show_cast_from_wikipedia
-from agent.script_agent   import write_script, write_short_script, translate_script, detect_part_number, generate_chapters
-from agent.video_agent    import create_video, process_user_images_smart, load_part2_images, ensure_music_assets
+from agent.script_agent   import write_script, translate_script, detect_part_number, generate_chapters
+from agent.video_agent    import create_video, process_user_images_smart, load_part2_images, ensure_music_assets, cut_chapter_shorts
 from agent.notify_agent   import (
     send_message, send_for_manual_posting, send_daily_report,
     send_video_to_telegram, clear_telegram_queue,
@@ -356,39 +354,28 @@ def run_pipeline():
             return
 
     try:
-        en_short = write_short_script(en_long)
-        print("  [2/5] English short script done")
-    except Exception as e:
-        send_message(f"Short script writing failed: {e}")
-        print(f"[ERROR] Short script: {e}")
-        return
-
-    try:
         ar_long = translate_script(en_long)
-        # Replace English chapter labels with Arabic equivalents
+        # Replace English chapter labels with Arabic equivalents, preserving angle_title
         ar_word_count = len(ar_long.get("script", "").split())
         if ar_word_count > 0:
-            ar_long["chapters"] = generate_chapters(ar_word_count, language="arabic")
+            ar_long["chapters"] = generate_chapters(
+                ar_word_count,
+                language="arabic",
+                angle_title=en_long.get("angle_title", ""),
+            )
+        # Carry angle fields through to Arabic
+        ar_long["angle_title"] = en_long.get("angle_title", "")
+        ar_long["angle_hook"]  = en_long.get("angle_hook", "")
         print("  [2/5] Arabic long script done")
     except Exception as e:
         send_message(f"Arabic translation failed: {e}")
         print(f"[ERROR] Arabic translation: {e}")
         return
 
-    try:
-        ar_short = translate_script(en_short)
-        print("  [2/5] Arabic short script done")
-    except Exception as e:
-        send_message(f"Arabic short translation failed: {e}")
-        print(f"[ERROR] Arabic short translation: {e}")
-        return
-
     # ── STEP 3: Send scripts to Telegram for review (non-blocking) ────────────
     print("\n[3/5] Sending scripts to Telegram for review...")
     for fn, script, label in [
-        (send_arabic_script_preview,  ar_short, "Arabic SHORT script (55 sec)"),
         (send_arabic_script_preview,  ar_long,  "Arabic LONG script (10-14 min)"),
-        (send_english_script_preview, en_short, "English SHORT script (55 sec)"),
         (send_english_script_preview, en_long,  "English LONG script (10-14 min)"),
     ]:
         try:
@@ -418,13 +405,17 @@ def run_pipeline():
     ar_long_id   = f"{today}_{uuid.uuid4().hex[:8]}_arabic_long"
     ar_long_path = _make_video(ar_long, ar_long_id, stats, user_images=user_images, user_videos=user_videos)
 
-    # OUTPUT 3 — Arabic short
-    ar_short_id   = f"{today}_{uuid.uuid4().hex[:8]}_arabic_short"
-    ar_short_path = _make_video(ar_short, ar_short_id, stats, user_images=user_images, user_videos=user_videos)
+    # Outputs 3-7: cut 5 chapter shorts from English long video
+    en_chapter_shorts: list[dict] = []
+    if en_long_path and os.path.exists(en_long_path):
+        print("[Pipeline] Cutting 5 English chapter shorts...")
+        en_chapter_shorts = cut_chapter_shorts(en_long_path, en_long)
 
-    # OUTPUT 4 — English short
-    en_short_id   = f"{today}_{uuid.uuid4().hex[:8]}_english_short"
-    en_short_path = _make_video(en_short, en_short_id, stats, user_images=user_images, user_videos=user_videos)
+    # Outputs 8-12: cut 5 chapter shorts from Arabic long video
+    ar_chapter_shorts: list[dict] = []
+    if ar_long_path and os.path.exists(ar_long_path):
+        print("[Pipeline] Cutting 5 Arabic chapter shorts...")
+        ar_chapter_shorts = cut_chapter_shorts(ar_long_path, ar_long)
 
     # Clear user images + videos so they don't bleed into the next run
     import shutil as _shutil
@@ -483,53 +474,55 @@ def run_pipeline():
                 _fail_msg += f"\n\nDownload video from GitHub artifact:\n{_artifact_url}"
             send_message(_fail_msg)
 
-    if en_short_path:
+    # Send 5 English chapter shorts to Telegram
+    for short in en_chapter_shorts:
         try:
-            send_for_manual_posting(
-                en_short_path, en_short,
-                "TikTok + Instagram Reels + YouTube Shorts",
+            caption = (
+                f"MANUAL POST NEEDED\n\n"
+                f"Chapter {short['chapter_idx']}: {short['title']}\n"
+                f"Post to: {short['label']}\n\n"
+                f"Topic: {en_long.get('title', '')}\n"
+                f"{en_long.get('hashtags', '')}"
             )
+            send_video_to_telegram(short["path"], caption, f"EN Short Ch{short['chapter_idx']}")
         except Exception as e:
-            print(f"  [WARN] Telegram English short send failed: {e}")
+            print(f"  [WARN] Telegram EN short Ch{short['chapter_idx']} send failed: {e}")
 
-    if ar_short_path and os.path.exists(ar_short_path):
+    # Send 5 Arabic chapter shorts to Telegram
+    for short in ar_chapter_shorts:
         try:
-            size_mb = os.path.getsize(ar_short_path) / 1024 / 1024
-            print(f"[Notify] Arabic short size: {size_mb:.1f}MB")
-            if size_mb > 50:
-                caption = (
-                    f"MANUAL POST NEEDED\n\nTitle: {ar_short.get('title', '')}\n"
-                    f"Post to: TikTok Arabic + Instagram Arabic\n\n"
-                    f"{ar_short.get('hashtags', '')}"
-                )
-                send_video_to_telegram(ar_short_path, caption, "Arabic short (document)")
-            else:
-                send_for_manual_posting(
-                    ar_short_path, ar_short,
-                    "TikTok Arabic + Instagram Arabic",
-                )
+            caption = (
+                f"MANUAL POST NEEDED\n\n"
+                f"Chapter {short['chapter_idx']}: {short['title']}\n"
+                f"Post to: {short['label']}\n\n"
+                f"Topic: {ar_long.get('title', '')}\n"
+                f"{ar_long.get('hashtags', '')}"
+            )
+            send_video_to_telegram(short["path"], caption, f"AR Short Ch{short['chapter_idx']}")
         except Exception as e:
-            print(f"  [WARN] Telegram Arabic short send failed: {e}")
+            print(f"  [WARN] Telegram AR short Ch{short['chapter_idx']} send failed: {e}")
 
-    # ── Save manifest (all 4 videos + upload status) ──────────
+    # ── Save manifest (2 long videos + shorts summary) ────────
     _save_manifest(
         today,
-        en_long, ar_long, en_short, ar_short,
-        en_long_path, ar_long_path, en_short_path, ar_short_path,
+        en_long, ar_long,
+        en_long_path, ar_long_path,
+        en_chapter_shorts, ar_chapter_shorts,
         yt_en_url, yt_ar_url,
     )
 
     # ── Daily summary ──────────────────────────────────────────
+    _total_shorts = len(en_chapter_shorts) + len(ar_chapter_shorts)
     send_message(
         f"📊 Daily Report — Dark Crime Decoded\n\n"
-        f"✅ Generated: 4 videos\n"
+        f"✅ Generated: 2 long + {_total_shorts} shorts ({_total_shorts // 2} EN + {_total_shorts // 2} AR)\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"🎬 English Long → YouTube\n"
         f"{yt_en_url or '❌ Upload failed'}\n\n"
         f"🎬 Arabic Long → YouTube\n"
         f"{yt_ar_url or '❌ Upload failed'}\n\n"
-        f"📱 English Short → Telegram ✅\n"
-        f"📱 Arabic Short → Telegram ✅\n"
+        f"📱 {len(en_chapter_shorts)} EN Chapter Shorts → Telegram ✅\n"
+        f"📱 {len(ar_chapter_shorts)} AR Chapter Shorts → Telegram ✅\n"
         f"━━━━━━━━━━━━━━━━━━━━━━"
     )
 
@@ -542,16 +535,16 @@ def run_pipeline():
             pass
 
     log_entry = {
-        "date":        today,
-        "channel":     "dark_crime",
-        "en_long_id":  en_long_id,
-        "ar_long_id":  ar_long_id,
-        "en_short_id": en_short_id,
-        "ar_short_id": ar_short_id,
-        "title":       en_long.get("title", ""),
-        "niche":       en_long.get("niche", ""),
-        "youtube_en":  yt_en_url or "",
-        "youtube_ar":  yt_ar_url or "",
+        "date":           today,
+        "channel":        "dark_crime",
+        "en_long_id":     en_long_id,
+        "ar_long_id":     ar_long_id,
+        "en_shorts":      len(en_chapter_shorts),
+        "ar_shorts":      len(ar_chapter_shorts),
+        "title":          en_long.get("title", ""),
+        "niche":          en_long.get("niche", ""),
+        "youtube_en":     yt_en_url or "",
+        "youtube_ar":     yt_ar_url or "",
     }
     _save_log(log_entry)
 
@@ -658,25 +651,24 @@ def _retry_failed_uploads():
             print(f"  [Recovery] {label} retry failed: {e}")
 
 
-def _save_manifest(today, en_long, ar_long, en_short, ar_short,
-                   en_long_path, ar_long_path, en_short_path, ar_short_path,
+def _save_manifest(today, en_long, ar_long,
+                   en_long_path, ar_long_path,
+                   en_chapter_shorts, ar_chapter_shorts,
                    yt_en_url, yt_ar_url) -> str:
-    """Save a JSON manifest recording all 4 video paths and upload status."""
+    """Save a JSON manifest recording long video paths, shorts, and upload status."""
     manifest = {
         "timestamp": time.time(),
         "date":  today,
         "topic": en_long.get("topic", ""),
         "videos": {
-            "en_long":  en_long_path,
-            "ar_long":  ar_long_path,
-            "en_short": en_short_path,
-            "ar_short": ar_short_path,
+            "en_long":        en_long_path,
+            "ar_long":        ar_long_path,
+            "en_shorts":      [s["path"] for s in en_chapter_shorts],
+            "ar_shorts":      [s["path"] for s in ar_chapter_shorts],
         },
         "scripts": {
-            "en_long_title":  en_long.get("title",  ""),
-            "ar_long_title":  ar_long.get("title",  ""),
-            "en_short_title": en_short.get("title", ""),
-            "ar_short_title": ar_short.get("title", ""),
+            "en_long_title": en_long.get("title", ""),
+            "ar_long_title": ar_long.get("title", ""),
         },
         "script_data": {
             "en_long": {k: en_long.get(k, "") for k in ("title", "description", "tags", "language", "niche")},
@@ -687,16 +679,14 @@ def _save_manifest(today, en_long, ar_long, en_short, ar_short,
             "ar": yt_ar_url or "",
         },
         "telegram_sent": {
-            "en_short": bool(en_short_path),
-            "ar_short": bool(ar_short_path),
-            "en_long":  False,
-            "ar_long":  False,
+            "en_shorts": len(en_chapter_shorts),
+            "ar_shorts": len(ar_chapter_shorts),
         },
         "status": {
             "en_long_uploaded": bool(yt_en_url),
             "ar_long_uploaded": bool(yt_ar_url),
-            "en_short_sent":    bool(en_short_path),
-            "ar_short_sent":    bool(ar_short_path),
+            "en_shorts_sent":   len(en_chapter_shorts),
+            "ar_shorts_sent":   len(ar_chapter_shorts),
         },
     }
     Path("output/dark_crime").mkdir(parents=True, exist_ok=True)

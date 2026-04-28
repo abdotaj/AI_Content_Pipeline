@@ -3216,6 +3216,124 @@ def cut_short_clip(video_path: str, output_path: str, duration: int = 90) -> str
                 time.sleep(0.5)
 
 
+
+
+def cut_chapter_shorts(
+    long_video_path: str,
+    script_data: dict,
+    output_dir: str | None = None,
+) -> list[dict]:
+    """Cut 5 chapter-based shorts from a long video using ffmpeg.
+
+    Parses chapter timestamps from script_data['chapters'], cuts a 55-90 second
+    clip from each chapter, and adds the chapter title as a text overlay.
+    Returns list of dicts: [{path, title, label, chapter_idx}]
+    """
+    import re as _re
+
+    chapters_str = script_data.get("chapters", "")
+    if not chapters_str or not os.path.exists(long_video_path):
+        return []
+
+    # Parse "MM:SS Title" lines
+    lines = [l.strip() for l in chapters_str.strip().split("\n") if l.strip()]
+    chapter_times: list[tuple[int, str]] = []
+    for line in lines:
+        m = _re.match(r'^(\d+):(\d+)\s+(.+)$', line)
+        if m:
+            secs = int(m.group(1)) * 60 + int(m.group(2))
+            title = m.group(3).strip()
+            chapter_times.append((secs, title))
+
+    if not chapter_times:
+        print("[Short] No chapter timestamps found -- skipping chapter shorts")
+        return []
+
+    total_dur = _ffprobe_duration(long_video_path) or 0
+    if total_dur < 30:
+        print(f"[Short] Video too short ({total_dur:.0f}s) for chapter shorts")
+        return []
+
+    if output_dir is None:
+        output_dir = SHORTS_DIR
+    os.makedirs(output_dir, exist_ok=True)
+
+    lang = script_data.get("language", "english")
+    safe_id = _re.sub(r'[^\w]', '_', script_data.get('topic', 'video')[:20])
+    angle_title = script_data.get("angle_title", "")
+
+    short_labels = [
+        "Hook — TikTok + Instagram + YouTube Shorts",
+        f"{angle_title or 'Untold Angle'} — TikTok + Instagram + YouTube Shorts",
+        "Real Story — TikTok + Instagram",
+        "Show vs Reality — TikTok + Instagram",
+        "Conclusion — YouTube Shorts + TikTok",
+    ]
+
+    ffmpeg_bin = _find_ffmpeg()
+    if not ffmpeg_bin:
+        print("[Short] ffmpeg not found -- skipping chapter shorts")
+        return []
+
+    shorts: list[dict] = []
+
+    for idx, (start_sec, chapter_title) in enumerate(chapter_times):
+        chapter_end = chapter_times[idx + 1][0] if idx + 1 < len(chapter_times) else total_dur
+        chapter_dur = max(0, chapter_end - start_sec)
+
+        # Select best 90 seconds
+        if idx == 0:
+            cut_start = start_sec
+        elif idx == 2:
+            # Middle of chapter for most dramatic content
+            cut_start = start_sec + max(0, chapter_dur // 2 - 45)
+        else:
+            cut_start = start_sec
+        cut_dur = min(90, max(15, chapter_end - cut_start))
+
+        if cut_dur < 15:
+            continue
+
+        out_path = os.path.join(output_dir, f"{safe_id}_ch{idx + 1}_{lang}.mp4")
+
+        # Escape text for ffmpeg drawtext
+        clean_title = _re.sub(r'[^\w\s\-]', '', chapter_title)[:50]
+        clean_title = clean_title.replace("'", "\\'")
+
+        cmd = [
+            ffmpeg_bin, "-y",
+            "-i", long_video_path,
+            "-ss", str(int(cut_start)),
+            "-t",  str(int(cut_dur)),
+            "-vf",
+            (
+                f"drawtext=text='{clean_title}':"
+                "fontsize=40:fontcolor=white:"
+                "x=(w-text_w)/2:y=50:"
+                "box=1:boxcolor=black@0.5:boxborderw=10"
+            ),
+            "-c:v", "libx264",
+            "-c:a", "aac",
+            "-pix_fmt", "yuv420p",
+            out_path,
+        ]
+
+        try:
+            subprocess.run(cmd, check=True, capture_output=True, timeout=180)
+            label = short_labels[idx] if idx < len(short_labels) else f"Chapter {idx + 1}"
+            shorts.append({
+                "path":        out_path,
+                "title":       chapter_title,
+                "label":       label,
+                "chapter_idx": idx + 1,
+            })
+            print(f"[Short] Ch{idx + 1} cut: {cut_dur:.0f}s -> {os.path.basename(out_path)}")
+        except Exception as e:
+            print(f"[Short] Ch{idx + 1} cut failed: {e}")
+
+    print(f"[Short] {len(shorts)}/5 chapter shorts created from {os.path.basename(long_video_path)}")
+    return shorts
+
 # â"€â"€ User image helpers â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 def _find_keyword_position(script_text: str, tags: list[str]) -> float:
