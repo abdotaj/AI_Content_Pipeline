@@ -586,13 +586,69 @@ def clear_telegram_queue() -> int:
         return 0
 
 
+def _download_user_video(file_id: str, file_size: int, duration: int,
+                         caption: str, message_id: int) -> dict | None:
+    """Download a video from Telegram, apply overlay removal + compression.
+
+    Returns {"path", "tags", "caption"} or None on failure.
+    Caller must already have verified file_size <= 20 MB.
+    """
+    os.makedirs("output/user_videos", exist_ok=True)
+    try:
+        r2 = requests.get(f"{BASE_URL}/getFile", params={"file_id": file_id}, timeout=15)
+        info = r2.json()
+        if not info.get("ok"):
+            return None
+        tg_file_path = info["result"]["file_path"]
+    except Exception as e:
+        print(f"[Notify] getFile failed: {e}")
+        return None
+
+    out_path = f"output/user_videos/user_{message_id}_{file_id[:8]}.mp4"
+    try:
+        dl = requests.get(
+            f"https://api.telegram.org/file/bot{TELEGRAM_BOT_TOKEN}/{tg_file_path}",
+            timeout=120, stream=True,
+        )
+        if dl.status_code != 200:
+            return None
+        with open(out_path, "wb") as f:
+            for chunk in dl.iter_content(chunk_size=8192):
+                f.write(chunk)
+    except Exception as e:
+        print(f"[Notify] Video download failed: {e}")
+        return None
+
+    if not os.path.exists(out_path) or os.path.getsize(out_path) < 1000:
+        print(f"[Notify] Video file missing or empty: {out_path}")
+        return None
+
+    dur_str = f"{duration}s, " if duration else ""
+    print(f"[Notify] Video downloaded: {os.path.basename(out_path)} ({dur_str}caption: {caption[:40]!r})")
+
+    out_path = _remove_video_overlays(out_path)
+    compressed = out_path.replace(".mp4", "_c.mp4")
+    out_path = _compress_video(out_path, compressed)
+
+    tags = [w.lower() for w in caption.split() if len(w) > 3] if caption else []
+    if caption:
+        txt = out_path.replace(".mp4", ".txt")
+        try:
+            with open(txt, "w", encoding="utf-8") as tf:
+                tf.write(caption)
+        except Exception:
+            pass
+
+    return {"path": out_path, "tags": tags, "caption": caption}
+
+
 def check_telegram_for_images(after_timestamp: float = 0.0) -> list[dict]:
     """
-    Check for photos sent after `after_timestamp` (Unix time).
-    Pass pipeline_start_time to exclude old images from previous runs.
+    Check for photos AND videos sent after `after_timestamp` (Unix time).
 
-    Returns list of {"path": ..., "tags": [...], "caption": ...} dicts,
-    newest-first.
+    Handles message.photo, message.video, and message.document (video files).
+    Returns list of {"path": ..., "tags": [...], "caption": ...} dicts.
+    Photos saved to output/user_images/; videos to output/user_videos/.
     """
     current_time = time.time()
     cutoff = after_timestamp if after_timestamp > 0 else current_time - 600
@@ -604,36 +660,69 @@ def check_telegram_for_images(after_timestamp: float = 0.0) -> list[dict]:
         print(f"[Notify] check_telegram_for_images failed: {e}")
         return []
 
-    user_images: list[dict] = []
+    results: list[dict] = []
 
     for update in reversed(updates):  # newest first
-        message = update.get("message", {})
-        chat_id = str(message.get("chat", {}).get("id", ""))
+        message  = update.get("message", {})
+        chat_id  = str(message.get("chat", {}).get("id", ""))
         msg_time = message.get("date", 0)
-        caption = message.get("caption", "") or ""
+        caption  = message.get("caption", "") or ""
+        msg_id   = message.get("message_id", int(time.time()))
 
         if chat_id != str(TELEGRAM_CHAT_ID):
             continue
-        # Only images sent after the cutoff timestamp
         if msg_time < cutoff:
-            print(f"[Notify] Skipping old image (before cutoff): {caption[:40]!r}")
+            print(f"[Notify] Skipping old message (before cutoff): {caption[:40]!r}")
             continue
 
+        # ── Photos ────────────────────────────────────────────────────────────
         photos = message.get("photo", [])
-        if not photos:
+        if photos:
+            best = max(photos, key=lambda p: p.get("file_size", 0))
+            img_info = download_telegram_photo(best["file_id"], caption=caption)
+            if img_info:
+                results.append(img_info)
+                print(f"[Notify] Photo downloaded: {img_info['path']} caption={caption[:40]!r}")
             continue
 
-        # Use highest quality photo
-        best = max(photos, key=lambda p: p.get("file_size", 0))
-        img_info = download_telegram_photo(best["file_id"], caption=caption)
-        if img_info:
-            user_images.append(img_info)
-            if caption:
-                print(f"[Notify] Image downloaded with caption: '{caption}' → {img_info['path']}")
-            else:
-                print(f"[Notify] Image downloaded (no caption) → {img_info['path']}")
+        # ── Videos ───────────────────────────────────────────────────────────
+        video_msg = message.get("video")
+        doc_msg   = message.get("document")
+        note_msg  = message.get("video_note")
 
-    return user_images
+        file_id   = None
+        file_size = 0
+        duration  = 0
+
+        if video_msg:
+            file_id   = video_msg.get("file_id")
+            file_size = video_msg.get("file_size", 0)
+            duration  = video_msg.get("duration", 0)
+        elif doc_msg and (doc_msg.get("mime_type", "")).startswith("video/"):
+            file_id   = doc_msg.get("file_id")
+            file_size = doc_msg.get("file_size", 0)
+        elif note_msg:
+            file_id   = note_msg.get("file_id")
+            file_size = note_msg.get("file_size", 0)
+            duration  = note_msg.get("duration", 0)
+
+        if not file_id:
+            continue
+
+        if file_size > 20 * 1024 * 1024:
+            size_mb = file_size // (1024 * 1024)
+            print(f"[Notify] Video too large ({size_mb}MB > 20MB limit) — skipping")
+            send_message(
+                f"\u26a0\ufe0f Video too large ({size_mb}MB). "
+                f"Max 20MB. Please compress or trim and resend."
+            )
+            continue
+
+        vid_info = _download_user_video(file_id, file_size, duration, caption, msg_id)
+        if vid_info:
+            results.append(vid_info)
+
+    return results
 
 
 def _remove_video_overlays(input_path: str) -> str:
@@ -748,14 +837,10 @@ def _compress_video(input_path: str, output_path: str, max_mb: int = 15) -> str:
 
 def check_telegram_for_videos(after_timestamp: float = 0.0) -> list[dict]:
     """
-    Check for video messages sent after `after_timestamp` (Unix time).
-    Detects message.video and message.document with video mime_type.
-    Downloads to output/user_videos/, reads caption, saves .txt sidecar.
+    Check for video messages sent after `after_timestamp`.
+    Delegates to _download_user_video() for download + processing.
     Returns list of {"path", "tags", "caption"} dicts, newest-first.
-    Telegram bot API limits downloads to 20 MB per file.
     """
-    from pathlib import Path as _Path
-
     current_time = time.time()
     cutoff = after_timestamp if after_timestamp > 0 else current_time - 600
 
@@ -766,28 +851,27 @@ def check_telegram_for_videos(after_timestamp: float = 0.0) -> list[dict]:
         print(f"[Notify] check_telegram_for_videos failed: {e}")
         return []
 
-    _Path("output/user_videos").mkdir(parents=True, exist_ok=True)
+    os.makedirs("output/user_videos", exist_ok=True)
     user_videos: list[dict] = []
 
     for update in reversed(updates):
-        message = update.get("message", {})
-        chat_id = str(message.get("chat", {}).get("id", ""))
+        message  = update.get("message", {})
+        chat_id  = str(message.get("chat", {}).get("id", ""))
         msg_time = message.get("date", 0)
-        caption = message.get("caption", "") or ""
+        caption  = message.get("caption", "") or ""
+        msg_id   = message.get("message_id", int(time.time()))
 
         if chat_id != str(TELEGRAM_CHAT_ID):
             continue
         if msg_time < cutoff:
-            print(f"[Notify] Skipping old video (before cutoff): {caption[:40]!r}")
             continue
 
-        # Detect video: message.video / document / video_note (round clip)
-        file_id = None
+        file_id   = None
         file_size = 0
-        duration = 0
-        video_msg  = message.get("video")
-        doc_msg    = message.get("document")
-        note_msg   = message.get("video_note")
+        duration  = 0
+        video_msg = message.get("video")
+        doc_msg   = message.get("document")
+        note_msg  = message.get("video_note")
 
         if video_msg:
             file_id   = video_msg.get("file_id")
@@ -804,61 +888,18 @@ def check_telegram_for_videos(after_timestamp: float = 0.0) -> list[dict]:
         if not file_id:
             continue
 
-        # Telegram bot API hard limit: 20 MB
         if file_size > 20 * 1024 * 1024:
             size_mb = file_size // (1024 * 1024)
-            print(f"[Notify] Video too large for bot API (>{size_mb}MB): skipping")
+            print(f"[Notify] Video too large ({size_mb}MB > 20MB limit) — skipping")
             send_message(
-                f"Video too large — please compress to under 20MB "
-                f"or send as a shorter clip (your file is ~{size_mb}MB)"
+                f"\u26a0\ufe0f Video too large ({size_mb}MB). "
+                f"Max 20MB. Please compress or trim and resend."
             )
             continue
 
-        try:
-            r2 = requests.get(f"{BASE_URL}/getFile", params={"file_id": file_id}, timeout=10)
-            info = r2.json()
-            if not info.get("ok"):
-                continue
-            tg_file_path = info["result"]["file_path"]
-        except Exception as e:
-            print(f"[Notify] getFile for video failed: {e}")
-            continue
-
-        local_path = f"output/user_videos/user_{int(time.time())}_{file_id[:8]}.mp4"
-        try:
-            dl_r = requests.get(
-                f"https://api.telegram.org/file/bot{TELEGRAM_BOT_TOKEN}/{tg_file_path}",
-                timeout=120,
-                stream=True,
-            )
-            if dl_r.status_code != 200:
-                continue
-            with open(local_path, "wb") as f:
-                for chunk in dl_r.iter_content(chunk_size=8192):
-                    f.write(chunk)
-        except Exception as e:
-            print(f"[Notify] Video download failed: {e}")
-            continue
-
-        dur_str = f"{duration}s, " if duration else ""
-        print(f"[Notify] Video downloaded: {os.path.basename(local_path)} ({dur_str}caption: {caption[:40]!r})")
-
-        local_path = _remove_video_overlays(local_path)
-
-        compressed_path = local_path.replace(".mp4", "_c.mp4")
-        local_path = _compress_video(local_path, compressed_path)
-
-        tags: list[str] = []
-        if caption:
-            tags = [w.lower() for w in caption.split() if len(w) > 3]
-            txt_path = local_path.replace(".mp4", ".txt")
-            try:
-                with open(txt_path, "w", encoding="utf-8") as tf:
-                    tf.write(caption)
-            except Exception:
-                pass
-
-        user_videos.append({"path": local_path, "tags": tags, "caption": caption})
+        vid_info = _download_user_video(file_id, file_size, duration, caption, msg_id)
+        if vid_info:
+            user_videos.append(vid_info)
 
     return user_videos
 
