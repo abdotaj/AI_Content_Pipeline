@@ -40,7 +40,7 @@ from config_darkcrimed import (
 
 from agent.research_agent import research_topics, research_series, mark_covered, is_fictional, _detect_show_topic, _fetch_show_cast_from_wikipedia
 from agent.script_agent   import write_script, translate_script, detect_part_number, generate_chapters
-from agent.video_agent    import create_video, process_user_images_smart, load_part2_images, ensure_music_assets, cut_chapter_shorts
+from agent.video_agent    import create_video, process_user_images_smart, load_part2_images, ensure_music_assets, cut_chapter_shorts, load_all_content
 from agent.notify_agent   import (
     send_message, send_for_manual_posting, send_daily_report,
     send_video_to_telegram, clear_telegram_queue,
@@ -393,6 +393,30 @@ def run_pipeline():
             user_images = _p2_dicts + list(user_images)
             print(f"[Pipeline] Added {len(_p2_paths)} saved Part 2 images")
             send_message(f"[Pipeline] Loaded {len(_p2_paths)} saved images for Part 2")
+
+    # ── Load GitHub content library for this topic ────────────
+    _gh_images, _gh_videos, _gh_music_long, _gh_music_short = load_all_content(
+        en_long.get("topic", "")
+    )
+    if _gh_music_long:
+        import shutil as _shutil
+        _shutil.copy(_gh_music_long, "assets/music/documentary_long.mp3")
+        print("[GitHub] Custom music applied for long video")
+    if _gh_music_short:
+        import shutil as _shutil
+        _shutil.copy(_gh_music_short, "assets/music/documentary_short.mp3")
+        print("[GitHub] Custom music applied for short video")
+
+    _gh_img_dicts = [{"path": p, "tags": [], "caption": os.path.basename(p)} for p in _gh_images]
+    _gh_vid_dicts = [{"path": p, "tags": [], "caption": os.path.basename(p)} for p in _gh_videos]
+    _tg_imgs = list(user_images or [])
+    _tg_vids = list(user_videos or [])
+    user_images = _gh_img_dicts + _tg_imgs
+    user_videos = _gh_vid_dicts + _tg_vids
+    if _gh_images or _gh_videos:
+        print(f"[Content] Total: {len(user_images)} images + {len(user_videos)} videos")
+        print(f"[Content] GitHub: {len(_gh_images)} images + {len(_gh_videos)} videos")
+        print(f"[Content] Telegram: {len(_tg_imgs)} images + {len(_tg_vids)} videos")
 
     # ── STEP 4: Generate all 4 videos ─────────────────────────
     print("\n[4/5] Generating videos...")

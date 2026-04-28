@@ -1825,6 +1825,94 @@ def _load_user_images_from_folders(topic: str = "") -> list[dict]:
     return found
 
 
+def find_content_folder(topic: str) -> str | None:
+    """Return path to content/<folder> matching this topic, or None."""
+    topic_lower = topic.lower()
+    folder_map = {
+        'mindhunter':        'mindhunter',
+        'al capone':         'al_capone',
+        'capone':            'al_capone',
+        'pablo escobar':     'pablo_escobar',
+        'escobar':           'pablo_escobar',
+        'narcos':            'pablo_escobar',
+        'frank lucas':       'frank_lucas',
+        'american gangster': 'frank_lucas',
+        'charles manson':    'charles_manson',
+        'manson':            'charles_manson',
+        'ed kemper':         'ed_kemper',
+        'kemper':            'ed_kemper',
+        'dahmer':            'dahmer',
+        'jeffrey dahmer':    'dahmer',
+        'ted bundy':         'ted_bundy',
+        'bundy':             'ted_bundy',
+        'griselda':          'griselda',
+        'scarface':          'scarface',
+        'godfather':         'godfather',
+        'goodfellas':        'goodfellas',
+    }
+    for keyword, folder in folder_map.items():
+        if keyword in topic_lower:
+            return f'content/{folder}'
+    first_word = topic_lower.split()[0] if topic_lower.split() else ''
+    if first_word and os.path.exists(f'content/{first_word}'):
+        return f'content/{first_word}'
+    return None
+
+
+def load_all_content(
+    topic: str,
+) -> tuple[list[str], list[str], str | None, str | None]:
+    """Load images, videos, and music from GitHub content library.
+
+    Priority: topic-specific folder first, then content/_shared as supplement.
+    Returns (image_paths, video_paths, music_long_path, music_short_path).
+    """
+    _img_exts = {'.jpg', '.jpeg', '.png', '.webp', '.jfif'}
+    _vid_exts = {'.mp4', '.mov', '.avi'}
+
+    def _scan(d: str, exts: set) -> list[str]:
+        if not os.path.isdir(d):
+            return []
+        return [
+            os.path.join(d, f) for f in sorted(os.listdir(d))
+            if not f.startswith('.') and os.path.splitext(f)[1].lower() in exts
+        ]
+
+    topic_folder  = find_content_folder(topic)
+    shared_folder = 'content/_shared'
+
+    images: list[str]      = []
+    videos: list[str]      = []
+    music_long: str | None  = None
+    music_short: str | None = None
+
+    # Topic-specific
+    if topic_folder and os.path.exists(topic_folder):
+        images += _scan(f'{topic_folder}/images', _img_exts)
+        videos += _scan(f'{topic_folder}/videos', _vid_exts)
+        long_p  = f'{topic_folder}/music/documentary_long.mp3'
+        short_p = f'{topic_folder}/music/documentary_short.mp3'
+        if os.path.exists(long_p):
+            music_long = long_p
+        if os.path.exists(short_p):
+            music_short = short_p
+
+    # Shared supplement
+    if os.path.exists(shared_folder):
+        images += _scan(f'{shared_folder}/images', _img_exts)
+        videos += _scan(f'{shared_folder}/videos', _vid_exts)
+        if not music_long:
+            shared_long = f'{shared_folder}/music/documentary_long.mp3'
+            if os.path.exists(shared_long):
+                music_long = shared_long
+
+    print(f'[GitHub] Content loaded for topic: {topic}')
+    print(f'[GitHub] Topic folder: {topic_folder or "none"}')
+    print(f'[GitHub] Images: {len(images)} | Videos: {len(videos)}')
+    print(f'[GitHub] Custom music: {bool(music_long)}')
+    return images, videos, music_long, music_short
+
+
 def _load_user_videos_from_folder() -> list[dict]:
     """
     Load user-provided videos from output/user_videos/ (downloaded from Telegram).

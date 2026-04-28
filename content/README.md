@@ -1,38 +1,48 @@
-# content/
+# Content Library
 
-Drop `.txt` or `.docx` files here to inject your own content into the pipeline instead of using AI-generated topics.
+Drop images, videos, and music here before running the pipeline.
+The pipeline auto-detects the topic and loads the matching folder.
 
-## How it works
+## Folder Structure
 
-1. Add a `.txt` or `.docx` file to this folder
-2. Run the pipeline (`python main.py`) — or push to GitHub to trigger the daily workflow
-3. The pipeline reads your file, formats it into a video script, and produces Arabic + English videos
-4. After processing, your file is moved to `content/processed/`
-
-## File format
-
-No special format required. Write naturally — the first line is used as the video topic/title.
-
-**Example** (`my_topic.txt`):
 ```
-How AI is changing the way we create music
-
-AI tools like Suno and Udio can now generate full songs in seconds.
-Artists are divided — some see it as a creative tool, others as a threat.
-Here is what you need to know about the AI music revolution.
+content/
+  <topic>/
+    images/    <- .jpg .jpeg .png .webp .jfif
+    videos/    <- .mp4 .mov  (pure scene video or b-roll)
+    music/
+      documentary_long.mp3   <- background music for long video
+      documentary_short.mp3  <- background music for short clip
+  _shared/
+    images/    <- used for every topic as supplement
+    videos/
+    music/
 ```
 
-## Folders
+## Supported Topics
 
-| Folder | Purpose |
+| Folder | Matched keywords |
 |---|---|
-| `content/` | Drop your files here |
-| `content/pending/` | Telegram bot drops — files sent via Telegram message or attachment |
-| `content/processed/` | Files moved here after the pipeline uses them |
+| mindhunter | mindhunter |
+| al_capone | al capone, capone |
+| pablo_escobar | pablo escobar, escobar, narcos |
+| frank_lucas | frank lucas, american gangster |
+| charles_manson | charles manson, manson |
+| ed_kemper | ed kemper, kemper |
+| dahmer | dahmer, jeffrey dahmer |
+| ted_bundy | ted bundy, bundy |
+| griselda | griselda |
+| scarface | scarface |
+| goodfellas | goodfellas |
 
-## Notes
+## Priority
 
-- Supports `.txt` and `.docx` files
-- For `.docx`, install: `pip install python-docx`
-- One file = two videos (Arabic for TikTok, English for YouTube/Facebook)
-- If no files are present, the pipeline falls back to AI research as normal
+1. Topic-specific folder (content/<topic>/)
+2. Shared folder (content/_shared/) - added as supplement
+3. Telegram uploads - merged after GitHub content
+
+## Video Captions
+
+Name your video files descriptively - the filename becomes the caption:
+- ed_kemper_interview_1984.mp4 -> tagged as pure/interview video
+- santa_cruz_broll.mp4 -> treated as b-roll
