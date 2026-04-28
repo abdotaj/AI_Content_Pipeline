@@ -2,10 +2,13 @@
 #  agents/video_agent.py  —  AI-generated images + voiceover
 # ============================================================
 import os
+import re
 import json
 import time
 import random
 import asyncio
+import subprocess
+import shutil
 import requests
 from pathlib import Path
 try:
@@ -1880,11 +1883,35 @@ def load_all_content(
             if not f.startswith('.') and os.path.splitext(f)[1].lower() in exts
         ]
 
+    def _validate_video_file(path: str) -> bool:
+        size = os.path.getsize(path)
+        if size < 10000:
+            print(f'[GitHub] Skipping LFS pointer file: {os.path.basename(path)} ({size} bytes)')
+            return False
+        try:
+            result = subprocess.run(
+                ['ffprobe', '-v', 'error', '-show_entries', 'format=duration',
+                 '-of', 'default=noprint_wrappers=1:nokey=1', path],
+                capture_output=True, text=True, timeout=15,
+            )
+            duration = float(result.stdout.strip())
+            return duration > 0
+        except Exception:
+            print(f'[GitHub] Invalid video file: {os.path.basename(path)}')
+            return False
+
     def _make_video_dict(path: str) -> dict:
         dur  = _ffprobe_duration(path) or 0.0
         stem = os.path.splitext(os.path.basename(path))[0]
         tags = [w.lower() for w in stem.replace('_', ' ').replace('-', ' ').split() if len(w) > 2]
         return {"path": path, "duration": dur, "type": "pure", "tags": tags, "caption": stem}
+
+    def _scan_and_validate_videos(d: str) -> list[dict]:
+        raw = _scan_paths(d, _vid_exts)
+        valid = [p for p in raw if _validate_video_file(p)]
+        skipped = len(raw) - len(valid)
+        print(f'[GitHub] Valid videos: {len(valid)} / {len(raw)} total ({skipped} skipped - LFS pointers)')
+        return [_make_video_dict(p) for p in valid]
 
     topic_folder  = find_content_folder(topic)
     shared_folder = 'content/_shared'
@@ -1897,7 +1924,7 @@ def load_all_content(
     # Topic-specific
     if topic_folder and os.path.exists(topic_folder):
         images += _scan_paths(f'{topic_folder}/images', _img_exts)
-        videos += [_make_video_dict(p) for p in _scan_paths(f'{topic_folder}/videos', _vid_exts)]
+        videos += _scan_and_validate_videos(f'{topic_folder}/videos')
         long_p  = f'{topic_folder}/music/documentary_long.mp3'
         short_p = f'{topic_folder}/music/documentary_short.mp3'
         if os.path.exists(long_p):
@@ -1908,7 +1935,7 @@ def load_all_content(
     # Shared supplement
     if os.path.exists(shared_folder):
         images += _scan_paths(f'{shared_folder}/images', _img_exts)
-        videos += [_make_video_dict(p) for p in _scan_paths(f'{shared_folder}/videos', _vid_exts)]
+        videos += _scan_and_validate_videos(f'{shared_folder}/videos')
         if not music_long:
             shared_long = f'{shared_folder}/music/documentary_long.mp3'
             if os.path.exists(shared_long):

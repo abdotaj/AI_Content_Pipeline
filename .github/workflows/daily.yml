@@ -42,7 +42,9 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y ffmpeg fonts-dejavu-core
+          sudo apt-get install -y ffmpeg fonts-dejavu-core git-lfs
+          git lfs install
+          git lfs pull
 
       - name: Cache pip packages
         uses: actions/cache@v4
