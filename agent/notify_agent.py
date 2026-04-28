@@ -2,6 +2,7 @@
 #  agents/notify_agent.py  —  Telegram notifications
 # ============================================================
 import json
+import os
 import requests
 import time
 from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
@@ -699,6 +700,52 @@ def _remove_video_overlays(input_path: str) -> str:
     return input_path
 
 
+def _compress_video(input_path: str, output_path: str, max_mb: int = 15) -> str:
+    import subprocess
+    file_size_mb = os.path.getsize(input_path) / (1024 * 1024)
+    if file_size_mb <= max_mb:
+        return input_path
+
+    print(f'[Video] Compressing {file_size_mb:.1f}MB -> target {max_mb}MB')
+
+    try:
+        result = subprocess.run(
+            ['ffprobe', '-v', 'error', '-show_entries', 'format=duration',
+             '-of', 'default=noprint_wrappers=1:nokey=1', input_path],
+            capture_output=True, text=True, timeout=15
+        )
+        duration = float(result.stdout.strip())
+    except Exception as e:
+        print(f'[Video] ffprobe duration failed: {e} — skipping compression')
+        return input_path
+
+    target_size_bits = max_mb * 8 * 1024 * 1024
+    target_bitrate   = int(target_size_bits / duration)
+    video_bitrate    = int(target_bitrate * 0.85)
+    audio_bitrate    = 128000
+
+    try:
+        subprocess.run([
+            'ffmpeg', '-y', '-i', input_path,
+            '-b:v', str(video_bitrate),
+            '-b:a', str(audio_bitrate),
+            '-c:v', 'libx264',
+            '-c:a', 'aac',
+            '-pix_fmt', 'yuv420p',
+            '-preset', 'fast',
+            output_path
+        ], timeout=120, check=True, capture_output=True)
+    except Exception as e:
+        print(f'[Video] Compression failed: {e} — using original')
+        return input_path
+
+    if os.path.exists(output_path):
+        new_size = os.path.getsize(output_path) / (1024 * 1024)
+        print(f'[Video] Compressed: {file_size_mb:.1f}MB -> {new_size:.1f}MB')
+        return output_path
+    return input_path
+
+
 def check_telegram_for_videos(after_timestamp: float = 0.0) -> list[dict]:
     """
     Check for video messages sent after `after_timestamp` (Unix time).
@@ -781,6 +828,9 @@ def check_telegram_for_videos(after_timestamp: float = 0.0) -> list[dict]:
             f.write(dl_r.content)
 
         local_path = _remove_video_overlays(local_path)
+
+        compressed_path = local_path.replace(".mp4", "_c.mp4")
+        local_path = _compress_video(local_path, compressed_path)
 
         tags: list[str] = []
         if caption:
