@@ -1860,6 +1860,62 @@ def _load_user_videos_from_folder() -> list[dict]:
     return found
 
 
+def _is_pure_video(video_dict: dict) -> bool:
+    """Return True if user video should keep its original background audio."""
+    tags    = [t.lower() for t in (video_dict.get("tags") or [])]
+    caption = (video_dict.get("caption") or "").lower()
+    pure_kw = {"pure", "clean", "scene", "real", "documentary", "original", "raw", "interview"}
+    return any(t in pure_kw for t in tags) or any(k in caption for k in pure_kw)
+
+
+def _mix_pure_video_audio(final_video_path: str, pure_video_paths: list[str]) -> str:
+    """Mix original audio from pure user videos (25%) with narration (100%).
+
+    Loops the pure video audio so it always covers the full narration length.
+    Returns final_video_path (file replaced in-place on success).
+    """
+    import shutil as _shutil
+
+    if not pure_video_paths:
+        return final_video_path
+
+    ffmpeg = _shutil.which("ffmpeg")
+    if not ffmpeg:
+        print("[Video] ffmpeg not found — skipping pure video audio mix")
+        return final_video_path
+
+    bg_video = next((p for p in pure_video_paths if os.path.exists(p)), None)
+    if not bg_video:
+        return final_video_path
+
+    mixed_path = final_video_path.replace(".mp4", "_mixed.mp4")
+    try:
+        cmd = [
+            ffmpeg, "-y",
+            "-stream_loop", "-1", "-i", bg_video,
+            "-i", final_video_path,
+            "-filter_complex",
+            "[0:a]volume=0.25[orig];[1:a]volume=1.0[narr];"
+            "[orig][narr]amix=inputs=2:duration=shortest[aout]",
+            "-map", "1:v",
+            "-map", "[aout]",
+            "-c:v", "copy",
+            "-c:a", "aac",
+            "-shortest",
+            mixed_path,
+        ]
+        subprocess.run(cmd, check=True, capture_output=True, timeout=300)
+        os.replace(mixed_path, final_video_path)
+        print(f"[Video] Pure video with original sound mixed: {os.path.basename(final_video_path)}")
+        print(f"[Video] Original audio at 25%, narration at 100%")
+    except Exception as e:
+        print(f"[Video] Pure video audio mix failed: {e} — using narration only")
+        if os.path.exists(mixed_path):
+            os.remove(mixed_path)
+
+    return final_video_path
+
+
 def _detect_assembly_mode(user_images: list | None, user_videos: list | None) -> str:
     """Return 'user_content' if user provided any images or videos, else 'auto'."""
     mode = "user_content" if (user_images or user_videos) else "auto"
@@ -4800,6 +4856,14 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
                     print("[Subtitle] Subtitles burned into final video")
             except Exception as _sub_e:
                 print(f"[Subtitle] Burn failed (non-fatal): {_sub_e}")
+
+        # Mix original audio from pure/clean/scene user videos at 25%
+        pure_paths = [
+            uv["path"] for uv in all_user_videos
+            if _is_pure_video(uv) and os.path.exists(uv.get("path", ""))
+        ]
+        if pure_paths:
+            video_path = _mix_pure_video_audio(video_path, pure_paths)
 
         short_out = os.path.join(SHORTS_DIR, f"{video_id}_short.mp4")
         script_data["short_clip_path"] = cut_short_clip(video_path, short_out)
