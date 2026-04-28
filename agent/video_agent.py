@@ -1916,6 +1916,122 @@ def _mix_pure_video_audio(final_video_path: str, pure_video_paths: list[str]) ->
     return final_video_path
 
 
+def check_content_sufficiency(
+    user_images: list,
+    user_videos: list,
+    target_duration_sec: float,
+) -> tuple[bool, float]:
+    """Calculate how much of the target duration user content covers.
+
+    Returns (is_sufficient, coverage_ratio) where coverage_ratio is 0.0-1.0+.
+    Each image counts as 4 s on screen.
+    Pure videos count their real duration (via ffprobe).
+    Broll/other clips each count as 8 s of coverage.
+    """
+    images_coverage = len(user_images) * 4
+
+    pure_coverage = 0.0
+    broll_coverage = 0
+    for v in user_videos:
+        path = v.get("path", "")
+        if not path or not os.path.exists(path):
+            continue
+        if _is_pure_video(v):
+            dur = _ffprobe_duration(path) or 0.0
+            pure_coverage += dur
+        else:
+            broll_coverage += 8
+
+    total_coverage = images_coverage + pure_coverage + broll_coverage
+    ratio = total_coverage / target_duration_sec if target_duration_sec > 0 else 0.0
+
+    print(f"[Video] Content coverage: {total_coverage:.0f}s / {target_duration_sec:.0f}s target")
+    print(f"[Video] Images: {len(user_images)} x 4s = {images_coverage}s")
+    print(f"[Video] Pure videos: {pure_coverage:.0f}s")
+    print(f"[Video] Broll clips: {broll_coverage}s")
+
+    if ratio >= 0.85:
+        print(f"[Video] SELF-SUFFICIENT MODE: user content covers {ratio*100:.0f}% of video")
+    elif ratio >= 0.60:
+        print(f"[Video] Coverage {ratio*100:.0f}% -> Wikimedia + OpenAI only for small gap")
+    else:
+        print(f"[Video] Coverage {ratio*100:.0f}% -> Full search chain activated")
+
+    return ratio >= 0.85, ratio
+
+
+def _fetch_gap_images(
+    script_text: str,
+    needed: int,
+    video_id: str,
+    topic: str,
+    coverage_ratio: float,
+) -> list[str]:
+    """Fill a visual gap using a priority chain scaled to coverage ratio.
+
+    >= 85%: nothing (caller should not call)
+    60-84%: Wikimedia person photo + Wikimedia Commons + OpenAI web search only
+    <  60%: full chain — Wikimedia + OpenAI + Archive + YouTube CC + Pollinations
+    """
+    if needed <= 0:
+        return []
+
+    results: list[str] = []
+
+    # Tier 1 (always): Wikimedia person photo + Commons
+    wiki_imgs = fetch_real_images(script_text, min(needed, 6), video_id, topic=topic)
+    results.extend(wiki_imgs)
+    if len(results) >= needed:
+        return results[:needed]
+
+    if coverage_ratio >= 0.60:
+        # Tier 2: Wikimedia exhausted — try OpenAI web search
+        remaining = needed - len(results)
+        ai_imgs = _fetch_openai_images_for_gap(topic, remaining, video_id)
+        results.extend(ai_imgs)
+        if len(results) >= needed:
+            return results[:needed]
+        print(f"[Video] Small gap: generating {needed} Wikimedia/AI images only")
+        return results[:needed]
+
+    # Tier 3 (coverage < 60%): add Archive + YouTube CC + Pollinations
+    remaining = needed - len(results)
+    if remaining > 0:
+        stock = fetch_stock_videos(script_text, remaining, video_id, topic=topic)
+        results.extend(stock)
+
+    remaining = needed - len(results)
+    if remaining > 0:
+        extra = fetch_real_images(script_text, remaining, video_id, topic=topic)
+        results.extend(extra)
+
+    return results[:needed]
+
+
+def _fetch_openai_images_for_gap(topic: str, count: int, video_id: str) -> list[str]:
+    """Download images found via OpenAI web search, return local paths."""
+    urls = _search_images_openai(f"{topic} real historical photograph", max_results=count * 2)
+    paths: list[str] = []
+    for i, url in enumerate(urls):
+        if len(paths) >= count:
+            break
+        try:
+            r = requests.get(url, timeout=15, headers={"User-Agent": "DarkCrimeDecoded/1.0"})
+            if r.status_code == 200 and r.content:
+                ext = ".jpg"
+                for candidate in (".png", ".webp", ".jpeg"):
+                    if candidate in url.lower():
+                        ext = candidate
+                        break
+                out = os.path.join(IMAGES_DIR, f"{video_id}_oai_{i}{ext}")
+                with open(out, "wb") as f:
+                    f.write(r.content)
+                paths.append(out)
+        except Exception as e:
+            print(f"[Image] OpenAI gap-fill download failed: {e}")
+    return paths
+
+
 def _detect_assembly_mode(user_images: list | None, user_videos: list | None) -> str:
     """Return 'user_content' if user provided any images or videos, else 'auto'."""
     mode = "user_content" if (user_images or user_videos) else "auto"
@@ -4759,11 +4875,20 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
                     except Exception as _e:
                         print(f"[Video] Could not copy user image {path}: {_e}")
 
-            # Step C: fill remaining slots with real image search
-            if len(image_paths) < n_images:
+            # Step C: smart gap-fill based on content sufficiency
+            audio_duration = _ffprobe_duration(audio_path) or (n_images * 8)
+            is_sufficient, coverage_ratio = check_content_sufficiency(
+                all_user_images, all_user_videos, audio_duration
+            )
+            if is_sufficient:
+                print(f"[Video] ✅ User content sufficient — skipping all AI/stock generation")
+            elif len(image_paths) < n_images:
                 missing = n_images - len(image_paths)
-                print(f"[Video] MODE 1: filling {missing} gap(s) with image search")
-                image_paths.extend(fetch_real_images(script_text, missing, video_id, topic=topic_str))
+                print(f"[Video] ⚠️ Gap: {missing} visuals needed (coverage {coverage_ratio*100:.0f}%)")
+                gap_imgs = _fetch_gap_images(
+                    script_text, missing, video_id, topic_str, coverage_ratio
+                )
+                image_paths.extend(gap_imgs)
         else:
             # MODE 2: Auto (no user content)
             image_paths = fetch_stock_videos(script_text, n_images, video_id, topic=topic_str)
