@@ -455,6 +455,10 @@ def _build_arabic_title(en_title: str, series_name: str | None, series_type: str
     return translate_to_arabic(en_title)
 
 
+# 5-chapter proportions for new structure
+_CHAPTER_PROPORTIONS_5 = [0.0, 0.20, 0.42, 0.65, 0.85]
+
+# Legacy 7-chapter labels (kept for backward compat with documentary angle)
 CHAPTER_LABELS_EN = [
     "🎬 Introduction",
     "📖 Background & Origins",
@@ -475,18 +479,34 @@ CHAPTER_LABELS_AR = [
     "🎯 الخاتمة",
 ]
 
-_CHAPTER_PROPORTIONS = [0.0, 0.13, 0.28, 0.45, 0.63, 0.78, 0.90]
 
-
-def generate_chapters(total_words, language: str = "english"):
-    """Generate YouTube chapter timestamps proportional to script length."""
-    words_per_minute = 156  # 130 wpm * 1.2x playback speed
+def generate_chapters(total_words: int, language: str = "english",
+                      angle_title: str = "") -> str:
+    """Generate YouTube chapter timestamps for 5-chapter structure."""
+    words_per_minute = 156
     total_seconds = (total_words / words_per_minute) * 60
 
-    labels = CHAPTER_LABELS_AR if language == "arabic" else CHAPTER_LABELS_EN
+    if language == "arabic":
+        angle_label = angle_title or "الحقيقة الخفية"
+        labels = [
+            "🎬 مقدمة",
+            f"🔍 {angle_label}",
+            "📖 القصة الحقيقية",
+            "⚡ المسلسل مقابل الواقع",
+            "🎯 الخاتمة",
+        ]
+    else:
+        angle_label = angle_title or "The Hidden Truth"
+        labels = [
+            "Introduction",
+            angle_label,
+            "The Real Story",
+            "What They Got Wrong",
+            "The Truth Revealed",
+        ]
 
     chapters = []
-    for ratio, title in zip(_CHAPTER_PROPORTIONS, labels):
+    for ratio, title in zip(_CHAPTER_PROPORTIONS_5, labels):
         seconds = int(total_seconds * ratio)
         mins = seconds // 60
         secs = seconds % 60
@@ -955,7 +975,52 @@ Start immediately with the HOOK. Spoken words only."""
     return result or ""
 
 
-def write_long_script_split(topic: dict, research: dict, series_info: tuple | None) -> str:
+def generate_untold_angle(topic: str, series_label: str) -> dict:
+    """Generate one specific untold angle/hidden truth for the video topic.
+
+    Returns dict with keys: angle_title, angle_hook, angle_content.
+    Falls back to a generic angle if generation fails.
+    """
+    prompt = f"""For the topic: {topic} (related to: {series_label})
+
+What is ONE specific hidden truth, controversy, or detail that most people missed?
+Must be about a specific moment, person, or decision — not general.
+
+Good examples:
+- The psychological breakdown that almost ended the FBI Behavioral Science Unit
+- The woman whose contribution was completely erased from the Netflix show
+- The serial killer interview that nobody was supposed to know about
+- Why the FBI leadership tried to shut down the entire unit
+- What really happened off camera that changed everything
+
+Return JSON only, no extra text:
+{{"angle_title": "...", "angle_hook": "...", "angle_content": "..."}}
+
+angle_title: 5-8 word punchy title (e.g. "The Interview That Broke John Douglas")
+angle_hook: One shocking sentence that opens the chapter — the most arresting fact
+angle_content: 2-3 sentences of specific detail to build the chapter around"""
+
+    try:
+        result = _ai_script_call(prompt, max_tokens=350, temperature=0.85, json_mode=True)
+        data = json.loads(result.strip())
+        if all(k in data for k in ('angle_title', 'angle_hook', 'angle_content')):
+            print(f"[Script] Untold angle: {data['angle_title']}")
+            return data
+    except Exception as e:
+        print(f"[Script] Angle generation failed: {e}")
+
+    return {
+        "angle_title": f"The Hidden Truth Behind {topic}",
+        "angle_hook": f"There is one story about {topic} that almost nobody knows.",
+        "angle_content": (
+            f"The full truth behind {topic} goes far deeper than any show has revealed. "
+            f"Documents, interviews, and declassified files tell a story that was never aired."
+        ),
+    }
+
+
+def write_long_script_split(topic: dict, research: dict, series_info: tuple | None,
+                             angle: dict | None = None) -> str:
     """Write 1,450–1,900 real-word script via 5 OpenAI calls → ~10–14 min runtime."""
     import time
 
@@ -1008,20 +1073,26 @@ Real person: {research.get('real_person', name)}
 Key facts: {(research.get('research_facts') or research.get('what_show_got_right', []))[:3]}
 {_show_chars_block}{_real_people_block}{_chars_block}{_rvs_block}{_time_loc}{_mandatory_instruction}"""
 
+    # Resolve angle — use passed-in angle or generate one now
+    _angle = angle or generate_untold_angle(name, f"{series} {stype}")
+    _angle_title   = _angle.get("angle_title", f"The Hidden Truth Behind {name}")
+    _angle_hook    = _angle.get("angle_hook", "")
+    _angle_content = _angle.get("angle_content", "")
+
     # (label, min_words, max_words, is_final)
     _SECTIONS_META = [
-        ("Hook + Intro",          300,  380,  False),
-        ("Background & Context",  320,  420,  False),
-        ("Main Events Deep Dive", 420,  560,  False),
-        ("Analysis & Aftermath",  320,  420,  False),
-        ("Conclusion",            180,  260,  True),
+        ("Hook Intro",            300,  380,  False),
+        ("Untold Angle",          350,  420,  False),
+        ("Background & Real Story", 420, 560, False),
+        ("Show vs Reality",       350,  420,  False),
+        ("Conclusion",            200,  260,  True),
     ]
 
     _SECTION_LABELS = [
         "[SECTION: Introduction]",
-        "[SECTION: Background]",
-        "[SECTION: Main Story]",
-        "[SECTION: Shocking Facts]",
+        "[SECTION: Untold Angle]",
+        "[SECTION: The Real Story]",
+        "[SECTION: Show vs Reality]",
         "[SECTION: Conclusion]",
     ]
 
@@ -1114,40 +1185,40 @@ Key facts: {(research.get('research_facts') or research.get('what_show_got_right
 
     section_prompts = [
         lambda: f"""{base_context}
-Write the HOOK and INTRODUCTION for a documentary about {name}.
+Write CHAPTER 1 — HOOK INTRO for a documentary about {name}.
 
-Open with a single gripping sentence that puts the viewer in the moment — a crime scene, a decision, a moment before everything changed. Then introduce the real story behind {series}: who the real people were, what the show is based on, and why this story matters. Introduce ALL main characters by name — real people and their fictional counterparts. End with a line that makes the viewer need to keep watching.
+Open with EXACTLY this sentence structure: "You think you know {name}. But what {series} never showed you was..."
+Then introduce ALL main characters briefly — real people and their screen counterparts.
+Build immediate tension. End Chapter 1 with a cliffhanger that points to the untold angle coming next.
 
-Write flowing documentary narration — no lists, no bullet points, paragraphs only. Minimum 3 sentences per paragraph. Always write complete sentences — never end mid-thought.
+Write flowing documentary narration — no lists, no bullet points, paragraphs only. Minimum 3 sentences per paragraph. Always write complete sentences.
 {_section_instruction(300, 380, False)}""",
 
         lambda: f"""{base_context}
-Continue the documentary. Write the BACKGROUND AND CONTEXT section.
+Write CHAPTER 2 — THE UNTOLD ANGLE. This is the most important chapter. Build it around this specific hidden truth:
+
+ANGLE TITLE: {_angle_title}
+ANGLE HOOK (open the chapter with this sentence): {_angle_hook}
+ANGLE DETAIL (expand this into the chapter): {_angle_content}
 
 {_prev_summary(1)}
 
-This section introduces NEW content: the world these people lived in — the era, the locations, the forces that shaped each character. Give every key person their own full paragraph: background, motivations, what drove them. For fictional characters, explain who the real person was and what the show changed.
+Open with the ANGLE HOOK sentence exactly as written above. Then build the entire chapter around this ONE untold detail. This is what separates this video from everything else — the hidden story, the erased contribution, the decision nobody talks about. Be specific — names, dates, exact events. Never be vague.
 
-Write flowing documentary narration — no lists, no bullet points, paragraphs only. Minimum 3 sentences per paragraph. Always write complete sentences — never end mid-thought.
-{_section_instruction(320, 420, False)}
+Write flowing documentary narration — no lists, no bullet points, paragraphs only. Minimum 3 sentences per paragraph.
+{_section_instruction(350, 420, False)}
 
 PREVIOUS SECTION:
 {sections[0]}""",
 
         lambda: f"""{base_context}
-Continue the documentary. Write the MAIN EVENTS section.
+Write CHAPTER 3 — BACKGROUND AND THE REAL STORY.
 
 {_prev_summary(2)}
 
-This section covers NEW material: walk through key events chronologically, building tension. Cover every major character's role — what they did, what choices they made, how their paths intersected.
+This chapter is the full historical truth. Walk through the real story chronologically — real names, real dates, real places. Every key person gets their OWN dedicated paragraph: who they were, what they did, why it mattered. Women, supporting figures, and lesser-known players get the same treatment as the main character. Do not skip anyone from the research.
 
-UNIVERSAL RULE — SUPPORTING CHARACTERS: Every key person in the research gets their OWN dedicated paragraph. Do not relegate any character to a passing mention. Women, minorities, and supporting figures get equal full coverage.
-
-SHOW vs REALITY (MANDATORY for all true-story topics): Include two dedicated paragraphs:
-- Starting with: "Here is what {series} got RIGHT about the real story:"
-- Starting with: "And here is what they changed or left out:"
-
-Write flowing documentary narration — no lists, no bullet points, paragraphs only. Minimum 3 sentences per paragraph. Always write complete sentences — never end mid-thought.
+Write flowing documentary narration — no lists, no bullet points, paragraphs only. Minimum 3 sentences per paragraph. Always write complete sentences.
 {_section_instruction(420, 560, False)}
 
 PREVIOUS SECTIONS:
@@ -1156,14 +1227,21 @@ PREVIOUS SECTIONS:
 {sections[1]}""",
 
         lambda: f"""{base_context}
-Continue the documentary. Write the AFTERMATH AND ANALYSIS section.
+Write CHAPTER 4 — SHOW VS REALITY.
 
 {_prev_summary(3)}
 
-This section covers NEW material: what happened to each person after the main events — investigations, trials, deaths, legacies. Reflect on what this story reveals about human nature, power, or justice.
+This chapter MUST contain these two clearly marked sections:
 
-Write flowing documentary narration — no lists, no bullet points, paragraphs only. Minimum 3 sentences per paragraph. Always write complete sentences — never end mid-thought.
-{_section_instruction(320, 420, False)}
+SECTION A — start with EXACTLY: "Here is what {series} got RIGHT:"
+Cover at least 3 specific things the show accurately depicted — scenes, characters, decisions.
+
+SECTION B — start with EXACTLY: "Here is what they completely changed or left out:"
+Cover at least 3 specific things — scenes that were invented, characters that were erased, timelines that were compressed, facts that were reversed.
+
+Use SPECIFIC examples — not general statements. Name episodes, scenes, characters.
+Write flowing documentary narration — minimum 3 sentences per paragraph.
+{_section_instruction(350, 420, False)}
 
 PREVIOUS SECTIONS:
 {sections[0]}
@@ -1173,16 +1251,18 @@ PREVIOUS SECTIONS:
 {sections[2]}""",
 
         lambda: f"""{base_context}
-Continue the documentary. Write the CONCLUSION.
+Write CHAPTER 5 — CONCLUSION AND CLIFFHANGER.
 
 {_prev_summary(4)}
 
-This section is the emotional landing: bring all threads together, deliver the final verdict, close with power. Naturally weave in a call to action for viewers.
+Structure:
+1. Callback to the untold angle from Chapter 2: "{_angle_title}" — what it means for the legacy
+2. ONE final shocking fact that viewers did not expect — save the best for last
+3. Strong call to action: "Follow Dark Crime Decoded for more real stories behind your favourite crime series and films"
 
-CRITICAL: Write a COMPLETE conclusion with a proper ending sentence. Your final sentence must be fully finished. Never end mid-sentence or mid-thought. If approaching the token limit, wrap up gracefully — do not stop abruptly.
-
-Write flowing documentary narration — no lists, no bullet points, paragraphs only.
-{_section_instruction(180, 260, True)}
+CRITICAL: End with a fully complete sentence. Never end mid-thought.
+Write flowing documentary narration — no lists, no bullet points.
+{_section_instruction(200, 260, True)}
 
 PREVIOUS SECTIONS:
 {sections[0]}
@@ -1766,8 +1846,11 @@ Series/Movie: {series_label}
 
 Start immediately with the HOOK. Write spoken words only — no labels, no headers."""
 
+    # Generate untold angle first — used in script + title + short video
+    _angle_data = generate_untold_angle(topic["topic"], series_label)
+
     # Primary: 5-call split targeting 2,500–3,050 real words
-    script_text = write_long_script_split(topic, research, _si_long)
+    script_text = write_long_script_split(topic, research, _si_long, angle=_angle_data)
     if script_text and clean_word_count(script_text) >= LONG_SCRIPT_MIN_WORDS:
         script_text = validate_script(script_text)
         print(f"[Script] ✅ Split method OK: {clean_word_count(script_text)} real words")
@@ -1811,16 +1894,16 @@ Do not summarize — give full detailed information."""
 Based on this voiceover script about "{topic['topic']}", generate the metadata fields.
 
 TITLE FORMAT (mandatory):
-"The Real Story Behind [Series]: [Real Person]'s True Life | Dark Crime Decoded"
-Example: "The Real Story Behind Boardwalk Empire: Al Capone's True Life | Dark Crime Decoded"
-Example: "The True Story That Inspired Narcos: Pablo Escobar's Real Life | Dark Crime Decoded"
-Example: "Before Breaking Bad: The Real Chemistry Teacher Who Inspired Walter White | Dark Crime Decoded"
-Example: "The Real Godfather: The True Story Behind The Greatest Crime Movie | Dark Crime Decoded"
-Example: "Who Was The Real Al Capone? The Story Behind Boardwalk Empire | Dark Crime Decoded"
-The real person for this topic is extracted from: {topic['topic']}
+Use the untold angle as the title hook: "{_angle_data.get('angle_title', topic['topic'])} | Dark Crime Decoded"
+Examples of good angle-based titles:
+"The Interview That Broke John Douglas | Dark Crime Decoded"
+"The Woman Netflix Erased From Mindhunter | Dark Crime Decoded"
+"The Confession That Should Never Have Happened | Dark Crime Decoded"
+"The Real Pablo Escobar Was Even Darker Than Narcos | Dark Crime Decoded"
+The real person for this topic is: {topic['topic']}
 The related series/movie is: {_related_series}
-If no series is known, use: "The True Story of [Real Person]: The Real Events Behind The Legend | Dark Crime Decoded"
-TONE: Informative and celebratory — never accusatory. Celebrate both the show and the real story.
+The untold angle for this video is: {_angle_data.get('angle_title', '')}
+TONE: Gripping and revelatory. The title teases the hidden truth.
 Max 90 chars total.
 
 Return ONLY this JSON with no extra text:
@@ -1852,7 +1935,10 @@ Return ONLY this JSON with no extra text:
         "caption":        meta.get("caption", ""),
         "hashtags":       _build_darkcrimed_hashtags(meta.get("hashtags", ""), _series_info),
         "thumbnail_text": meta.get("thumbnail_text", ""),
-        "chapters":       generate_chapters(clean_word_count(script_text)),
+        "chapters":       generate_chapters(
+            clean_word_count(script_text),
+            angle_title=_angle_data.get("angle_title", ""),
+        ),
     }
     script_data["topic"]              = topic["topic"]
     script_data["niche"]              = topic["niche"]
@@ -1861,6 +1947,8 @@ Return ONLY this JSON with no extra text:
     script_data["language"]           = "english"
     script_data["series_name"]        = _series_name_raw
     script_data["series_type"]        = _series_type_raw
+    script_data["angle_title"]        = _angle_data.get("angle_title", "")
+    script_data["angle_hook"]         = _angle_data.get("angle_hook", "")
     # Carry discovery fields so Telegram preview can show them
     script_data["user_discovery"]          = user_discovery
     script_data["user_discovery_expanded"] = discovery_expanded
@@ -2588,20 +2676,28 @@ def write_short_script(en_long_script: dict) -> dict:
         _unique = list(dict.fromkeys(_caps))[:4]
         _chars_line = ", ".join(_unique) if _unique else topic
 
+    # Use angle_hook as opening if available — creates perfect teaser for long video
+    _angle_hook = en_long_script.get("angle_hook", "")
+    _angle_title = en_long_script.get("angle_title", "")
+    _angle_opening = (
+        f"MANDATORY FIRST SENTENCE — use this exactly: \"{_angle_hook}\"\n"
+        if _angle_hook else ""
+    )
+
     prompt = f"""Write a 55-second hook script for a crime documentary short video.
 Topic: {topic}
 Related series/movie: {series}
 Key characters/people: {_chars_line}
+{f"Untold angle title: {_angle_title}" if _angle_title else ""}
 
-UNIVERSAL RULES (apply to ALL topics — crime, biopics, historical, TV shows):
-1. Write like a movie trailer narrator — dramatic, mysterious, gripping
-2. FIRST SENTENCE must be a shocking hook question or bold statement — not a biography fact
-3. Mention ALL main characters in the first 3 sentences — never focus on just one person
-4. NO bullet facts. NO numbers (no salary, years served, birth dates, ages). NO list format.
-5. End with a cliffhanger + "Follow Dark Crime Decoded to uncover the truth."
-6. MINIMUM 120 words, MAXIMUM 140 words — count carefully before finishing
-7. Must feel like a 55-second TEASER, not a biography summary
-8. Flowing prose only — minimum 2 sentences per paragraph, no standalone lines
+{_angle_opening}UNIVERSAL RULES (apply to ALL topics — crime, biopics, historical, TV shows):
+1. {"Start with the MANDATORY FIRST SENTENCE above, then" if _angle_hook else "FIRST SENTENCE must be a shocking hook question or bold statement — then"} build the short around this untold angle
+2. Mention ALL main characters in the first 3 sentences — never focus on just one person
+3. NO bullet facts. NO numbers (no salary, years served, birth dates, ages). NO list format.
+4. End with: "Follow Dark Crime Decoded for the full story."
+5. MINIMUM 120 words, MAXIMUM 140 words — count carefully before finishing
+6. Must feel like a 55-second TEASER, not a biography summary
+7. Flowing prose only — minimum 2 sentences per paragraph, no standalone lines
 
 GOOD EXAMPLE (Mindhunter — 3 characters, TV show):
 In the 1970s, three people changed criminal justice forever. Holden Ford, a young FBI agent obsessed with understanding evil. Bill Tench, a seasoned investigator who had seen too much. And Wendy Carr, a psychologist who dared to study the darkest minds in history. Together they built something that had never existed before — a unit dedicated to getting inside the heads of serial killers. But the real story behind Mindhunter is far darker than Netflix ever showed. The men they interviewed, the killers they faced, the price they paid. Follow Dark Crime Decoded to uncover the truth.
