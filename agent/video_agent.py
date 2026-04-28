@@ -774,7 +774,7 @@ def transform_user_image(
     """
     import hashlib
 
-    caption_clean = (caption or "cinematic dark portrait").strip()
+    caption_clean = clean_caption_for_prompt(caption or "cinematic dark portrait")
     if section_tags:
         tags_str = " ".join(section_tags)
         prompt = (
@@ -1948,12 +1948,34 @@ def _load_user_videos_from_folder() -> list[dict]:
     return found
 
 
+def clean_caption_for_prompt(caption: str) -> str:
+    """Strip file extension and noise chars from a filename before using as AI prompt."""
+    import re as _re
+    caption = _re.sub(r'\.(jfif|jpg|jpeg|png|webp|mp4|mov|avi)$', '', caption, flags=_re.IGNORECASE)
+    caption = _re.sub(r'[+_\-]', ' ', caption)
+    caption = _re.sub(r'\bCopy\b', '', caption, flags=_re.IGNORECASE)
+    caption = _re.sub(r'\s+', ' ', caption).strip()
+    return caption
+
+
+_PURE_VIDEO_KEYWORDS = {"pure", "clean", "scene", "real", "documentary",
+                        "original", "raw", "interview", "live", "reel"}
+
+
 def _is_pure_video(video_dict: dict) -> bool:
-    """Return True if user video should keep its original background audio."""
+    """Return True if video should keep its original background audio.
+
+    Checks tags, caption text, and the filename stem.
+    """
     tags    = [t.lower() for t in (video_dict.get("tags") or [])]
     caption = (video_dict.get("caption") or "").lower()
-    pure_kw = {"pure", "clean", "scene", "real", "documentary", "original", "raw", "interview"}
-    return any(t in pure_kw for t in tags) or any(k in caption for k in pure_kw)
+    path    = (video_dict.get("path") or "")
+    stem    = os.path.splitext(os.path.basename(path))[0].lower().replace("_", " ").replace("-", " ")
+    combined = caption + " " + stem
+    return (
+        any(t in _PURE_VIDEO_KEYWORDS for t in tags)
+        or any(k in combined for k in _PURE_VIDEO_KEYWORDS)
+    )
 
 
 def _mix_pure_video_audio(final_video_path: str, pure_video_paths: list[str]) -> str:
@@ -2012,31 +2034,30 @@ def check_content_sufficiency(
     """Calculate how much of the target duration user content covers.
 
     Returns (is_sufficient, coverage_ratio) where coverage_ratio is 0.0-1.0+.
-    Each image counts as 4 s on screen.
-    Pure videos count their real duration (via ffprobe).
-    Broll/other clips each count as 8 s of coverage.
+    Each image counts as 5 s on screen.
+    All videos counted by actual ffprobe duration (pure) or real duration (broll).
     """
-    images_coverage = len(user_images) * 4
+    images_coverage = len(user_images) * 5
 
-    pure_coverage = 0.0
-    broll_coverage = 0
+    pure_coverage  = 0.0
+    broll_coverage = 0.0
     for v in user_videos:
         path = v.get("path", "")
         if not path or not os.path.exists(path):
             continue
+        dur = _ffprobe_duration(path) or 0.0
         if _is_pure_video(v):
-            dur = _ffprobe_duration(path) or 0.0
             pure_coverage += dur
         else:
-            broll_coverage += 8
+            broll_coverage += min(dur, 8.0) if dur > 0 else 8.0
 
     total_coverage = images_coverage + pure_coverage + broll_coverage
     ratio = total_coverage / target_duration_sec if target_duration_sec > 0 else 0.0
 
     print(f"[Video] Content coverage: {total_coverage:.0f}s / {target_duration_sec:.0f}s target")
-    print(f"[Video] Images: {len(user_images)} x 4s = {images_coverage}s")
+    print(f"[Video] Images: {len(user_images)} x 5s = {images_coverage}s")
     print(f"[Video] Pure videos: {pure_coverage:.0f}s")
-    print(f"[Video] Broll clips: {broll_coverage}s")
+    print(f"[Video] Broll clips: {broll_coverage:.0f}s")
 
     if ratio >= 0.85:
         print(f"[Video] SELF-SUFFICIENT MODE: user content covers {ratio*100:.0f}% of video")
