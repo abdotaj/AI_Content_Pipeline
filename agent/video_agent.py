@@ -1861,16 +1861,18 @@ def find_content_folder(topic: str) -> str | None:
 
 def load_all_content(
     topic: str,
-) -> tuple[list[str], list[str], str | None, str | None]:
+) -> tuple[list[str], list[dict], str | None, str | None]:
     """Load images, videos, and music from GitHub content library.
 
     Priority: topic-specific folder first, then content/_shared as supplement.
-    Returns (image_paths, video_paths, music_long_path, music_short_path).
+    Returns (image_paths, video_dicts, music_long_path, music_short_path).
+    video_dicts: [{"path", "duration", "type": "pure"|"broll", "tags", "caption"}]
+    All content-library videos are typed "pure" by default.
     """
     _img_exts = {'.jpg', '.jpeg', '.png', '.webp', '.jfif'}
     _vid_exts = {'.mp4', '.mov', '.avi'}
 
-    def _scan(d: str, exts: set) -> list[str]:
+    def _scan_paths(d: str, exts: set) -> list[str]:
         if not os.path.isdir(d):
             return []
         return [
@@ -1878,18 +1880,24 @@ def load_all_content(
             if not f.startswith('.') and os.path.splitext(f)[1].lower() in exts
         ]
 
+    def _make_video_dict(path: str) -> dict:
+        dur  = _ffprobe_duration(path) or 0.0
+        stem = os.path.splitext(os.path.basename(path))[0]
+        tags = [w.lower() for w in stem.replace('_', ' ').replace('-', ' ').split() if len(w) > 2]
+        return {"path": path, "duration": dur, "type": "pure", "tags": tags, "caption": stem}
+
     topic_folder  = find_content_folder(topic)
     shared_folder = 'content/_shared'
 
-    images: list[str]      = []
-    videos: list[str]      = []
+    images: list[str]       = []
+    videos: list[dict]      = []
     music_long: str | None  = None
     music_short: str | None = None
 
     # Topic-specific
     if topic_folder and os.path.exists(topic_folder):
-        images += _scan(f'{topic_folder}/images', _img_exts)
-        videos += _scan(f'{topic_folder}/videos', _vid_exts)
+        images += _scan_paths(f'{topic_folder}/images', _img_exts)
+        videos += [_make_video_dict(p) for p in _scan_paths(f'{topic_folder}/videos', _vid_exts)]
         long_p  = f'{topic_folder}/music/documentary_long.mp3'
         short_p = f'{topic_folder}/music/documentary_short.mp3'
         if os.path.exists(long_p):
@@ -1899,16 +1907,17 @@ def load_all_content(
 
     # Shared supplement
     if os.path.exists(shared_folder):
-        images += _scan(f'{shared_folder}/images', _img_exts)
-        videos += _scan(f'{shared_folder}/videos', _vid_exts)
+        images += _scan_paths(f'{shared_folder}/images', _img_exts)
+        videos += [_make_video_dict(p) for p in _scan_paths(f'{shared_folder}/videos', _vid_exts)]
         if not music_long:
             shared_long = f'{shared_folder}/music/documentary_long.mp3'
             if os.path.exists(shared_long):
                 music_long = shared_long
 
+    total_dur = sum(v["duration"] for v in videos)
     print(f'[GitHub] Content loaded for topic: {topic}')
     print(f'[GitHub] Topic folder: {topic_folder or "none"}')
-    print(f'[GitHub] Images: {len(images)} | Videos: {len(videos)}')
+    print(f'[GitHub] Images: {len(images)} | Videos: {len(videos)} ({total_dur:.0f}s total)')
     print(f'[GitHub] Custom music: {bool(music_long)}')
     return images, videos, music_long, music_short
 
@@ -1965,11 +1974,15 @@ _PURE_VIDEO_KEYWORDS = {"pure", "clean", "scene", "real", "documentary",
 def _is_pure_video(video_dict: dict) -> bool:
     """Return True if video should keep its original background audio.
 
-    Checks tags, caption text, and the filename stem.
+    Videos from the content/ library are always pure.
+    Telegram videos: pure only if filename/caption contains a pure keyword.
     """
+    path = (video_dict.get("path") or "")
+    # All content-library videos are pure by default
+    if "content" + os.sep in path or "content/" in path:
+        return True
     tags    = [t.lower() for t in (video_dict.get("tags") or [])]
     caption = (video_dict.get("caption") or "").lower()
-    path    = (video_dict.get("path") or "")
     stem    = os.path.splitext(os.path.basename(path))[0].lower().replace("_", " ").replace("-", " ")
     combined = caption + " " + stem
     return (
@@ -2054,19 +2067,23 @@ def check_content_sufficiency(
     total_coverage = images_coverage + pure_coverage + broll_coverage
     ratio = total_coverage / target_duration_sec if target_duration_sec > 0 else 0.0
 
-    print(f"[Video] Content coverage: {total_coverage:.0f}s / {target_duration_sec:.0f}s target")
-    print(f"[Video] Images: {len(user_images)} x 5s = {images_coverage}s")
-    print(f"[Video] Pure videos: {pure_coverage:.0f}s")
-    print(f"[Video] Broll clips: {broll_coverage:.0f}s")
+    pure_files  = sum(1 for v in user_videos if _is_pure_video(v) and os.path.exists(v.get("path","")))
+    broll_files = sum(1 for v in user_videos if not _is_pure_video(v) and os.path.exists(v.get("path","")))
+    print(f"[Video] Pure videos:  {pure_coverage:.0f}s across {pure_files} file(s)")
+    print(f"[Video] Broll clips:  {broll_coverage:.0f}s across {broll_files} clip(s)")
+    print(f"[Video] Images:       {images_coverage}s across {len(user_images)} image(s)")
+    print(f"[Video] Total coverage: {total_coverage:.0f}s / {target_duration_sec:.0f}s target ({ratio*100:.0f}%)")
 
-    if ratio >= 0.85:
-        print(f"[Video] SELF-SUFFICIENT MODE: user content covers {ratio*100:.0f}% of video")
+    if ratio >= 0.80:
+        print(f"[Video] \u2705 SELF-SUFFICIENT \u2014 skipping all external search")
     elif ratio >= 0.60:
-        print(f"[Video] Coverage {ratio*100:.0f}% -> Wikimedia + OpenAI only for small gap")
+        gap = target_duration_sec - total_coverage
+        print(f"[Video] \u26a0\ufe0f Gap: {gap:.0f}s \u2014 filling with Wikimedia + OpenAI only")
     else:
-        print(f"[Video] Coverage {ratio*100:.0f}% -> Full search chain activated")
+        gap = target_duration_sec - total_coverage
+        print(f"[Video] \u26a0\ufe0f Gap: {gap:.0f}s \u2014 full search chain activated")
 
-    return ratio >= 0.85, ratio
+    return ratio >= 0.80, ratio
 
 
 def _fetch_gap_images(
@@ -2076,44 +2093,41 @@ def _fetch_gap_images(
     topic: str,
     coverage_ratio: float,
 ) -> list[str]:
-    """Fill a visual gap using a priority chain scaled to coverage ratio.
+    """Fill a visual gap with priority: Wikimedia → OpenAI search → Pollinations AI.
 
-    >= 85%: nothing (caller should not call)
-    60-84%: Wikimedia person photo + Wikimedia Commons + OpenAI web search only
-    <  60%: full chain — Wikimedia + OpenAI + Archive + YouTube CC + Pollinations
+    Archive and YouTube CC are never used for gap-fill — only clean image sources.
     """
     if needed <= 0:
         return []
 
     results: list[str] = []
 
-    # Tier 1 (always): Wikimedia person photo + Commons
-    wiki_imgs = fetch_real_images(script_text, min(needed, 6), video_id, topic=topic)
+    # Priority 1: Wikimedia person photos + Commons
+    wiki_imgs = fetch_real_images(script_text, min(needed, 8), video_id, topic=topic)
     results.extend(wiki_imgs)
     if len(results) >= needed:
         return results[:needed]
 
-    if coverage_ratio >= 0.60:
-        # Tier 2: Wikimedia exhausted — try OpenAI web search
-        remaining = needed - len(results)
+    # Priority 2: OpenAI web search for real photos
+    remaining = needed - len(results)
+    if remaining > 0:
         ai_imgs = _fetch_openai_images_for_gap(topic, remaining, video_id)
         results.extend(ai_imgs)
-        if len(results) >= needed:
-            return results[:needed]
-        print(f"[Video] Small gap: generating {needed} Wikimedia/AI images only")
+    if len(results) >= needed:
         return results[:needed]
 
-    # Tier 3 (coverage < 60%): add Archive + YouTube CC + Pollinations
+    # Priority 3: Pollinations AI generation (last resort)
     remaining = needed - len(results)
     if remaining > 0:
-        stock = fetch_stock_videos(script_text, remaining, video_id, topic=topic)
-        results.extend(stock)
+        print(f"[Video] Gap-fill last resort: generating {remaining} Pollinations AI images")
+        for i in range(remaining):
+            prompt = f"{topic} cinematic documentary dark dramatic portrait"
+            out = os.path.join(IMAGES_DIR, f"{video_id}_gap_{i}.png")
+            result = generate_ai_image(prompt, out)
+            if result and os.path.exists(result):
+                results.append(result)
 
-    remaining = needed - len(results)
-    if remaining > 0:
-        extra = fetch_real_images(script_text, remaining, video_id, topic=topic)
-        results.extend(extra)
-
+    print(f"[Video] Gap-fill complete: {len(results)}/{needed} images (Wikimedia + OpenAI + Pollinations)")
     return results[:needed]
 
 

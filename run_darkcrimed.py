@@ -407,16 +407,17 @@ def run_pipeline():
         _shutil.copy(_gh_music_short, "assets/music/documentary_short.mp3")
         print("[GitHub] Custom music applied for short video")
 
+    # _gh_images is list[str]; _gh_videos is list[dict] (with duration/type pre-computed)
     _gh_img_dicts = [{"path": p, "tags": [], "caption": os.path.basename(p)} for p in _gh_images]
-    _gh_vid_dicts = [{"path": p, "tags": [], "caption": os.path.basename(p)} for p in _gh_videos]
     _tg_imgs = list(user_images or [])
     _tg_vids = list(user_videos or [])
     user_images = _gh_img_dicts + _tg_imgs
-    user_videos = _gh_vid_dicts + _tg_vids
+    user_videos = _gh_videos + _tg_vids   # _gh_videos already dicts
     if _gh_images or _gh_videos:
-        print(f"[Content] Total: {len(user_images)} images + {len(user_videos)} videos")
-        print(f"[Content] GitHub: {len(_gh_images)} images + {len(_gh_videos)} videos")
+        _gh_dur = sum(v.get("duration", 0) for v in _gh_videos)
+        print(f"[Content] GitHub: {len(_gh_images)} images + {len(_gh_videos)} videos ({_gh_dur:.0f}s)")
         print(f"[Content] Telegram: {len(_tg_imgs)} images + {len(_tg_vids)} videos")
+        print(f"[Content] Total: {len(user_images)} images + {len(user_videos)} videos")
 
     # ── STEP 4: Generate all 4 videos ─────────────────────────
     print("\n[4/5] Generating videos...")
