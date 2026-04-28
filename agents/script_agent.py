@@ -4,6 +4,7 @@
 # ============================================================
 import json
 import os
+import re
 import groq as groq_lib
 from groq import Groq
 from config import GROQ_API_KEY, LONG_VIDEO_DURATION
@@ -441,8 +442,28 @@ def validate_script(text: str) -> str:
     return '\n'.join(cleaned)
 
 
+_AR_TITLE_NOISE = re.compile(
+    r'\b(netflix|show|true story|series|movie|film|documentary|decoded|dark crime)\b',
+    re.IGNORECASE,
+)
+
+
+def _clean_arabic_title(raw: str) -> str:
+    """Remove English noise words that leak into Arabic titles from translation."""
+    import re as _re
+    # Strip trailing English channel suffix — will be re-added
+    raw = _re.sub(r'\s*\|\s*Dark Crime Decoded\s*$', '', raw, flags=_re.IGNORECASE).strip()
+    # Remove known English noise tokens
+    raw = _AR_TITLE_NOISE.sub('', raw)
+    # Remove stray ASCII words (2+ chars) that shouldn't be in an Arabic title,
+    # but preserve short Latin abbreviations that are part of proper nouns
+    raw = _re.sub(r'\b[A-Za-z]{4,}\b', '', raw)
+    raw = _re.sub(r'\s+', ' ', raw).strip().strip('|').strip()
+    return f"{raw} | Dark Crime Decoded" if raw else "Dark Crime Decoded"
+
+
 def _build_arabic_title(en_title: str, series_name: str | None, series_type: str | None) -> str:
-    """Return Arabic title with فيلم/مسلسل label, falling back to Google Translate."""
+    """Return clean Arabic title, falling back to Google Translate + noise cleanup."""
     ar_entry = SERIES_ARABIC.get(series_name or "")
     if ar_entry:
         ar_series, ar_type = ar_entry
@@ -452,7 +473,9 @@ def _build_arabic_title(en_title: str, series_name: str | None, series_type: str
         ar_type = "فيلم" if series_type == "Movie" else "مسلسل" if series_type == "Series" else ""
         if ar_type:
             return f"القصة الحقيقية وراء {ar_type} {series_name} | Dark Crime Decoded"
-    return translate_to_arabic(en_title)
+    # Fallback: translate the angle-based English title then clean noise
+    raw = translate_to_arabic(en_title)
+    return _clean_arabic_title(raw)
 
 
 # 5-chapter proportions for new structure
@@ -1085,7 +1108,7 @@ Key facts: {(research.get('research_facts') or research.get('what_show_got_right
         ("Untold Angle",          350,  420,  False),
         ("Background & Real Story", 420, 560, False),
         ("Show vs Reality",       350,  420,  False),
-        ("Conclusion",            200,  260,  True),
+        ("Conclusion",            300,  350,  True),
     ]
 
     _SECTION_LABELS = [
