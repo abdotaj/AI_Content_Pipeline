@@ -635,6 +635,70 @@ def check_telegram_for_images(after_timestamp: float = 0.0) -> list[dict]:
     return user_images
 
 
+def _remove_video_overlays(input_path: str) -> str:
+    """Crop out typical channel overlay areas from a downloaded user video.
+
+    Returns path to the cleaned file (overwrites in-place via a temp file).
+    Falls back to the original path if ffmpeg is unavailable or fails.
+    """
+    import os
+    import subprocess
+    import shutil
+
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        print("[Video] ffmpeg not found — skipping overlay removal")
+        return input_path
+
+    # Detect dimensions with ffprobe
+    width, height = 0, 0
+    ffprobe = shutil.which("ffprobe")
+    if ffprobe:
+        try:
+            probe = subprocess.run(
+                [ffprobe, "-v", "error", "-select_streams", "v:0",
+                 "-show_entries", "stream=width,height",
+                 "-of", "csv=p=0", input_path],
+                capture_output=True, text=True, timeout=15
+            )
+            parts = probe.stdout.strip().split(",")
+            if len(parts) == 2:
+                width, height = int(parts[0]), int(parts[1])
+        except Exception as e:
+            print(f"[Video] ffprobe failed: {e}")
+
+    is_vertical = height > width if (width and height) else False
+
+    if is_vertical:
+        # Shorts / TikTok: remove top 10% + bottom 15%
+        crop_filter = "crop=iw:ih*0.75:0:ih*0.10"
+        removed = "top 10% + bottom 15%"
+    else:
+        # Landscape: remove top 8% + bottom 12%
+        crop_filter = "crop=iw:ih*0.80:0:ih*0.08"
+        removed = "top 8% + bottom 12%"
+
+    clean_path = input_path.replace(".mp4", "_clean.mp4")
+    try:
+        subprocess.run(
+            [ffmpeg, "-y", "-i", input_path,
+             "-vf", crop_filter,
+             "-c:v", "libx264", "-c:a", "aac",
+             "-pix_fmt", "yuv420p",
+             clean_path],
+            capture_output=True, timeout=180, check=True
+        )
+        os.replace(clean_path, input_path)
+        print(f"[Video] Overlay removal applied: removed {removed}")
+        print(f"[Video] Clean video saved: {os.path.basename(input_path)}")
+    except Exception as e:
+        print(f"[Video] Overlay removal failed: {e} — using original")
+        if os.path.exists(clean_path):
+            os.remove(clean_path)
+
+    return input_path
+
+
 def check_telegram_for_videos(after_timestamp: float = 0.0) -> list[dict]:
     """
     Check for video messages sent after `after_timestamp` (Unix time).
@@ -715,6 +779,8 @@ def check_telegram_for_videos(after_timestamp: float = 0.0) -> list[dict]:
         local_path = f"output/user_videos/user_{int(time.time())}_{file_id[:8]}.mp4"
         with open(local_path, "wb") as f:
             f.write(dl_r.content)
+
+        local_path = _remove_video_overlays(local_path)
 
         tags: list[str] = []
         if caption:
