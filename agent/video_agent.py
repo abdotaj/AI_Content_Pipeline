@@ -2039,6 +2039,209 @@ def _mix_pure_video_audio(final_video_path: str, pure_video_paths: list[str]) ->
     return final_video_path
 
 
+def _escape_drawtext(text: str) -> str:
+    """Escape special characters for ffmpeg drawtext filter."""
+    return (
+        text.replace("\\", "\\\\")
+            .replace("'", "\\'")
+            .replace(":", "\\:")
+            .replace("[", "\\[")
+            .replace("]", "\\]")
+    )
+
+
+def _find_text_font(arabic: bool = False) -> str:
+    """Return a valid TTF path for ffmpeg drawtext, or empty string."""
+    import glob as _glob
+    if arabic:
+        candidates = [
+            r"C:\Windows\Fonts\NotoSansArabic-Regular.ttf",
+            r"C:\Windows\Fonts\Arabic.ttf",
+            r"/usr/share/fonts/truetype/noto/NotoSansArabic-Regular.ttf",
+            r"/usr/share/fonts/truetype/noto/NotoNaskhArabic-Regular.ttf",
+            r"/usr/share/fonts/noto/NotoSansArabic-Regular.ttf",
+        ]
+    else:
+        candidates = [
+            r"C:\Windows\Fonts\DejaVuSans-Bold.ttf",
+            r"C:\Windows\Fonts\arialbd.ttf",
+            r"C:\Windows\Fonts\arial.ttf",
+            r"/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            r"/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+            r"/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf",
+        ]
+    for c in candidates:
+        if os.path.exists(c):
+            return c
+    # last resort: any ttf on the system
+    for pattern in [r"C:\Windows\Fonts\*.ttf", "/usr/share/fonts/**/*.ttf"]:
+        found = _glob.glob(pattern, recursive=True)
+        if found:
+            return found[0]
+    return ""
+
+
+def _parse_chapter_timestamps(chapters_str: str) -> list[tuple[float, str]]:
+    """Parse 'MM:SS Title' lines → list of (seconds, title) sorted by time."""
+    import re as _re
+    results = []
+    for line in (chapters_str or "").splitlines():
+        m = _re.match(r"(\d{1,2}):(\d{2})\s+(.*)", line.strip())
+        if m:
+            secs = int(m.group(1)) * 60 + int(m.group(2))
+            results.append((float(secs), m.group(3).strip()))
+    return sorted(results, key=lambda x: x[0])
+
+
+def _apply_intro_outro_overlay(
+    video_path: str,
+    title: str,
+    language: str,
+    video_id: str,
+    is_short: bool = False,
+    chapters_str: str = "",
+) -> str:
+    """Apply intro card, title card, chapter transitions, and outro via single ffmpeg pass.
+
+    Returns video_path (replaced in-place on success, original kept on failure).
+    """
+    import shutil as _shutil
+
+    ffmpeg = _shutil.which("ffmpeg")
+    if not ffmpeg:
+        print("[Overlay] ffmpeg not found — skipping overlays")
+        return video_path
+
+    arabic = (language or "").lower().startswith("ar")
+    font = _find_text_font(arabic=arabic)
+    if not font:
+        print("[Overlay] No font found — skipping overlays")
+        return video_path
+
+    font_esc = font.replace("\\", "/").replace(":", "\\:")
+    channel_name = _escape_drawtext("Dark Crime Decoded")
+    subtitle_text = _escape_drawtext("حقائق الجريمة الحقيقية" if arabic else "True Crime Documentary")
+    title_esc = _escape_drawtext(title[:60] if title else "")
+    cta_text = _escape_drawtext("اشترك في القناة" if arabic else "Subscribe for more True Crime")
+
+    w, h = "iw", "ih"
+
+    filters = []
+
+    if is_short:
+        # Shorts: persistent top bar (channel name) + bottom bar (CTA)
+        bar_h = 80
+        filters += [
+            # Top bar
+            f"drawbox=x=0:y=0:w={w}:h={bar_h}:color=black@0.75:t=fill",
+            f"drawtext=fontfile='{font_esc}':text='{channel_name}':fontsize=32:fontcolor=white"
+            f":x=(w-text_w)/2:y={bar_h//2 - 16}",
+            # Bottom bar
+            f"drawbox=x=0:y=ih-{bar_h}:w={w}:h={bar_h}:color=black@0.75:t=fill",
+            f"drawtext=fontfile='{font_esc}':text='{cta_text}':fontsize=28:fontcolor=white"
+            f":x=(w-text_w)/2:y=ih-{bar_h//2 + 14}",
+        ]
+    else:
+        intro_end = 3.0      # black card fades out at t=3
+        intro_fade = 1.0     # fade-in duration for text
+        title_start = intro_end
+        title_end = title_start + 2.5
+        outro_start = 9999.0  # placeholder, set below
+
+        # Intro: black card for first 3s
+        filters += [
+            f"drawbox=x=0:y=0:w={w}:h={h}:color=black@1.0:t=fill:enable='lt(t,{intro_end})'",
+            # Channel name fades in
+            f"drawtext=fontfile='{font_esc}':text='{channel_name}':fontsize=64:fontcolor=white"
+            f":x=(w-text_w)/2:y=(h/2 - 80)"
+            f":alpha='if(lt(t,{intro_fade}),t/{intro_fade},1)'"
+            f":enable='lt(t,{intro_end})'",
+            # Red separator line
+            f"drawbox=x=(w-400)/2:y=h/2-8:w=400:h=6:color=red@1.0:t=fill"
+            f":enable='lt(t,{intro_end})'",
+            # Subtitle fades in with 0.3s delay
+            f"drawtext=fontfile='{font_esc}':text='{subtitle_text}':fontsize=36:fontcolor=white@0.85"
+            f":x=(w-text_w)/2:y=(h/2 + 30)"
+            f":alpha='if(lt(t,{intro_fade+0.3}),(t-0.3)/{intro_fade},1)'"
+            f":enable='lt(t,{intro_end})'",
+            # Fade from black to video at t=2–3
+            f"fade=t=in:st=2:d=1",
+        ]
+
+        # Episode title card at t=3–5.5
+        filters += [
+            f"drawbox=x=0:y=ih/2-70:w={w}:h=140:color=black@0.72:t=fill"
+            f":enable='between(t,{title_start},{title_end})'",
+            f"drawtext=fontfile='{font_esc}':text='{title_esc}':fontsize=44:fontcolor=white"
+            f":x=(w-text_w)/2:y=h/2-28"
+            f":enable='between(t,{title_start},{title_end})'",
+        ]
+
+        # Chapter transition flashes (0.5s white flash text overlay)
+        chapters = _parse_chapter_timestamps(chapters_str)
+        for ch_time, ch_label in chapters:
+            if ch_time < 6.0:
+                continue
+            ch_esc = _escape_drawtext(ch_label[:40])
+            flash_end = ch_time + 0.5
+            filters += [
+                f"drawbox=x=0:y=0:w={w}:h={h}:color=white@0.25:t=fill"
+                f":enable='between(t,{ch_time},{flash_end})'",
+                f"drawtext=fontfile='{font_esc}':text='{ch_esc}':fontsize=52:fontcolor=white"
+                f":x=(w-text_w)/2:y=(h/2 - 30)"
+                f":enable='between(t,{ch_time},{flash_end})'",
+            ]
+
+        # Outro: fade to black at last 4.5s + CTA text
+        # Use ffprobe to get duration, fall back to expression
+        try:
+            _dur = _ffprobe_duration(video_path) or 0.0
+            if _dur > 10:
+                outro_start = _dur - 4.5
+            else:
+                outro_start = 9999.0
+        except Exception:
+            outro_start = 9999.0
+
+        if outro_start < 9999.0:
+            filters += [
+                f"fade=t=out:st={outro_start}:d=4.5",
+                f"drawbox=x=0:y=0:w={w}:h={h}:color=black@1.0:t=fill"
+                f":enable='gte(t,{outro_start + 3.5})'",
+                f"drawtext=fontfile='{font_esc}':text='{channel_name}':fontsize=56:fontcolor=white"
+                f":x=(w-text_w)/2:y=(h/2 - 60)"
+                f":enable='gte(t,{outro_start + 3.5})'",
+                f"drawtext=fontfile='{font_esc}':text='{cta_text}':fontsize=36:fontcolor=yellow"
+                f":x=(w-text_w)/2:y=(h/2 + 20)"
+                f":enable='gte(t,{outro_start + 3.5})'",
+            ]
+
+    vf = ",".join(filters)
+    out_path = video_path.replace(".mp4", "_overlay.mp4")
+    cmd = [
+        ffmpeg, "-y", "-i", video_path,
+        "-vf", vf,
+        "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+        "-c:a", "copy",
+        out_path,
+    ]
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, timeout=600)
+        os.replace(out_path, video_path)
+        print(f"[Overlay] Intro/outro overlays applied: {os.path.basename(video_path)}")
+    except subprocess.CalledProcessError as e:
+        err = (e.stderr or b"").decode(errors="replace")[-400:]
+        print(f"[Overlay] ffmpeg overlay failed: {err}")
+        if os.path.exists(out_path):
+            os.remove(out_path)
+    except Exception as e:
+        print(f"[Overlay] Overlay failed: {e}")
+        if os.path.exists(out_path):
+            os.remove(out_path)
+
+    return video_path
+
+
 def check_content_sufficiency(
     user_images: list,
     user_videos: list,
@@ -5112,6 +5315,18 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
         ]
         if pure_paths:
             video_path = _mix_pure_video_audio(video_path, pure_paths)
+
+        # Apply intro/outro overlays
+        _overlay_title = script_data.get("title", "")
+        _overlay_chapters = script_data.get("chapters", "")
+        video_path = _apply_intro_outro_overlay(
+            video_path,
+            title=_overlay_title,
+            language=language,
+            video_id=video_id,
+            is_short=is_short,
+            chapters_str=_overlay_chapters,
+        )
 
         short_out = os.path.join(SHORTS_DIR, f"{video_id}_short.mp4")
         script_data["short_clip_path"] = cut_short_clip(video_path, short_out)
