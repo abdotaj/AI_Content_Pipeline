@@ -1437,84 +1437,46 @@ def _search_wikimedia_commons(query: str, max_results: int = 3) -> list[str]:
 
 
 def _search_images_openai(query: str, max_results: int = 5) -> list[str]:
-    """Use OpenAI web search to find real image URLs.
-
-    Primary: Chat Completions with gpt-4o-mini-search-preview (grounded web search).
-    Fallback: Responses API with web_search_preview tool.
-    """
-    import re as _re
-
+    import re
     api_key = os.getenv('OPENAI_API_KEY', '').strip()
     if not api_key:
         return []
-
-    print(f'[Image] OpenAI web search query: {query}')
-    headers = {'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json'}
-    url_pattern = r'https?://\S+\.(?:jpg|jpeg|png|webp|gif)'
-
-    def _extract_urls(text: str) -> list[str]:
-        return _re.findall(url_pattern, text or '')
-
-    # ── Attempt 1: Chat Completions with gpt-4o-mini-search-preview ──────────
-    try:
-        r = requests.post(
-            'https://api.openai.com/v1/chat/completions',
-            headers=headers,
-            json={
-                'model': 'gpt-4o-mini-search-preview',
-                'messages': [{'role': 'user', 'content': (
-                    f'Find direct image URLs (ending in .jpg .jpeg .png .webp) of real '
-                    f'photographs of {query}. Return only the URLs, one per line.'
-                )}],
-                'max_tokens': 500,
-            },
-            timeout=30,
-        )
-        print(f'[Image] OpenAI response status: {r.status_code}')
-        if r.status_code == 200:
-            text = r.json()['choices'][0]['message']['content']
-            urls = _extract_urls(text)
-            if urls:
-                print(f'[Image] OpenAI Chat search: {len(urls)} URLs for "{query}"')
-                return urls[:max_results]
-            print(f'[Image] OpenAI Chat search: no URLs in response')
-        else:
-            print(f'[Image] OpenAI response keys: {list(r.json().keys())}')
-    except Exception as e:
-        print(f'[Image] OpenAI Chat search failed: {e}')
-
-    # ── Attempt 2: Responses API (gpt-4o-mini + web_search_preview tool) ─────
     try:
         r = requests.post(
             'https://api.openai.com/v1/responses',
-            headers=headers,
+            headers={
+                'Authorization': f'Bearer {api_key}',
+                'Content-Type': 'application/json'
+            },
             json={
                 'model': 'gpt-4o-mini',
                 'tools': [{'type': 'web_search_preview'}],
-                'input': (
-                    f'Find real photographs of {query}. '
-                    f'List only direct image URLs ending in .jpg .jpeg .png or .webp'
-                ),
+                'input': f'Find real photographs of {query}. Return only direct image URLs ending in .jpg .jpeg .png or .webp. One URL per line. No explanation, no markdown.'
             },
-            timeout=30,
+            timeout=30
         )
-        print(f'[Image] OpenAI Responses status: {r.status_code}')
-        if r.status_code == 200:
-            data = r.json()
-            print(f'[Image] OpenAI Responses keys: {list(data.keys())}')
-            for item in data.get('output', []):
-                if item.get('type') == 'message':
-                    for part in item.get('content', []):
-                        if part.get('type') == 'output_text':
-                            urls = _extract_urls(part.get('text', ''))
-                            if urls:
-                                print(f'[Image] OpenAI Responses API: {len(urls)} URLs for "{query}"')
-                                return urls[:max_results]
-            print(f'[Image] OpenAI Responses API: no URLs found')
-    except Exception as e:
-        print(f'[Image] OpenAI Responses API failed: {e}')
+        data = r.json()
+        print(f'[Image] OpenAI search status: {r.status_code} for: {query}')
 
-    return []
+        text = ''
+        for item in data.get('output', []):
+            if item.get('type') == 'message':
+                for c in item.get('content', []):
+                    if c.get('type') == 'output_text':
+                        text += c.get('text', '') + '\n'
+
+        urls = re.findall(
+            r'https?://\S+\.(?:jpg|jpeg|png|webp)',
+            text,
+            flags=re.IGNORECASE
+        )
+
+        print(f'[Image] OpenAI search found {len(urls)} URLs for: {query}')
+        return urls[:max_results]
+
+    except Exception as e:
+        print(f'[Image] OpenAI search error: {e}')
+        return []
 
 
 def _internet_archive_image_results(query: str, max_results: int = 5) -> list[str]:
