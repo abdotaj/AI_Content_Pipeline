@@ -1141,11 +1141,17 @@ def write_long_script_split(topic: dict, research: dict, series_info: tuple | No
             f"Never focus on just one character or just the real story — show BOTH worlds.\n"
         )
 
-    base_context = f"""Topic: {name}
+    # Topic facts visible to every chapter (no coverage instruction — that goes in Ch3 only)
+    _topic_context = f"""Topic: {name}
 Series/Movie: {series} ({stype})
 Real person: {research.get('real_person', name)}
 Key facts: {(research.get('research_facts') or research.get('what_show_got_right', []))[:3]}
-{_show_chars_block}{_real_people_block}{_chars_block}{_rvs_block}{_time_loc}{_mandatory_instruction}"""
+{_show_chars_block}{_real_people_block}{_chars_block}{_rvs_block}{_time_loc}"""
+
+    # Full character-coverage instruction — belongs ONLY in Chapter 3
+    _ch3_mandatory = _mandatory_instruction
+
+    base_context = _topic_context  # kept for any legacy references
 
     # Resolve angle — use passed-in angle or generate one now
     _angle = angle or generate_untold_angle(name, f"{series} {stype}")
@@ -1159,7 +1165,7 @@ Key facts: {(research.get('research_facts') or research.get('what_show_got_right
         ("Untold Angle",          350,  420,  False),
         ("Background & Real Story", 420, 560, False),
         ("Show vs Reality",       350,  420,  False),
-        ("Conclusion",            300,  350,  True),
+        ("Conclusion",            200,  260,  True),
     ]
 
     _SECTION_LABELS = [
@@ -1240,105 +1246,154 @@ Key facts: {(research.get('research_facts') or research.get('what_show_got_right
 
     import random as _random
 
-    def _prev_summary(n: int) -> str:
-        """Extract first sentence of each completed section as a 'what was covered' summary."""
+    def _used_facts_block(n: int) -> str:
+        """List key sentences already used in sections 0..n-1 as explicit prohibitions."""
         if not sections:
             return ""
-        lines = []
+        items = []
         for idx, sec in enumerate(sections[:n]):
-            first = sec.strip().split(".")[0].strip()
-            if first:
-                lines.append(f"Section {idx + 1}: {first}.")
-        if not lines:
+            sents = [s.strip() for s in sec.replace("\n", " ").split(". ") if len(s.strip()) > 40]
+            for sent in sents[:5]:
+                items.append(f"- {sent}.")
+        if not items:
             return ""
         return (
-            "IMPORTANT — topics already covered in previous sections "
-            "(do NOT repeat any of this, only introduce NEW information):\n"
-            + "\n".join(lines)
+            "⛔ ALREADY COVERED — do NOT restate, paraphrase, or re-introduce any of the following "
+            "(these facts appeared in earlier chapters and must never appear again):\n"
+            + "\n".join(items)
+            + "\nEvery sentence in your chapter must introduce information that has NOT appeared above."
         )
 
     section_prompts = [
-        lambda: f"""{base_context}
+        # ── Chapter 1: Hook Intro ─────────────────────────────────────────────
+        lambda: f"""{_topic_context}
 Write CHAPTER 1 — HOOK INTRO for a documentary about {name}.
 
-Open with EXACTLY this sentence structure: "You think you know {name}. But what {series} never showed you was..."
-Then introduce ALL main characters briefly — real people and their screen counterparts.
-Build immediate tension. End Chapter 1 with a cliffhanger that points to the untold angle coming next.
+YOUR EXCLUSIVE JOB in this chapter (and ONLY this chapter):
+1. Open with EXACTLY: "You think you know {name}. But what {series} never showed you was..."
+2. Describe what made {series} compelling — the specific scene or moment that hooked millions.
+3. Plant ONE unanswered question that the rest of the video will answer.
+4. End with a cliffhanger that pulls viewers into Chapter 2.
+
+STRICT SCOPE — this chapter does NOT:
+- Cover real historical facts or timelines (that is Chapter 3)
+- Introduce or profile real people in detail (that is Chapter 3)
+- Reveal the hidden truth or untold angle (that is Chapter 2)
+- Make show-vs-reality comparisons (that is Chapter 4)
+This chapter sets the scene ONLY. It speaks about what the SHOW depicted, not what really happened.
 
 Write flowing documentary narration — no lists, no bullet points, paragraphs only. Minimum 3 sentences per paragraph. Always write complete sentences.
 {_section_instruction(300, 380, False)}""",
 
-        lambda: f"""{base_context}
-Write CHAPTER 2 — THE UNTOLD ANGLE. This is the most important chapter. Build it around this specific hidden truth:
+        # ── Chapter 2: Untold Angle ───────────────────────────────────────────
+        lambda: f"""{_topic_context}
+Write CHAPTER 2 — THE UNTOLD ANGLE for a documentary about {name}.
+
+YOUR EXCLUSIVE JOB in this chapter:
+Build the ENTIRE chapter around this single hidden truth — the one thing {series} never showed:
 
 ANGLE TITLE: {_angle_title}
-ANGLE HOOK (open the chapter with this sentence): {_angle_hook}
-ANGLE DETAIL (expand this into the chapter): {_angle_content}
+ANGLE HOOK — open the chapter with EXACTLY this sentence: {_angle_hook}
+ANGLE DETAIL — expand ONLY these 2–3 sentences into the full chapter: {_angle_content}
 
-{_prev_summary(1)}
+STRICT SCOPE — this chapter does NOT:
+- Re-introduce the show or describe what it depicted (Chapter 1 did that)
+- Cover the general real history or biography (Chapter 3 does that)
+- Compare show scenes to real events (Chapter 4 does that)
+Every sentence must add NEW specific information about this ONE hidden truth only.
 
-Open with the ANGLE HOOK sentence exactly as written above. Then build the entire chapter around this ONE untold detail. This is what separates this video from everything else — the hidden story, the erased contribution, the decision nobody talks about. Be specific — names, dates, exact events. Never be vague.
+{_used_facts_block(1)}
 
-Write flowing documentary narration — no lists, no bullet points, paragraphs only. Minimum 3 sentences per paragraph.
+Open with the ANGLE HOOK sentence exactly as written. Then expand the angle with specific names, dates, and decisions — never vague. Minimum 3 sentences per paragraph.
 {_section_instruction(350, 420, False)}
 
-PREVIOUS SECTION:
+PREVIOUS CHAPTER (context only — do NOT repeat anything from it):
 {sections[0]}""",
 
-        lambda: f"""{base_context}
-Write CHAPTER 3 — BACKGROUND AND THE REAL STORY.
+        # ── Chapter 3: The Real Story ─────────────────────────────────────────
+        lambda: f"""{_topic_context}{_ch3_mandatory}
+Write CHAPTER 3 — THE REAL STORY for a documentary about {name}.
 
-{_prev_summary(2)}
+YOUR EXCLUSIVE JOB in this chapter:
+Deliver the full documented history in chronological order. This is the FIRST TIME viewers hear the complete real biography and timeline — not summaries, the full story.
 
-This chapter is the full historical truth. Walk through the real story chronologically — real names, real dates, real places. Every key person gets their OWN dedicated paragraph: who they were, what they did, why it mattered. Women, supporting figures, and lesser-known players get the same treatment as the main character. Do not skip anyone from the research.
+WHAT THIS CHAPTER MUST COVER (and ONLY this chapter covers):
+- Who each real person was before everything began: family, background, first crime
+- The key events in documented chronological order with exact years
+- Real victims, real locations, real consequences
+- Every named person in the research gets their own dedicated paragraph
 
-Write flowing documentary narration — no lists, no bullet points, paragraphs only. Minimum 3 sentences per paragraph. Always write complete sentences.
+STRICT SCOPE — this chapter does NOT:
+- Re-describe what the show depicted (Chapter 1 did that)
+- Re-state the hidden angle from Chapter 2 (already covered)
+- Make show vs reality comparisons (Chapter 4 does that)
+
+{_used_facts_block(2)}
+
+Write flowing documentary narration — no lists, no bullet points. Minimum 3 sentences per paragraph. Always complete sentences.
 {_section_instruction(420, 560, False)}
 
-PREVIOUS SECTIONS:
+PREVIOUS CHAPTERS (context only — do NOT repeat anything from them):
 {sections[0]}
 
 {sections[1]}""",
 
-        lambda: f"""{base_context}
-Write CHAPTER 4 — SHOW VS REALITY.
+        # ── Chapter 4: Show vs Reality ────────────────────────────────────────
+        lambda: f"""{_topic_context}
+Write CHAPTER 4 — SHOW VS REALITY for a documentary about {name}.
 
-{_prev_summary(3)}
+YOUR EXCLUSIVE JOB in this chapter:
+Make direct comparisons between what {series} depicted and what the documented record shows.
+This is the ONLY chapter that compares screen to reality — do it thoroughly.
 
-This chapter MUST contain these two clearly marked sections:
+REQUIRED STRUCTURE:
 
-SECTION A — start with EXACTLY: "Here is what {series} got RIGHT:"
-Cover at least 3 specific things the show accurately depicted — scenes, characters, decisions.
+PART A — start with EXACTLY: "Here is what {series} got RIGHT:"
+Cover 3 or more specific things the show accurately depicted — reference specific scenes, episodes, or character decisions by name.
 
-SECTION B — start with EXACTLY: "Here is what they completely changed or left out:"
-Cover at least 3 specific things — scenes that were invented, characters that were erased, timelines that were compressed, facts that were reversed.
+PART B — start with EXACTLY: "Here is what they completely changed or left out:"
+Cover 3 or more specific things — invented scenes, erased characters, compressed timelines, reversed facts. Be precise: name the specific change and what actually happened.
 
-Use SPECIFIC examples — not general statements. Name episodes, scenes, characters.
+STRICT SCOPE — this chapter does NOT:
+- Re-tell the real history (Chapter 3 already did that)
+- Re-introduce people who were fully covered in Chapter 3
+- Re-state the untold angle from Chapter 2
+Every comparison must reference NEW specific details not yet stated in Chapters 1, 2, or 3.
+
+{_used_facts_block(3)}
+
 Write flowing documentary narration — minimum 3 sentences per paragraph.
 {_section_instruction(350, 420, False)}
 
-PREVIOUS SECTIONS:
+PREVIOUS CHAPTERS (context only — do NOT repeat anything from them):
 {sections[0]}
 
 {sections[1]}
 
 {sections[2]}""",
 
-        lambda: f"""{base_context}
-Write CHAPTER 5 — CONCLUSION AND CLIFFHANGER.
+        # ── Chapter 5: Conclusion ─────────────────────────────────────────────
+        lambda: f"""{_topic_context}
+Write CHAPTER 5 — CONCLUSION for a documentary about {name}.
 
-{_prev_summary(4)}
+YOUR EXCLUSIVE JOB in this chapter:
+1. Deliver ONE final fact that has NOT appeared anywhere in this video — the most lasting consequence, the most recent development, or the most unexpected legacy detail.
+2. In 2–3 sentences: what does the story of {name} tell us about the world today?
+3. Close with: "Follow Dark Crime Decoded for more real stories behind your favourite crime series and films."
 
-Structure:
-1. Callback to the untold angle from Chapter 2: "{_angle_title}" — what it means for the legacy
-2. ONE final shocking fact that viewers did not expect — save the best for last
-3. Strong call to action: "Follow Dark Crime Decoded for more real stories behind your favourite crime series and films"
+STRICT SCOPE — this chapter does NOT:
+- Recap or summarize what was covered in Chapters 1–4
+- Re-state the untold angle, the real history, or any show comparison
+- Repeat ANY fact already used (see list below)
+This chapter reflects and closes — it does not re-tell.
+
+{_used_facts_block(4)}
 
 CRITICAL: End with a fully complete sentence. Never end mid-thought.
 Write flowing documentary narration — no lists, no bullet points.
 {_section_instruction(200, 260, True)}
 
-PREVIOUS SECTIONS:
+PREVIOUS CHAPTERS (context only — do NOT repeat anything from them):
 {sections[0]}
 
 {sections[1]}
