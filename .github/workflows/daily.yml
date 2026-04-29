@@ -98,7 +98,9 @@ jobs:
 
       - name: Run Dark Crime pipeline
         env:
+          PYTHONUNBUFFERED:                  "1"
           VIDEOS_PER_DAY:                    "1"
+          ENABLE_PREMIUM_INTRO:              "0"
           ANTHROPIC_API_KEY:                 ${{ secrets.ANTHROPIC_API_KEY }}
           GROQ_API_KEY:                      ${{ secrets.GROQ_API_KEY }}
           OPENAI_API_KEY:                    ${{ secrets.OPENAI_API_KEY }}
