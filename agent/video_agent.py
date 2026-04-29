@@ -124,6 +124,45 @@ def get_voice(language: str) -> str:
     return voices.get(language.lower(), "en-US-GuyNeural")
 
 
+_ARABIC_PRONUNCIATION = [
+    ("Netflix", "نتفليكس"), ("HBO", "إتش بي أو"), ("FBI", "إف بي آي"),
+    ("CIA", "سي آي إيه"), ("DEA", "دي إي إيه"), ("NYPD", "شرطة نيويورك"),
+    ("Mindhunter", "مايند هانتر"), ("Breaking Bad", "بريكينج باد"),
+    ("Better Call Saul", "بيتر كول سول"), ("Narcos", "ناركوس"),
+    ("Narcos Mexico", "ناركوس المكسيك"), ("Scarface", "سكارفيس"),
+    ("Goodfellas", "غودفيلاز"), ("The Godfather", "العراب"),
+    ("Godfather", "العراب"), ("Casino", "كازينو"),
+    ("The Irishman", "الإيرلندي"), ("Donnie Brasco", "دوني براسكو"),
+    ("American Gangster", "الغانغستر الأمريكي"), ("Sicario", "سيكاريو"),
+    ("City of God", "مدينة الله"), ("Ozark", "أوزارك"),
+    ("The Wire", "ذا واير"), ("Peaky Blinders", "بيكي بلايندرز"),
+    ("Money Heist", "مانيي هيست"), ("La Casa de Papel", "لا كاسا دي بابيل"),
+    ("Griselda", "غريزيلدا"), ("El Chapo", "إل تشابو"),
+    ("Pablo Escobar", "بابلو إسكوبار"), ("Al Capone", "آل كابوني"),
+    ("John Gotti", "جون غوتي"), ("Whitey Bulger", "وايتي بولغر"),
+    ("Henry Hill", "هنري هيل"), ("Frank Lucas", "فرانك لوكاس"),
+    ("Griselda Blanco", "غريزيلدا بلانكو"), ("Amado Carrillo", "أمادو كاريو"),
+    ("Miguel Angel Gallardo", "ميغيل أنخيل غالاردو"),
+    ("Willy Falcon", "ويلي فالكون"), ("Jon Hamm", "جون هام"),
+    ("Bryan Cranston", "براين كرانستون"), ("Bob Odenkirk", "بوب أودنكيرك"),
+    ("Al Pacino", "آل باتشينو"), ("Robert De Niro", "روبرت دي نيرو"),
+    ("Joe Pesci", "جو بيشي"), ("Martin Scorsese", "مارتن سكورسيزي"),
+    ("John Douglas", "جون دوغلاس"), ("James Comey", "جيمس كومي"),
+    ("Robert Mueller", "روبرت مولر"), ("Jeffrey Dahmer", "جيفري دامر"),
+    ("Ted Bundy", "تيد باندي"), ("John Wayne Gacy", "جون واين غيسي"),
+    ("Charles Manson", "تشارلز مانسون"), ("El Mayo", "إل مايو"),
+    ("Los Zetas", "لوس زيتاس"), ("Sinaloa", "سينالوا"),
+    ("Medellin", "ميديين"), ("Cali Cartel", "كارتيل كالي"),
+    ("Cosa Nostra", "كوزا نوسترا"), ("Ndrangheta", "ندرانغيتا"),
+]
+
+def _apply_arabic_pronunciation(text: str) -> str:
+    import re as _pre
+    for en, ar in sorted(_ARABIC_PRONUNCIATION, key=lambda x: len(x[0]), reverse=True):
+        text = _pre.sub(_pre.escape(en), ar, text, flags=_pre.IGNORECASE)
+    return text
+
+
 def generate_voiceover_edgetts(script_text: str, filename: str, language: str = "english") -> str:
     """Generate voiceover using edge-tts."""
     try:
@@ -448,6 +487,8 @@ def _elevenlabs_chunk(chunk: str, voice_id: str, api_key: str, chunk_path: str) 
 def generate_voiceover(script_text: str, filename: str, language: str = "english") -> str:
     """Generate voiceover — OpenAI TTS (tts-1-hd) → edge-tts fallback."""
     script_text = _strip_section_markers(script_text)
+    if language == "arabic":
+        script_text = _apply_arabic_pronunciation(script_text)
     try:
         from agents.script_agent import format_for_tts as _fmt
     except ImportError:
@@ -4545,16 +4586,13 @@ def assemble_video_with_hook(
         return np.array(pil)
 
     def _fit_vertical(clip):
-        """Resize + center crop to exact 1080x1920."""
-        c = clip.resize(height=TARGET_H)
-        if c.w < TARGET_W:
-            c = c.resize(width=TARGET_W)
-        return c.crop(
-            x_center=c.w / 2,
-            y_center=c.h / 2,
-            width=TARGET_W,
-            height=TARGET_H,
-        )
+        """Scale clip to fill 1080×1920 with center crop — no black bars for any aspect ratio."""
+        cw, ch = clip.size
+        scale = max(TARGET_W / cw, TARGET_H / ch)
+        nw = max(TARGET_W, int(cw * scale))
+        nh = max(TARGET_H, int(ch * scale))
+        c = clip.resize((nw, nh))
+        return c.crop(x_center=nw / 2, y_center=nh / 2, width=TARGET_W, height=TARGET_H)
 
     def _zoom_clip(
         frame, dur: float,
@@ -4584,7 +4622,8 @@ def assemble_video_with_hook(
             return np.clip(rgb, 0, 255).astype("uint8")
         return VideoClip(make_frame=make_frame, duration=dur)
 
-    def _media_clip(src_path: str, dur: float, zoom_in: bool = True):
+    def _media_clip(src_path: str, dur: float, zoom_in: bool = True, first_clip: bool = False):
+        fi = 0.0 if first_clip else 0.2
         if _is_video_file(src_path):
             v = VideoFileClip(src_path)
             if v.duration <= 0:
@@ -4599,7 +4638,7 @@ def assemble_video_with_hook(
                 c = c.set_duration(dur)
             return c
         frame = _load_frame(src_path)
-        return _zoom_clip(frame, dur, 1.00, 1.08 if zoom_in else 1.00, fade_in=0.2, fade_out=0.2)
+        return _zoom_clip(frame, dur, 1.00, 1.08 if zoom_in else 1.00, fade_in=fi, fade_out=0.2)
 
     # â"€â"€ HOOK SECTION (0:00 to 1:30): fast cuts every 3-5 s â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
     # Cycle through ALL images repeatedly — movie-trailer energy
@@ -4613,7 +4652,7 @@ def assemble_video_with_hook(
             cut_dur   = random.uniform(3, 4)
             remaining = hook_duration - hook_total
             cut_dur   = min(cut_dur, remaining)
-            clip = _media_clip(img_path, cut_dur, zoom_in=(img_index % 2 == 0))
+            clip = _media_clip(img_path, cut_dur, zoom_in=(img_index % 2 == 0), first_clip=(img_index == 0))
             hook_clips.append(clip)
             hook_total += cut_dur
         except Exception as e:
@@ -4788,15 +4827,13 @@ def assemble_short_video(audio_path: str, image_paths: list[str], output_path: s
         return np.array(pil)
 
     def _fit_vertical(clip):
-        c = clip.resize(height=TARGET_H)
-        if c.w < TARGET_W:
-            c = c.resize(width=TARGET_W)
-        return c.crop(
-            x_center=c.w / 2,
-            y_center=c.h / 2,
-            width=TARGET_W,
-            height=TARGET_H,
-        )
+        """Scale clip to fill 1080×1920 with center crop — no black bars for any aspect ratio."""
+        cw, ch = clip.size
+        scale = max(TARGET_W / cw, TARGET_H / ch)
+        nw = max(TARGET_W, int(cw * scale))
+        nh = max(TARGET_H, int(ch * scale))
+        c = clip.resize((nw, nh))
+        return c.crop(x_center=nw / 2, y_center=nh / 2, width=TARGET_W, height=TARGET_H)
 
     def _zoom_clip(frame, start_scale: float, end_scale: float, dur: float):
         def make_frame(t):
@@ -5588,8 +5625,9 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
             chapters_str=_overlay_chapters,
         )
 
-        # Optional: prepend 3-second cinematic intro (set ENABLE_PREMIUM_INTRO=1 to activate)
-        if not is_short and os.getenv("ENABLE_PREMIUM_INTRO", "").strip() in ("1", "true", "yes"):
+        # Intro disabled — black screen confirmed in production benchmarks
+        # To re-enable: change "FORCE_ENABLE" back to ("1", "true", "yes") after fixing
+        if not is_short and os.getenv("ENABLE_PREMIUM_INTRO", "").strip() == "FORCE_ENABLE":
             try:
                 from agents.premium_intro import create_intro, prepend_intro
                 _intro_path = os.path.join(FINAL_DIR, f"{video_id}_intro.mp4")

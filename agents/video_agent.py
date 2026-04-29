@@ -124,6 +124,75 @@ def get_voice(language: str) -> str:
     return voices.get(language.lower(), "en-US-GuyNeural")
 
 
+# ── Arabic TTS pronunciation map ──────────────────────────────────────────────
+# Replaces foreign names/brands that appear in Arabic script with phonetic Arabic
+# equivalents so the TTS engine doesn't mispronounce Latin characters.
+# Listed longest-first so multi-word phrases match before single words.
+_ARABIC_PRONUNCIATION = [
+    # Streaming / platforms
+    ("Netflix",          "نتفليكس"),
+    ("YouTube",          "يوتيوب"),
+    ("Amazon Prime",     "أمازون برايم"),
+    ("Amazon",           "أمازون"),
+    ("HBO",              "إتش بي أو"),
+    ("TikTok",           "تيك توك"),
+    ("Instagram",        "إنستغرام"),
+    ("WhatsApp",         "واتساب"),
+    ("Google",           "غوغل"),
+    ("Twitter",          "تويتر"),
+    # Law enforcement / agencies
+    ("FBI",              "إف بي آي"),
+    ("CIA",              "سي آي إيه"),
+    ("DEA",              "دي إيه إيه"),
+    ("NSA",              "إن إس إيه"),
+    ("LAPD",             "شرطة لوس أنجلوس"),
+    ("Interpol",         "الإنتربول"),
+    # Shows / films from pipeline topics
+    ("Mindhunter",       "مايند هانتر"),
+    ("Breaking Bad",     "بريكينج باد"),
+    ("Narcos Mexico",    "ناركوس المكسيك"),
+    ("Narcos",           "ناركوس"),
+    ("Scarface",         "سكارفيس"),
+    ("Goodfellas",       "غودفيلاز"),
+    ("The Godfather",    "العراب"),
+    ("Godfather",        "العراب"),
+    ("The Sopranos",     "سوبرانوز"),
+    ("Sopranos",         "سوبرانوز"),
+    ("The Wire",         "ذا واير"),
+    ("Ozark",            "أوزارك"),
+    ("Casino",           "كازينو"),
+    ("Donnie Brasco",    "دوني براسكو"),
+    ("Sicario",          "سيكاريو"),
+    ("Griselda",         "غريسيلدا"),
+    ("American Gangster","الغانغستر الأمريكي"),
+    ("City of God",      "مدينة الله"),
+    ("Peaky Blinders",   "بيكي بلايندرز"),
+    ("Money Heist",      "سرقة الأموال"),
+    # Key people
+    ("John Douglas",     "جون دوغلاس"),
+    ("Pablo Escobar",    "بابلو إسكوبار"),
+    ("El Chapo",         "إل تشابو"),
+    ("Al Capone",        "آل كابوني"),
+    ("Frank Lucas",      "فرانك لوكاس"),
+    ("Tony Montana",     "توني مونتانا"),
+    ("Walter White",     "والتر وايت"),
+    ("Jesse Pinkman",    "جيسي بينكمان"),
+    ("Griselda Blanco",  "غريسيلدا بلانكو"),
+    ("Whitey Bulger",    "وايتي بولجر"),
+    ("Henry Hill",       "هنري هيل"),
+    ("Michael Corleone", "مايكل كورليوني"),
+    ("Vito Corleone",    "فيتو كورليوني"),
+]
+
+
+def _apply_arabic_pronunciation(text: str) -> str:
+    """Replace foreign names in Arabic text with phonetic Arabic equivalents."""
+    import re as _pre
+    for en, ar in sorted(_ARABIC_PRONUNCIATION, key=lambda x: len(x[0]), reverse=True):
+        text = _pre.sub(_pre.escape(en), ar, text, flags=_pre.IGNORECASE)
+    return text
+
+
 def generate_voiceover_edgetts(script_text: str, filename: str, language: str = "english") -> str:
     """Generate voiceover using edge-tts."""
     try:
@@ -457,6 +526,10 @@ def generate_voiceover(script_text: str, filename: str, language: str = "english
             _fmt = None
     if _fmt:
         script_text = _fmt(script_text)
+
+    # Replace foreign names with Arabic phonetic equivalents before any TTS engine
+    if language == "arabic":
+        script_text = _apply_arabic_pronunciation(script_text)
 
     # Priority 1: OpenAI TTS
     openai_key = os.getenv("OPENAI_API_KEY", "").strip()
@@ -4545,16 +4618,13 @@ def assemble_video_with_hook(
         return np.array(pil)
 
     def _fit_vertical(clip):
-        """Resize + center crop to exact 1080x1920."""
-        c = clip.resize(height=TARGET_H)
-        if c.w < TARGET_W:
-            c = c.resize(width=TARGET_W)
-        return c.crop(
-            x_center=c.w / 2,
-            y_center=c.h / 2,
-            width=TARGET_W,
-            height=TARGET_H,
-        )
+        """Scale clip to fill 1080×1920 with center crop — no black bars for any aspect ratio."""
+        cw, ch = clip.size
+        scale = max(TARGET_W / cw, TARGET_H / ch)
+        nw = max(TARGET_W, int(cw * scale))
+        nh = max(TARGET_H, int(ch * scale))
+        c = clip.resize((nw, nh))
+        return c.crop(x_center=nw / 2, y_center=nh / 2, width=TARGET_W, height=TARGET_H)
 
     def _zoom_clip(
         frame, dur: float,
@@ -4584,13 +4654,14 @@ def assemble_video_with_hook(
             return np.clip(rgb, 0, 255).astype("uint8")
         return VideoClip(make_frame=make_frame, duration=dur)
 
-    def _media_clip(src_path: str, dur: float, zoom_in: bool = True):
+    def _media_clip(src_path: str, dur: float, zoom_in: bool = True, first_clip: bool = False):
+        fi = 0.0 if first_clip else 0.2   # no fade-in on opening shot
         if _is_video_file(src_path):
             v = VideoFileClip(src_path)
             if v.duration <= 0:
                 v.close()
                 frame = _load_frame(src_path)
-                return _zoom_clip(frame, dur, 1.00, 1.06 if zoom_in else 1.00)
+                return _zoom_clip(frame, dur, 1.00, 1.06 if zoom_in else 1.00, fade_in=fi)
             max_start = max(0.0, v.duration - dur)
             start = random.uniform(0, max_start) if max_start > 0 else 0.0
             c = v.subclip(start, min(v.duration, start + dur))
@@ -4599,7 +4670,7 @@ def assemble_video_with_hook(
                 c = c.set_duration(dur)
             return c
         frame = _load_frame(src_path)
-        return _zoom_clip(frame, dur, 1.00, 1.08 if zoom_in else 1.00, fade_in=0.2, fade_out=0.2)
+        return _zoom_clip(frame, dur, 1.00, 1.08 if zoom_in else 1.00, fade_in=fi, fade_out=0.2)
 
     # â"€â"€ HOOK SECTION (0:00 to 1:30): fast cuts every 3-5 s â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
     # Cycle through ALL images repeatedly — movie-trailer energy
@@ -4613,7 +4684,7 @@ def assemble_video_with_hook(
             cut_dur   = random.uniform(3, 4)
             remaining = hook_duration - hook_total
             cut_dur   = min(cut_dur, remaining)
-            clip = _media_clip(img_path, cut_dur, zoom_in=(img_index % 2 == 0))
+            clip = _media_clip(img_path, cut_dur, zoom_in=(img_index % 2 == 0), first_clip=(img_index == 0))
             hook_clips.append(clip)
             hook_total += cut_dur
         except Exception as e:
@@ -4788,15 +4859,13 @@ def assemble_short_video(audio_path: str, image_paths: list[str], output_path: s
         return np.array(pil)
 
     def _fit_vertical(clip):
-        c = clip.resize(height=TARGET_H)
-        if c.w < TARGET_W:
-            c = c.resize(width=TARGET_W)
-        return c.crop(
-            x_center=c.w / 2,
-            y_center=c.h / 2,
-            width=TARGET_W,
-            height=TARGET_H,
-        )
+        """Scale clip to fill 1080×1920 with center crop — no black bars for any aspect ratio."""
+        cw, ch = clip.size
+        scale = max(TARGET_W / cw, TARGET_H / ch)
+        nw = max(TARGET_W, int(cw * scale))
+        nh = max(TARGET_H, int(ch * scale))
+        c = clip.resize((nw, nh))
+        return c.crop(x_center=nw / 2, y_center=nh / 2, width=TARGET_W, height=TARGET_H)
 
     def _zoom_clip(frame, start_scale: float, end_scale: float, dur: float):
         def make_frame(t):
@@ -5607,8 +5676,9 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
             chapters_str=_overlay_chapters,
         )
 
-        # Optional: prepend 3-second cinematic intro (set ENABLE_PREMIUM_INTRO=1 to activate)
-        if not is_short and os.getenv("ENABLE_PREMIUM_INTRO", "").strip() in ("1", "true", "yes"):
+        # Intro disabled — black screen confirmed in production benchmarks
+        # To re-enable: change "FORCE_ENABLE" back to ("1", "true", "yes") after fixing
+        if not is_short and os.getenv("ENABLE_PREMIUM_INTRO", "").strip() == "FORCE_ENABLE":
             try:
                 from agents.premium_intro import create_intro, prepend_intro
                 _intro_path = os.path.join(FINAL_DIR, f"{video_id}_intro.mp4")
