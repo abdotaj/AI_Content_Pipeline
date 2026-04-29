@@ -3910,7 +3910,7 @@ def cut_chapter_shorts(
         "Conclusion — YouTube Shorts + TikTok",
     ]
 
-    ffmpeg_bin = _find_ffmpeg()
+    ffmpeg_bin = _get_ffmpeg()
     if not ffmpeg_bin:
         print("[Short] ffmpeg not found -- skipping chapter shorts")
         return []
