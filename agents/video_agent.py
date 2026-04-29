@@ -161,13 +161,15 @@ def generate_voiceover_openai(text: str, language: str, output_path: str,
     global _OPENAI_QUOTA_EXCEEDED
     import openai
     import httpx
+    import hashlib
+    import shutil as _shutil
 
     api_key = os.getenv("OPENAI_API_KEY", "").strip()
     if not api_key:
         print("[Voice] OpenAI API key not set — skipping")
         return None
     if _OPENAI_QUOTA_EXCEEDED:
-        print("[Voice] OpenAI quota exceeded this run — skipping directly to edge-tts")
+        print("[Voice] OpenAI quota exceeded this run — skipping")
         return None
 
     client = openai.OpenAI(
@@ -204,19 +206,37 @@ def generate_voiceover_openai(text: str, language: str, output_path: str,
     }
 
     if language == "arabic":
-        model = "tts-1-hd"
+        model = "tts-1"
         voice = "alloy"
         speed = TTS_SPEED
         label = "Arabic"
     else:
-        model = "tts-1-hd"
+        model = "tts-1"
         voice = "onyx"
         speed = TTS_SPEED
         label = "English"
 
-    tts_instructions = None  # tts-1-hd does not support instructions param
+    tts_instructions = None  # tts-1 does not support instructions param
 
     print(f"[Voice] TTS speed: {speed} ({label}) | model={model} voice={voice}")
+
+    # ── Persistent hash cache ──────────────────────────────────────────────────
+    _cache_key  = hashlib.sha256(
+        f"{text}|{language}|{voice}|{model}".encode()
+    ).hexdigest()[:16]
+    _cache_path = os.path.join(AUDIO_DIR, f"tts_{_cache_key}.mp3")
+    if os.path.exists(_cache_path) and os.path.getsize(_cache_path) > 0:
+        _shutil.copy2(_cache_path, output_path)
+        print(f"[TTS] cache hit — {_cache_path}")
+        return output_path
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def _is_quota_err(err_str: str) -> bool:
+        """Permanent credit/billing exhaustion — do NOT retry."""
+        _SIGNALS = ("insufficient_quota", "billing", "credit", "payment",
+                    "402", "your balance", "out of credits")
+        s = err_str.lower()
+        return any(sig in s for sig in _SIGNALS) or ("429" in err_str and "quota" in s)
 
     try:
         chunks = _split_text(text, max_chars=4000)
@@ -226,6 +246,11 @@ def generate_voiceover_openai(text: str, language: str, output_path: str,
         base = output_path.replace(".mp3", "")
         for i, chunk in enumerate(chunks):
             chunk_path = f"{base}_oai_chunk{i}.mp3"
+
+            if os.path.exists(chunk_path) and os.path.getsize(chunk_path) > 0:
+                print(f"[Voice] OpenAI chunk {i + 1}/{len(chunks)} cached — reusing")
+                audio_files.append(chunk_path)
+                continue
 
             for attempt in range(3):
                 try:
@@ -244,13 +269,14 @@ def generate_voiceover_openai(text: str, language: str, output_path: str,
                     break
                 except Exception as e:
                     err_str = str(e)
-                    if "429" in err_str or "quota" in err_str.lower() or "rate" in err_str.lower():
-                        print(f"[Voice] OpenAI 429/quota error — disabling OpenAI TTS for this run")
+                    if _is_quota_err(err_str):
+                        # Permanent billing/credit exhaustion — abort, no retries
                         _OPENAI_QUOTA_EXCEEDED = True
                         for f in audio_files:
                             try: os.remove(f)
                             except OSError: pass
                         return None
+                    # Transient network error — retry with backoff
                     print(f"[Voice] OpenAI chunk attempt {attempt + 1} failed: {e}")
                     time.sleep(5)
             else:
@@ -262,8 +288,7 @@ def generate_voiceover_openai(text: str, language: str, output_path: str,
 
         # Merge chunks
         if len(audio_files) == 1:
-            import shutil
-            shutil.move(audio_files[0], output_path)
+            _shutil.move(audio_files[0], output_path)
         else:
             merged = False
             import subprocess
@@ -285,8 +310,7 @@ def generate_voiceover_openai(text: str, language: str, output_path: str,
             if not merged:
                 merged = _merge_chunks_pydub(audio_files, output_path)
             if not merged:
-                import shutil
-                shutil.copy(audio_files[0], output_path)
+                _shutil.copy(audio_files[0], output_path)
                 print("[Voice] OpenAI using first chunk only")
             for f in audio_files:
                 if os.path.exists(f) and f != output_path:
@@ -295,7 +319,9 @@ def generate_voiceover_openai(text: str, language: str, output_path: str,
             try: os.remove(list_path)
             except OSError: pass
 
-        print(f"[Voice] OpenAI TTS complete: {output_path}")
+        # Save to persistent cache for future runs
+        _shutil.copy2(output_path, _cache_path)
+        print(f"[TTS] OpenAI success")
         return output_path
 
     except Exception as e:
@@ -432,19 +458,22 @@ def generate_voiceover(script_text: str, filename: str, language: str = "english
     if _fmt:
         script_text = _fmt(script_text)
 
-    # Priority 1: OpenAI TTS (tts-1-hd)
+    # Priority 1: OpenAI TTS
     openai_key = os.getenv("OPENAI_API_KEY", "").strip()
     if openai_key and not _OPENAI_QUOTA_EXCEEDED:
-        print("[Voice] Trying OpenAI TTS (tts-1-hd)...")
+        print("[Voice] Trying OpenAI TTS...")
         _oai_path = os.path.join(AUDIO_DIR, f"{filename}.mp3")
         _is_short = "short" in filename.lower()
         result = generate_voiceover_openai(script_text, language, _oai_path, is_short=_is_short)
         if result:
             return result
-        print("[Voice] OpenAI TTS failed — falling back to edge-tts")
+        if _OPENAI_QUOTA_EXCEEDED:
+            print("[TTS] OpenAI quota exceeded -> edge fallback")
+        else:
+            print("[Voice] OpenAI TTS failed — falling back to edge-tts")
 
-    # Priority 2: edge-tts (always available)
-    print("[Voice] Using edge-tts fallback")
+    # Priority 2: edge-tts (backup — used only when OpenAI unavailable)
+    print("[Voice] Using edge-tts")
     return generate_voiceover_edgetts(script_text, filename, language)
 
 
@@ -1126,53 +1155,57 @@ _IMAGE_PROMPT_SUFFIX = (
 
 
 def build_image_prompt(chunk_text: str) -> str:
-    """Ask OpenAI for a specific â‰¤20-word image prompt from a script chunk.
-    Falls back to a generic cinematic prompt if OpenAI is unavailable.
-    """
-    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    """Groq-first image prompt generation from a script chunk; OpenAI fallback."""
     first_200 = " ".join(chunk_text.split()[:200])
 
-    if not api_key:
-        return f"true crime historical documentary scene cinematic dark{_IMAGE_PROMPT_SUFFIX}"
+    prompt = (
+        "Read this script excerpt and write a specific visual image generation prompt "
+        "(max 20 words) that represents the exact subject being described.\n\n"
+        "Rules:\n- Name real places, real objects, real events\n- No human faces\n"
+        "- Dark cinematic documentary style\n- Be specific not generic\n\n"
+        "Examples:\n"
+        "GOOD: 'Burned village Darfur Sudan desert, smoke ruins, golden hour, cinematic aerial view'\n"
+        "BAD: 'dark crime documentary background'\n\n"
+        f"Script excerpt: {first_200}\n\nReturn only the image prompt, nothing else."
+    )
 
-    prompt = f"""Read this script excerpt and write a specific visual image generation prompt (max 20 words) that represents the exact subject being described.
-
-Rules:
-- Name real places, real objects, real events
-- No human faces
-- Dark cinematic documentary style
-- Be specific not generic
-
-Examples:
-GOOD: 'Burned village Darfur Sudan desert, smoke ruins, golden hour, cinematic aerial view'
-BAD: 'dark crime documentary background'
-
-Script excerpt: {first_200}
-
-Return only the image prompt, nothing else."""
-
+    # Groq first (free tier)
     try:
-        r = requests.post(
-            "https://api.openai.com/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": "gpt-4o-mini",
-                "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": 60,
-                "temperature": 0.7,
-            },
-            timeout=30,
-        )
-        if r.status_code == 200:
-            result = r.json()["choices"][0]["message"]["content"].strip().strip('"\'')
-            print(f"[Image] Chunk prompt: {result[:70]}")
-            return f"{result}{_IMAGE_PROMPT_SUFFIX}"
-        print(f"[Image] build_image_prompt error {r.status_code}")
-    except Exception as e:
-        print(f"[Image] build_image_prompt failed: {e}")
+        from agents.script_agent import _groq_call as _gc
+    except ImportError:
+        try:
+            from script_agent import _groq_call as _gc
+        except ImportError:
+            _gc = None
+    if _gc:
+        try:
+            result = _gc(
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=60, temperature=0.7,
+            ).choices[0].message.content.strip().strip('"\'')
+            if result:
+                print(f"[Image] Chunk prompt (Groq): {result[:70]}")
+                return f"{result}{_IMAGE_PROMPT_SUFFIX}"
+        except Exception as e:
+            print(f"[Image] Groq image prompt failed: {e}")
+
+    # OpenAI fallback
+    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    if api_key:
+        try:
+            r = requests.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json={"model": "gpt-4o-mini", "messages": [{"role": "user", "content": prompt}],
+                      "max_tokens": 60, "temperature": 0.7},
+                timeout=30,
+            )
+            if r.status_code == 200:
+                result = r.json()["choices"][0]["message"]["content"].strip().strip('"\'')
+                print(f"[Image] Chunk prompt (OpenAI): {result[:70]}")
+                return f"{result}{_IMAGE_PROMPT_SUFFIX}"
+        except Exception as e:
+            print(f"[Image] build_image_prompt OpenAI failed: {e}")
 
     return f"true crime historical documentary scene cinematic dark{_IMAGE_PROMPT_SUFFIX}"
 
@@ -2830,7 +2863,13 @@ def _section_fallback_query(section_idx: int, topic: str) -> str:
 
 
 def _get_stock_video_query_for_chunk(chunk_text: str, topic: str = "") -> str | None:
-    """Generate stock-video-friendly B-roll query from script chunk. OpenAI → Groq fallback."""
+    """Generate stock-video-friendly B-roll query from script chunk. Groq primary → OpenAI fallback."""
+    # Groq first (free tier)
+    result = _groq_query_for_chunk(chunk_text, topic=topic, for_video=True)
+    if result:
+        return result
+
+    # OpenAI fallback
     first_120 = " ".join((chunk_text or "").split()[:120])
     prompt = (
         f"Create one stock video search query (3-6 English words) for this script chunk.\n"
@@ -2838,14 +2877,9 @@ def _get_stock_video_query_for_chunk(chunk_text: str, topic: str = "") -> str | 
         f"Be as specific as possible. Use real names, real places, real time periods from the text.\n"
         f"GOOD: 'John Douglas FBI agent 1977'\n"
         f"GOOD: 'Edmund Kemper prison interview 1979'\n"
-        f"GOOD: 'FBI Quantico Behavioral Science Unit'\n"
-        f"GOOD: 'Mindhunter Netflix cast three agents'\n"
         f"BAD: 'crime story background'\n"
-        f"BAD: 'dark street night'\n"
         f"Text: {first_120}\nReturn only the query."
     )
-
-    # Try OpenAI first
     api_key = os.getenv("OPENAI_API_KEY", "").strip()
     if api_key:
         try:
@@ -2863,9 +2897,7 @@ def _get_stock_video_query_for_chunk(chunk_text: str, topic: str = "") -> str | 
                     return q
         except Exception as e:
             print(f"[Stock] OpenAI video query failed: {e}")
-
-    # Groq fallback
-    return _groq_query_for_chunk(chunk_text, topic=topic, for_video=True)
+    return None
 
 
 # ── yt-dlp availability check ────────────────────────────────────────────────
@@ -3079,36 +3111,48 @@ def fetch_stock_videos(script_text: str, count: int, video_id: str, topic: str =
 
 
 def _translate_to_arabic_query(english_query: str) -> str | None:
-    """Translate an English image search query to Arabic via OpenAI."""
+    """Translate an English image search query to Arabic. Groq primary → OpenAI fallback."""
+    _prompt = (
+        f"Translate this image search query to Arabic. "
+        f"Return only the Arabic translation, nothing else.\n\nQuery: {english_query}"
+    )
+
+    # Groq first (free tier)
+    try:
+        from agents.script_agent import _groq_call as _gc
+    except ImportError:
+        try:
+            from script_agent import _groq_call as _gc
+        except ImportError:
+            _gc = None
+    if _gc:
+        try:
+            result = _gc(
+                messages=[{"role": "user", "content": _prompt}],
+                max_tokens=30, temperature=0.1,
+            ).choices[0].message.content.strip()
+            if result:
+                return result
+        except Exception as e:
+            print(f"[Image] Groq Arabic query translation failed: {e}")
+
+    # OpenAI fallback
     api_key = os.getenv("OPENAI_API_KEY", "").strip()
     if not api_key:
         return None
     try:
         r = requests.post(
             "https://api.openai.com/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": "gpt-4o-mini",
-                "messages": [{
-                    "role": "user",
-                    "content": (
-                        f"Translate this image search query to Arabic. "
-                        f"Return only the Arabic translation, nothing else.\n\n"
-                        f"Query: {english_query}"
-                    ),
-                }],
-                "max_tokens": 30,
-                "temperature": 0.1,
-            },
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json={"model": "gpt-4o-mini",
+                  "messages": [{"role": "user", "content": _prompt}],
+                  "max_tokens": 30, "temperature": 0.1},
             timeout=15,
         )
         if r.status_code == 200:
             return r.json()["choices"][0]["message"]["content"].strip()
     except Exception as e:
-        print(f"[Image] Arabic query translation failed: {e}")
+        print(f"[Image] OpenAI Arabic query translation failed: {e}")
     return None
 
 
@@ -3131,8 +3175,14 @@ def search_real_image(query: str, output_path: str) -> str | None:
 def _get_search_query_for_chunk(chunk_text: str) -> str | None:
     """
     Get a specific English image search query for a script chunk.
-    Always English even if chunk is Arabic. OpenAI first, Groq fallback.
+    Always English even if chunk is Arabic. Groq primary → OpenAI fallback.
     """
+    # Groq first (free tier)
+    result = _groq_query_for_chunk(chunk_text, for_video=False)
+    if result:
+        return result
+
+    # OpenAI fallback
     first_150 = " ".join(chunk_text.split()[:150])
     prompt = (
         "What is the single most specific, searchable subject in this text?\n"
@@ -3144,8 +3194,6 @@ def _get_search_query_for_chunk(chunk_text: str) -> str | None:
         f"Text: {first_150}\n"
         "Return only the English search query, nothing else."
     )
-
-    # Try OpenAI first
     api_key = os.getenv("OPENAI_API_KEY", "").strip()
     if api_key:
         try:
@@ -3163,9 +3211,7 @@ def _get_search_query_for_chunk(chunk_text: str) -> str | None:
                     return q
         except Exception as e:
             print(f"[Image] OpenAI search query failed: {e}")
-
-    # Groq fallback
-    return _groq_query_for_chunk(chunk_text, for_video=False)
+    return None
 
 
 def fetch_real_images(script_text: str, count: int, video_id: str,
@@ -5488,11 +5534,38 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
             chapters_str=_overlay_chapters,
         )
 
+        # Optional: prepend 3-second cinematic intro (set ENABLE_PREMIUM_INTRO=1 to activate)
+        if not is_short and os.getenv("ENABLE_PREMIUM_INTRO", "").strip() in ("1", "true", "yes"):
+            try:
+                from agents.premium_intro import create_intro, prepend_intro
+                _intro_path = os.path.join(FINAL_DIR, f"{video_id}_intro.mp4")
+                _intro = create_intro(_intro_path)
+                if _intro:
+                    video_path = prepend_intro(_intro, video_path)
+            except Exception as _intro_err:
+                print(f"[Intro] Non-fatal: {_intro_err}")
+
         short_out = os.path.join(SHORTS_DIR, f"{video_id}_short.mp4")
         script_data["short_clip_path"] = cut_short_clip(video_path, short_out, script_data=script_data)
-        # Extract first frame for YouTube thumbnail (actual content, not AI portrait)
+
+        # Generate styled thumbnail; fall back to raw frame extraction on failure
         thumb_path = os.path.join(FINAL_DIR, f"{video_id}_thumb.jpg")
-        extracted = extract_first_frame(video_path, thumb_path)
-        if extracted:
-            script_data["thumbnail_path"] = extracted
+        _thumb_candidates = [p for p in all_image_paths[:5] if p and os.path.exists(p)]
+        _thumb = None
+        if _thumb_candidates:
+            try:
+                from agents.thumbnail_generator import create_thumbnail as _mk_thumb, select_best_image as _sbi
+                _thumb_src = _sbi(_thumb_candidates)
+                _thumb = _mk_thumb(
+                    image_path  = _thumb_src,
+                    title       = script_data.get("title", ""),
+                    output_path = thumb_path,
+                    language    = language,
+                )
+            except Exception as _te:
+                print(f"[Thumb] Non-fatal: {_te}")
+        if not _thumb:
+            _thumb = extract_first_frame(video_path, thumb_path)
+        if _thumb:
+            script_data["thumbnail_path"] = _thumb
     return video_path

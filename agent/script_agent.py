@@ -228,10 +228,19 @@ _OPENAI_QUOTA_EXCEEDED = False
 def _ai_script_call(prompt: str, max_tokens: int = 1000,
                     json_mode: bool = False, temperature: float = 0.7,
                     system_prompt: str | None = None) -> str:
-    """Try OpenAI gpt-4o-mini first, fall back to Groq."""
+    """Groq primary, OpenAI gpt-4o-mini fallback."""
     import requests as _req
     global _OPENAI_QUOTA_EXCEEDED
 
+    # Groq first (free tier — llama-3.3-70b)
+    try:
+        result = _groq_fallback(prompt, max_tokens, json_mode, system_prompt=system_prompt)
+        if result:
+            return result
+    except Exception as e:
+        print(f'[Script] Groq failed: {e}')
+
+    # OpenAI fallback
     api_key = os.getenv('OPENAI_API_KEY', '').strip()
     if api_key and not _OPENAI_QUOTA_EXCEEDED:
         try:
@@ -247,14 +256,15 @@ def _ai_script_call(prompt: str, max_tokens: int = 1000,
                 timeout=60,
             )
             if r.status_code == 200:
+                print('[Script] Used OpenAI fallback')
                 return r.json()['choices'][0]['message']['content'].strip()
             elif r.status_code == 429:
                 _OPENAI_QUOTA_EXCEEDED = True
-                print('[Script] OpenAI quota exceeded — switching to Groq')
+                print('[Script] OpenAI quota exceeded')
         except Exception as e:
             print(f'[Script] OpenAI failed: {e}')
 
-    return _groq_fallback(prompt, max_tokens, json_mode, system_prompt=system_prompt)
+    return ""
 
 
 title_format = "Dark Crime Decoded: {person} & {series} — {curiosity_hook}"
@@ -2274,13 +2284,13 @@ def format_for_tts_arabic(text: str) -> str:
             out_parts.append(part)
             continue
 
-        # Cleanup pass: OpenAI → Groq → as-is
+        # Cleanup pass: Groq → OpenAI → as-is
         if clean_word_count(part) > 20:
             try:
-                cleaned = _clean_arabic_with_openai(part)
+                cleaned = _groq_clean_arabic(part)
             except Exception:
                 try:
-                    cleaned = _groq_clean_arabic(part)
+                    cleaned = _clean_arabic_with_openai(part)
                 except Exception:
                     cleaned = part
         else:

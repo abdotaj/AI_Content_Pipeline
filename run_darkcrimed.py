@@ -136,13 +136,94 @@ def check_force_run() -> bool:
     return False
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  Pipeline Utilities  (structured log · retry · stage timer · manifest dedup)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _log(stage: str, msg: str, level: str = "INFO") -> None:
+    """Timestamped structured log line."""
+    ts  = datetime.datetime.now().strftime("%H:%M:%S")
+    tag = {"WARN": "WARN", "ERROR": "ERR ", "OK": "OK  "}.get(level, "INFO")
+    print(f"[{ts}][{tag}][{stage}] {msg}", flush=True)
+
+
+def _with_retry(fn, *args, retries: int = 3, delay: float = 10.0,
+                label: str = "", **kwargs):
+    """Call fn(*args, **kwargs); retry up to `retries` times on transient failure."""
+    for attempt in range(1, retries + 1):
+        try:
+            return fn(*args, **kwargs)
+        except Exception as exc:
+            if attempt == retries:
+                raise
+            wait = delay * attempt
+            _log("Retry",
+                 f"{label or fn.__name__} attempt {attempt}/{retries}: {exc} "
+                 f"— retrying in {wait:.0f}s", "WARN")
+            time.sleep(wait)
+
+
+_PIPELINE_T0: float  = 0.0    # absolute pipeline start time
+_STAGE_MARKS: list   = []     # [(name, timestamp), ...]  in insertion order
+
+
+def _stage(name: str) -> None:
+    """Record a named timing milestone and log it."""
+    _STAGE_MARKS.append((name, time.time()))
+    _log(name, "reached")
+
+
+def _timing_report() -> str:
+    """Return a multi-line stage-timing summary."""
+    if not _STAGE_MARKS:
+        return ""
+    lines = ["", "── Stage Timings ─────────────────────────────────"]
+    prev_t = _PIPELINE_T0
+    for name, t in _STAGE_MARKS:
+        dur = t - prev_t
+        lines.append(f"  {name:<34} {dur / 60:5.1f} min")
+        prev_t = t
+    total = time.time() - _PIPELINE_T0
+    lines.append(f"  {'TOTAL':<34} {total / 60:5.1f} min")
+    lines.append("──────────────────────────────────────────────────")
+    return "\n".join(lines)
+
+
+def _load_existing_outputs(today: str, topic: str) -> tuple:
+    """
+    If today's manifest already has matching topic and both video files exist,
+    return (en_path, ar_path) so the pipeline can skip regeneration on a rerun.
+    """
+    manifest_path = f"output/dark_crime/manifest_{today}.json"
+    if not os.path.exists(manifest_path):
+        return "", ""
+    try:
+        with open(manifest_path, encoding="utf-8") as _f:
+            _d = json.load(_f)
+        if _d.get("topic", "").lower().strip() != topic.lower().strip():
+            return "", ""
+        en = _d.get("videos", {}).get("en_long", "")
+        ar = _d.get("videos", {}).get("ar_long", "")
+        if en and ar and os.path.exists(en) and os.path.exists(ar):
+            _log("Pipeline", f"Reusing existing videos for '{topic}'", "OK")
+            return en, ar
+    except Exception as _exc:
+        _log("Pipeline", f"Manifest reuse check failed: {_exc}", "WARN")
+    return "", ""
+
+
 def run_pipeline():
+    global _PIPELINE_T0, _STAGE_MARKS
+    _PIPELINE_T0 = time.time()
+    _STAGE_MARKS = []
+
     today = datetime.date.today().isoformat()
     stats = {"generated": 0, "posted": 0, "skipped": 0, "errors": 0}
 
-    print(f"\n{'='*50}")
+    print(f"\n{'='*60}")
     print(f"  Dark Crime Decoded Pipeline — {today}")
-    print(f"{'='*50}\n")
+    print(f"{'='*60}\n")
+    _stage("Pipeline start")
 
     # ── Date-based cooldown (scheduled runs only) ──────────────
     # workflow_dispatch and local runs always proceed regardless.
@@ -265,14 +346,16 @@ def run_pipeline():
                 print("[1/5] No photos — AI images will be generated")
 
             # ── 1F: Research exact topic ──────────────────────────────────────
-            print(f"[Research] Researching: {topic_text}")
+            _log("Research", f"Researching: {topic_text}")
             try:
-                research = research_series(topic_text, series_name, user_note=raw_input)
+                research = _with_retry(research_series, topic_text, series_name,
+                                       user_note=raw_input, retries=3, delay=12,
+                                       label="research_series")
                 if research is None:
-                    print("[Pipeline] research_series returned None — aborting")
+                    _log("Research", "research_series returned None — aborting", "ERROR")
                     return
             except Exception as e:
-                print(f"  [WARN] Web research failed for '{topic_text}': {e}")
+                _log("Research", f"Web research failed for '{topic_text}': {e}", "WARN")
                 research = {}
 
             # Force correct person — never let research override the user's choice
@@ -300,10 +383,11 @@ def run_pipeline():
             )
 
             try:
-                auto_topics = research_topics(count=1)
+                auto_topics = _with_retry(research_topics, count=1,
+                                          retries=3, delay=12, label="research_topics")
             except Exception as e:
                 send_message(f"Research failed: {e}")
-                print(f"[ERROR] Research: {e}")
+                _log("Research", f"research_topics failed: {e}", "ERROR")
                 return
             topic = auto_topics[0]
             topic_text  = topic.get("topic", "")
@@ -320,13 +404,15 @@ def run_pipeline():
             print(f"[Pipeline] Auto topic: '{topic_text}'")
             series = topic_niche.split("behind")[-1].strip() if "behind" in topic_niche else topic_text
             try:
-                research_result = research_series(series, user_note=topic.get("user_note"))
+                research_result = _with_retry(research_series, series,
+                                              user_note=topic.get("user_note"),
+                                              retries=3, delay=12, label="research_series")
                 if research_result is None:
-                    print("[Pipeline] research_series returned None — aborting")
+                    _log("Research", "research_series returned None — aborting", "ERROR")
                     return
                 topic["research"] = research_result
             except Exception as e:
-                print(f"  [WARN] Web research failed for '{series}': {e}")
+                _log("Research", f"Web research failed for '{series}': {e}", "WARN")
                 topic["research"] = {}
 
             # Collect any images sent after pipeline start (no 3-min wait in auto mode)
@@ -353,6 +439,8 @@ def run_pipeline():
             print(f"[ERROR] Script: {e}")
             return
 
+    _stage("Scripts EN done")
+
     try:
         ar_long = translate_script(en_long)
         # Replace English chapter labels with Arabic equivalents, preserving angle_title
@@ -366,11 +454,13 @@ def run_pipeline():
         # Carry angle fields through to Arabic
         ar_long["angle_title"] = en_long.get("angle_title", "")
         ar_long["angle_hook"]  = en_long.get("angle_hook", "")
-        print("  [2/5] Arabic long script done")
+        _log("Scripts", "Arabic script done", "OK")
     except Exception as e:
         send_message(f"Arabic translation failed: {e}")
-        print(f"[ERROR] Arabic translation: {e}")
+        _log("Scripts", f"Arabic translation failed: {e}", "ERROR")
         return
+
+    _stage("Scripts AR done")
 
     # ── STEP 3: Send scripts to Telegram for review (non-blocking) ────────────
     print("\n[3/5] Sending scripts to Telegram for review...")
@@ -382,7 +472,8 @@ def run_pipeline():
             fn(script, label=label)
         except Exception as e:
             print(f"  [WARN] Script preview failed ({label}): {e}")
-    print("  Scripts sent — continuing pipeline immediately.")
+    _log("Telegram", "Scripts sent — continuing pipeline immediately.", "OK")
+    _stage("Scripts sent to Telegram")
 
     # ── Load saved Part 2 images if this is a Part 2 run ──────
     _part_num_final = en_long.get("part_number")
@@ -420,15 +511,24 @@ def run_pipeline():
         print(f"[Content] Total: {len(user_images)} images + {len(user_videos)} videos")
 
     # ── STEP 4: Generate all 4 videos ─────────────────────────
-    print("\n[4/5] Generating videos...")
+    _log("VideoGen", "Starting video generation")
+    _stage("Video gen start")
 
-    # OUTPUT 1 — English long-form
-    en_long_id   = f"{today}_{uuid.uuid4().hex[:8]}_english_long"
-    en_long_path = _make_video(en_long, en_long_id, stats, user_images=user_images, user_videos=user_videos)
+    # Skip regeneration if today's manifest already has valid files for this topic
+    en_long_id, ar_long_id = "", ""
+    _ex_en, _ex_ar = _load_existing_outputs(today, en_long.get("topic", ""))
+    if _ex_en and _ex_ar:
+        en_long_path, ar_long_path = _ex_en, _ex_ar
+        stats["skipped"] += 2
+        _log("VideoGen", "Reusing existing video files — skipping generation", "OK")
+    else:
+        # OUTPUT 1 — English long-form
+        en_long_id   = f"{today}_{uuid.uuid4().hex[:8]}_english_long"
+        en_long_path = _make_video(en_long, en_long_id, stats, user_images=user_images, user_videos=user_videos)
 
-    # OUTPUT 2 — Arabic long-form
-    ar_long_id   = f"{today}_{uuid.uuid4().hex[:8]}_arabic_long"
-    ar_long_path = _make_video(ar_long, ar_long_id, stats, user_images=user_images, user_videos=user_videos)
+        # OUTPUT 2 — Arabic long-form
+        ar_long_id   = f"{today}_{uuid.uuid4().hex[:8]}_arabic_long"
+        ar_long_path = _make_video(ar_long, ar_long_id, stats, user_images=user_images, user_videos=user_videos)
 
     # Outputs 3-7: cut 5 chapter shorts from English long video
     en_chapter_shorts: list[dict] = []
@@ -442,16 +542,22 @@ def run_pipeline():
         print("[Pipeline] Cutting 5 Arabic chapter shorts...")
         ar_chapter_shorts = cut_chapter_shorts(ar_long_path, ar_long)
 
+    _stage("Videos + shorts done")
+
     # Clear user images + videos so they don't bleed into the next run
     import shutil as _shutil
     for _clear_dir in ("output/user_images", "output/user_videos"):
-        if os.path.exists(_clear_dir):
-            _shutil.rmtree(_clear_dir)
-            os.makedirs(_clear_dir)
-    print("[Pipeline] User images + videos cleared for next run")
+        try:
+            if os.path.exists(_clear_dir):
+                _shutil.rmtree(_clear_dir)
+            os.makedirs(_clear_dir, exist_ok=True)
+        except Exception as _ce:
+            _log("Cleanup", f"Could not reset {_clear_dir}: {_ce}", "WARN")
+    _log("Cleanup", "User media dirs reset for next run", "OK")
 
     # ── STEP 5: Upload long videos to YouTube, then send shorts to Telegram ──
-    print("\n[5/5] Publishing videos...")
+    _log("Publish", "Starting publishing step")
+    _stage("Publish start")
 
     # Retry any failed uploads from previous pipeline runs
     _retry_failed_uploads()
@@ -464,40 +570,46 @@ def run_pipeline():
     yt_en_url = None
     if en_long_path:
         try:
-            print("[Publish] Uploading English long to YouTube...")
-            yt_en_url = upload_to_youtube(en_long_path, en_long, token_file=YOUTUBE_TOKEN_FILE_EN)
+            _log("Publish", "Uploading English long to YouTube...")
+            yt_en_url = _with_retry(upload_to_youtube, en_long_path, en_long,
+                                    token_file=YOUTUBE_TOKEN_FILE_EN,
+                                    retries=3, delay=30, label="YT EN upload")
             send_message(
                 f"✅ English Video Published on YouTube!\n\n"
                 f"🎬 {en_long.get('title', '')}\n"
                 f"🔗 {yt_en_url}\n\n"
                 f"Duration: {get_duration(en_long_path)}"
             )
-            print(f"  [Publish] English YouTube URL: {yt_en_url}")
+            _log("Publish", f"English YouTube: {yt_en_url}", "OK")
         except Exception as e:
-            print(f"  [ERROR] English YouTube upload failed: {e}")
+            _log("Publish", f"English YouTube upload failed: {e}", "ERROR")
             _fail_msg = f"❌ English YouTube upload failed: {e}"
             if _artifact_url:
                 _fail_msg += f"\n\nDownload video from GitHub artifact:\n{_artifact_url}"
             send_message(_fail_msg)
+            stats["errors"] += 1
 
     yt_ar_url = None
     if ar_long_path:
         try:
-            print("[Publish] Uploading Arabic long to YouTube...")
-            yt_ar_url = upload_to_youtube(ar_long_path, ar_long, token_file=YOUTUBE_TOKEN_FILE_AR)
+            _log("Publish", "Uploading Arabic long to YouTube...")
+            yt_ar_url = _with_retry(upload_to_youtube, ar_long_path, ar_long,
+                                    token_file=YOUTUBE_TOKEN_FILE_AR,
+                                    retries=3, delay=30, label="YT AR upload")
             send_message(
                 f"✅ تم نشر الفيديو العربي على يوتيوب!\n\n"
                 f"🎬 {ar_long.get('title', '')}\n"
                 f"🔗 {yt_ar_url}\n\n"
                 f"المدة: {get_duration(ar_long_path)}"
             )
-            print(f"  [Publish] Arabic YouTube URL: {yt_ar_url}")
+            _log("Publish", f"Arabic YouTube: {yt_ar_url}", "OK")
         except Exception as e:
-            print(f"  [ERROR] Arabic YouTube upload failed: {e}")
+            _log("Publish", f"Arabic YouTube upload failed: {e}", "ERROR")
             _fail_msg = f"❌ Arabic YouTube upload failed: {e}"
             if _artifact_url:
                 _fail_msg += f"\n\nDownload video from GitHub artifact:\n{_artifact_url}"
             send_message(_fail_msg)
+            stats["errors"] += 1
 
     # Send 5 English chapter shorts to Telegram
     for short in en_chapter_shorts:
@@ -509,9 +621,11 @@ def run_pipeline():
                 f"Topic: {en_long.get('title', '')}\n"
                 f"{en_long.get('hashtags', '')}"
             )
-            send_video_to_telegram(short["path"], caption, f"EN Short Ch{short['chapter_idx']}")
+            _with_retry(send_video_to_telegram, short["path"], caption,
+                        f"EN Short Ch{short['chapter_idx']}",
+                        retries=3, delay=10, label=f"TG EN Ch{short['chapter_idx']}")
         except Exception as e:
-            print(f"  [WARN] Telegram EN short Ch{short['chapter_idx']} send failed: {e}")
+            _log("Telegram", f"EN short Ch{short['chapter_idx']} send failed: {e}", "WARN")
 
     # Send 5 Arabic chapter shorts to Telegram
     for short in ar_chapter_shorts:
@@ -523,9 +637,11 @@ def run_pipeline():
                 f"Topic: {ar_long.get('title', '')}\n"
                 f"{ar_long.get('hashtags', '')}"
             )
-            send_video_to_telegram(short["path"], caption, f"AR Short Ch{short['chapter_idx']}")
+            _with_retry(send_video_to_telegram, short["path"], caption,
+                        f"AR Short Ch{short['chapter_idx']}",
+                        retries=3, delay=10, label=f"TG AR Ch{short['chapter_idx']}")
         except Exception as e:
-            print(f"  [WARN] Telegram AR short Ch{short['chapter_idx']} send failed: {e}")
+            _log("Telegram", f"AR short Ch{short['chapter_idx']} send failed: {e}", "WARN")
 
     # ── Save manifest (2 long videos + shorts summary) ────────
     _save_manifest(
@@ -535,17 +651,22 @@ def run_pipeline():
         en_chapter_shorts, ar_chapter_shorts,
         yt_en_url, yt_ar_url,
     )
+    _stage("Publish done")
 
     # ── Daily summary ──────────────────────────────────────────
     _total_shorts = len(en_chapter_shorts) + len(ar_chapter_shorts)
+    _total_elapsed = (time.time() - _PIPELINE_T0) / 60
+    _status_en = f"✅ {yt_en_url}" if yt_en_url else "❌ Upload failed"
+    _status_ar = f"✅ {yt_ar_url}" if yt_ar_url else "❌ Upload failed"
     send_message(
         f"📊 Daily Report — Dark Crime Decoded\n\n"
         f"✅ Generated: 2 long + {_total_shorts} shorts ({_total_shorts // 2} EN + {_total_shorts // 2} AR)\n"
+        f"⏱ Total time: {_total_elapsed:.0f} min\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"🎬 English Long → YouTube\n"
-        f"{yt_en_url or '❌ Upload failed'}\n\n"
+        f"{_status_en}\n\n"
         f"🎬 Arabic Long → YouTube\n"
-        f"{yt_ar_url or '❌ Upload failed'}\n\n"
+        f"{_status_ar}\n\n"
         f"📱 {len(en_chapter_shorts)} EN Chapter Shorts → Telegram ✅\n"
         f"📱 {len(ar_chapter_shorts)} AR Chapter Shorts → Telegram ✅\n"
         f"━━━━━━━━━━━━━━━━━━━━━━"
@@ -574,7 +695,18 @@ def run_pipeline():
     _save_log(log_entry)
 
     send_daily_report(stats)
-    print(f"\nDone. Generated: {stats['generated']} | Posted: {stats['posted']} | Errors: {stats['errors']}\n")
+
+    # ── Final console summary ──────────────────────────────────
+    _result = "SUCCESS" if stats["errors"] == 0 else f"PARTIAL ({stats['errors']} error(s))"
+    print(_timing_report())
+    print(f"\n{'='*60}")
+    print(f"  Pipeline {_result} — {today}")
+    print(f"  Generated: {stats['generated']} | Skipped: {stats['skipped']} "
+          f"| Posted: {stats['posted']} | Errors: {stats['errors']}")
+    print(f"  YouTube EN: {yt_en_url or 'FAILED'}")
+    print(f"  YouTube AR: {yt_ar_url or 'FAILED'}")
+    print(f"  Shorts sent: {_total_shorts} ({len(en_chapter_shorts)} EN + {len(ar_chapter_shorts)} AR)")
+    print(f"{'='*60}\n")
 
 
 def get_duration(video_path: str) -> str:
@@ -657,23 +789,27 @@ def _retry_failed_uploads():
     for item in failed:
         label = "English" if "en" in item["type"] else "Arabic"
         try:
-            url = upload_to_youtube(item["path"], item["script"], token_file=item["token"])
+            url = _with_retry(upload_to_youtube, item["path"], item["script"],
+                              token_file=item["token"],
+                              retries=3, delay=30, label=f"Recovery {label}")
             if url:
-                print(f"  [Recovery] {label} recovered: {url}")
+                _log("Recovery", f"{label} recovered: {url}", "OK")
                 send_message(f"✅ [Recovery] {label} video uploaded: {url}")
                 try:
-                    with open(item["manifest"]) as f:
+                    with open(item["manifest"], encoding="utf-8") as f:
                         mdata = json.load(f)
                     key    = "en_long_uploaded" if "en" in item["type"] else "ar_long_uploaded"
                     yt_key = "en"               if "en" in item["type"] else "ar"
-                    mdata["status"][key]         = True
+                    mdata["status"][key]          = True
                     mdata["youtube_urls"][yt_key] = url
-                    with open(item["manifest"], "w") as f:
+                    _tmp = item["manifest"] + ".tmp"
+                    with open(_tmp, "w", encoding="utf-8") as f:
                         json.dump(mdata, f, ensure_ascii=False, indent=2)
+                    os.replace(_tmp, item["manifest"])
                 except Exception as e2:
-                    print(f"  [WARN] Could not update manifest after recovery: {e2}")
+                    _log("Recovery", f"Could not update manifest after recovery: {e2}", "WARN")
         except Exception as e:
-            print(f"  [Recovery] {label} retry failed: {e}")
+            _log("Recovery", f"{label} retry failed: {e}", "WARN")
 
 
 def _save_manifest(today, en_long, ar_long,
@@ -716,9 +852,16 @@ def _save_manifest(today, en_long, ar_long,
     }
     Path("output/dark_crime").mkdir(parents=True, exist_ok=True)
     manifest_path = f"output/dark_crime/manifest_{today}.json"
-    with open(manifest_path, "w", encoding="utf-8") as f:
-        json.dump(manifest, f, ensure_ascii=False, indent=2)
-    print(f"[Manifest] Saved: {manifest_path}")
+    _tmp = manifest_path + ".tmp"
+    try:
+        with open(_tmp, "w", encoding="utf-8") as f:
+            json.dump(manifest, f, ensure_ascii=False, indent=2)
+        os.replace(_tmp, manifest_path)
+    except Exception as _me:
+        _log("Manifest", f"Atomic write failed: {_me} — falling back to direct write", "WARN")
+        with open(manifest_path, "w", encoding="utf-8") as f:
+            json.dump(manifest, f, ensure_ascii=False, indent=2)
+    _log("Manifest", f"Saved: {manifest_path}", "OK")
     return manifest_path
 
 
