@@ -3645,9 +3645,116 @@ def clean_voice(input_path: str, output_path: str) -> str:
 SHORTS_DIR = "output/shorts"
 Path(SHORTS_DIR).mkdir(parents=True, exist_ok=True)
 
+# ── Retention scoring for short-clip selection ────────────────────────────────
+# Each list is checked against the chapter title + first 400 chars of section text.
 
-def cut_short_clip(video_path: str, output_path: str, duration: int = 90) -> str:
-    """Cut the first 60-90 seconds (random) of a video and save to output_path."""
+_RETENTION_HOOK     = ["you won't believe", "what if i told you", "imagine",
+                       "did you know", "the real story", "no one knew",
+                       "this is why", "this is how", "this killer", "this criminal"]
+_RETENTION_REVEAL   = ["revealed", "exposed", "shocking", "nobody knew",
+                       "secret", "real identity", "it turned out", "the truth was",
+                       "what they found", "hidden for years"]
+_RETENTION_MYSTERY  = ["who was", "why did", "what happened", "where did",
+                       "mystery", "disappeared", "was never found", "unknown"]
+_RETENTION_CONFESS  = ["admitted", "confessed", "i killed", "i did it",
+                       "he admitted", "she confessed", "in his own words",
+                       "told investigators", "according to him", "according to her"]
+_RETENTION_ENDING   = ["sentenced", "executed", "life in prison", "never seen again",
+                       "escaped", "guilty", "acquitted", "was shot", "final verdict"]
+# Universal psychological hooks — topic- and region-agnostic (crime, history, cartel, scandal, any language)
+_RETENTION_UNIVERSAL = ["true story", "based on real", "untold", "cover-up", "cover up",
+                        "most wanted", "betrayed", "betrayal", "for the first time",
+                        "until now", "hidden for decades", "the world never knew"]
+# Generic section titles that reduce clip appeal — matched against title only
+_RETENTION_BORING   = ["introduction", "background", "context", "overview", "setup",
+                       "conclusion", "summary", "prologue", "epilogue", "beginning"]
+
+
+def _score_retention(title: str, section_text: str) -> int:
+    """
+    Score a chapter for short-form retention value.
+    Checks title + first 400 chars of section text (combined) for positive signals;
+    title only for the boring-title penalty.
+
+    Weights (globally topic- and region-agnostic):
+      confession quote      +4 each  (rarest, highest watch-through)
+      hook phrase           +3 each
+      shocking reveal       +3 each
+      universal psych hook  +2 each  (betrayal, cover-up, true story — any topic/culture)
+      mystery question      +2 each
+      dramatic ending       +2 each
+      question mark in opening +2
+      boring section title  −2 each  (Introduction, Background, etc.)
+    """
+    combined = (title + " " + section_text[:400]).lower()
+    title_l  = title.lower()
+    score  = sum(4 for kw in _RETENTION_CONFESS   if kw in combined)
+    score += sum(3 for kw in _RETENTION_HOOK      if kw in combined)
+    score += sum(3 for kw in _RETENTION_REVEAL    if kw in combined)
+    score += sum(2 for kw in _RETENTION_UNIVERSAL if kw in combined)
+    score += sum(2 for kw in _RETENTION_MYSTERY   if kw in combined)
+    score += sum(2 for kw in _RETENTION_ENDING    if kw in combined)
+    if "?" in (title + section_text[:120]):
+        score += 2
+    score -= sum(2 for kw in _RETENTION_BORING    if kw in title_l)
+    return score
+
+
+def _pick_best_short_start(script_data: dict, video_dur: float,
+                            min_remaining: float = 55.0) -> float:
+    """
+    Return the video timestamp (seconds) of the chapter with the highest
+    retention score.  Falls back to 0.0 when chapters are absent or all
+    chapters score identically (intro is already a hook by convention).
+    """
+    import re as _re
+    chapters_str = script_data.get("chapters", "")
+    script_text  = script_data.get("script",   "")
+    if not chapters_str:
+        return 0.0
+
+    parsed: list[tuple[float, str]] = []
+    for line in chapters_str.strip().splitlines():
+        m = _re.match(r'^(\d+):(\d+)\s+(.+)$', line.strip())
+        if m:
+            secs = int(m.group(1)) * 60 + int(m.group(2))
+            parsed.append((float(secs), m.group(3).strip()))
+
+    if not parsed:
+        return 0.0
+
+    sections = _parse_script_sections(script_text) if script_text else []
+
+    best_score  = -1
+    best_start  = 0.0
+
+    for i, (secs, title) in enumerate(parsed):
+        if secs > video_dur - min_remaining:   # not enough video left for a full short
+            continue
+        section_text = sections[i][1] if i < len(sections) else ""
+        score = _score_retention(title, section_text)
+        print(f"[Short] Ch{i+1} '{title[:40]}' retention={score}")
+        if score > best_score:
+            best_score = score
+            best_start = secs
+
+    if best_score <= 0:
+        print("[Short] No chapter scored — defaulting to t=0 (intro hook)")
+        return 0.0
+
+    print(f"[Short] Selected start: {best_start:.0f}s (score={best_score})")
+    return best_start
+
+
+def cut_short_clip(video_path: str, output_path: str, duration: int = 90,
+                   script_data: dict | None = None) -> str:
+    """
+    Cut the most retention-worthy 55-65s clip from a video.
+
+    When script_data contains chapter timestamps, selects the chapter with the
+    strongest hook / reveal / confession signals as the cut start point.
+    Falls back to t=0 when chapter data is unavailable.
+    """
     try:
         from moviepy.editor import VideoFileClip
     except ImportError:
@@ -3661,10 +3768,10 @@ def cut_short_clip(video_path: str, output_path: str, duration: int = 90) -> str
     short = None
     try:
         clip = VideoFileClip(video_path)
-        # Random duration between 60-90 seconds
-        actual_duration = random.randint(60, 90)
-        actual_duration = min(actual_duration, clip.duration)
-        short = clip.subclip(0, actual_duration)
+        cut_start       = _pick_best_short_start(script_data, clip.duration) if script_data else 0.0
+        actual_duration = random.randint(55, 65)
+        actual_duration = min(actual_duration, clip.duration - cut_start)
+        short = clip.subclip(cut_start, cut_start + actual_duration)
         short.write_videofile(
             output_path,
             fps=30,
@@ -3762,20 +3869,27 @@ def cut_chapter_shorts(
         print("[Short] ffmpeg not found -- skipping chapter shorts")
         return []
 
+    # Parse script sections once — used for retention scoring inside the loop
+    _sections = _parse_script_sections(script_data.get("script", ""))
+
     shorts: list[dict] = []
 
     for idx, (start_sec, chapter_title) in enumerate(chapter_times):
         chapter_end = chapter_times[idx + 1][0] if idx + 1 < len(chapter_times) else total_dur
         chapter_dur = max(0, chapter_end - start_sec)
 
-        # Select best 90 seconds
-        if idx == 0:
-            cut_start = start_sec
-        elif idx == 2:
-            # Middle of chapter for most dramatic content
-            cut_start = start_sec + max(0, chapter_dur // 2 - 45)
+        # Retention-first start selection:
+        # High-scoring chapters (hook, confession, reveal) always start at the
+        # chapter's opening — that is where DCD scripts place the strongest line.
+        # Low-scoring context chapters (background, setup) skip 25 % of their
+        # duration to land past the slow intro sentences.
+        section_text = _sections[idx][1] if idx < len(_sections) else ""
+        ret_score    = _score_retention(chapter_title, section_text)
+        if ret_score >= 3:
+            cut_start = start_sec                               # strong opening — use it
         else:
-            cut_start = start_sec
+            cut_start = start_sec + min(30, chapter_dur // 4)  # weak intro — skip ahead
+
         cut_dur = min(90, max(15, chapter_end - cut_start))
 
         if cut_dur < 15:
@@ -5306,6 +5420,25 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
 
     print(f"[DEBUG] First 5 images selected for video: {[os.path.basename(p) for p in all_image_paths[:5]]}")
 
+    # â"€â"€ Image enhancement â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+    try:
+        from agents.enhancer import enhance_image as _enhance_image
+        _img_exts = {".jpg", ".jpeg", ".png", ".webp", ".jfif", ".bmp"}
+        _to_enhance = [
+            p for p in all_image_paths
+            if Path(p).suffix.lower() in _img_exts and os.path.exists(p)
+        ]
+        if _to_enhance:
+            print(f"[Video] Enhancing {len(_to_enhance)} image(s) before rendering...")
+            from concurrent.futures import ThreadPoolExecutor as _TPE
+            with _TPE(max_workers=min(4, len(_to_enhance))) as _pool:
+                _enh_results = list(_pool.map(_enhance_image, _to_enhance))
+            _enh_map = dict(zip(_to_enhance, _enh_results))
+            all_image_paths = [_enh_map.get(p, p) for p in all_image_paths]
+            print(f"[Video] Enhancement complete")
+    except Exception as _enh_err:
+        print(f"[Video] Enhancement skipped (non-fatal): {_enh_err}")
+
     # â"€â"€ Assembly â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
     output_path = os.path.join(FINAL_DIR, f"{video_id}.mp4")
 
@@ -5356,7 +5489,7 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
         )
 
         short_out = os.path.join(SHORTS_DIR, f"{video_id}_short.mp4")
-        script_data["short_clip_path"] = cut_short_clip(video_path, short_out)
+        script_data["short_clip_path"] = cut_short_clip(video_path, short_out, script_data=script_data)
         # Extract first frame for YouTube thumbnail (actual content, not AI portrait)
         thumb_path = os.path.join(FINAL_DIR, f"{video_id}_thumb.jpg")
         extracted = extract_first_frame(video_path, thumb_path)

@@ -45,8 +45,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y ffmpeg fonts-dejavu-core git-lfs
-          git lfs install
-          git lfs pull
+          git lfs install   # ensure user-level hooks; checkout@v4 already pulled LFS objects
 
       - name: Cache pip packages
         uses: actions/cache@v4
