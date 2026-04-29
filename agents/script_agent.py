@@ -227,12 +227,54 @@ _OPENAI_QUOTA_EXCEEDED = False
 
 def _ai_script_call(prompt: str, max_tokens: int = 1000,
                     json_mode: bool = False, temperature: float = 0.7,
-                    system_prompt: str | None = None) -> str:
-    """Groq primary, OpenAI gpt-4o-mini fallback."""
+                    system_prompt: str | None = None,
+                    premium: bool = False) -> str:
+    """Route script calls by quality tier.
+
+    premium=True  → OpenAI gpt-4o (primary) → Groq fallback  — long-form sections
+    premium=False → Groq (primary) → OpenAI gpt-4o-mini fallback — cheap helpers
+    """
     import requests as _req
     global _OPENAI_QUOTA_EXCEEDED
 
-    # Groq first (free tier — llama-3.3-70b)
+    if premium:
+        # ── Premium path: OpenAI gpt-4o → Groq fallback ─────────────────────
+        api_key = os.getenv('OPENAI_API_KEY', '').strip()
+        if api_key and not _OPENAI_QUOTA_EXCEEDED:
+            try:
+                messages = []
+                if system_prompt:
+                    messages.append({'role': 'system', 'content': system_prompt})
+                messages.append({'role': 'user', 'content': prompt})
+                r = _req.post(
+                    'https://api.openai.com/v1/chat/completions',
+                    headers={'Authorization': f'Bearer {api_key}',
+                             'Content-Type': 'application/json'},
+                    json={'model': 'gpt-4o', 'messages': messages,
+                          'max_tokens': max_tokens, 'temperature': temperature},
+                    timeout=120,
+                )
+                if r.status_code == 200:
+                    print('[Script] OpenAI gpt-4o ✅')
+                    return r.json()['choices'][0]['message']['content'].strip()
+                if r.status_code == 429:
+                    _OPENAI_QUOTA_EXCEEDED = True
+                    print('[Script] OpenAI quota exceeded — falling back to Groq')
+                else:
+                    print(f'[Script] OpenAI gpt-4o HTTP {r.status_code} — falling back to Groq')
+            except Exception as e:
+                print(f'[Script] OpenAI gpt-4o failed: {e} — falling back to Groq')
+        # Groq fallback for premium path
+        try:
+            result = _groq_fallback(prompt, max_tokens, json_mode, system_prompt=system_prompt)
+            if result:
+                print('[Script] Groq fallback used (premium path)')
+                return result
+        except Exception as e:
+            print(f'[Script] Groq fallback failed: {e}')
+        return ""
+
+    # ── Standard path: Groq primary → OpenAI gpt-4o-mini fallback ───────────
     try:
         result = _groq_fallback(prompt, max_tokens, json_mode, system_prompt=system_prompt)
         if result:
@@ -240,7 +282,6 @@ def _ai_script_call(prompt: str, max_tokens: int = 1000,
     except Exception as e:
         print(f'[Script] Groq failed: {e}')
 
-    # OpenAI fallback
     api_key = os.getenv('OPENAI_API_KEY', '').strip()
     if api_key and not _OPENAI_QUOTA_EXCEEDED:
         try:
@@ -256,7 +297,7 @@ def _ai_script_call(prompt: str, max_tokens: int = 1000,
                 timeout=60,
             )
             if r.status_code == 200:
-                print('[Script] Used OpenAI fallback')
+                print('[Script] Used OpenAI gpt-4o-mini fallback')
                 return r.json()['choices'][0]['message']['content'].strip()
             elif r.status_code == 429:
                 _OPENAI_QUOTA_EXCEEDED = True
@@ -833,7 +874,7 @@ RULES:
 
 Start immediately with the HOOK."""
 
-    result = _ai_script_call(prompt, max_tokens=4000, temperature=0.75)
+    result = _ai_script_call(prompt, max_tokens=4000, temperature=0.75, premium=True)
     words = clean_word_count(result) if result else 0
     print(f"[Script] Hemedti Part 1: {words} real words")
     return result or ""
@@ -916,7 +957,7 @@ RULES:
 
 Start immediately with the HOOK."""
 
-    result = _ai_script_call(prompt, max_tokens=4000, temperature=0.75)
+    result = _ai_script_call(prompt, max_tokens=4000, temperature=0.75, premium=True)
     words = clean_word_count(result) if result else 0
     print(f"[Script] Hemedti Part 2: {words} real words")
     return result or ""
@@ -1002,7 +1043,7 @@ RULES:
 
 Start immediately with the HOOK. Spoken words only."""
 
-    result = _ai_script_call(prompt, max_tokens=4000, temperature=0.75)
+    result = _ai_script_call(prompt, max_tokens=4000, temperature=0.75, premium=True)
     words = clean_word_count(result) if result else 0
     print(f"[Script] Documentary script{part_label}: {words} real words")
     return result or ""
@@ -1163,7 +1204,7 @@ Key facts: {(research.get('research_facts') or research.get('what_show_got_right
         # Conclusion gets more tokens to prevent mid-sentence cutoff
         _max_tok = 800 if call_num == 5 else 1200
         result = _ai_script_call(prompt, max_tokens=_max_tok,
-                                  system_prompt=_SCRIPT_SYSTEM_PROMPT)
+                                  system_prompt=_SCRIPT_SYSTEM_PROMPT, premium=True)
         if not result:
             print(f"[Script] Section {call_num} ({label}): call failed")
             return None
@@ -1177,7 +1218,7 @@ Key facts: {(research.get('research_facts') or research.get('what_show_got_right
             print(f"[Script] Section {call_num}: below minimum — retrying once")
             time.sleep(4)
             retry = _ai_script_call(prompt, max_tokens=_max_tok,
-                                     system_prompt=_SCRIPT_SYSTEM_PROMPT)
+                                     system_prompt=_SCRIPT_SYSTEM_PROMPT, premium=True)
             if retry:
                 r_real = clean_word_count(retry)
                 r_raw  = len(retry.split())
@@ -1386,7 +1427,7 @@ RULES:
 - No two consecutive sentences start same word
 - Write like Netflix documentary narrator
 - Dramatic but factual
-""", max_tokens=1200, system_prompt=_SCRIPT_SYSTEM_PROMPT)
+""", max_tokens=1200, system_prompt=_SCRIPT_SYSTEM_PROMPT, premium=True)
     if s1:
         sections.append(s1)
         print(f"[Script] S1: {clean_word_count(s1)} real words")
@@ -1416,7 +1457,7 @@ RULES:
 - Exactly 800 words
 - New information only — no repetition
 - Specific dates numbers names places
-""", max_tokens=1200, system_prompt=_SCRIPT_SYSTEM_PROMPT)
+""", max_tokens=1200, system_prompt=_SCRIPT_SYSTEM_PROMPT, premium=True)
     if s2:
         sections.append(s2)
         print(f"[Script] S2: {clean_word_count(s2)} real words")
@@ -1447,7 +1488,7 @@ RULES:
 - Chronological order with years
 - Every paragraph = new information
 - Include 10+ specific dates or numbers
-""", max_tokens=1400, system_prompt=_SCRIPT_SYSTEM_PROMPT)
+""", max_tokens=1400, system_prompt=_SCRIPT_SYSTEM_PROMPT, premium=True)
     if s3:
         sections.append(s3)
         print(f"[Script] S3: {clean_word_count(s3)} real words")
@@ -1478,7 +1519,7 @@ RULES:
 - Facts that would shock even informed viewers
 - Cite specific sources: ICC, UN, journalists
 - No speculation — only documented facts
-""", max_tokens=1200, system_prompt=_SCRIPT_SYSTEM_PROMPT)
+""", max_tokens=1200, system_prompt=_SCRIPT_SYSTEM_PROMPT, premium=True)
     if s4:
         sections.append(s4)
         print(f"[Script] S4: {clean_word_count(s4)} real words")
@@ -1536,7 +1577,7 @@ RULES:
 - Specific scene references
 - Respectful of filmmakers' creative choices
 """
-    s5 = _ai_script_call(s5_prompt, max_tokens=1200, system_prompt=_SCRIPT_SYSTEM_PROMPT)
+    s5 = _ai_script_call(s5_prompt, max_tokens=1200, system_prompt=_SCRIPT_SYSTEM_PROMPT, premium=True)
     if s5:
         sections.append(s5)
         print(f"[Script] S5: {clean_word_count(s5)} real words")
@@ -1572,7 +1613,7 @@ RULES:
 - Exactly 500 words
 - Emotional but factual ending
 - Strong memorable final line
-""", max_tokens=800, system_prompt=_SCRIPT_SYSTEM_PROMPT)
+""", max_tokens=800, system_prompt=_SCRIPT_SYSTEM_PROMPT, premium=True)
     if s6:
         sections.append(s6)
         print(f"[Script] S6: {clean_word_count(s6)} real words")
@@ -1589,6 +1630,7 @@ RULES:
                 f"Keep same topic and style.\n\n{section}",
                 max_tokens=1200,
                 system_prompt=_SCRIPT_SYSTEM_PROMPT,
+                premium=True,
             )
             if expanded and clean_word_count(expanded) > clean_word_count(section):
                 sections[i] = expanded
