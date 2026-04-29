@@ -1264,6 +1264,65 @@ Key facts: {(research.get('research_facts') or research.get('what_show_got_right
             + "\nEvery sentence in your chapter must introduce information that has NOT appeared above."
         )
 
+    # ── Master outline: pre-assign unique facts to each chapter ──────────────
+    def _generate_master_outline() -> dict:
+        """One AI call that locks 10–15 unique facts to specific chapters before writing starts."""
+        _rf = (research.get("research_facts") or research.get("what_show_got_right") or [])[:8]
+        _sh = (research.get("research_shocking") or research.get("shocking_real_facts") or [])[:4]
+        _in = (research.get("research_inaccuracies") or research.get("what_show_got_wrong") or [])[:4]
+        _outline_prompt = f"""You are outlining a documentary script about: {name} (related to {series} {stype}).
+
+Task: Distribute 10–15 unique specific facts across exactly 5 chapters.
+Each fact must appear in EXACTLY ONE chapter — never repeated elsewhere.
+Every fact must be SPECIFIC: include a real name, date, number, or location.
+
+RESEARCH MATERIAL:
+Facts: {_rf}
+Shocking details: {_sh}
+Show inaccuracies: {_in}
+
+UNTOLD ANGLE (reserved for Chapter 2):
+Title: {_angle_title}
+Detail: {_angle_content}
+
+Assign facts to chapters using these STRICT roles:
+- ch1: 2 facts — (a) the specific scene/moment that made {series} famous; (b) ONE unanswered question it raises
+- ch2: 3–4 facts — the hidden truth details ONLY, all expanding on the untold angle above
+- ch3: 4–5 facts — chronological documented history in order (earliest first, each with a year)
+- ch4: 3–4 facts — direct comparisons only, each formatted as "Show depicted X, reality was Y"
+- ch5: 2 facts — aftermath and present-day legacy ONLY (consequences after the main story ended)
+
+Return ONLY valid JSON, no explanation:
+{{"ch1": ["...", "..."], "ch2": ["...", "...", "..."], "ch3": ["...", "...", "...", "..."], "ch4": ["...", "...", "..."], "ch5": ["...", "..."]}}"""
+
+        try:
+            raw = _ai_script_call(_outline_prompt, max_tokens=900, json_mode=True, temperature=0.4)
+            data = json.loads(raw.strip())
+            if all(k in data for k in ("ch1", "ch2", "ch3", "ch4", "ch5")):
+                total = sum(len(v) for v in data.values())
+                print(f"[Script] Master outline: {total} unique facts pre-assigned across 5 chapters")
+                return data
+            print("[Script] Master outline: incomplete keys — proceeding without outline")
+        except Exception as e:
+            print(f"[Script] Master outline failed ({e}) — proceeding without outline")
+        return {}
+
+    _outline = _generate_master_outline()
+    time.sleep(2)  # brief pause before chapter writing begins
+
+    def _facts_block(ch_key: str) -> str:
+        """Inject pre-assigned facts as a hard writing directive for one chapter."""
+        facts = _outline.get(ch_key, [])
+        if not facts:
+            return ""
+        lines = "\n".join(f"  • {f}" for f in facts)
+        return (
+            f"📋 YOUR PRE-ASSIGNED FACTS — write ONLY about these specific points "
+            f"(they were reserved exclusively for this chapter and appear nowhere else):\n"
+            f"{lines}\n"
+            "Stay within this list. Do NOT introduce other events or facts from the research."
+        )
+
     section_prompts = [
         # ── Chapter 1: Hook Intro ─────────────────────────────────────────────
         lambda: f"""{_topic_context}
@@ -1274,6 +1333,8 @@ YOUR EXCLUSIVE JOB in this chapter (and ONLY this chapter):
 2. Describe what made {series} compelling — the specific scene or moment that hooked millions.
 3. Plant ONE unanswered question that the rest of the video will answer.
 4. End with a cliffhanger that pulls viewers into Chapter 2.
+
+{_facts_block("ch1")}
 
 STRICT SCOPE — this chapter does NOT:
 - Cover real historical facts or timelines (that is Chapter 3)
@@ -1296,6 +1357,8 @@ ANGLE TITLE: {_angle_title}
 ANGLE HOOK — open the chapter with EXACTLY this sentence: {_angle_hook}
 ANGLE DETAIL — expand ONLY these 2–3 sentences into the full chapter: {_angle_content}
 
+{_facts_block("ch2")}
+
 STRICT SCOPE — this chapter does NOT:
 - Re-introduce the show or describe what it depicted (Chapter 1 did that)
 - Cover the general real history or biography (Chapter 3 does that)
@@ -1304,7 +1367,7 @@ Every sentence must add NEW specific information about this ONE hidden truth onl
 
 {_used_facts_block(1)}
 
-Open with the ANGLE HOOK sentence exactly as written. Then expand the angle with specific names, dates, and decisions — never vague. Minimum 3 sentences per paragraph.
+Open with the ANGLE HOOK sentence exactly as written. Then expand with specific names, dates, and decisions — never vague. Minimum 3 sentences per paragraph.
 {_section_instruction(350, 420, False)}
 
 PREVIOUS CHAPTER (context only — do NOT repeat anything from it):
@@ -1316,6 +1379,8 @@ Write CHAPTER 3 — THE REAL STORY for a documentary about {name}.
 
 YOUR EXCLUSIVE JOB in this chapter:
 Deliver the full documented history in chronological order. This is the FIRST TIME viewers hear the complete real biography and timeline — not summaries, the full story.
+
+{_facts_block("ch3")}
 
 WHAT THIS CHAPTER MUST COVER (and ONLY this chapter covers):
 - Who each real person was before everything began: family, background, first crime
@@ -1345,6 +1410,8 @@ Write CHAPTER 4 — SHOW VS REALITY for a documentary about {name}.
 YOUR EXCLUSIVE JOB in this chapter:
 Make direct comparisons between what {series} depicted and what the documented record shows.
 This is the ONLY chapter that compares screen to reality — do it thoroughly.
+
+{_facts_block("ch4")}
 
 REQUIRED STRUCTURE:
 
@@ -1377,14 +1444,16 @@ PREVIOUS CHAPTERS (context only — do NOT repeat anything from them):
 Write CHAPTER 5 — CONCLUSION for a documentary about {name}.
 
 YOUR EXCLUSIVE JOB in this chapter:
-1. Deliver ONE final fact that has NOT appeared anywhere in this video — the most lasting consequence, the most recent development, or the most unexpected legacy detail.
+1. Deliver ONE final fact that has NOT appeared anywhere in this video — draw from your pre-assigned facts below.
 2. In 2–3 sentences: what does the story of {name} tell us about the world today?
 3. Close with: "Follow Dark Crime Decoded for more real stories behind your favourite crime series and films."
+
+{_facts_block("ch5")}
 
 STRICT SCOPE — this chapter does NOT:
 - Recap or summarize what was covered in Chapters 1–4
 - Re-state the untold angle, the real history, or any show comparison
-- Repeat ANY fact already used (see list below)
+- Repeat ANY fact already used (see fence below)
 This chapter reflects and closes — it does not re-tell.
 
 {_used_facts_block(4)}
