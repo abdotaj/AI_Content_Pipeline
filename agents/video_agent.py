@@ -4235,12 +4235,16 @@ def _secs_to_ass_time(s: float) -> str:
     return f"{h}:{m:02d}:{sec:05.2f}"
 
 
+_WHISPER_MODEL = None   # module-level cache — loaded once per process
+
+
 def generate_subtitles(audio_path: str, language: str) -> list[dict]:
     """
     Transcribe audio with word-level timestamps using openai-whisper.
+    Whisper base model is cached at module level so it is never reloaded.
     Returns list of Whisper segments (each with 'words' list).
-    Auto-installs openai-whisper if missing.
     """
+    global _WHISPER_MODEL
     try:
         import whisper
     except ImportError:
@@ -4254,9 +4258,13 @@ def generate_subtitles(audio_path: str, language: str) -> list[dict]:
 
     lang_code = "ar" if language == "arabic" else "en"
     try:
-        print(f"[Subtitle] Loading Whisper base model for {language}...")
-        model = whisper.load_model("base")
-        result = model.transcribe(audio_path, language=lang_code, word_timestamps=True)
+        if _WHISPER_MODEL is None:
+            print("[Subtitle] Loading Whisper base model (first call)...")
+            _WHISPER_MODEL = whisper.load_model("base")
+            print("[Subtitle] Whisper model loaded and cached")
+        else:
+            print("[Subtitle] Using cached Whisper model")
+        result = _WHISPER_MODEL.transcribe(audio_path, language=lang_code, word_timestamps=True)
         segments = result.get("segments", [])
         print(f"[Subtitle] Transcribed {len(segments)} segment(s)")
         return segments
@@ -4290,15 +4298,44 @@ def burn_subtitles_ffmpeg(
     language: str,
 ) -> str | None:
     """
-    Build word-level karaoke ASS subtitle file and burn it into the video.
+    Premium documentary subtitle burn for Dark Crime Decoded.
 
-    Each subtitle event highlights the current word in YELLOW; all other
-    words in the same line (up to 4) are WHITE. Outline is black.
-    Arabic text is bottom-center with size 20; English with size 18.
+    Design:
+    - Phrase-based chunking (3-4 words), split at natural pauses / punctuation
+    - Large bold font (76 EN / 82 AR), 4 px black outline, 2 px drop shadow
+    - Important crime/drama words highlighted inline in crimson
+    - Safe bottom position (MarginV 200 px) for mobile UI chrome
+    - Supports English (LTR) and Arabic (RTL — handled by libass automatically)
     """
     import subprocess
 
-    # Build flat word list from all segments
+    # ── Important-word highlight sets ─────────────────────────────────────────
+    _HIGHLIGHT_EN = frozenset([
+        "murder", "murdered", "kill", "killed", "killing", "killer",
+        "dead", "death", "died", "die", "dying", "blood", "bloody",
+        "weapon", "gun", "shot", "stabbed", "stab",
+        "crime", "criminal", "guilty",
+        "secret", "secrets", "hidden", "truth", "exposed", "reveal", "revealed",
+        "betrayal", "betrayed", "betray",
+        "confession", "confessed", "confess",
+        "escaped", "escape", "fled", "flee",
+        "missing", "disappeared", "vanished",
+        "sentenced", "prison", "arrested", "arrest",
+        "executed", "execution", "innocent", "victim", "victims",
+        "cartel", "mafia", "gang", "drug", "drugs",
+        "corrupt", "corruption", "millions", "billion",
+        "never", "first", "only", "untold",
+        "shocking", "terrifying", "brutal", "horrific", "deadly",
+    ])
+    _HIGHLIGHT_AR = frozenset([
+        "قتل", "مقتل", "جريمة", "ضحية", "سر", "أسرار", "حقيقة",
+        "هرب", "اعتراف", "اختفى", "مفقود", "دم", "سلاح",
+        "مخدرات", "عصابة", "سجن", "إعدام", "فساد", "مليون", "مليار",
+        "فر", "اعتقل", "حقيقي", "مجرم", "ضحايا",
+    ])
+    highlight_words = _HIGHLIGHT_AR if language == "arabic" else _HIGHLIGHT_EN
+
+    # ── Flatten Whisper segments → word list ──────────────────────────────────
     words: list[dict] = []
     for seg in segments:
         for w in seg.get("words", []):
@@ -4315,49 +4352,85 @@ def burn_subtitles_ffmpeg(
         print("[Subtitle] No words found in segments, skipping subtitles")
         return None
 
-    is_arabic = language == "arabic"
-    font     = "Arial"
-    fontsize = 20 if is_arabic else 18
-    # ASS colours are &HAABBGGRR
-    white  = "&H00FFFFFF"
-    yellow = "&H0000FFFF"  # RGB yellow = FF FF 00 -> BGR = 00 FF FF -> hex 00FFFF
-    black  = "&H00000000"
+    is_arabic  = language == "arabic"
+    max_phrase = 3 if is_arabic else 4   # max words per chunk
 
-    # Group into lines of max 4 words
-    lines: list[list[dict]] = []
-    for i in range(0, len(words), 4):
-        lines.append(words[i:i + 4])
+    # ── Phrase chunking: split at pauses, punctuation, or max length ──────────
+    def _chunk_words(ws):
+        chunks, cur = [], []
+        for i, w in enumerate(ws):
+            cur.append(w)
+            is_last   = (i == len(ws) - 1)
+            bare      = w["word"].rstrip()
+            has_punct = bare != bare.rstrip(".,!?:;،؟؛")
+            long_gap  = (not is_last) and (ws[i + 1]["start"] - w["end"]) > 0.35
+            if is_last or len(cur) >= max_phrase or (has_punct and len(cur) >= 2) or (long_gap and len(cur) >= 2):
+                chunks.append(cur[:])
+                cur = []
+        if cur:
+            chunks.append(cur)
+        return chunks
 
-    # Build ASS events: one per word, showing full line with highlighted word
+    chunks = _chunk_words(words)
+
+    # ── ASS colour constants  (format: &HAABBGGRR) ────────────────────────────
+    white   = "&H00FFFFFF"
+    # Crimson: R=180(B4) G=10(0A) B=30(1E) → BGR=1E0AB4
+    crimson = "&H001E0AB4"
+    black   = "&H00000000"
+    shadow_bg = "&HAA000000"   # semi-transparent dark back
+
+    c_crim  = "{\\c" + crimson + "}"
+    c_white = "{\\c" + white   + "}"
+
+    def _phrase_text(chunk):
+        parts = []
+        for w in chunk:
+            clean = w["word"].strip().lower().strip(".,!?:;،؟؛'\"")
+            if clean in highlight_words:
+                parts.append(c_crim + w["word"] + c_white)
+            else:
+                parts.append(w["word"])
+        return " ".join(parts)
+
+    # ── Build one ASS event per phrase ────────────────────────────────────────
     events: list[tuple[float, float, str]] = []
-    for line in lines:
-        for j, word in enumerate(line):
-            parts = []
-            for k, w in enumerate(line):
-                if k == j:
-                    parts.append("{" + f"\\c{yellow}" + "}" + w["word"] + "{" + f"\\c{white}" + "}")
-                else:
-                    parts.append(w["word"])
-            text = " ".join(parts)
-            t_start = word["start"]
-            t_end   = word["end"] if word["end"] > word["start"] else word["start"] + 0.4
-            events.append((t_start, t_end, text))
+    for chunk in chunks:
+        t_start = chunk[0]["start"]
+        t_end   = chunk[-1]["end"]
+        if t_end <= t_start:
+            t_end = t_start + 0.5
+        events.append((t_start, t_end, _phrase_text(chunk)))
 
-    # Write ASS file
-    ass_path = output_path.replace(".mp4", "_subs.ass")
+    # ── ASS style ─────────────────────────────────────────────────────────────
+    # Font: DejaVu Sans (installed via fonts-dejavu-core in CI; fallback on Windows)
+    font_name = "DejaVu Sans"
+    fontsize  = 82 if is_arabic else 76
+    marginv   = 200   # px from bottom — clear of mobile UI chrome
+
+    # Format: Name,Font,Size,Primary,Secondary,Outline,Back,
+    #         Bold,Italic,Underline,Strike,ScaleX,ScaleY,Spacing,Angle,
+    #         BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding
     style_line = (
-        f"Style: Default,{font},{fontsize},{white},&H000000FF,{black},&H80000000,"
-        f"-1,0,0,0,100,100,0,0,1,2,0,2,10,10,50,1"
+        f"Style: Default,{font_name},{fontsize},"
+        f"{white},&H000000FF,{black},{shadow_bg},"
+        f"-1,0,0,0,100,100,0,0,1,4,2,2,60,60,{marginv},1"
     )
+
+    # ── Write ASS file ────────────────────────────────────────────────────────
+    ass_path = output_path.replace(".mp4", "_subs.ass")
     ass_header = [
         "[Script Info]",
         "ScriptType: v4.00+",
         "PlayResX: 1080",
         "PlayResY: 1920",
         "ScaledBorderAndShadow: yes",
+        "WrapStyle: 0",
         "",
         "[V4+ Styles]",
-        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour,"
+        " Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle,"
+        " BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
         style_line,
         "",
         "[Events]",
@@ -4370,12 +4443,12 @@ def burn_subtitles_ffmpeg(
     try:
         with open(ass_path, "w", encoding="utf-8-sig") as f:
             f.write("\n".join(ass_header + event_lines))
-        print(f"[Subtitle] ASS file written: {len(events)} events")
+        print(f"[Subtitle] ASS written: {len(events)} phrases ({len(words)} words)")
     except Exception as ex:
         print(f"[Subtitle] Could not write ASS file: {ex}")
         return None
 
-    # Burn subtitles into video
+    # ── Burn into video ───────────────────────────────────────────────────────
     ffmpeg = _get_ffmpeg()
     if not ffmpeg:
         print("[Subtitle] ffmpeg not found, skipping subtitle burn")
@@ -4389,13 +4462,13 @@ def burn_subtitles_ffmpeg(
             capture_output=True, timeout=600,
         )
         if result.returncode == 0:
-            print(f"[Subtitle] Subtitles burned: {output_path}")
+            print(f"[Subtitle] Burned into: {output_path}")
             return output_path
-        else:
-            print(f"[Subtitle] ffmpeg burn failed (rc={result.returncode}): {result.stderr[-300:].decode(errors='replace')}")
-            return None
+        print(f"[Subtitle] ffmpeg burn failed (rc={result.returncode}): "
+              f"{result.stderr[-300:].decode(errors='replace')}")
+        return None
     except Exception as e:
-        print(f"[Subtitle] Subtitle burn error: {e}")
+        print(f"[Subtitle] Burn error: {e}")
         return None
 
 
