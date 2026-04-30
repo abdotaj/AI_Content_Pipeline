@@ -223,11 +223,20 @@ def _trim_plain_text_to_words(text: str, max_words: int) -> str:
     return trimmed
 
 
+_GROQ_RATE_LIMITED    = False   # set True on first 429 — skips all subsequent Groq calls
+_OPENAI_QUOTA_EXCEEDED = False
+
+
 def _groq_fallback(prompt: str, max_tokens: int, json_mode: bool,
                    system_prompt: str | None = None) -> str:
-    """Groq with aggressive prompt truncation and 3-model retry chain."""
+    """Groq primary call. Detects 429 immediately and sets session flag to skip Groq."""
     import os
     import time
+    global _GROQ_RATE_LIMITED
+
+    if _GROQ_RATE_LIMITED:
+        print("[Groq] Rate-limited this session — skipping Groq entirely")
+        return ""
 
     groq_key = os.getenv("GROQ_API_KEY", "").strip()
     if not groq_key:
@@ -237,12 +246,9 @@ def _groq_fallback(prompt: str, max_tokens: int, json_mode: bool,
     from groq import Groq
     groq_client = Groq(api_key=groq_key)
 
-    # For JSON mode: instruct in the prompt instead of using response_format
-    # (response_format is only supported on select Groq models)
     if json_mode and "valid JSON" not in prompt:
         prompt = prompt + "\n\nRespond with valid JSON only, no markdown, no explanation."
 
-    # Keep beginning + end to preserve context within 3000-char limit
     max_chars = 3000
     if len(prompt) > max_chars:
         half   = max_chars // 2
@@ -254,6 +260,7 @@ def _groq_fallback(prompt: str, max_tokens: int, json_mode: bool,
         messages.append({"role": "system", "content": system_prompt})
     messages.append({"role": "user", "content": prompt})
 
+    # Only try the primary model; do NOT fall back to a weaker Groq model on rate limit
     for model, model_max in [
         ("llama-3.3-70b-versatile", 2000),
         ("llama-3.1-8b-instant",    1000),
@@ -268,13 +275,21 @@ def _groq_fallback(prompt: str, max_tokens: int, json_mode: bool,
             print(f"[Script] Groq {model} success")
             return resp.choices[0].message.content
         except Exception as e:
+            err = str(e).lower()
+            is_rate_limit = (
+                "rate_limit_exceeded" in err
+                or "rate limit" in err
+                or "429" in err
+                or "too many requests" in err
+            )
+            if is_rate_limit:
+                _GROQ_RATE_LIMITED = True
+                print(f"[Groq] Rate limit hit — switching to OpenAI fallback")
+                return ""   # caller will use OpenAI; do NOT try next Groq model
             print(f"[Script] Groq {model} failed: {e}")
             time.sleep(5)
 
     return ""
-
-
-_OPENAI_QUOTA_EXCEEDED = False
 
 
 def _ai_script_call(prompt: str, max_tokens: int = 1000,
@@ -284,10 +299,11 @@ def _ai_script_call(prompt: str, max_tokens: int = 1000,
     """Route script calls by quality tier.
 
     premium=True  → OpenAI gpt-4o (primary) → Groq fallback  — long-form sections
-    premium=False → Groq (primary) → OpenAI gpt-4o-mini fallback — cheap helpers
+    premium=False → Groq (primary) → OpenAI fallback — cheap helpers
+                    On Groq rate limit, fallback upgrades to gpt-4o automatically.
     """
     import requests as _req
-    global _OPENAI_QUOTA_EXCEEDED
+    global _OPENAI_QUOTA_EXCEEDED, _GROQ_RATE_LIMITED
 
     if premium:
         # ── Premium path: OpenAI gpt-4o → Groq fallback ─────────────────────
@@ -326,7 +342,9 @@ def _ai_script_call(prompt: str, max_tokens: int = 1000,
             print(f'[Script] Groq fallback failed: {e}')
         return ""
 
-    # ── Standard path: Groq primary → OpenAI gpt-4o-mini fallback ───────────
+    # ── Standard path: Groq primary → OpenAI fallback ───────────────────────
+    # On Groq rate limit, upgrade to gpt-4o (same quality as premium path).
+    # On other Groq failures, use gpt-4o-mini to conserve quota.
     try:
         result = _groq_fallback(prompt, max_tokens, json_mode, system_prompt=system_prompt)
         if result:
@@ -336,6 +354,8 @@ def _ai_script_call(prompt: str, max_tokens: int = 1000,
 
     api_key = os.getenv('OPENAI_API_KEY', '').strip()
     if api_key and not _OPENAI_QUOTA_EXCEEDED:
+        # Use gpt-4o when Groq is rate-limited; gpt-4o-mini for ordinary failures
+        oai_model = 'gpt-4o' if _GROQ_RATE_LIMITED else 'gpt-4o-mini'
         try:
             messages = []
             if system_prompt:
@@ -344,18 +364,18 @@ def _ai_script_call(prompt: str, max_tokens: int = 1000,
             r = _req.post(
                 'https://api.openai.com/v1/chat/completions',
                 headers={'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json'},
-                json={'model': 'gpt-4o-mini', 'messages': messages,
+                json={'model': oai_model, 'messages': messages,
                       'max_tokens': max_tokens, 'temperature': temperature},
-                timeout=60,
+                timeout=120,
             )
             if r.status_code == 200:
-                print('[Script] Used OpenAI gpt-4o-mini fallback')
+                print(f'[Script] Used OpenAI {oai_model} fallback')
                 return r.json()['choices'][0]['message']['content'].strip()
             elif r.status_code == 429:
                 _OPENAI_QUOTA_EXCEEDED = True
-                print('[Script] OpenAI quota exceeded')
+                print(f'[Script] OpenAI {oai_model} quota exceeded')
         except Exception as e:
-            print(f'[Script] OpenAI failed: {e}')
+            print(f'[Script] OpenAI {oai_model} failed: {e}')
 
     return ""
 
