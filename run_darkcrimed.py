@@ -546,6 +546,11 @@ def run_pipeline():
     _log("VideoGen", "Starting video generation")
     _stage("Video gen start")
 
+    # Snapshot user content for short video generation — isolate from any
+    # side-effects of long video assembly and re-load from GitHub content folder.
+    _short_user_images = list(user_images)
+    _short_user_videos = list(user_videos)
+
     # Skip regeneration if today's manifest already has valid files for this topic
     en_long_id, ar_long_id = "", ""
     _ex_en, _ex_ar = _load_existing_outputs(today, en_long.get("topic", ""))
@@ -569,7 +574,8 @@ def run_pipeline():
         print("[Pipeline] Generating English short from short script (TTS → video)...")
         _en_short_data = {**en_long, "script": _en_short_script}
         _en_short_id   = f"{today}_{uuid.uuid4().hex[:8]}_english_short"
-        _en_short_path = _make_video(_en_short_data, _en_short_id, stats)
+        _en_short_path = _make_video(_en_short_data, _en_short_id, stats,
+                                     user_images=_short_user_images, user_videos=_short_user_videos)
         if _en_short_path:
             en_chapter_shorts = [{
                 "path":        _en_short_path,
@@ -590,7 +596,8 @@ def run_pipeline():
         print("[Pipeline] Generating Arabic short from short script (TTS → video)...")
         _ar_short_data = {**ar_long, "script": _ar_short_script}
         _ar_short_id   = f"{today}_{uuid.uuid4().hex[:8]}_arabic_short"
-        _ar_short_path = _make_video(_ar_short_data, _ar_short_id, stats)
+        _ar_short_path = _make_video(_ar_short_data, _ar_short_id, stats,
+                                     user_images=_short_user_images, user_videos=_short_user_videos)
         if _ar_short_path:
             ar_chapter_shorts = [{
                 "path":        _ar_short_path,
@@ -606,7 +613,7 @@ def run_pipeline():
 
     _stage("Videos + shorts done")
 
-    # Clear user images + videos so they don't bleed into the next run
+    # Clear user images + videos AFTER all 4 videos are assembled
     import shutil as _shutil
     for _clear_dir in ("output/user_images", "output/user_videos"):
         try:

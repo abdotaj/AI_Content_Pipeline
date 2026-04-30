@@ -3227,7 +3227,7 @@ SENTENCE RULES:
 - Mix 5-word punches with 12-word builds. Vary the rhythm.
 - No descriptive filler. Every sentence must move the story forward.
 
-LENGTH: Target 150-170 words. Allowed range 140-190. Hard maximum 200.
+LENGTH: Target 180-200 words. Minimum 180. Hard maximum 220.
 
 BANNED OPENERS: "This video explains...", "In this story...", "In an era...", "Throughout history...", "This is the story of...", "He was...", "This is about..."
 BANNED FORMAT: Any headings, labels, or section markers in the output.
@@ -3235,11 +3235,21 @@ BANNED STYLE: Summaries, educational tone, documentary narration, generic phrase
 
 
 def write_short_script(en_long_script: dict) -> dict:
-    """Extract the strongest moment from the long script and rewrite it as a 45-90 second viral short."""
-    topic       = en_long_script.get("topic", "")
-    long_script = en_long_script.get("script", "")
+    """Extract the strongest moment from the long script and rewrite it as a 60-90 second viral short."""
+    topic        = en_long_script.get("topic", "")
+    long_script  = en_long_script.get("script", "")
     _angle_hook  = en_long_script.get("angle_hook", "")
     _angle_title = en_long_script.get("angle_title", "")
+    series_name  = en_long_script.get("series_name", "")
+    niche        = en_long_script.get("niche", "")
+    show_chars   = en_long_script.get("show_characters", [])
+
+    _series_line = f"Show/Series: {series_name}\n" if series_name else ""
+    _niche_line  = f"Context: {niche}\n"           if niche        else ""
+    _chars_line  = (
+        f"Real figures in this story: {', '.join(str(c) for c in show_chars[:5])}\n"
+        if show_chars else ""
+    )
 
     _hook_instruction = (
         f"Open with EXACTLY this sentence: \"{_angle_hook}\"\n"
@@ -3247,19 +3257,21 @@ def write_short_script(en_long_script: dict) -> dict:
         "Open with the most shocking fact or unanswered question from the story. No setup. Drop straight in.\n"
     )
 
-    prompt = f"""You are writing a spoken voiceover for a 45-90 second crime documentary short video.
+    prompt = f"""You are writing a spoken voiceover for a 60-90 second crime documentary short video.
 
-TASK: Read the script below. Find the single most gripping moment — a shocking reveal, confession, twist, or hidden truth. Rewrite it as a standalone viral voiceover. Do NOT summarize the whole story. Tell one moment, fast and hard.
+TASK: Read the SOURCE SCRIPT below. Find the single most gripping moment — a shocking reveal, confession, twist, or hidden truth. Rewrite it as a standalone viral voiceover. Do NOT summarize the whole story. Tell one moment, fast and hard.
 
+TOPIC LOCK — this short is specifically about:
 Topic: {topic}
-{f"Angle: {_angle_title}" if _angle_title else ""}
+{_series_line}{_niche_line}{_chars_line}{f"Angle: {_angle_title}" if _angle_title else ""}
+STRICT RULE: Every fact you write must come directly from the SOURCE SCRIPT below. Do NOT invent events, names, dates, or details not in the script. Do NOT write generic crime content — stay on this specific story.
 
 {_hook_instruction}
 FLOW (4 beats — write them as continuous prose, NO headings or labels):
-- Beat 1 — HOOK: 2 sentences. Jump straight into the action or fact. No "In [year]...", no "This is the story of...", no setup.
-- Beat 2 — FAST SETUP: 2 sentences. Who was involved? What was at stake? Keep it tight.
-- Beat 3 — MAIN REVEAL: 3-4 sentences. The truth, the twist, the thing that changes everything.
-- Beat 4 — STRONG ENDING: 1-2 sentences. A line that lingers. End with: "Follow Dark Crime Decoded for more."
+- Beat 1 — HOOK: 2-3 sentences. Jump straight into the action or fact. No "In [year]...", no "This is the story of...", no setup.
+- Beat 2 — FAST SETUP: 2-3 sentences. Who was involved? What was at stake? Use specific names from the script.
+- Beat 3 — MAIN REVEAL: 4-5 sentences. The truth, the twist, the thing that changes everything. Use specific facts from the script.
+- Beat 4 — STRONG ENDING: 2 sentences. A line that lingers. End with: "Follow Dark Crime Decoded for more."
 
 STYLE:
 - Maximum 14 words per sentence. Shorter is stronger.
@@ -3269,23 +3281,23 @@ STYLE:
 - Every 2 sentences must increase tension — never flat.
 - NO summaries. NO "He was..." openers. NO educational tone.
 
-LENGTH: Target 150-170 words. Allowed 140-190. Hard maximum 200. Count every word.
+LENGTH: Target 180-200 words. Minimum 180. Hard maximum 220. Count every word.
 
-SOURCE SCRIPT (find the best moment inside):
-{long_script[:1800]}
+SOURCE SCRIPT (extract the best moment from inside):
+{long_script[:2000]}
 
 Write ONLY the spoken words. No headings. No labels. No explanations."""
 
-    # ── Phase 1: OpenAI gpt-4o primary (2 attempts) ─────────────────────────
+    # ── Phase 1: OpenAI gpt-4o primary (2 attempts, minimum 180 words) ───────
     script_text = ""
     best_text   = ""
     for attempt in range(2):
         _p = prompt
         if attempt > 0 and script_text:
             wc = clean_word_count(script_text)
-            _p += (f"\n\nPREVIOUS ATTEMPT: {wc} words — target 150-170. "
-                   f"{'Add more specific detail and tension to reach 150 words.' if wc < 140 else 'Trim filler to hit 150-170.'}")
-        result = _ai_script_call(_p, max_tokens=550, temperature=0.85,
+            _p += (f"\n\nPREVIOUS ATTEMPT: {wc} words — target 180-200, minimum 180. "
+                   f"{'Expand beats 2 and 3 with more specific facts from the script to reach 180 words.' if wc < 180 else 'Trim filler to hit 180-200.'}")
+        result = _ai_script_call(_p, max_tokens=600, temperature=0.85,
                                   system_prompt=_SHORT_SCRIPT_SYSTEM, premium=True).strip()
         words   = clean_word_count(result)
         seconds = round(words / 2.5)
@@ -3293,24 +3305,24 @@ Write ONLY the spoken words. No headings. No labels. No explanations."""
         if words > clean_word_count(best_text):
             best_text = result
         script_text = result
-        if words >= 140:
+        if words >= 180:
             break
-        print(f"[Script] Short too short ({words} words) — retrying with gpt-4o...")
+        print(f"[Script] Short under 180w ({words} words) — retrying with gpt-4o...")
 
-    # ── Phase 2: Groq fallback only if both OpenAI attempts failed ───────────
-    if clean_word_count(script_text) < 140:
-        print("[Script] gpt-4o attempts insufficient — Groq fallback...")
-        _p = prompt + "\n\nIMPORTANT: Write EXACTLY 150-170 words. Count every word carefully."
-        result = _ai_script_call(_p, max_tokens=550, temperature=0.85,
+    # ── Phase 2: Groq fallback — only if gpt-4o produced < 180w, accept >= 170
+    if clean_word_count(script_text) < 180:
+        print("[Script] gpt-4o under 180w — Groq fallback (minimum 170)...")
+        _p = prompt + "\n\nIMPORTANT: Write at least 170 words. Target 180-200. Count every word."
+        result = _ai_script_call(_p, max_tokens=600, temperature=0.85,
                                   system_prompt=_SHORT_SCRIPT_SYSTEM, premium=False).strip()
         words = clean_word_count(result)
         print(f"[Script] Short Groq fallback: {words} words")
         if words > clean_word_count(best_text):
             best_text = result
-        script_text = result
+        script_text = result if words >= 170 else (best_text or result)
 
     # Keep best result if current is still too short
-    if clean_word_count(script_text) < 100 and best_text:
+    if clean_word_count(script_text) < 140 and best_text:
         script_text = best_text
         print(f"[Script] Using best result: {clean_word_count(script_text)} words")
 
@@ -3324,7 +3336,7 @@ Write ONLY the spoken words. No headings. No labels. No explanations."""
         print(f"[Script] Hook score after improvement: {_hook_score}/10")
 
     # ── Word budget gated by hook score ─────────────────────────────────────
-    _max_short = 190 if _hook_score >= 9 else 170
+    _max_short = 210 if _hook_score >= 9 else 200
     if clean_word_count(script_text) > _max_short:
         script_text = _trim_plain_text_to_words(script_text, _max_short)
         print(f"[Script] Short trimmed to {_max_short} words (hook score {_hook_score}/10)")
