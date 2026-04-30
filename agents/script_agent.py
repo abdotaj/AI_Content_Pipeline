@@ -2855,100 +2855,83 @@ def translate_script(en_script: dict) -> dict:
 
 
 def write_short_script(en_long_script: dict) -> dict:
-    """Generate a 120-140 word trailer-style hook script for a 55-second short video."""
-    topic  = en_long_script.get("topic", "")
-    _si    = get_series_for_person(topic)
-    series = f"{_si[0]}" if _si else en_long_script.get("niche", "the series")
-
-    # Build characters line — show cast if available, else key figures from long script
-    _show_chars = en_long_script.get("show_characters") or []
-    if _show_chars:
-        _chars_line = ", ".join(
-            f"{c['character']} ({c.get('based_on', '?')})"
-            for c in _show_chars[:4]
-        )
-    else:
-        # Extract first names mentioned in the long script as key figures
-        import re as _re
-        _script_excerpt = en_long_script.get("script", "")[:800]
-        _caps = _re.findall(r'\b[A-Z][a-z]+ [A-Z][a-z]+\b', _script_excerpt)
-        _unique = list(dict.fromkeys(_caps))[:4]
-        _chars_line = ", ".join(_unique) if _unique else topic
-
-    # Use angle_hook as opening if available — creates perfect teaser for long video
-    _angle_hook = en_long_script.get("angle_hook", "")
+    """Extract the strongest moment from the long script and rewrite it as a 60-80 second standalone short."""
+    topic       = en_long_script.get("topic", "")
+    long_script = en_long_script.get("script", "")
+    _angle_hook  = en_long_script.get("angle_hook", "")
     _angle_title = en_long_script.get("angle_title", "")
-    _angle_opening = (
-        f"MANDATORY FIRST SENTENCE — use this exactly: \"{_angle_hook}\"\n"
-        if _angle_hook else ""
+
+    _hook_instruction = (
+        f"HOOK (use this exact sentence to open): \"{_angle_hook}\"\n"
+        if _angle_hook else
+        "HOOK: Write the strongest possible first sentence — a shocking question, bold fact, or mystery.\n"
     )
 
-    prompt = f"""Write a 55-second hook script for a crime documentary short video.
+    prompt = f"""You are writing a 60-80 second spoken script for a crime documentary short video.
+
+TASK: Read the full script below. Find the single most powerful moment — a shocking reveal, emotional confession, mystery, or twist. Do NOT summarize the whole story. Extract just that moment and rewrite it as a complete, standalone short script.
+
 Topic: {topic}
-Related series/movie: {series}
-Key characters/people: {_chars_line}
-{f"Untold angle title: {_angle_title}" if _angle_title else ""}
+{f"Untold angle: {_angle_title}" if _angle_title else ""}
 
-{_angle_opening}UNIVERSAL RULES (apply to ALL topics — crime, biopics, historical, TV shows):
-1. {"Start with the MANDATORY FIRST SENTENCE above, then" if _angle_hook else "FIRST SENTENCE must be a shocking hook question or bold statement — then"} build the short around this untold angle
-2. Mention ALL main characters in the first 3 sentences — never focus on just one person
-3. NO bullet facts. NO numbers (no salary, years served, birth dates, ages). NO list format.
-4. End with: "Follow Dark Crime Decoded for the full story."
-5. MINIMUM 120 words, MAXIMUM 140 words — count carefully before finishing
-6. Must feel like a 55-second TEASER, not a biography summary
-7. Flowing prose only — minimum 2 sentences per paragraph, no standalone lines
+{_hook_instruction}
+STRUCTURE (all 4 parts required):
+1. HOOK (2 sentences): Grab attention immediately. No setup, no background — jump straight into the most dramatic moment.
+2. SETUP (2-3 sentences): Just enough context for the viewer to understand what's at stake.
+3. REVEAL (3-4 sentences): The core of the moment — the confession, the twist, the truth that changes everything. This is the part you extracted from the long script.
+4. CLOSE (1-2 sentences): A strong ending line. End with "Follow Dark Crime Decoded for more."
 
-GOOD EXAMPLE (Mindhunter — 3 characters, TV show):
-In the 1970s, three people changed criminal justice forever. Holden Ford, a young FBI agent obsessed with understanding evil. Bill Tench, a seasoned investigator who had seen too much. And Wendy Carr, a psychologist who dared to study the darkest minds in history. Together they built something that had never existed before — a unit dedicated to getting inside the heads of serial killers. But the real story behind Mindhunter is far darker than Netflix ever showed. The men they interviewed, the killers they faced, the price they paid. Follow Dark Crime Decoded to uncover the truth.
+RULES:
+- MINIMUM 150 words, MAXIMUM 200 words — count carefully
+- Flowing prose only — no bullet points, no lists, no standalone fragment sentences
+- Do NOT just summarize the whole story — focus on one powerful moment
+- Every sentence must earn its place — delete anything that doesn't add tension or emotion
+- Write for spoken delivery at 150 words per minute
 
-GOOD EXAMPLE (Pablo Escobar — single person, Narcos):
-What does it take to become the most wanted man on the planet? Pablo Escobar did not rise to power through luck — he built an empire through fear, money, and ruthless strategy that governments struggled to contain. His story is not just about cocaine or cartels. It is the story of a Colombia torn apart by a man who genuinely believed he could buy his way out of anything. The show Narcos captured his violence. But the full truth of what happened — the deals made, the lives destroyed, the legacy he left — goes far deeper than any camera ever showed. Follow Dark Crime Decoded to uncover the truth.
-
-BAD EXAMPLE — NEVER do this (any topic):
-John E. Douglas was born June 18 1945. He joined FBI in 1970. He made 135000 dollars per year. He interviewed 36 killers. He retired in 1995.
-
-Context from full script (use only for tone and story direction, not individual facts):
-{en_long_script.get('script', '')[:400]}
+FULL LONG SCRIPT (find the best moment inside this):
+{long_script[:1800]}
 
 Output ONLY the spoken script text, nothing else."""
 
     script_text = ""
     for attempt in range(2):
-        _short_prompt = prompt
+        _p = prompt
         if attempt > 0:
-            _short_prompt += f"\n\nCRITICAL: Previous attempt was {clean_word_count(script_text)} words. Must be 120-140 words. Expand the story — add more dramatic detail, cover more characters, build more tension."
-        script_text = _ai_script_call(_short_prompt, max_tokens=400, temperature=0.88).strip()
+            _p += f"\n\nCRITICAL: Previous attempt was {clean_word_count(script_text)} words. Target is 150-200 words. Expand the reveal — more dramatic detail, deeper emotional impact."
+        script_text = _ai_script_call(_p, max_tokens=500, temperature=0.85).strip()
         words   = clean_word_count(script_text)
-        seconds = round(words / 2.5)  # ~150wpm for dramatic narration
-        print(f"[Script] Short attempt {attempt + 1}: {words} real words = ~{seconds}s")
-        if words >= 120:
-            print(f"[Script] Short length OK: {words} real words")
+        seconds = round(words / 2.5)
+        print(f"[Script] Short attempt {attempt + 1}: {words} words = ~{seconds}s")
+        if words >= 150:
             break
-        print(f"[Script] Short too short ({words} real words) — retrying...")
+        print(f"[Script] Short too short ({words} words) — retrying...")
 
-    # Trim if over 150 real words (keep it tight for 55-second delivery)
-    if clean_word_count(script_text) > 150:
-        script_text = _trim_plain_text_to_words(script_text, 140)
-        print(f"[Script] Short trimmed to 140 words")
+    if clean_word_count(script_text) > 210:
+        script_text = _trim_plain_text_to_words(script_text, 200)
+        print("[Script] Short trimmed to 200 words")
+
+    ar_script_text = translate_to_arabic(script_text) if script_text else ""
 
     short_data = {
-        "title":           en_long_script.get("title", ""),  # overwritten below
-        "hook":            en_long_script.get("hook", script_text[:100]),
-        "script":          script_text,
-        "on_screen_texts": en_long_script.get("on_screen_texts", [])[:2],
-        "caption":         en_long_script["caption"],
-        "hashtags":        en_long_script["hashtags"],
-        "thumbnail_text":  en_long_script["thumbnail_text"],
-        "topic":           en_long_script["topic"],
-        "niche":           en_long_script["niche"],
-        "search_query":    en_long_script["search_query"],
-        "keywords":        en_long_script["keywords"],
-        "language":        "english",
+        "title":            en_long_script.get("title", ""),
+        "hook":             en_long_script.get("hook", script_text[:100]),
+        "script":           script_text,
+        "short_script_en":  script_text,
+        "short_script_ar":  ar_script_text,
+        "on_screen_texts":  en_long_script.get("on_screen_texts", [])[:2],
+        "caption":          en_long_script["caption"],
+        "hashtags":         en_long_script["hashtags"],
+        "thumbnail_text":   en_long_script["thumbnail_text"],
+        "topic":            en_long_script["topic"],
+        "niche":            en_long_script["niche"],
+        "search_query":     en_long_script["search_query"],
+        "keywords":         en_long_script["keywords"],
+        "language":         "english",
     }
     _short_title = add_short_title(short_data)
     short_data["title"]       = _short_title
     short_data["short_title"] = _short_title
-    print(f"[Script] Written (english short): '{short_data['title']}'")
+    print(f"[Script] Short script done: '{short_data['title']}' ({clean_word_count(script_text)} words EN, {clean_word_count(ar_script_text)} words AR)")
     return short_data
 
 

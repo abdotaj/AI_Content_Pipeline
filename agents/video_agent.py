@@ -2233,8 +2233,9 @@ def _apply_intro_outro_overlay(
     video_id: str,
     is_short: bool = False,
     chapters_str: str = "",
+    hook_text: str = "",
 ) -> str:
-    """Apply intro card, title card, chapter transitions, and outro via single ffmpeg pass.
+    """Apply cold open hook, title card, chapter transitions, and outro via single ffmpeg pass.
 
     Returns video_path (replaced in-place on success, original kept on failure).
     """
@@ -2275,39 +2276,39 @@ def _apply_intro_outro_overlay(
             f":x=(w-text_w)/2:y=ih-{bar_h//2 + 14}",
         ]
     else:
-        intro_end = 3.0      # black card fades out at t=3
-        intro_fade = 1.0     # fade-in duration for text
-        title_start = intro_end
-        title_end = title_start + 2.5
-        outro_start = 9999.0  # placeholder, set below
+        hook_end    = 2.5
+        outro_start = 9999.0
+        crimson     = "0xDC143C"
 
-        # Intro: black card for first 3s
+        _hook_raw = hook_text or title or "Dark Crime Decoded"
+        _hook_raw = (_hook_raw[:42] + "…") if len(_hook_raw) > 42 else _hook_raw
+        hook_esc  = _escape_drawtext(_hook_raw)
+
+        # Cold open: soft glitch pulse at t=0
         filters += [
-            f"drawbox=x=0:y=0:w={w}:h={h}:color=black@1.0:t=fill:enable='lt(t,{intro_end})'",
-            # Channel name fades in
-            f"drawtext=fontfile='{font_esc}':text='{channel_name}':fontsize=64:fontcolor=white"
-            f":x=(w-text_w)/2:y=(h/2 - 80)"
-            f":alpha='if(lt(t,{intro_fade}),t/{intro_fade},1)'"
-            f":enable='lt(t,{intro_end})'",
-            # Red separator line
-            f"drawbox=x=(w-400)/2:y=h/2-8:w=400:h=6:color=red@1.0:t=fill"
-            f":enable='lt(t,{intro_end})'",
-            # Subtitle fades in with 0.3s delay
-            f"drawtext=fontfile='{font_esc}':text='{subtitle_text}':fontsize=36:fontcolor=white@0.85"
-            f":x=(w-text_w)/2:y=(h/2 + 30)"
-            f":alpha='if(lt(t,{intro_fade+0.3}),(t-0.3)/{intro_fade},1)'"
-            f":enable='lt(t,{intro_end})'",
-            # Fade from black to video at t=2–3
-            f"fade=t=in:st=2:d=1",
+            f"drawbox=x=0:y=0:w={w}:h={h}:color=white@0.20:t=fill:enable='lt(t,0.08)'",
         ]
 
-        # Episode title card at t=3–5.5
+        # Hook: slim scrim + text at bottom (0–2.5 s)
         filters += [
-            f"drawbox=x=0:y=ih/2-70:w={w}:h=140:color=black@0.72:t=fill"
-            f":enable='between(t,{title_start},{title_end})'",
-            f"drawtext=fontfile='{font_esc}':text='{title_esc}':fontsize=44:fontcolor=white"
-            f":x=(w-text_w)/2:y=h/2-28"
-            f":enable='between(t,{title_start},{title_end})'",
+            # Thin scrim — non-blocking, just enough for legibility
+            f"drawbox=x=0:y=ih-110:w={w}:h=110:color=black@0.42:t=fill"
+            f":enable='between(t,0,{hook_end})'",
+            # Crimson accent line above scrim
+            f"drawbox=x=0:y=ih-113:w={w}:h=3:color={crimson}@1.0:t=fill"
+            f":enable='between(t,0,{hook_end})'",
+            # Hook text with shadow for depth
+            f"drawtext=fontfile='{font_esc}':text='{hook_esc}':fontsize=44:fontcolor=white"
+            f":shadowcolor=black@0.80:shadowx=2:shadowy=2"
+            f":x=(w-text_w)/2:y=ih-78"
+            f":alpha='if(lt(t,0.25),t/0.25,1)'"
+            f":enable='between(t,0,{hook_end})'",
+            # Brand watermark — small, crimson, bottom edge
+            f"drawtext=fontfile='{font_esc}':text='{channel_name}':fontsize=18:fontcolor={crimson}"
+            f":shadowcolor=black@0.80:shadowx=1:shadowy=1"
+            f":x=(w-text_w)/2:y=ih-24"
+            f":alpha='if(lt(t,0.25),t/0.25,1)'"
+            f":enable='between(t,0,{hook_end})'",
         ]
 
         # Chapter transition flashes (0.5s white flash text overlay)
@@ -4054,6 +4055,110 @@ def cut_chapter_shorts(
     print(f"[Short] {len(shorts)}/5 chapter shorts created from {os.path.basename(long_video_path)}")
     return shorts
 
+
+def cut_best_short(
+    long_video_path: str,
+    script_data: dict,
+    output_dir: str | None = None,
+) -> list[dict]:
+    """Cut the single highest-scoring chapter short from a long video.
+
+    Scores every chapter with retention signals (hook, reveal, mystery,
+    confession, twist) and cuts the winner at 45-90 seconds.
+    Returns a list with 0 or 1 dict: [{path, title, label, chapter_idx, score}]
+    """
+    import re as _re
+
+    chapters_str = script_data.get("chapters", "")
+    if not chapters_str or not os.path.exists(long_video_path):
+        return []
+
+    lines = [l.strip() for l in chapters_str.strip().split("
+") if l.strip()]
+    chapter_times: list[tuple[int, str]] = []
+    for line in lines:
+        m = _re.match(r'^(\d+):(\d+)\s+(.+)$', line)
+        if m:
+            secs = int(m.group(1)) * 60 + int(m.group(2))
+            chapter_times.append((secs, m.group(3).strip()))
+
+    if not chapter_times:
+        print("[Short] No chapter timestamps -- skipping best short")
+        return []
+
+    total_dur = _ffprobe_duration(long_video_path) or 0
+    if total_dur < 45:
+        print(f"[Short] Video too short ({total_dur:.0f}s) for best short")
+        return []
+
+    if output_dir is None:
+        output_dir = SHORTS_DIR
+    os.makedirs(output_dir, exist_ok=True)
+
+    lang    = script_data.get("language", "english")
+    safe_id = _re.sub(r'[^\w]', '_', script_data.get('topic', 'video')[:20])
+
+    ffmpeg_bin = _get_ffmpeg()
+    if not ffmpeg_bin:
+        print("[Short] ffmpeg not found -- skipping best short")
+        return []
+
+    _sections = _parse_script_sections(script_data.get("script", ""))
+
+    # Score every chapter; pick the highest (ties broken by earliest index)
+    best_idx, best_score = 0, -1
+    for idx, (_, ch_title) in enumerate(chapter_times):
+        section_text = _sections[idx][1] if idx < len(_sections) else ""
+        score = _score_retention(ch_title, section_text)
+        if score > best_score:
+            best_score, best_idx = score, idx
+
+    start_sec, chapter_title = chapter_times[best_idx]
+    chapter_end = chapter_times[best_idx + 1][0] if best_idx + 1 < len(chapter_times) else total_dur
+    chapter_dur = max(0, chapter_end - start_sec)
+
+    cut_start = start_sec if best_score >= 3 else start_sec + min(20, chapter_dur // 5)
+    cut_dur   = min(90, max(45, chapter_end - cut_start))
+
+    if cut_dur < 45:
+        print(f"[Short] Best chapter too short ({cut_dur:.0f}s) -- skipping")
+        return []
+
+    out_path    = os.path.join(output_dir, f"{safe_id}_best_{lang}.mp4")
+    clean_title = _re.sub(r'[^\w\s\-]', '', chapter_title)[:50].replace("'", "\'")
+
+    cmd = [
+        ffmpeg_bin, "-y",
+        "-i", long_video_path,
+        "-ss", str(int(cut_start)),
+        "-t",  str(int(cut_dur)),
+        "-vf",
+        (
+            f"drawtext=text='{clean_title}':"
+            "fontsize=40:fontcolor=white:"
+            "x=(w-text_w)/2:y=50:"
+            "box=1:boxcolor=black@0.5:boxborderw=10"
+        ),
+        "-c:v", "libx264",
+        "-c:a", "aac",
+        "-pix_fmt", "yuv420p",
+        out_path,
+    ]
+
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, timeout=180)
+        print(f"[Short] Best short: ch{best_idx+1} score={best_score} {cut_dur:.0f}s -> {os.path.basename(out_path)}")
+        return [{
+            "path":        out_path,
+            "title":       chapter_title,
+            "label":       "Best Short -- TikTok + Instagram + YouTube Shorts",
+            "chapter_idx": best_idx + 1,
+            "score":       best_score,
+        }]
+    except Exception as e:
+        print(f"[Short] Best short cut failed: {e}")
+        return []
+
 # â"€â"€ User image helpers â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 def _find_keyword_position(script_text: str, tags: list[str]) -> float:
@@ -4889,12 +4994,11 @@ def assemble_short_video(audio_path: str, image_paths: list[str], output_path: s
             if v.duration <= 0:
                 v.close()
                 return _zoom_clip(_load_frame(src_path), 1.00, 1.08 if zoom_in else 1.00, dur)
-            max_start = max(0.0, v.duration - dur)
-            start = random.uniform(0, max_start) if max_start > 0 else 0.0
-            c = v.subclip(start, min(v.duration, start + dur))
+            actual_dur = min(dur, v.duration)  # don't pad beyond natural duration
+            max_start  = max(0.0, v.duration - actual_dur)
+            start      = random.uniform(0, max_start) if max_start > 0 else 0.0
+            c = v.subclip(start, min(v.duration, start + actual_dur))
             c = _fit_vertical(c)
-            if c.duration < dur:
-                c = c.set_duration(dur)
             return c
         frame = _load_frame(src_path)
         return _zoom_clip(frame, 1.00, 1.08 if zoom_in else 1.00, dur)
@@ -4904,22 +5008,37 @@ def assemble_short_video(audio_path: str, image_paths: list[str], output_path: s
         print("[Video] No media for short video, aborting")
         return ""
 
-    # 2 variations per media source.
-    all_clips = []
-    for src in media_sources:
+    # Separate real footage from static images — videos anchor the front
+    video_sources = [p for p in media_sources if _is_video_file(p)]
+    image_sources = [p for p in media_sources if not _is_video_file(p)]
+
+    # Video clips: 10-14s, two segments per source
+    video_clips: list = []
+    for src in video_sources:
         try:
-            all_clips.append(_media_clip(src, random.uniform(6, 8), zoom_in=True))
-            all_clips.append(_media_clip(src, random.uniform(6, 8), zoom_in=False))
+            video_clips.append(_media_clip(src, random.uniform(10, 14)))
+            video_clips.append(_media_clip(src, random.uniform(10, 14)))
         except Exception as e:
-            print(f"[Video] Short media clip error: {e}")
+            print(f"[Video] Short video clip error: {e}")
 
-    random.shuffle(all_clips)
-
-    # Loop by regenerating new clips from random media until we have enough
-    while sum(c.duration for c in all_clips) < total_duration + 5:
-        src = media_sources[random.randint(0, len(media_sources) - 1)]
+    # Image clips: 5-7s zoom pairs
+    image_clips: list = []
+    for src in image_sources:
         try:
-            all_clips.append(_media_clip(src, random.uniform(5, 7), zoom_in=True))
+            image_clips.append(_media_clip(src, random.uniform(5, 7), zoom_in=True))
+            image_clips.append(_media_clip(src, random.uniform(5, 7), zoom_in=False))
+        except Exception as e:
+            print(f"[Video] Short image clip error: {e}")
+
+    random.shuffle(image_clips)
+    all_clips = video_clips + image_clips
+
+    # Gap-fill: prefer real footage when available
+    refill_pool = video_sources if video_sources else media_sources
+    while sum(c.duration for c in all_clips) < total_duration + 5:
+        src = refill_pool[random.randint(0, len(refill_pool) - 1)]
+        try:
+            all_clips.append(_media_clip(src, random.uniform(8, 12)))
         except Exception:
             pass
 
@@ -5664,9 +5783,10 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
         if pure_paths:
             video_path = _mix_pure_video_audio(video_path, pure_paths)
 
-        # Apply intro/outro overlays
-        _overlay_title = script_data.get("title", "")
+        # Apply cold open + overlays
+        _overlay_title    = script_data.get("title", "")
         _overlay_chapters = script_data.get("chapters", "")
+        _overlay_hook     = script_data.get("angle_title", "") or script_data.get("topic", "")
         video_path = _apply_intro_outro_overlay(
             video_path,
             title=_overlay_title,
@@ -5674,6 +5794,7 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
             video_id=video_id,
             is_short=is_short,
             chapters_str=_overlay_chapters,
+            hook_text=_overlay_hook,
         )
 
         # Intro disabled — black screen confirmed in production benchmarks

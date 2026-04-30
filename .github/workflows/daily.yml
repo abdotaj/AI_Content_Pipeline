@@ -26,21 +26,18 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4.2.2
         with:
           lfs: true
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v5.4.0
         with:
           python-version: '3.11'
 
-      - name: Cache apt packages
-        uses: actions/cache@v4
-        with:
-          path: /var/cache/apt/archives
-          key: apt-ffmpeg-${{ runner.os }}-v1
-
+      # apt packages are NOT cached — /var/cache/apt/archives/partial and lock
+      # files change during apt-get install and cause tar exit code 2 on save.
+      # ffmpeg + fonts install in ~25 s on ubuntu-latest; the cache saves nothing.
       - name: Install system dependencies
         run: |
           sudo apt-get update -qq
@@ -48,14 +45,14 @@ jobs:
           git lfs install   # ensure user-level hooks; checkout@v4 already pulled LFS objects
 
       - name: Cache pip packages
-        uses: actions/cache@v4
+        uses: actions/cache@v4.2.3
         with:
           path: ~/.cache/pip
           key: pip-${{ hashFiles('requirements.txt') }}
           restore-keys: pip-
 
       - name: Cache music assets
-        uses: actions/cache@v4
+        uses: actions/cache@v4.2.3
         with:
           path: assets/music/
           key: music-assets-v1
@@ -129,7 +126,7 @@ jobs:
 
       - name: Upload all videos as artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v4.6.2
         with:
           name: dark-crime-videos-${{ github.run_id }}
           path: |
@@ -141,7 +138,7 @@ jobs:
 
       - name: Upload shorts as artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v4.6.2
         with:
           name: dark-crime-shorts-${{ github.run_id }}
           path: output/shorts/*.mp4
@@ -150,7 +147,7 @@ jobs:
 
       - name: Upload logs on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v4.6.2
         with:
           name: dark-crime-error-logs
           path: output/dark_crime/
@@ -233,7 +230,7 @@ jobs:
   #
   #     - name: Upload logs on failure
   #       if: failure()
-  #       uses: actions/upload-artifact@v4
+  #       uses: actions/upload-artifact@v4.6.2
   #       with:
   #         name: shopmart-error-logs
   #         path: output/shopmart/

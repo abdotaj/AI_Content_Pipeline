@@ -1,12 +1,12 @@
 # ============================================================
 #  run_darkcrimed.py  —  Pipeline entry point for Dark Crime Decoded
 #
-#  Daily output (1 topic, 12 pieces):
+#  Daily output (1 topic, 4 pieces):
 #
-#    OUTPUT 1  — English long-form (12-20 min) → auto YouTube upload
-#    OUTPUT 2  — Arabic long-form  (12-20 min) → auto YouTube upload
-#    OUTPUTS 3-7  — 5 English chapter shorts (55-90s each) → Telegram
-#    OUTPUTS 8-12 — 5 Arabic  chapter shorts (55-90s each) → Telegram
+#    OUTPUT 1 — English long-form (12-20 min) → auto YouTube upload
+#    OUTPUT 2 — Arabic long-form  (12-20 min) → auto YouTube upload
+#    OUTPUT 3 — English short (45-90s) → Telegram  [SHORT_MODE=script|cut]
+#    OUTPUT 4 — Arabic short  (45-90s) → Telegram  [SHORT_MODE=script|cut]
 # ============================================================
 import os
 import sys
@@ -39,8 +39,8 @@ from config_darkcrimed import (
 # Local: use existing youtube_token_darkcrimed_en/ar.json files
 
 from agent.research_agent import research_topics, research_series, mark_covered, is_fictional, _detect_show_topic, _fetch_show_cast_from_wikipedia
-from agent.script_agent   import write_script, translate_script, detect_part_number, generate_chapters
-from agent.video_agent    import create_video, process_user_images_smart, load_part2_images, ensure_music_assets, cut_chapter_shorts, load_all_content
+from agent.script_agent   import write_script, translate_script, detect_part_number, generate_chapters, write_short_script
+from agent.video_agent    import create_video, process_user_images_smart, load_part2_images, ensure_music_assets, cut_chapter_shorts, cut_best_short, load_all_content
 from agent.notify_agent   import (
     send_message, send_for_manual_posting, send_daily_report,
     send_video_to_telegram, clear_telegram_queue,
@@ -50,6 +50,12 @@ from agent.notify_agent   import (
 )
 from agent.publish_agent  import upload_to_youtube
 from agents.content_agent import ingest_content_files
+
+# SHORT_MODE controls how the daily short videos are generated.
+# "script" (default) — TTS + full video assembly from the optimized short script.
+# "cut"              — cut the best chapter clip from the finished long video.
+# Falls back to "cut" automatically if short_script_en/ar are empty.
+SHORT_MODE = os.getenv("SHORT_MODE", "script").lower()
 
 
 def _already_ran_today() -> bool:
@@ -460,6 +466,15 @@ def run_pipeline():
         _log("Scripts", f"Arabic translation failed: {e}", "ERROR")
         return
 
+    # Generate short scripts: extract + rewrite strongest moment from long script
+    try:
+        _short_data = write_short_script(en_long)
+        en_long["short_script_en"] = _short_data.get("short_script_en", "")
+        ar_long["short_script_ar"] = _short_data.get("short_script_ar", "")
+        _log("Scripts", "Short scripts done", "OK")
+    except Exception as e:
+        _log("Scripts", f"Short script generation failed (non-fatal): {e}", "WARN")
+
     _stage("Scripts AR done")
 
     # ── STEP 3: Send scripts to Telegram for review (non-blocking) ────────────
@@ -530,17 +545,47 @@ def run_pipeline():
         ar_long_id   = f"{today}_{uuid.uuid4().hex[:8]}_arabic_long"
         ar_long_path = _make_video(ar_long, ar_long_id, stats, user_images=user_images, user_videos=user_videos)
 
-    # Outputs 3-7: cut 5 chapter shorts from English long video
+    # Output 3: English short  ── script path or cut fallback
     en_chapter_shorts: list[dict] = []
-    if en_long_path and os.path.exists(en_long_path):
-        print("[Pipeline] Cutting 5 English chapter shorts...")
-        en_chapter_shorts = cut_chapter_shorts(en_long_path, en_long)
+    _en_short_script = en_long.get("short_script_en", "")
+    if SHORT_MODE == "script" and _en_short_script:
+        print("[Pipeline] Generating English short from short script (TTS → video)...")
+        _en_short_data = {**en_long, "script": _en_short_script}
+        _en_short_id   = f"{today}_{uuid.uuid4().hex[:8]}_english_short"
+        _en_short_path = _make_video(_en_short_data, _en_short_id, stats)
+        if _en_short_path:
+            en_chapter_shorts = [{
+                "path":        _en_short_path,
+                "title":       en_long.get("title", ""),
+                "label":       "Best Short — TikTok + Instagram + YouTube Shorts",
+                "chapter_idx": 1,
+            }]
+    else:
+        _reason = "SHORT_MODE=cut" if _en_short_script else "short_script_en missing"
+        print(f"[Pipeline] Cutting best English short from long video ({_reason})...")
+        if en_long_path and os.path.exists(en_long_path):
+            en_chapter_shorts = cut_best_short(en_long_path, en_long)
 
-    # Outputs 8-12: cut 5 chapter shorts from Arabic long video
+    # Output 4: Arabic short  ── script path or cut fallback
     ar_chapter_shorts: list[dict] = []
-    if ar_long_path and os.path.exists(ar_long_path):
-        print("[Pipeline] Cutting 5 Arabic chapter shorts...")
-        ar_chapter_shorts = cut_chapter_shorts(ar_long_path, ar_long)
+    _ar_short_script = ar_long.get("short_script_ar", "")
+    if SHORT_MODE == "script" and _ar_short_script:
+        print("[Pipeline] Generating Arabic short from short script (TTS → video)...")
+        _ar_short_data = {**ar_long, "script": _ar_short_script}
+        _ar_short_id   = f"{today}_{uuid.uuid4().hex[:8]}_arabic_short"
+        _ar_short_path = _make_video(_ar_short_data, _ar_short_id, stats)
+        if _ar_short_path:
+            ar_chapter_shorts = [{
+                "path":        _ar_short_path,
+                "title":       ar_long.get("title", ""),
+                "label":       "Best Short — TikTok + Instagram + YouTube Shorts",
+                "chapter_idx": 1,
+            }]
+    else:
+        _reason = "SHORT_MODE=cut" if _ar_short_script else "short_script_ar missing"
+        print(f"[Pipeline] Cutting best Arabic short from long video ({_reason})...")
+        if ar_long_path and os.path.exists(ar_long_path):
+            ar_chapter_shorts = cut_best_short(ar_long_path, ar_long)
 
     _stage("Videos + shorts done")
 
@@ -611,37 +656,39 @@ def run_pipeline():
             send_message(_fail_msg)
             stats["errors"] += 1
 
-    # Send 5 English chapter shorts to Telegram
-    for short in en_chapter_shorts:
+    # Send best English short to Telegram (1 video, reliable)
+    if en_chapter_shorts:
+        short = en_chapter_shorts[0]
         try:
             caption = (
                 f"MANUAL POST NEEDED\n\n"
-                f"Chapter {short['chapter_idx']}: {short['title']}\n"
+                f"{short['title']}\n"
                 f"Post to: {short['label']}\n\n"
                 f"Topic: {en_long.get('title', '')}\n"
                 f"{en_long.get('hashtags', '')}"
             )
             _with_retry(send_video_to_telegram, short["path"], caption,
-                        f"EN Short Ch{short['chapter_idx']}",
-                        retries=3, delay=10, label=f"TG EN Ch{short['chapter_idx']}")
+                        "EN Best Short",
+                        retries=3, delay=10, label="TG EN Best Short")
         except Exception as e:
-            _log("Telegram", f"EN short Ch{short['chapter_idx']} send failed: {e}", "WARN")
+            _log("Telegram", f"EN best short send failed: {e}", "WARN")
 
-    # Send 5 Arabic chapter shorts to Telegram
-    for short in ar_chapter_shorts:
+    # Send best Arabic short to Telegram (1 video, reliable)
+    if ar_chapter_shorts:
+        short = ar_chapter_shorts[0]
         try:
             caption = (
                 f"MANUAL POST NEEDED\n\n"
-                f"Chapter {short['chapter_idx']}: {short['title']}\n"
+                f"{short['title']}\n"
                 f"Post to: {short['label']}\n\n"
                 f"Topic: {ar_long.get('title', '')}\n"
                 f"{ar_long.get('hashtags', '')}"
             )
             _with_retry(send_video_to_telegram, short["path"], caption,
-                        f"AR Short Ch{short['chapter_idx']}",
-                        retries=3, delay=10, label=f"TG AR Ch{short['chapter_idx']}")
+                        "AR Best Short",
+                        retries=3, delay=10, label="TG AR Best Short")
         except Exception as e:
-            _log("Telegram", f"AR short Ch{short['chapter_idx']} send failed: {e}", "WARN")
+            _log("Telegram", f"AR best short send failed: {e}", "WARN")
 
     # ── Save manifest (2 long videos + shorts summary) ────────
     _save_manifest(
@@ -660,15 +707,15 @@ def run_pipeline():
     _status_ar = f"✅ {yt_ar_url}" if yt_ar_url else "❌ Upload failed"
     send_message(
         f"📊 Daily Report — Dark Crime Decoded\n\n"
-        f"✅ Generated: 2 long + {_total_shorts} shorts ({_total_shorts // 2} EN + {_total_shorts // 2} AR)\n"
+        f"✅ Generated: 2 long + {_total_shorts} shorts (1 EN + 1 AR best chapters)\n"
         f"⏱ Total time: {_total_elapsed:.0f} min\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"🎬 English Long → YouTube\n"
         f"{_status_en}\n\n"
         f"🎬 Arabic Long → YouTube\n"
         f"{_status_ar}\n\n"
-        f"📱 {len(en_chapter_shorts)} EN Chapter Shorts → Telegram ✅\n"
-        f"📱 {len(ar_chapter_shorts)} AR Chapter Shorts → Telegram ✅\n"
+        f"📱 {len(en_chapter_shorts)} EN Best Short → Telegram ✅\n"
+        f"📱 {len(ar_chapter_shorts)} AR Best Short → Telegram ✅\n"
         f"━━━━━━━━━━━━━━━━━━━━━━"
     )
 
@@ -705,7 +752,7 @@ def run_pipeline():
           f"| Posted: {stats['posted']} | Errors: {stats['errors']}")
     print(f"  YouTube EN: {yt_en_url or 'FAILED'}")
     print(f"  YouTube AR: {yt_ar_url or 'FAILED'}")
-    print(f"  Shorts sent: {_total_shorts} ({len(en_chapter_shorts)} EN + {len(ar_chapter_shorts)} AR)")
+    print(f"  Shorts sent: {_total_shorts} (1 EN + 1 AR best chapters)")
     print(f"{'='*60}\n")
 
 
