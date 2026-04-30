@@ -1878,7 +1878,12 @@ def _load_user_images_from_folders(topic: str = "") -> list[dict]:
     Supports .jpg/.jpeg/.png/.webp/.jfif — JFIF files are auto-converted via Pillow.
     Returns list of {"path", "caption", "tags"} dicts.
     """
-    search_dirs = ["assets/images", "content/images", "content/pending/images"]
+    search_dirs = [
+        "assets/images",
+        "content/images",
+        "content/pending/images",
+        "output/user_images",   # Telegram images downloaded by notify_agent
+    ]
     # Also check topic-specific subfolder
     if topic:
         slug = topic.lower().replace(" ", "_").replace("-", "_")[:30]
@@ -1893,12 +1898,12 @@ def _load_user_images_from_folders(topic: str = "") -> list[dict]:
             ext = os.path.splitext(fname)[1].lower()
             if ext not in image_exts:
                 continue
-            path = os.path.join(d, fname)
+            path = os.path.abspath(os.path.join(d, fname))
             # Convert JFIF → JPEG so MoviePy/Pillow can load it reliably
             if ext == ".jfif":
                 try:
                     from PIL import Image as _PIL
-                    converted = os.path.join(d, os.path.splitext(fname)[0] + "_converted.jpg")
+                    converted = os.path.abspath(os.path.join(d, os.path.splitext(fname)[0] + "_converted.jpg"))
                     if not os.path.exists(converted):
                         _PIL.open(path).convert("RGB").save(converted, "JPEG")
                         print(f"[Image] Converted JFIF → JPG: {fname}")
@@ -1985,7 +1990,7 @@ def load_all_content(
         if not os.path.isdir(d):
             return []
         return [
-            os.path.join(d, f) for f in sorted(os.listdir(d))
+            os.path.abspath(os.path.join(d, f)) for f in sorted(os.listdir(d))
             if not f.startswith('.') and os.path.splitext(f)[1].lower() in exts
         ]
 
@@ -4811,16 +4816,14 @@ def assemble_video_with_hook(
     except ImportError:
         from moviepy import AudioFileClip, VideoClip, VideoFileClip, concatenate_videoclips
 
-    # BUG 5: user images check at assembly start
-    _ui_dir = "output/user_images"
-    _ui_on_disk = [f for f in (os.listdir(_ui_dir) if os.path.isdir(_ui_dir) else [])
-                   if f.lower().endswith((".jpg", ".jpeg", ".png", ".jfif", ".webp"))]
-    print(f"[Video] User images available at long assembly start: {len(_ui_on_disk)}")
-    if not _ui_on_disk:
-        print("[Video] WARNING: No user images on disk at assembly time")
-    _user_in_pool = [p for p in image_paths if "user_" in os.path.basename(p) or "_ui_" in os.path.basename(p)]
-    print(f"[DEBUG] Image pool at long assembly: {len(_user_in_pool)} user images, {len(image_paths) - len(_user_in_pool)} stock/AI images")
-    print(f"[DEBUG] User image paths in pool: {[os.path.basename(p) for p in _user_in_pool]}")
+    # User images copied in Step B are named *_ui_* inside output/images/
+    _ui_in_pool = [p for p in image_paths if p and "_ui_" in os.path.basename(p)]
+    _ui_existing = [p for p in _ui_in_pool if os.path.exists(p)]
+    print(f"[Video] User images available at long assembly start: {len(_ui_existing)}")
+    if _ui_in_pool and not _ui_existing:
+        print("[Video] WARNING: User image paths in pool but files missing on disk — path issue")
+    print(f"[DEBUG] Image pool at long assembly: {len(_ui_existing)} user images, {len(image_paths) - len(_ui_in_pool)} stock/AI images")
+    print(f"[DEBUG] User image paths in pool: {[os.path.basename(p) for p in _ui_existing]}")
     print(f"[DEBUG] First 5 images for long video: {[os.path.basename(p) for p in image_paths[:5]]}")
 
     TARGET_W, TARGET_H = 1080, 1920
@@ -5117,16 +5120,14 @@ def assemble_short_video(audio_path: str, image_paths: list[str], output_path: s
     except ImportError:
         from moviepy import AudioFileClip, VideoClip, VideoFileClip, concatenate_videoclips
 
-    # BUG 5: user images check at assembly start
-    _ui_dir = "output/user_images"
-    _ui_on_disk = [f for f in (os.listdir(_ui_dir) if os.path.isdir(_ui_dir) else [])
-                   if f.lower().endswith((".jpg", ".jpeg", ".png", ".jfif", ".webp"))]
-    print(f"[Video] User images available at short assembly start: {len(_ui_on_disk)}")
-    if not _ui_on_disk:
-        print("[Video] WARNING: No user images on disk at assembly time")
-    _user_in_pool = [p for p in image_paths if "user_" in os.path.basename(p) or "_ui_" in os.path.basename(p)]
-    print(f"[DEBUG] Image pool at short assembly: {len(_user_in_pool)} user images, {len(image_paths) - len(_user_in_pool)} stock/AI images")
-    print(f"[DEBUG] User image paths in pool: {[os.path.basename(p) for p in _user_in_pool]}")
+    # User images copied in Step B are named *_ui_* inside output/images/
+    _ui_in_pool = [p for p in image_paths if p and "_ui_" in os.path.basename(p)]
+    _ui_existing = [p for p in _ui_in_pool if os.path.exists(p)]
+    print(f"[Video] User images available at short assembly start: {len(_ui_existing)}")
+    if _ui_in_pool and not _ui_existing:
+        print("[Video] WARNING: User image paths in pool but files missing on disk — path issue")
+    print(f"[DEBUG] Image pool at short assembly: {len(_ui_existing)} user images, {len(image_paths) - len(_ui_in_pool)} stock/AI images")
+    print(f"[DEBUG] User image paths in pool: {[os.path.basename(p) for p in _ui_existing]}")
     print(f"[DEBUG] First 5 images for short video: {[os.path.basename(p) for p in image_paths[:5]]}")
 
     TARGET_W, TARGET_H = 1080, 1920
@@ -5772,17 +5773,10 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
 
     # Minimal wait for late-arriving Telegram downloads before scanning
     import time as _t; _t.sleep(1)
-    # BUG 5 check: how many user images are on disk right now
-    _ui_dir = "output/user_images"
-    _ui_on_disk = [f for f in (os.listdir(_ui_dir) if os.path.isdir(_ui_dir) else [])
-                   if f.lower().endswith((".jpg", ".jpeg", ".png", ".jfif", ".webp"))]
-    print(f"[Video] User images available on disk at assembly start: {len(_ui_on_disk)}")
-    if not _ui_on_disk and not (user_images or user_videos):
-        print("[Video] WARNING: No user images found on disk — check if cleared too early or none were sent")
 
-    # Auto-load user content from disk (Telegram downloads land here)
+    # Auto-load user content from disk (Telegram images → output/user_images, videos → output/user_videos)
     folder_videos = _load_user_videos_from_folder()
-    folder_images = _load_user_images_from_folders(topic_str)
+    folder_images = _load_user_images_from_folders(topic_str)  # includes output/user_images
 
     # Deduplicate: merge passed-in lists with folder-loaded lists by path
     _seen_paths: set[str] = set()
@@ -5797,10 +5791,16 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
     all_user_images: list[dict] = []
     for _ui in list(user_images or []) + folder_images:
         _p = _ui.get("path", "")
-        if _p and _p not in _seen_paths and os.path.exists(_p):
-            _seen_paths.add(_p)
-            all_user_images.append(_ui)
+        _p_abs = os.path.abspath(_p) if _p else ""
+        if _p_abs and _p_abs not in _seen_paths and os.path.exists(_p_abs):
+            _seen_paths.add(_p_abs)
+            # Normalise path to absolute in the dict so all downstream code gets abs paths
+            _ui_norm = dict(_ui); _ui_norm["path"] = _p_abs
+            all_user_images.append(_ui_norm)
 
+    print(f"[Video] User images available on disk at assembly start: {len(all_user_images)}")
+    if not all_user_images and not all_user_videos:
+        print("[Video] INFO: No user images provided — will use stock/AI visuals only")
     print(f"[DEBUG] User content: {len(all_user_images)} unique images, {len(all_user_videos)} unique videos")
     if all_user_images:
         print(f"[DEBUG] User image paths: {[img['path'] for img in all_user_images]}")
@@ -5937,13 +5937,13 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
 
     print(f"[DEBUG] First 5 images selected for video: {[os.path.basename(p) for p in all_image_paths[:5]]}")
 
-    # â"€â"€ Image enhancement â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+    # ── Image enhancement ────────────────────────────────────────────────────────
     try:
         from agents.enhancer import enhance_image as _enhance_image
         _img_exts = {".jpg", ".jpeg", ".png", ".webp", ".jfif", ".bmp"}
         _to_enhance = [
             p for p in all_image_paths
-            if Path(p).suffix.lower() in _img_exts and os.path.exists(p)
+            if p and Path(p).suffix.lower() in _img_exts and os.path.exists(p)
         ]
         if _to_enhance:
             print(f"[Video] Enhancing {len(_to_enhance)} image(s) before rendering...")
@@ -5951,12 +5951,22 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
             with _TPE(max_workers=min(4, len(_to_enhance))) as _pool:
                 _enh_results = list(_pool.map(_enhance_image, _to_enhance))
             _enh_map = dict(zip(_to_enhance, _enh_results))
-            all_image_paths = [_enh_map.get(p, p) for p in all_image_paths]
+            # Use `or p` so that a None result from enhance_image falls back to original
+            all_image_paths = [_enh_map.get(p) or p for p in all_image_paths]
             print(f"[Video] Enhancement complete")
     except Exception as _enh_err:
         print(f"[Video] Enhancement skipped (non-fatal): {_enh_err}")
 
-    # â"€â"€ Assembly â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+    # ── Pre-assembly validation ───────────────────────────────────────────────
+    # Filter any None or missing paths that could crash MoviePy
+    _missing = [p for p in all_image_paths if not p or not os.path.exists(p)]
+    if _missing:
+        print(f"[Video] WARNING: {len(_missing)} image path(s) missing before assembly — filtering out")
+        all_image_paths = [p for p in all_image_paths if p and os.path.exists(p)]
+    print(f"[DEBUG] Final image list count: {len(all_image_paths)}")
+    print(f"[DEBUG] First 3 image paths: {all_image_paths[:3]}")
+
+    # ── Assembly ──────────────────────────────────────────────────────────────
     output_path = os.path.join(FINAL_DIR, f"{video_id}.mp4")
 
     if is_short:
