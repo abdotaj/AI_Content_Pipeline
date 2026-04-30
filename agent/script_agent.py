@@ -87,11 +87,33 @@ CHARACTER COVERAGE:
 - Every key person gets their own dedicated paragraph: full name, actual role, what they did, their fate.
 - Women, minorities, and supporting figures get EQUAL coverage — never relegate them to a passing mention.
 
-TONE:
-- 85% dark, serious, documentary tone.
-- 15% dry understatement — especially for criminal mistakes, ironic twists, moments of hubris.
-- Example: "He planned the perfect crime. He forgot that cameras exist."
+VOICE TONE:
+- Calm. Investigative. Slightly unsettling.
+- The narrator knows more than they are saying — and the viewer senses it.
+- Not academic. Not casual. Not excited. Never sensationalist.
+- 85% dark and controlled. 15% dry understatement for criminal mistakes and ironic twists.
+- Example of dry understatement: "He planned the perfect crime. He forgot that cameras exist."
 - Never mock victims. Dry humor only at criminals or corrupt officials. One line maximum per chapter.
+
+NARRATIVE TENSION — sustained across every chapter:
+- Each chapter must introduce a new unresolved question, hidden conflict, or suppressed truth.
+- Do NOT fully resolve tension within the same chapter — leave something open that pulls into the next.
+- The viewer must always feel: there is something I still do not know.
+
+HOOK QUALITY — first 1-2 sentences of every chapter:
+- Must contain ONE of: a contradiction, a hidden truth, a shocking omission, or an open question.
+- Strong examples: "Everyone knew his name. Nobody knew his real one." / "The police had the evidence. They buried it."
+- NEVER open with background, dates, or scene-setting. Start with the tension, not the context.
+
+FACT PRIORITIZATION:
+- Lead with controversial, unknown, or psychologically revealing facts.
+- Skip generic filler: "He was born in...", "The show premiered in...", "This is a story about..."
+- Every fact chosen must answer: what does this reveal that the viewer did not expect?
+
+ENDING STRENGTH — final 1-2 sentences of every chapter:
+- Must leave an impact, raise a disturbing question, or reveal a deeper implication.
+- Never close with a summary: "So that is what happened..." / "That is the story of..."
+- The last line of every chapter should make the viewer need to continue.
 
 SHOW vs REALITY — for biopics, true crime series, and historical dramas:
 - Chapter 4 MUST contain:
@@ -2675,11 +2697,16 @@ Return ONLY the Arabic translation. No explanations, no notes."""
                             "role": "system",
                             "content": (
                                 "You are a professional Arabic translator specialising in "
-                                "true crime and investigative journalism. You translate "
-                                "accurately with correct military and legal terminology. "
-                                "Preserve every sentence — never summarise or skip content. "
-                                "When the source text contains dry humor or sarcasm, adapt "
-                                "it naturally into Arabic — do not translate literally."
+                                "true crime and investigative documentary narration. "
+                                "Translate into natural spoken Modern Standard Arabic — "
+                                "not formal Classical Arabic. "
+                                "When an English sentence is long, break it into two shorter "
+                                "Arabic sentences for better spoken rhythm. "
+                                "Short punchy English sentences must stay short in Arabic. "
+                                "Adapt idioms and sarcasm naturally — never translate them literally. "
+                                "Preserve every fact, name, and date — never summarise or skip content. "
+                                "Maintain dramatic tension: if the English builds suspense, "
+                                "the Arabic must build the same suspense."
                             ),
                         },
                         {"role": "user", "content": prompt_text},
@@ -2882,12 +2909,17 @@ def translate_script(en_script: dict) -> dict:
 
 _SHORT_SCRIPT_SYSTEM = """You are writing spoken narration for viral short-form video (YouTube Shorts / TikTok / Instagram Reels).
 
-VOICE: Conversational. Direct. Urgent. Like a friend telling you something unbelievable — not a documentary narrator, not a journalist.
-NOT: academic, formal, essay-like, or article-style.
+VOICE TONE: Calm. Investigative. Slightly unsettling. The narrator knows more than they are saying.
+NOT: academic, formal, excited, or sensationalist.
 
 SENTENCES: Short and varied. Mix punchy 5-word lines with 15-word builds. Never over 22 words per sentence.
 PARAGRAPHS: Maximum 3 sentences. No walls of text.
 FLOW: Every sentence must pull the listener forward to the next one.
+
+HOOK: The first 2 sentences must contain a contradiction, hidden truth, or shocking omission. Never open with context or background.
+FACTS: Lead with the most controversial or psychologically revealing detail. Skip generic background.
+ENDING: The last 1-2 sentences must leave impact — a disturbing implication, an open question, or a fact that reframes everything heard before.
+
 BANNED WORDS: "Furthermore", "In conclusion", "As we can see", "It is important to note", "Throughout history", "In summary".
 BANNED FORMAT: Any headings, labels, or section markers in the output (no "HOOK:", "SETUP:", "REVEAL:", etc.)."""
 
