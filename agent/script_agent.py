@@ -346,6 +346,62 @@ def _ai_script_call(prompt: str, max_tokens: int = 1000,
     return ""
 
 
+# ============================================================
+# SCRIPT SCORING SYSTEM
+# ============================================================
+
+_SCORING_PROMPT = """You are a YouTube retention expert.
+
+Evaluate this script for short-form video performance.
+
+Score (0-10):
+- Hook strength
+- Curiosity gap
+- Clarity
+- Emotional pull
+- Retention flow
+
+Return EXACT format:
+
+SCORE: X/10
+
+IF score < 7:
+IMPROVED:
+[Rewrite the script to be more engaging, natural spoken voice, no labels]
+
+SCRIPT:
+{{SCRIPT}}"""
+
+
+def _extract_score(text: str) -> int:
+    import re
+    m = re.search(r"SCORE:\s*(\d+)", text)
+    return int(m.group(1)) if m else 10
+
+
+def _extract_improved(text: str) -> str:
+    if "IMPROVED:" not in text:
+        return ""
+    return text.split("IMPROVED:")[-1].strip()
+
+
+def evaluate_and_fix_script(script: str) -> str:
+    try:
+        prompt = _SCORING_PROMPT.replace("{{SCRIPT}}", script[:1800])
+        result = _ai_script_call(prompt, max_tokens=800, temperature=0.7, premium=False)
+        score = _extract_score(result)
+        print(f"[Script Score] {score}/10")
+        if score >= 7:
+            return script
+        improved = _extract_improved(result)
+        if improved:
+            print("[Script] Using improved version")
+            return improved
+    except Exception as e:
+        print(f"[Script Score] Failed: {e}")
+    return script
+
+
 title_format = "Dark Crime Decoded: {person} & {series} — {curiosity_hook}"
 
 PERSON_TO_SERIES: dict[str, tuple[str, str]] = {
@@ -2201,6 +2257,7 @@ Return ONLY this JSON with no extra text:
     script_data["user_discovery_expanded"] = discovery_expanded
     # Carry show_characters forward so write_short_script can use them
     script_data["show_characters"]         = research.get("show_characters", [])
+    script_data["script"] = evaluate_and_fix_script(script_data["script"])
     print(f"[Script] Written (english): '{script_data['title']}'")
     return script_data
 
@@ -2982,6 +3039,7 @@ Write ONLY the spoken words. No headings. No labels. No explanations."""
         script_text = _trim_plain_text_to_words(script_text, 180)
         print("[Script] Short trimmed to 180 words")
 
+    script_text = evaluate_and_fix_script(script_text)
     ar_script_text = translate_to_arabic(script_text) if script_text else ""
 
     short_data = {
