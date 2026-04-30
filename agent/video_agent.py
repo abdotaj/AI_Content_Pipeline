@@ -3067,6 +3067,124 @@ def _search_vimeo_free(query: str, max_results: int = 5) -> list[str]:
         return []
 
 
+# ── Visual query helpers ─────────────────────────────────────────────────────
+
+_IRRELEVANT_QUERY_TERMS = frozenset({
+    "animal", "animals", "wildlife", "nature", "fashion", "beauty",
+    "makeup", "cooking", "recipe", "food", "travel", "tourism",
+    "fitness", "workout", "yoga", "dance", "gaming",
+    "minecraft", "fortnite", "unboxing", "haul",
+})
+
+
+def _is_crime_relevant_query(query: str) -> bool:
+    """Return False if query contains off-topic category terms."""
+    return not bool(set(query.lower().split()) & _IRRELEVANT_QUERY_TERMS)
+
+
+def _generate_visual_queries(chunk: str, topic: str) -> list[str]:
+    """
+    Use OpenAI to generate 2-3 specific stock-video queries from a script chunk.
+    Each query targets a real location, action, or time period.
+    Falls back to single Groq/OpenAI query on failure.
+    """
+    first_150 = " ".join((chunk or "").split()[:150])
+    prompt = (
+        f"You are a documentary video editor. Generate 2-3 specific stock video search queries "
+        f"for B-roll footage that matches this script excerpt.\n\n"
+        f"Topic: {topic}\n"
+        f"Script excerpt: {first_150}\n\n"
+        f"Rules:\n"
+        f"- Each query: 3-6 English words\n"
+        f"- Include a real location, action, or time period\n"
+        f"- GOOD: 'FBI headquarters Washington 1970s', 'courtroom trial verdict 1983'\n"
+        f"- BAD: 'crime background', 'dark dramatic scene'\n"
+        f"- Never include: animals, nature, fashion, beauty, cooking, gaming\n\n"
+        f"Return ONLY the queries, one per line. No bullets, no numbers, no explanations."
+    )
+    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    if api_key:
+        try:
+            r = requests.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json={"model": "gpt-4o-mini",
+                      "messages": [{"role": "user", "content": prompt}],
+                      "max_tokens": 80, "temperature": 0.3},
+                timeout=20,
+            )
+            if r.status_code == 200:
+                text = r.json()["choices"][0]["message"]["content"].strip()
+                queries = [
+                    line.strip().strip('"\'').strip("-•1234567890. ")
+                    for line in text.splitlines()
+                    if line.strip() and 2 <= len(line.strip().split()) <= 8
+                ]
+                relevant = [q for q in queries if _is_crime_relevant_query(q)]
+                if relevant:
+                    print(f"[Stock] Visual queries: {relevant}")
+                    return relevant[:3]
+        except Exception as e:
+            print(f"[Stock] Visual query generation failed: {e}")
+
+    # Fallback: single Groq/OpenAI query
+    single = _get_stock_video_query_for_chunk(chunk, topic=topic)
+    return [single] if single else []
+
+
+def _refine_with_youtube_metadata(queries: list[str], topic: str) -> list[str]:
+    """
+    Fetch YouTube video titles for each query (metadata only, no download).
+    Extract recurring keywords from titles and append to the original query.
+    Non-fatal — returns originals unchanged if yt-dlp fails or finds nothing.
+    """
+    import subprocess
+
+    if not _ensure_ytdlp():
+        return queries
+
+    _STOP_WORDS = frozenset({
+        "the", "a", "an", "of", "in", "on", "at", "to", "for", "and",
+        "or", "but", "is", "was", "are", "were", "this", "that", "with",
+        "from", "by", "about", "how", "why", "what", "when", "who",
+        "full", "video", "official", "new", "best", "top", "part",
+        "episode", "channel", "youtube", "hd", "4k", "2024", "2023",
+    })
+
+    refined: list[str] = []
+    for q in queries:
+        try:
+            cmd = [
+                "yt-dlp", f"ytsearch5:{q}",
+                "--print", "%(title)s",
+                "--no-download", "--quiet", "--no-warnings",
+            ]
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+            titles = [ln.strip() for ln in proc.stdout.splitlines() if ln.strip()]
+            if titles:
+                # Count words appearing in 2+ titles
+                freq: dict[str, int] = {}
+                q_words = set(q.lower().split())
+                for title in titles:
+                    for word in title.lower().split():
+                        word = word.strip(".,!?;:()[]\"'")
+                        if (len(word) >= 4 and word not in _STOP_WORDS
+                                and word not in q_words and word.isalpha()):
+                            freq[word] = freq.get(word, 0) + 1
+                top = [w for w, c in sorted(freq.items(), key=lambda x: -x[1]) if c >= 2][:1]
+                if top:
+                    refined_q = f"{q} {top[0]}"
+                    if _is_crime_relevant_query(refined_q) and len(refined_q.split()) <= 7:
+                        print(f"[Stock] Refined: '{q}' → '{refined_q}'")
+                        refined.append(refined_q)
+                        continue
+        except Exception as e:
+            print(f"[Stock] YouTube metadata refinement failed for '{q}': {e}")
+        refined.append(q)
+
+    return refined
+
+
 def fetch_stock_videos(script_text: str, count: int, video_id: str, topic: str = "") -> list[str]:
     """
     Build a stock-video pool from free licensed sources.
@@ -3106,6 +3224,8 @@ def fetch_stock_videos(script_text: str, count: int, video_id: str, topic: str =
         for src_name, src_fn, use_ytdlp, mb_override in [
             ("Internet Archive", _search_internet_archive, False, _ARCHIVE_VIDEO_MAX_BYTES),
             ("YouTube CC",       _search_youtube_cc,       True,  None),
+            ("Pexels",           _search_pexels_videos,    False, _VIDEO_MAX_BYTES),
+            ("Pixabay",          _search_pixabay_videos,   False, _VIDEO_MAX_BYTES),
         ]:
             urls = src_fn(query)
             if not urls:
@@ -3120,13 +3240,14 @@ def fetch_stock_videos(script_text: str, count: int, video_id: str, topic: str =
         return None
 
     for i, chunk in enumerate(chunks):
-        primary_query = _get_stock_video_query_for_chunk(chunk, topic=topic)
-        # Section-based fallback: uses actual topic name and maps section index to template
+        # Generate 2-3 specific queries (location/action/mood) then refine via YouTube titles
+        ai_queries = _generate_visual_queries(chunk, topic=topic)
+        refined_queries = _refine_with_youtube_metadata(ai_queries, topic) if ai_queries else []
         section_q = _section_fallback_query(i, topic)
         fb_a = fallback_queries[i % len(fallback_queries)]
         fb_b = fallback_queries[(i + 1) % len(fallback_queries)]
-        # Priority: Groq query → section template → keyword fallback A → keyword fallback B
-        queries_to_try = list(dict.fromkeys(filter(None, [primary_query, section_q, fb_a, fb_b])))
+        # Priority: AI-refined queries → section template → keyword fallbacks
+        queries_to_try = list(dict.fromkeys(filter(None, refined_queries + [section_q, fb_a, fb_b])))
 
         out = os.path.join(STOCK_VIDEOS_DIR, f"{video_id}_stock_{i}.mp4")
         saved = None
@@ -4877,6 +4998,80 @@ def build_image_list(user_images: list, ai_images: list[str]) -> list[str]:
     return final
 
 
+# ── Visual scoring ────────────────────────────────────────────────────────────
+
+def _score_visual_asset(path: str, query: str = "", topic: str = "") -> float:
+    """
+    Score a media asset for quality and relevance.
+
+    +3  video clip          +2  dark/cinematic tones (brightness < 100)
+    +1  image file          -2  overexposed (brightness > 200)
+    +3  face detected       +2  query/topic keyword in filename
+    -5  irrelevant category (animals, nature, fashion…)
+    """
+    score = 0.0
+    is_video = _is_video_file(path)
+    score += 3.0 if is_video else 1.0
+
+    base = os.path.basename(path).lower()
+
+    # Hard reject: irrelevant category in filename
+    if any(t in base for t in _IRRELEVANT_QUERY_TERMS):
+        return score - 5.0
+
+    # Keyword relevance: topic/query words in filename
+    kw = set((topic or "").lower().split()) | set((query or "").lower().split())
+    kw -= {"the", "a", "an", "of", "in", "is", "was"}
+    if kw and any(w in base for w in kw if len(w) >= 4):
+        score += 2.0
+
+    # Visual analysis for images only (frame extraction for videos is too slow)
+    if not is_video:
+        try:
+            import numpy as _np
+            from PIL import Image as _PILImg
+            with _PILImg.open(path) as _img:
+                arr = _np.array(_img.convert("RGB"))
+            mean_b = float(_np.mean(arr))
+            if mean_b < 100:
+                score += 2.0   # dark / cinematic
+            elif mean_b > 200:
+                score -= 2.0   # washed out
+
+            # Face detection (OpenCV optional — skipped silently if unavailable)
+            try:
+                import cv2 as _cv2
+                gray = _cv2.cvtColor(arr, _cv2.COLOR_RGB2GRAY)
+                cc = _cv2.CascadeClassifier(
+                    _cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+                )
+                if len(cc.detectMultiScale(gray, 1.1, 4)) > 0:
+                    score += 3.0
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    return score
+
+
+def _rank_visual_pool(paths: list[str], query: str = "", topic: str = "") -> list[str]:
+    """Score each asset and return sorted list, highest score first."""
+    if not paths:
+        return paths
+    scored = []
+    for p in paths:
+        try:
+            s = _score_visual_asset(p, query=query, topic=topic)
+        except Exception:
+            s = 0.0
+        scored.append((s, p))
+    scored.sort(key=lambda x: -x[0])
+    top = [round(s, 1) for s, _ in scored[:5]]
+    print(f"[Visual] Ranked {len(scored)} assets — top scores: {top}")
+    return [p for _, p in scored]
+
+
 # â"€â"€ Short video assembler â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 def assemble_short_video(audio_path: str, image_paths: list[str], output_path: str) -> str:
@@ -5634,6 +5829,8 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
                 gap_imgs = _fetch_gap_images(
                     script_text, missing, video_id, topic_str, coverage_ratio
                 )
+                if gap_imgs:
+                    gap_imgs = _rank_visual_pool(gap_imgs, topic=topic_str)
                 image_paths.extend(gap_imgs)
         else:
             # MODE 2: Auto (no user content)
@@ -5643,6 +5840,8 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
                 if missing:
                     print(f"[Stock] Fallback: generating {missing} image visuals")
                     image_paths.extend(fetch_real_images(script_text, missing, video_id, topic=topic_str))
+            if image_paths:
+                image_paths = _rank_visual_pool(image_paths, topic=topic_str)
     except Exception as e:
         print(f"[Video] CRASH at visual generation: {e}")
         traceback.print_exc()
