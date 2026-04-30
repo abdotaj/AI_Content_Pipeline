@@ -3276,24 +3276,55 @@ SOURCE SCRIPT (find the best moment inside):
 
 Write ONLY the spoken words. No headings. No labels. No explanations."""
 
+    # ── Phase 1: OpenAI gpt-4o primary (2 attempts) ─────────────────────────
     script_text = ""
-    for attempt in range(3):
+    best_text   = ""
+    for attempt in range(2):
         _p = prompt
-        if attempt > 0:
+        if attempt > 0 and script_text:
             wc = clean_word_count(script_text)
-            _p += f"\n\nPREVIOUS ATTEMPT: {wc} words — target 150-170. {'Expand the reveal with more specific detail and tension.' if wc < 140 else 'Trim filler to hit 150-170.'}"
-        script_text = _ai_script_call(_p, max_tokens=500, temperature=0.85,
-                                       system_prompt=_SHORT_SCRIPT_SYSTEM).strip()
-        words   = clean_word_count(script_text)
+            _p += (f"\n\nPREVIOUS ATTEMPT: {wc} words — target 150-170. "
+                   f"{'Add more specific detail and tension to reach 150 words.' if wc < 140 else 'Trim filler to hit 150-170.'}")
+        result = _ai_script_call(_p, max_tokens=550, temperature=0.85,
+                                  system_prompt=_SHORT_SCRIPT_SYSTEM, premium=True).strip()
+        words   = clean_word_count(result)
         seconds = round(words / 2.5)
-        print(f"[Script] Short attempt {attempt + 1}: {words} words = ~{seconds}s")
+        print(f"[Script] Short gpt-4o attempt {attempt + 1}: {words} words = ~{seconds}s")
+        if words > clean_word_count(best_text):
+            best_text = result
+        script_text = result
         if words >= 140:
             break
-        print(f"[Script] Short too short ({words} words) — retrying...")
+        print(f"[Script] Short too short ({words} words) — retrying with gpt-4o...")
 
-    # Score the hook to decide max word budget
+    # ── Phase 2: Groq fallback only if both OpenAI attempts failed ───────────
+    if clean_word_count(script_text) < 140:
+        print("[Script] gpt-4o attempts insufficient — Groq fallback...")
+        _p = prompt + "\n\nIMPORTANT: Write EXACTLY 150-170 words. Count every word carefully."
+        result = _ai_script_call(_p, max_tokens=550, temperature=0.85,
+                                  system_prompt=_SHORT_SCRIPT_SYSTEM, premium=False).strip()
+        words = clean_word_count(result)
+        print(f"[Script] Short Groq fallback: {words} words")
+        if words > clean_word_count(best_text):
+            best_text = result
+        script_text = result
+
+    # Keep best result if current is still too short
+    if clean_word_count(script_text) < 100 and best_text:
+        script_text = best_text
+        print(f"[Script] Using best result: {clean_word_count(script_text)} words")
+
+    # ── Hook scoring: improve if score < 8 ──────────────────────────────────
     _hook_score = _score_hook(" ".join(script_text.split(".")[:2]))
-    _max_short  = 190 if _hook_score >= 9 else 170
+    print(f"[Script] Short hook score: {_hook_score}/10")
+    if _hook_score < 8:
+        print("[Script] Hook score < 8 — running pick_best_hook with gpt-4o...")
+        script_text = pick_best_hook(script_text)
+        _hook_score = _score_hook(" ".join(script_text.split(".")[:2]))
+        print(f"[Script] Hook score after improvement: {_hook_score}/10")
+
+    # ── Word budget gated by hook score ─────────────────────────────────────
+    _max_short = 190 if _hook_score >= 9 else 170
     if clean_word_count(script_text) > _max_short:
         script_text = _trim_plain_text_to_words(script_text, _max_short)
         print(f"[Script] Short trimmed to {_max_short} words (hook score {_hook_score}/10)")
