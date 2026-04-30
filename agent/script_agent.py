@@ -508,6 +508,18 @@ def pick_best_hook(script: str) -> str:
                 best_score, best_hook = s, h
         print(f"[Hook] Best score: {best_score}/10")
 
+        # If best < 9, regenerate once and re-pick
+        if best_score < 9:
+            print("[Hook] Score < 9 — regenerating once for stronger hooks")
+            raw2 = _ai_script_call(prompt, max_tokens=300, temperature=0.9, premium=False)
+            hooks2 = _parse_hooks(raw2)
+            for h in hooks2:
+                s = _score_hook(h)
+                print(f"[Hook] retry {s}/10: {h[:70]}")
+                if s > best_score:
+                    best_score, best_hook = s, h
+            print(f"[Hook] Final best score: {best_score}/10")
+
         # Replace only first 2 sentences; preserve all [SECTION:] markers and rest of script
         lines = script.splitlines()
         rebuilt = []
@@ -534,75 +546,55 @@ def pick_best_hook(script: str) -> str:
 # SCRIPT UPGRADE SYSTEM (RETENTION ENHANCEMENT)
 # ============================================================
 
-_UPGRADE_PROMPT = """You are a true crime documentary script editor upgrading scripts for YouTube retention.
+_UPGRADE_PROMPT = """You are a true crime documentary script editor. Make targeted line-level edits only.
 
-DO NOT change: facts, names, dates, structure, or [SECTION:] markers.
-DO NOT remove any information.
-Return ONLY the improved script — no notes, no labels.
+PRESERVE:
+- Every fact, name, date, and number — unchanged
+- The original sequence of events — do not reorder
+- Core wording where it is already strong — do not touch it
+- All [SECTION:] markers — exactly as written
+- Overall script length — do not add or remove large blocks
 
-MAKE THESE CHANGES:
+MAKE ONLY THESE THREE TYPES OF EDITS:
 
-1. FIRST 3 SENTENCES — rewrite for maximum impact:
-   - Sentence 1: immediate tension, secret, or violation — no context or backstory
-   - Sentence 2: escalate — reveal something that raises an unanswered question
-   - Sentence 3: open loop — leave something unresolved that forces the viewer to continue
-   - BANNED openers: "In an era...", "This is the story of...", "He was born...", "Throughout history..."
+1. SENTENCE STRUCTURE — fix weak openings only:
+   - If the first sentence of the script starts with "In an era", "This is the story of", "He was born", or "Throughout history" — rewrite that sentence only to open with tension or action
+   - Do not touch sentences that already open with tension or specificity
 
-2. EXPLANATION to ACTION:
-   - Find paragraphs that explain rather than show — rewrite as scenes with action verbs
-   - Show what people DID, not what they WERE
-   - Wrong: "He was a ruthless drug lord who controlled an empire."
-   - Right: "He walked into the room last. Every man seated had already agreed to work for him."
+2. EXPLANATION TO ACTION — convert flat "state" sentences only:
+   - If a sentence says "He was [adjective]" or "They were known for [noun]" with no action — rewrite it as what they DID
+   - Only change sentences that are purely descriptive with no verb of action
+   - Keep all surrounding sentences unchanged
 
-3. REMOVE REPETITION:
-   - Each adjective or descriptor may appear only ONCE in the entire script
-   - Remove repeated facts silently — do not announce the removal
+3. MICRO-TENSION — add one tension beat per flat paragraph only:
+   - If a paragraph has 3+ sentences with no question, contradiction, or escalation — add a single short sentence at the end that raises a question or reveals an implication
+   - Do not restructure the paragraph
 
-4. MICRO-TENSION:
-   - Every 2-3 sentences must introduce new tension, mystery, question, or reversal
-   - No flat paragraphs — every paragraph must move the story forward emotionally
-
-5. UNTOLD ANGLE SECTION:
-   - Emphasize: who was threatened, what was buried, who paid the price for knowing
-   - Add one specific consequence that was deliberately hidden from the public
-
-6. FINAL SECTION — last 2-3 sentences:
-   - Must feel like a verdict or revelation — not a summary
-   - BANNED endings: "So that is what happened.", "That is the story of...", "In the end..."
-   - End with a disturbing truth, reframing fact, or open question that lingers
+Return the FULL script with only these targeted edits applied. Do not rewrite, summarize, or restructure.
 
 ORIGINAL SCRIPT:
 {script}"""
 
 
-_UPGRADE_ARABIC_PROMPT = """أنت محرر نصوص وثائقية محترف متخصص في الاحتفاظ بالمشاهدين.
+_UPGRADE_ARABIC_PROMPT = """أنت محرر نصوص وثائقية. مهمتك تعديلات دقيقة فقط — لا إعادة كتابة.
 
-مهمتك: تحسين هذا النص دون تغيير أي حقائق أو أسماء أو تواريخ أو علامات [SECTION:].
-أعد النص المحسّن فقط — بدون ملاحظات أو شرح.
+الحفاظ على:
+- جميع الحقائق والأسماء والتواريخ — بدون تغيير
+- ترتيب الأحداث الأصلي — لا تعيد الترتيب
+- الصياغة الأصلية القوية — لا تمسّها
+- جميع علامات [SECTION:] — كما هي
+- طول النص الإجمالي — لا تضف ولا تحذف فقرات
 
-التغييرات المطلوبة:
+فقط هذه التعديلات الثلاثة:
 
-1. أول 3 جمل — أعد كتابتها:
-   - الجملة الأولى: توتر فوري أو سر أو انتهاك — بدون سياق أو خلفية
-   - الجملة الثانية: تصعيد — شيء يثير سؤالاً
-   - الجملة الثالثة: حلقة مفتوحة — اترك شيئاً غير محلول يجبر المشاهد على الاستمرار
+1. بنية الجمل — فقط إذا كانت الجملة الأولى تبدأ بـ "في عصر" أو "هذه قصة" أو "وُلد" — أعد صياغة تلك الجملة فقط لتبدأ بتوتر أو فعل
 
-2. حوّل الشرح إلى مشاهد:
-   - استخدم أفعالاً حركية بدلاً من الوصف الثابت
-   - أظهر ما فعله الناس وليس ما كانوا عليه
+2. الشرح إلى فعل — إذا كانت الجملة تصف حالة فقط بدون فعل حركي، حوّلها إلى ما فعله الشخص فعلاً
+   - لا تغيّر الجمل المحيطة
 
-3. اللغة المنطوقة:
-   - عربية محكية حديثة — ليست ترجمة حرفية
-   - جمل قصيرة لا تتجاوز 15 كلمة
-   - إيقاع طبيعي يناسب التعليق الصوتي المسموع
+3. جملة توتر واحدة — إذا كانت الفقرة خالية من أي سؤال أو تصعيد، أضف جملة قصيرة واحدة في النهاية تطرح سؤالاً أو تكشف تداعية
 
-4. توتر متصاعد:
-   - كل 2-3 جمل يجب أن تصعّد التوتر أو تطرح سؤالاً جديداً
-   - لا فقرات مسطحة — كل فقرة يجب أن تحرك القصة عاطفياً
-
-5. النهاية:
-   - يجب أن تكون مؤثرة — حقيقة مقلقة أو سؤال مفتوح يبقى في الذهن
-   - ممنوع: الملخصات أو الخواتيم العادية
+أعد النص الكامل مع هذه التعديلات الدقيقة فقط.
 
 النص الأصلي:
 {script}"""
