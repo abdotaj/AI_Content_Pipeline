@@ -387,16 +387,21 @@ def _extract_improved(text: str) -> str:
 
 def evaluate_and_fix_script(script: str) -> str:
     try:
-        prompt = _SCORING_PROMPT.replace("{{SCRIPT}}", script[:1800])
+        sentences = [s.strip() for s in script.split(".") if s.strip()]
+        hook = ". ".join(sentences[:3])
+        prompt = _SCORING_PROMPT.replace("{{SCRIPT}}", hook)
         result = _ai_script_call(prompt, max_tokens=800, temperature=0.7, premium=False)
         score = _extract_score(result)
         print(f"[Script Score] {score}/10")
         if score >= 7:
             return script
-        improved = _extract_improved(result)
-        if improved:
-            print("[Script] Using improved version")
-            return improved
+        improved_hook = _extract_improved(result)
+        if improved_hook:
+            print("[Script] Using improved hook")
+            rest = ". ".join(sentences[3:])
+            if rest:
+                return improved_hook.rstrip(".") + ". " + rest
+            return improved_hook
     except Exception as e:
         print(f"[Script Score] Failed: {e}")
     return script

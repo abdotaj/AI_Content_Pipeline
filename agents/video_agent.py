@@ -5768,6 +5768,8 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
     script_text = script_data.get("script", "")
     topic_str   = script_data.get("topic", "")
 
+    # Minimal wait for late-arriving Telegram downloads before scanning
+    import time as _t; _t.sleep(1)
     # BUG 5 check: how many user images are on disk right now
     _ui_dir = "output/user_images"
     _ui_on_disk = [f for f in (os.listdir(_ui_dir) if os.path.isdir(_ui_dir) else [])
