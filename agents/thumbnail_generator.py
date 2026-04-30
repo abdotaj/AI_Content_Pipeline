@@ -332,6 +332,20 @@ def create_thumbnail(image_path: str,
 
     try:
         # ── 1. Background image ───────────────────────────────────────────────
+        # Guard: extract a frame if given a video file instead of an image
+        if image_path.lower().endswith(('.mp4', '.mov', '.avi', '.mkv', '.webm')):
+            import subprocess as _sp
+            _frame = image_path.rsplit('.', 1)[0] + '_thumb_frame.jpg'
+            try:
+                _sp.run(
+                    ["ffmpeg", "-y", "-ss", "2", "-i", image_path,
+                     "-frames:v", "1", "-q:v", "2", _frame],
+                    check=True, capture_output=True, timeout=30
+                )
+                image_path = _frame
+            except Exception as _fe:
+                print(f"[Thumb] Cannot extract frame from video: {_fe}")
+                return None
         bg = Image.open(image_path).convert("RGB")
         bg = _fit_cover(bg, _TW, _TH)
 

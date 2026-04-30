@@ -3115,10 +3115,11 @@ SENTENCE RULES:
 - Mix 5-word punches with 12-word builds. Vary the rhythm.
 - No descriptive filler. Every sentence must move the story forward.
 
-LENGTH: 120-180 words ONLY. Count carefully.
+LENGTH: 150-250 words ONLY. Hard minimum 150. Hard maximum 250.
 
-BANNED OPENERS: "This video explains...", "In this story...", "In an era...", "Throughout history...", "This is the story of..."
-BANNED FORMAT: Any headings, labels, or section markers in the output."""
+BANNED OPENERS: "This video explains...", "In this story...", "In an era...", "Throughout history...", "This is the story of...", "He was...", "This is about..."
+BANNED FORMAT: Any headings, labels, or section markers in the output.
+BANNED STYLE: Summaries, educational tone, documentary narration, generic phrases."""
 
 
 def write_short_script(en_long_script: dict) -> dict:
@@ -3149,12 +3150,14 @@ FLOW (4 beats — write them as continuous prose, NO headings or labels):
 - Beat 4 — STRONG ENDING: 1-2 sentences. A line that lingers. End with: "Follow Dark Crime Decoded for more."
 
 STYLE:
-- Short sentences mixed with medium ones. Never over 22 words.
-- Conversational — like you're telling someone something they cannot believe.
+- Maximum 14 words per sentence. Shorter is stronger.
+- Conversational, NOT documentary. Direct. Urgent. Like exposing a secret.
 - No formal transitions. No long paragraphs. No academic tone.
 - No ellipsis (...). No mid-sentence dashes. No parentheses.
+- Every 2 sentences must increase tension — never flat.
+- NO summaries. NO "He was..." openers. NO educational tone.
 
-LENGTH: Exactly 120–180 words. Count every word.
+LENGTH: 150–250 words. Hard minimum 150. Hard maximum 250. Count every word.
 
 SOURCE SCRIPT (find the best moment inside):
 {long_script[:1800]}
@@ -3162,22 +3165,23 @@ SOURCE SCRIPT (find the best moment inside):
 Write ONLY the spoken words. No headings. No labels. No explanations."""
 
     script_text = ""
-    for attempt in range(2):
+    for attempt in range(3):
         _p = prompt
         if attempt > 0:
-            _p += f"\n\nPREVIOUS ATTEMPT: {clean_word_count(script_text)} words — need 120-180. {'Expand the reveal with more specific detail.' if clean_word_count(script_text) < 120 else 'Cut filler sentences to hit the target.'}"
-        script_text = _ai_script_call(_p, max_tokens=450, temperature=0.85,
+            wc = clean_word_count(script_text)
+            _p += f"\n\nPREVIOUS ATTEMPT: {wc} words — need 150-250. {'Expand each beat with more specific detail and tension.' if wc < 150 else 'Cut filler to stay under 250.'}"
+        script_text = _ai_script_call(_p, max_tokens=600, temperature=0.85,
                                        system_prompt=_SHORT_SCRIPT_SYSTEM).strip()
         words   = clean_word_count(script_text)
         seconds = round(words / 2.5)
         print(f"[Script] Short attempt {attempt + 1}: {words} words = ~{seconds}s")
-        if words >= 120:
+        if words >= 150:
             break
         print(f"[Script] Short too short ({words} words) — retrying...")
 
-    if clean_word_count(script_text) > 190:
-        script_text = _trim_plain_text_to_words(script_text, 180)
-        print("[Script] Short trimmed to 180 words")
+    if clean_word_count(script_text) > 260:
+        script_text = _trim_plain_text_to_words(script_text, 250)
+        print("[Script] Short trimmed to 250 words")
 
     script_text = evaluate_and_fix_script(script_text)
     ar_script_text = translate_to_arabic(script_text) if script_text else ""

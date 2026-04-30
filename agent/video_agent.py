@@ -2228,7 +2228,9 @@ def _apply_intro_outro_overlay(
 
     w, h = "iw", "ih"
 
-    filters = []
+    # Normalize resolution + pixel format to prevent "Error reinitializing filters"
+    norm_w, norm_h = ("1080:1920" if is_short else "1920:1080")
+    filters = [f"scale={norm_w}:{norm_h},format=yuv420p"]
 
     if is_short:
         # Shorts: persistent top bar (channel name) + bottom bar (CTA)
@@ -2333,11 +2335,11 @@ def _apply_intro_outro_overlay(
         print(f"[Overlay] Intro/outro overlays applied: {os.path.basename(video_path)}")
     except subprocess.CalledProcessError as e:
         err = (e.stderr or b"").decode(errors="replace")[-400:]
-        print(f"[Overlay] ffmpeg overlay failed: {err}")
+        print(f"[Overlay] skipped due to mismatch: {err[:200]}")
         if os.path.exists(out_path):
             os.remove(out_path)
     except Exception as e:
-        print(f"[Overlay] Overlay failed: {e}")
+        print(f"[Overlay] skipped due to mismatch: {e}")
         if os.path.exists(out_path):
             os.remove(out_path)
 
