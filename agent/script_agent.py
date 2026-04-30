@@ -2960,6 +2960,8 @@ def translate_script(en_script: dict) -> dict:
     ar_data["language"]     = "arabic"
     ar_data["series_name"]  = en_script.get("series_name", "")
     ar_data["series_type"]  = en_script.get("series_type", "")
+    if ar_data.get("script"):
+        ar_data["script"] = evaluate_and_fix_script(ar_data["script"])
     print(f"[Script] Translated (arabic): '{ar_data['title']}'")
     return ar_data
 
@@ -3061,6 +3063,8 @@ Write ONLY the spoken words. No headings. No labels. No explanations."""
     _short_title = add_short_title(short_data)
     short_data["title"]       = _short_title
     short_data["short_title"] = _short_title
+    if short_data.get("script"):
+        short_data["script"] = evaluate_and_fix_script(short_data["script"])
     print(f"[Script] Short script done: '{short_data['title']}' ({clean_word_count(script_text)} words EN, {clean_word_count(ar_script_text)} words AR)")
     return short_data
 
