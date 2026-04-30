@@ -425,28 +425,33 @@ def evaluate_and_fix_script(script: str) -> str:
 # MULTI-HOOK GENERATION + SCORING SYSTEM
 # ============================================================
 
-_HOOK_GEN_PROMPT = """You are a YouTube retention expert. Generate 3 DISTINCT opening hooks for a true crime documentary short.
+_HOOK_GEN_PROMPT = """You are a true crime YouTube scriptwriter. Write 3 highly specific, shocking opening hooks for a documentary short.
 
-Each hook must feel like a secret being revealed — NOT a documentary intro.
+MANDATORY — every hook MUST contain at least ONE of:
+- A real person's name (e.g. "Ed Kemper told the FBI...", "Pablo Escobar paid...")
+- A concrete crime detail (a specific act, weapon, date, location, or number)
+- A shocking contradiction or disturbing fact that names what actually happened
 
-Generate exactly these 3 types:
+BANNED — reject any hook that contains:
+- Generic phrases: "what drove", "a mother's fear", "someone", "a killer", "one man", "one woman", "a person"
+- Vague openers: "In an era...", "This is the story of...", "You won't believe...", "Once upon a time..."
+- Abstract questions with no named subject
 
-HOOK 1 (Curiosity): Creates an unanswered question. Forces the viewer to stay to find out. The answer must not be obvious.
-HOOK 2 (Shock / Rule-Break): An unexpected action, violation, or dangerous secret. Something that should not have happened — but did.
-HOOK 3 (Emotional / Human): Focus on one person and one consequence. Make the viewer feel something before they know anything.
+Write exactly 3 hooks:
+HOOK 1 (Revelation): Reveal a specific fact or decision that changed everything. Name the person or event.
+HOOK 2 (Contradiction): Something that should not have happened but did. Name the act or the person who did it.
+HOOK 3 (Consequence): One named person, one specific result. Make the viewer feel dread from a concrete detail.
 
-RULES FOR ALL HOOKS:
+RULES:
 - 1-2 sentences only. Never more.
-- Spoken style — sounds natural when a narrator says it aloud
-- Maximum 16 words per sentence
-- BANNED openers: "In an era...", "This is the story of...", "You won't believe...", "Throughout history...", "Once upon a time..."
-- Each hook must feel urgent, specific, and unsettling
-- No hook can sound like the others
+- Maximum 16 words per sentence. Spoken aloud — natural narrator voice.
+- Each hook must feel like a headline exposing something disturbing or unexpected.
+- No two hooks may share the same framing or subject.
 
 Return EXACTLY this format (no extra text):
-HOOK 1: [curiosity hook here]
-HOOK 2: [shock hook here]
-HOOK 3: [emotional hook here]
+HOOK 1: [revelation hook here]
+HOOK 2: [contradiction hook here]
+HOOK 3: [consequence hook here]
 
 SCRIPT EXCERPT:
 {script_excerpt}"""
@@ -488,6 +493,19 @@ def _score_hook(hook: str) -> int:
         return 0
 
 
+_HOOK_GENERIC_PHRASES = [
+    "what drove", "a mother's fear", "someone", "a killer", "one man", "one woman",
+    "a person", "in an era", "this is the story", "you won't believe", "once upon",
+    "throughout history", "it all began", "nobody knew", "little did", "the world",
+]
+
+
+def _hook_is_generic(hook: str) -> bool:
+    """Return True if hook contains banned generic phrases or lacks specifics."""
+    h = hook.lower()
+    return any(phrase in h for phrase in _HOOK_GENERIC_PHRASES)
+
+
 def pick_best_hook(script: str) -> str:
     try:
         import re as _re
@@ -497,21 +515,20 @@ def pick_best_hook(script: str) -> str:
         best_hook, best_score = "", 0
         final_attempt = 1
 
-        # Fix 3: loop up to 5 attempts; pass previous best+score each time for progressive feedback
         for attempt in range(1, 6):
             final_attempt = attempt
             if attempt == 1:
-                raw = _ai_script_call(base_prompt, max_tokens=300, temperature=0.85, premium=False)
+                raw = _ai_script_call(base_prompt, max_tokens=350, temperature=0.85, premium=False)
             else:
                 _feedback_prompt = (
                     base_prompt
-                    + f"\n\nPREVIOUS BEST HOOK (scored {best_score}/10):\n{best_hook}\n\n"
-                    + f"This hook scored {best_score}/10. Write 3 completely different hooks that are "
-                    + "more shocking, specific, and curiosity-driven. Avoid generic phrases like "
-                    + "'what drove them' or 'a mother\\'s fear'. Use a specific name, specific crime "
-                    + "detail, or a shocking contradiction."
+                    + f"\n\nPREVIOUS BEST HOOK scored {best_score}/10:\n{best_hook}\n\n"
+                    + f"Write 3 completely different hooks that score higher. "
+                    + "Each must include a real name (person or place) or a concrete crime detail. "
+                    + "Make them more disturbing and more specific. "
+                    + "Do NOT use: 'what drove', 'someone', 'a killer', 'one man', 'a person'."
                 )
-                raw = _ai_script_call(_feedback_prompt, max_tokens=300, temperature=0.9, premium=False)
+                raw = _ai_script_call(_feedback_prompt, max_tokens=350, temperature=0.9, premium=False)
 
             hooks = _parse_hooks(raw)
             if not hooks:
@@ -520,6 +537,10 @@ def pick_best_hook(script: str) -> str:
 
             print(f"[Hook] Attempt {attempt}: {len(hooks)} candidates")
             for h in hooks:
+                # Hard filter: reject hooks with generic phrasing before scoring
+                if _hook_is_generic(h):
+                    print(f"[Hook] REJECTED (generic): {h[:70]}")
+                    continue
                 s = _score_hook(h)
                 print(f"[Hook] {s}/10: {h[:70]}")
                 if s > best_score:
@@ -531,7 +552,7 @@ def pick_best_hook(script: str) -> str:
                 break
 
         if not best_hook:
-            print("[Hook] No hooks generated — keeping original")
+            print("[Hook] No hooks passed filter — keeping original")
             return script
 
         print(f"[Hook] Final: {best_score}/10 after {final_attempt} attempt(s)")
@@ -3253,35 +3274,58 @@ def _translate_script_preserve_sections(english_script_text: str) -> str:
 
 
 def _expand_arabic_script_to_min(ar_script: str, target_min: int = 1800) -> str:
-    """Expand a translated Arabic script to reach target_min words by adding detail."""
+    """Append additional Arabic content until the script meets target_min words."""
     current = clean_word_count(ar_script)
     if current >= target_min:
         return ar_script
-    needed = target_min - current
-    print(f"[Script] Arabic {current}w < {target_min}w minimum — expanding (+{needed}w needed)")
-    prompt = (
-        f"أنت محرر نصوص وثائقية متخصص. النص العربي أدناه ({current} كلمة) "
-        f"أقل من الحد الأدنى المطلوب ({target_min} كلمة).\n\n"
-        f"المطلوب: وسّع النص ليصل إلى {target_min} كلمة على الأقل "
-        f"بإضافة تفاصيل وأمثلة وسرد إضافي لكل قسم.\n"
-        f"القواعد:\n"
-        f"1. احتفظ بعلامات الأقسام [SECTION: ...] بالضبط كما هي\n"
-        f"2. لا تلخص أو تحذف أي محتوى موجود — فقط أضف\n"
-        f"3. أضف معلومات تفصيلية وأمثلة محددة وأسماء وتواريخ وسياقاً تاريخياً\n"
-        f"4. حافظ على الأسلوب الوثائقي الاحترافي\n\n"
-        f"النص الحالي:\n{ar_script}\n\n"
-        f"أعد النص الكامل مع الإضافات. لا تكتب أي شرح أو ملاحظات."
-    )
-    expanded = _ai_script_call(prompt, max_tokens=6000, temperature=0.65, premium=True)
-    if not expanded:
-        print("[Script] Arabic expansion call failed — keeping original")
-        return ar_script
-    expanded_wc = clean_word_count(expanded)
-    if expanded_wc > current:
-        print(f"[Script] Arabic expanded: {current}w → {expanded_wc}w")
-        return expanded
-    print(f"[Script] Arabic expansion did not grow ({expanded_wc}w ≤ {current}w) — keeping original")
-    return ar_script
+
+    result = ar_script
+
+    for _attempt in range(1, 3):
+        cur_wc = clean_word_count(result)
+        if cur_wc >= target_min:
+            break
+        needed = target_min - cur_wc
+        if _attempt == 1:
+            instruction = (
+                f"واصل وطوّل النص العربي التالي بإضافة {needed + 50} كلمة على الأقل. "
+                f"أضف تفاصيل جديدة وأمثلة وعمقاً سردياً. "
+                f"لا تلخص أو تكرر ما تم ذكره. استمر بشكل طبيعي من الجملة الأخيرة."
+            )
+            max_tok = 1200
+        else:
+            instruction = (
+                f"أضف 300 كلمة جديدة على الأقل مع أحداث تفصيلية وأسماء وشروحات. "
+                f"لا تكرر ما قيل. استمر مباشرة بعد النص الموجود."
+            )
+            max_tok = 1600
+
+        print(f"[Script] Arabic expansion attempt {_attempt}: {cur_wc}w, need +{needed}w")
+        prompt = (
+            f"{instruction}\n\n"
+            f"النص الحالي (لا تُعده — فقط استمر بعده):\n{result}\n\n"
+            f"اكتب الإضافة فقط — لا تعيد النص الأصلي. لا تكتب أي شرح."
+        )
+        continuation = _ai_script_call(prompt, max_tokens=max_tok, temperature=0.65, premium=True)
+        if not continuation:
+            print(f"[Script] Arabic expansion attempt {_attempt} failed — no response")
+            continue
+
+        added_wc = clean_word_count(continuation)
+        if added_wc < 100:
+            print(f"[Script] Arabic expansion attempt {_attempt} rejected — only {added_wc}w added (need ≥100w)")
+            continue
+
+        result = result.rstrip() + "\n\n" + continuation.strip()
+        new_wc = clean_word_count(result)
+        print(f"[Script] Arabic expansion attempt {_attempt}: {cur_wc}w + {added_wc}w added = {new_wc}w total")
+
+    final_wc = clean_word_count(result)
+    if final_wc > current:
+        print(f"[Script] Arabic expansion done: {current}w → {final_wc}w")
+    else:
+        print(f"[Script] Arabic expansion: no growth achieved ({final_wc}w)")
+    return result
 
 
 def translate_script(en_script: dict) -> dict:
