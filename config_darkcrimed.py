@@ -80,6 +80,7 @@ VIDEOS_PER_DAY = 1
 LONG_VIDEO_DURATION  = 3000  # 50 minutes max; actual duration set by audio length
 SHORT_VIDEO_DURATION = 75    # 75 seconds target (60-90 s range); audio drives actual length
 EDGETTS_RATE         = "+0%"   # edge-tts speaking rate for fallback TTS (+0% = normal speed)
+OPENAI_TTS_SPEED     = 1.0    # TTS speed for all voices, all languages (1.0 = natural pace)
 # Legacy aliases — kept for backward compatibility
 VIDEO_DURATION_SECONDS = LONG_VIDEO_DURATION
 SHORT_CLIP_DURATION    = SHORT_VIDEO_DURATION

@@ -49,7 +49,7 @@ from config import (
     AUDIO_DIR, VIDEO_DIR, FINAL_DIR,
     VIDEO_WIDTH, VIDEO_HEIGHT,
     SHORT_VIDEO_DURATION, LONG_VIDEO_DURATION,
-    EDGETTS_RATE,
+    EDGETTS_RATE, OPENAI_TTS_SPEED,
 )
 
 IMAGES_DIR = "output/images"
@@ -57,9 +57,9 @@ STOCK_VIDEOS_DIR = "output/stock_videos"
 for d in [AUDIO_DIR, VIDEO_DIR, FINAL_DIR, IMAGES_DIR, STOCK_VIDEOS_DIR]:
     Path(d).mkdir(parents=True, exist_ok=True)
 
-# Unified TTS speed target across all engines/languages.
-TTS_SPEED = 1.20
-EDGETTS_RATE_120 = "+20%"
+# Unified TTS speed — sourced from config so one constant controls all engines/languages.
+TTS_SPEED = OPENAI_TTS_SPEED
+EDGETTS_RATE_120 = "+0%"
 _ELEVENLABS_DISABLED = False
 _OPENAI_QUOTA_EXCEEDED = False  # set True on first 429 — skips all subsequent OpenAI TTS calls
 

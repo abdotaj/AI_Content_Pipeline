@@ -145,8 +145,8 @@ def clean_word_count(text: str) -> int:
     return len([w for w in cleaned.split() if w.strip()])
 
 
-LONG_SCRIPT_MIN_WORDS = 1450
-LONG_SCRIPT_MAX_WORDS = 1900
+LONG_SCRIPT_MIN_WORDS = 1800
+LONG_SCRIPT_MAX_WORDS = 2500
 
 
 def _cap_script_max_words(script_text: str, max_words: int = LONG_SCRIPT_MAX_WORDS) -> str:
@@ -1493,11 +1493,11 @@ Key facts: {(research.get('research_facts') or research.get('what_show_got_right
 
     # (label, min_words, max_words, is_final)
     _SECTIONS_META = [
-        ("Opening Atmosphere",    300,  380,  False),
-        ("Untold Angle",          350,  420,  False),
-        ("Background & Real Story", 420, 560, False),
-        ("Show vs Reality",       350,  420,  False),
-        ("Final Insight",         200,  260,  True),
+        ("Opening Atmosphere",      350, 450, False),
+        ("Untold Angle",            450, 550, False),
+        ("Background & Real Story", 550, 650, False),
+        ("Show vs Reality",         450, 550, False),
+        ("Final Insight",           200, 300, True),
     ]
 
     _SECTION_LABELS = [
@@ -1540,7 +1540,7 @@ Key facts: {(research.get('research_facts') or research.get('what_show_got_right
     def _call_section(prompt: str, label: str, min_w: int, max_w: int,
                       call_num: int) -> str | None:
         # Conclusion gets more tokens to prevent mid-sentence cutoff
-        _max_tok = 800 if call_num == 5 else 1200
+        _max_tok = 1000 if call_num == 5 else 1600
         result = _ai_script_call(prompt, max_tokens=_max_tok,
                                   system_prompt=_SCRIPT_SYSTEM_PROMPT, premium=True)
         if not result:
@@ -1551,7 +1551,7 @@ Key facts: {(research.get('research_facts') or research.get('what_show_got_right
         emoji = "✅" if real >= min_w else "⚠️"
         print(f"[Script] Section {call_num} ({label}): {real} real words {emoji} "
               f"(target {min_w}–{max_w}, raw {raw})")
-        # One retry if below minimum
+        # First retry if below minimum
         if real < min_w:
             print(f"[Script] Section {call_num}: below minimum — retrying once")
             time.sleep(4)
@@ -1566,6 +1566,25 @@ Key facts: {(research.get('research_facts') or research.get('what_show_got_right
                 if r_real >= real:
                     result = retry
                     real = r_real
+        # Third attempt with explicit detail instruction if still below minimum
+        if real < min_w:
+            print(f"[Script] Section {call_num}: still below {min_w}w — 3rd attempt with detail instruction")
+            time.sleep(4)
+            _expand_prompt = (
+                prompt
+                + f"\n\nCRITICAL: Previous attempts produced only {real} words — you need at least {min_w}."
+                + " Add more specific examples, names, dates, and narrative detail to every point."
+                + " Do not summarize or skip anything — expand each sentence into a full paragraph."
+            )
+            third = _ai_script_call(_expand_prompt, max_tokens=_max_tok + 500,
+                                     system_prompt=_SCRIPT_SYSTEM_PROMPT, premium=True)
+            if third:
+                t_real = clean_word_count(third)
+                emoji3 = "✅" if t_real >= min_w else "⚠️"
+                print(f"[Script] Section {call_num} 3rd attempt: {t_real} real words {emoji3}")
+                if t_real > real:
+                    result = third
+                    real = t_real
 
         # Hard cap per section to stop runaway outputs from pushing total runtime.
         if real > max_w:
@@ -2266,7 +2285,7 @@ The host found something most viewers don't know — celebrate that discovery.
         )
 
     part1_prompt = f"""You are a top true crime documentary writer for YouTube.
-Write a 1450-1900 word 10-14 minute documentary script about: {topic['topic']}
+Write a 1800-2500 word 12-16 minute documentary script about: {topic['topic']}
 The related series/movie is: {series_label}
 
 NARRATION STYLE: Write like Morgan Freeman narrating a documentary. Flowing paragraphs, no lists, no bullet points. Minimum 3 sentences per paragraph. Use transition phrases like "But what happened next shocked everyone...", "What nobody knew at the time was...", "Years later, the truth finally emerged..."
@@ -2343,8 +2362,8 @@ CONCLUSION (120 words = ~0.8 minutes):
 - One question to tease the next video
 - End with: "Follow Dark Crime Decoded for more real stories behind your favourite crime series"
 
-TOTAL TARGET: 1450 words minimum, 1900 words maximum.
-SECTION TOTALS: 100+220+320+520+220+80+120 = 1580 words = ~10-12 minutes at 150-160 wpm.
+TOTAL TARGET: 1800 words minimum, 2500 words maximum.
+SECTION TOTALS: 150+350+450+750+350+100+200 = 2350 words = ~14-16 minutes at 150-160 wpm.
 
 PRISON SENTENCE RULE (critical for Arabic translation):
 Always write "served X years IN PRISON" or "spent X years BEHIND BARS" — never just "served X years".
@@ -3171,6 +3190,38 @@ def _translate_script_preserve_sections(english_script_text: str) -> str:
     return "\n\n".join(translated_parts).strip()
 
 
+def _expand_arabic_script_to_min(ar_script: str, target_min: int = 1800) -> str:
+    """Expand a translated Arabic script to reach target_min words by adding detail."""
+    current = clean_word_count(ar_script)
+    if current >= target_min:
+        return ar_script
+    needed = target_min - current
+    print(f"[Script] Arabic {current}w < {target_min}w minimum — expanding (+{needed}w needed)")
+    prompt = (
+        f"أنت محرر نصوص وثائقية متخصص. النص العربي أدناه ({current} كلمة) "
+        f"أقل من الحد الأدنى المطلوب ({target_min} كلمة).\n\n"
+        f"المطلوب: وسّع النص ليصل إلى {target_min} كلمة على الأقل "
+        f"بإضافة تفاصيل وأمثلة وسرد إضافي لكل قسم.\n"
+        f"القواعد:\n"
+        f"1. احتفظ بعلامات الأقسام [SECTION: ...] بالضبط كما هي\n"
+        f"2. لا تلخص أو تحذف أي محتوى موجود — فقط أضف\n"
+        f"3. أضف معلومات تفصيلية وأمثلة محددة وأسماء وتواريخ وسياقاً تاريخياً\n"
+        f"4. حافظ على الأسلوب الوثائقي الاحترافي\n\n"
+        f"النص الحالي:\n{ar_script}\n\n"
+        f"أعد النص الكامل مع الإضافات. لا تكتب أي شرح أو ملاحظات."
+    )
+    expanded = _ai_script_call(prompt, max_tokens=6000, temperature=0.65, premium=True)
+    if not expanded:
+        print("[Script] Arabic expansion call failed — keeping original")
+        return ar_script
+    expanded_wc = clean_word_count(expanded)
+    if expanded_wc > current:
+        print(f"[Script] Arabic expanded: {current}w → {expanded_wc}w")
+        return expanded
+    print(f"[Script] Arabic expansion did not grow ({expanded_wc}w ≤ {current}w) — keeping original")
+    return ar_script
+
+
 def translate_script(en_script: dict) -> dict:
     """Translate an English script_data dict into Arabic with stable section markers."""
     _topic_lower = en_script.get("topic", "").lower()
@@ -3202,6 +3253,10 @@ def translate_script(en_script: dict) -> dict:
     ar_data["language"]     = "arabic"
     ar_data["series_name"]  = en_script.get("series_name", "")
     ar_data["series_type"]  = en_script.get("series_type", "")
+    _ar_wc = clean_word_count(ar_data.get("script", ""))
+    print(f"[Script] Arabic word count after translation: {_ar_wc}")
+    if _ar_wc < 1800:
+        ar_data["script"] = _expand_arabic_script_to_min(ar_data["script"], target_min=1800)
     if ar_data.get("script"):
         ar_data["script"] = upgrade_arabic_script(ar_data["script"])
         ar_data["script"] = evaluate_and_fix_script(ar_data["script"])
