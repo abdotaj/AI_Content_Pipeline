@@ -4041,8 +4041,7 @@ def cut_best_short(
     if not chapters_str or not os.path.exists(long_video_path):
         return []
 
-    lines = [l.strip() for l in chapters_str.strip().split("
-") if l.strip()]
+    lines = [l.strip() for l in chapters_str.strip().split("\n") if l.strip()]
     chapter_times: list[tuple[int, str]] = []
     for line in lines:
         m = _re.match(r'^(\d+):(\d+)\s+(.+)$', line)
