@@ -105,6 +105,20 @@ HOOK QUALITY — first 1-2 sentences of every chapter:
 - Strong examples: "Everyone knew his name. Nobody knew his real one." / "The police had the evidence. They buried it."
 - NEVER open with background, dates, or scene-setting. Start with the tension, not the context.
 
+OPENING INTENSITY — first 3 sentences of Chapter 1 only:
+- Sentence 1 MUST introduce: a conflict, a secret, or a rule being broken. No context. No background.
+- Sentences 2 and 3 MUST escalate — not explain. Each sentence adds pressure, not information.
+- Maximum 16 words per sentence in the opening. Shorter is stronger.
+- Create an open loop: leave a question unanswered that forces the viewer to keep watching.
+- Example style: "The FBI sat across from a killer. They were smiling. Nobody in that room was telling the truth."
+- BANNED in first 3 sentences: character backstory, dates, place names as openers, general context.
+
+MICRO-TENSION — sustained within every chapter:
+- Every 2-3 sentences must introduce new tension, mystery, or escalation.
+- Use: unanswered questions, contradictions, reveals, or unexpected reversals.
+- Avoid: long explanations, flat narration, lists of facts without emotional weight.
+- The viewer must feel momentum — as if the story is accelerating toward something.
+
 FACT PRIORITIZATION:
 - Lead with controversial, unknown, or psychologically revealing facts.
 - Skip generic filler: "He was born in...", "The show premiered in...", "This is a story about..."
@@ -411,31 +425,42 @@ def evaluate_and_fix_script(script: str) -> str:
 # MULTI-HOOK GENERATION + SCORING SYSTEM
 # ============================================================
 
-_HOOK_GEN_PROMPT = """You are a YouTube retention expert writing opening hooks for a true crime documentary.
+_HOOK_GEN_PROMPT = """You are a YouTube retention expert. Generate 3 DISTINCT opening hooks for a true crime documentary short.
 
-Read this script excerpt and generate 3 different opening hook variations.
+Each hook must feel like a secret being revealed — NOT a documentary intro.
 
-Rules:
-- Each hook is 1-2 sentences only
-- Strong curiosity, contradiction, or mystery
-- Spoken tone — sounds natural when read aloud by a narrator
-- No labels or headings inside the hook text itself
+Generate exactly these 3 types:
 
-Return EXACTLY this format:
-HOOK 1: [your hook here]
-HOOK 2: [your hook here]
-HOOK 3: [your hook here]
+HOOK 1 (Curiosity): Creates an unanswered question. Forces the viewer to stay to find out. The answer must not be obvious.
+HOOK 2 (Shock / Rule-Break): An unexpected action, violation, or dangerous secret. Something that should not have happened — but did.
+HOOK 3 (Emotional / Human): Focus on one person and one consequence. Make the viewer feel something before they know anything.
+
+RULES FOR ALL HOOKS:
+- 1-2 sentences only. Never more.
+- Spoken style — sounds natural when a narrator says it aloud
+- Maximum 16 words per sentence
+- BANNED openers: "In an era...", "This is the story of...", "You won't believe...", "Throughout history...", "Once upon a time..."
+- Each hook must feel urgent, specific, and unsettling
+- No hook can sound like the others
+
+Return EXACTLY this format (no extra text):
+HOOK 1: [curiosity hook here]
+HOOK 2: [shock hook here]
+HOOK 3: [emotional hook here]
 
 SCRIPT EXCERPT:
 {script_excerpt}"""
 
-_HOOK_SCORE_PROMPT = """Score this documentary opening hook for YouTube retention.
+_HOOK_SCORE_PROMPT = """Score this true crime documentary hook for YouTube retention.
 
 Score 0-10 based on:
-- Curiosity: does it make the viewer need to know more?
-- Clarity: is it immediately clear what the story is about?
-- Emotional impact: does it create tension, shock, or intrigue?
-- Mystery / contradiction: does it plant an unanswered question?
+- Curiosity gap: does it force the viewer to stay and find out? (0-3 points)
+- Contradiction / rule-breaking: does it violate expectations or reveal a secret? (0-3 points)
+- Emotional intensity: does it create immediate tension, dread, or shock? (0-2 points)
+- Clarity: is it instantly clear something serious happened? (0-2 points)
+
+BONUS: Award +1 if the hook contains secrecy, betrayal, or a hidden truth.
+PENALTY: Deduct 2 if the hook sounds like a generic documentary intro.
 
 Return EXACTLY:
 SCORE: X/10
@@ -3072,21 +3097,28 @@ def translate_script(en_script: dict) -> dict:
     return ar_data
 
 
-_SHORT_SCRIPT_SYSTEM = """You are writing spoken narration for viral short-form video (YouTube Shorts / TikTok / Instagram Reels).
+_SHORT_SCRIPT_SYSTEM = """You are writing a 60-second spoken voiceover for a true crime short video (YouTube Shorts / TikTok / Instagram Reels).
+
+STRUCTURE (implicit — NO labels, NO headings in output):
+- Seconds 0-3 (Hook): Drop straight into the action. Contradiction, secret, or rule-break. Shock immediately.
+- Seconds 3-20 (Build): Who was involved. What was at stake. Keep tight — 2-3 sentences max.
+- Seconds 20-45 (Reveal): The truth, the twist, the moment that changes everything. Most intense section.
+- Last 5 seconds (Cliffhanger + CTA): End on an open question or disturbing fact. Then ONE of:
+  "Full story in the main video." / "The truth is in the full video." / "Follow Dark Crime Decoded for more."
 
 VOICE TONE: Calm. Investigative. Slightly unsettling. The narrator knows more than they are saying.
-NOT: academic, formal, excited, or sensationalist.
+NOT: excited, academic, formal, or sensationalist.
 
-SENTENCES: Short and varied. Mix punchy 5-word lines with 15-word builds. Never over 22 words per sentence.
-PARAGRAPHS: Maximum 3 sentences. No walls of text.
-FLOW: Every sentence must pull the listener forward to the next one.
+SENTENCE RULES:
+- Maximum 14 words per sentence. Shorter is stronger.
+- Every 2 sentences must increase tension — never flat.
+- Mix 5-word punches with 12-word builds. Vary the rhythm.
+- No descriptive filler. Every sentence must move the story forward.
 
-HOOK: The first 2 sentences must contain a contradiction, hidden truth, or shocking omission. Never open with context or background.
-FACTS: Lead with the most controversial or psychologically revealing detail. Skip generic background.
-ENDING: The last 1-2 sentences must leave impact — a disturbing implication, an open question, or a fact that reframes everything heard before.
+LENGTH: 120-180 words ONLY. Count carefully.
 
-BANNED WORDS: "Furthermore", "In conclusion", "As we can see", "It is important to note", "Throughout history", "In summary".
-BANNED FORMAT: Any headings, labels, or section markers in the output (no "HOOK:", "SETUP:", "REVEAL:", etc.)."""
+BANNED OPENERS: "This video explains...", "In this story...", "In an era...", "Throughout history...", "This is the story of..."
+BANNED FORMAT: Any headings, labels, or section markers in the output."""
 
 
 def write_short_script(en_long_script: dict) -> dict:
