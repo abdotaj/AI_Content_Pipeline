@@ -42,16 +42,28 @@ def _groq_call(**kwargs):
 
 
 
-_SCRIPT_SYSTEM_PROMPT = """You are a professional true crime documentary scriptwriter. Write like Morgan Freeman narrating a documentary — measured, authoritative, deeply human.
+_SCRIPT_SYSTEM_PROMPT = """You are a professional true crime documentary scriptwriter. Write like a BBC/Netflix narrator — measured, cinematic, authoritative.
 
-NARRATION STYLE:
-- Flow like a novel, not a report. Every paragraph tells part of the story and builds tension.
-- Minimum 3 sentences per paragraph, maximum 6. No single-sentence paragraphs.
+DOCUMENTARY VOICE — NOT AN ESSAY:
+- This is SPOKEN narration, not text to be read on a screen. Every sentence must sound natural when read aloud.
+- Never open with generic lines: "In the world of crime...", "Throughout history...", "This story is about..."
+- Never write like a Wikipedia article, a blog post, or an essay. No thesis statements. No topic sentences announcing what you will cover.
+- Write the scene, not the summary. Show the moment, then draw meaning from it.
+- Every paragraph must EARN its place — no padding, no throat-clearing, no restatements of what was just said.
+
+SENTENCE STRUCTURE FOR TTS:
+- Mix short punches (5–10 words) with medium narrative sentences (15–22 words). Vary the rhythm.
+- Maximum 25 words per sentence — anything longer breaks spoken flow.
+- No mid-sentence dashes or parentheses. No ellipses — end sentences with a period.
+- No acronyms without spelling them out first. Numbers under one hundred written as words.
+
+NARRATION FLOW:
+- Minimum 3 sentences per paragraph, maximum 5. No single-sentence paragraphs.
 - No bullet points. No numbered lists. No standalone facts. Prose only.
-- Show cause and effect: actions lead to consequences, decisions lead to outcomes.
-- Always write COMPLETE sentences. Never end mid-sentence or mid-thought. If approaching the end, wrap up gracefully with a full closing sentence.
+- Show cause and effect: decisions lead to consequences, actions reveal character.
+- Always write COMPLETE sentences. Never end mid-thought.
 
-TRANSITION PHRASES — pick a DIFFERENT one for each section, never repeat:
+TRANSITION PHRASES — use a DIFFERENT one for each chapter, never repeat:
 - "What nobody expected was..."
 - "The truth was far more disturbing..."
 - "Behind closed doors, however..."
@@ -62,26 +74,30 @@ TRANSITION PHRASES — pick a DIFFERENT one for each section, never repeat:
 - "The case files told a different story..."
 - "What would later emerge changed everything..."
 - "The reality was far darker than anyone knew..."
-FORBIDDEN: Never use "But what happened next shocked everyone" more than once per script. Never repeat the same transition phrase twice.
+FORBIDDEN: Never repeat the same transition phrase twice in the same script.
 
-CHARACTER COVERAGE — universal rule for ALL topics:
+NO REPETITION RULES — absolute:
+- Never repeat a fact, name, date, or event that appeared in an earlier chapter.
+- Never restate a chapter's opening sentence or theme in a later chapter.
+- Never use the same adjective or descriptor twice in a script (e.g., "ruthless" — use it once, never again).
+- If you find yourself writing something that was already said, stop and write something new instead.
+
+CHARACTER COVERAGE:
 - Cover ALL main characters — never focus on just one person.
-- Every key person in the research gets their OWN dedicated paragraph with: who they are, what they specifically contributed, their unique challenge or perspective.
-- For each real person: full name, actual role, what they really did, their fate.
-- For fictional characters based on real people: name the real person and explain what changed.
-- Women, minorities, and supporting figures get EQUAL coverage — never relegate them to a mention.
+- Every key person gets their own dedicated paragraph: full name, actual role, what they did, their fate.
+- Women, minorities, and supporting figures get EQUAL coverage — never relegate them to a passing mention.
 
-TONE RULES:
-- 85% dark, serious, documentary tone
-- 15% dry humor and sarcasm — especially for: criminal mistakes, ironic twists, moments of hubris
-- Examples: 'He planned the perfect crime. Except he left his wallet at the scene.' / 'For a man who controlled an entire militia, he somehow forgot that cameras exist.'
-- Never make fun of victims. Only humor at criminals, corrupt officials, or ironic situations. One or two lines max per section.
+TONE:
+- 85% dark, serious, documentary tone.
+- 15% dry understatement — especially for criminal mistakes, ironic twists, moments of hubris.
+- Example: "He planned the perfect crime. He forgot that cameras exist."
+- Never mock victims. Dry humor only at criminals or corrupt officials. One line maximum per chapter.
 
-SHOW vs REALITY — applies to ALL biopics, true crime shows, historical dramas:
-- Section 3 (Main Story) MUST contain two dedicated paragraphs:
-  Paragraph A: "Here is what [show/film name] got RIGHT about the real story: ..."
-  Paragraph B: "And here is what they changed or left out: ..."
-- Use phrases like: "The show portrayed X as... In reality, Y actually..." or "Hollywood changed this detail: the real story was..."
+SHOW vs REALITY — for biopics, true crime series, and historical dramas:
+- Chapter 4 MUST contain:
+  Part A starting with EXACTLY: "Here is what [show] got RIGHT:"
+  Part B starting with EXACTLY: "Here is what they completely changed or left out:"
+- Each part covers at least 3 specific comparisons with real names, scenes, or dates.
 - This structure is MANDATORY for any topic based on true events."""
 
 
@@ -1161,11 +1177,11 @@ Key facts: {(research.get('research_facts') or research.get('what_show_got_right
 
     # (label, min_words, max_words, is_final)
     _SECTIONS_META = [
-        ("Hook Intro",            300,  380,  False),
+        ("Opening Atmosphere",    300,  380,  False),
         ("Untold Angle",          350,  420,  False),
         ("Background & Real Story", 420, 560, False),
         ("Show vs Reality",       350,  420,  False),
-        ("Conclusion",            200,  260,  True),
+        ("Final Insight",         200,  260,  True),
     ]
 
     _SECTION_LABELS = [
@@ -1326,24 +1342,28 @@ Return ONLY valid JSON, no explanation:
     section_prompts = [
         # ── Chapter 1: Hook Intro ─────────────────────────────────────────────
         lambda: f"""{_topic_context}
-Write CHAPTER 1 — HOOK INTRO for a documentary about {name}.
+Write CHAPTER 1 — OPENING ATMOSPHERE for a documentary about {name}.
 
-YOUR EXCLUSIVE JOB in this chapter (and ONLY this chapter):
-1. Open with EXACTLY: "You think you know {name}. But what {series} never showed you was..."
-2. Describe what made {series} compelling — the specific scene or moment that hooked millions.
-3. Plant ONE unanswered question that the rest of the video will answer.
-4. End with a cliffhanger that pulls viewers into Chapter 2.
+YOUR EXCLUSIVE JOB in this chapter:
+1. Open with a SPECIFIC vivid moment from the real story — a year, a place, one person in the middle of an action. Make the viewer see it. Do NOT open with a question or with "You think you know..."
+2. In 2–3 sentences: establish the atmosphere, the era, the stakes. What was the world like then?
+3. In 1 paragraph: explain what made {series} famous — the one moment that millions remember — then immediately contrast it: "But the real story was never that simple."
+4. End with ONE sharp unanswered question that the rest of the video will resolve.
 
 {_facts_block("ch1")}
 
 STRICT SCOPE — this chapter does NOT:
-- Cover real historical facts or timelines (that is Chapter 3)
-- Introduce or profile real people in detail (that is Chapter 3)
+- Cover the real history or biography in detail (that is Chapter 3)
 - Reveal the hidden truth or untold angle (that is Chapter 2)
 - Make show-vs-reality comparisons (that is Chapter 4)
-This chapter sets the scene ONLY. It speaks about what the SHOW depicted, not what really happened.
+Set the mood and plant the hook. Nothing more.
 
-Write flowing documentary narration — no lists, no bullet points, paragraphs only. Minimum 3 sentences per paragraph. Always write complete sentences.
+NARRATION RULES:
+- First sentence: a specific scene, not a statement. Put the viewer in the moment.
+- No generic openers: "In the world of crime...", "This is the story of...", "One man..."
+- Short punchy sentences to open, longer narrative sentences to build atmosphere.
+
+Write flowing documentary narration — no lists, no bullet points, paragraphs only. Minimum 3 sentences per paragraph. Always complete sentences.
 {_section_instruction(300, 380, False)}""",
 
         # ── Chapter 2: Untold Angle ───────────────────────────────────────────
@@ -1441,20 +1461,26 @@ PREVIOUS CHAPTERS (context only — do NOT repeat anything from them):
 
         # ── Chapter 5: Conclusion ─────────────────────────────────────────────
         lambda: f"""{_topic_context}
-Write CHAPTER 5 — CONCLUSION for a documentary about {name}.
+Write CHAPTER 5 — FINAL INSIGHT for a documentary about {name}.
 
 YOUR EXCLUSIVE JOB in this chapter:
-1. Deliver ONE final fact that has NOT appeared anywhere in this video — draw from your pre-assigned facts below.
-2. In 2–3 sentences: what does the story of {name} tell us about the world today?
-3. Close with: "Follow Dark Crime Decoded for more real stories behind your favourite crime series and films."
+1. Open with ONE final fact from your pre-assigned list below — something that has NOT appeared anywhere in Chapters 1–4. Make it land hard: one or two short sentences, then silence.
+2. In 2–3 sentences: what does the story of {name} reveal about the world — about power, about crime, about the gap between what we are shown and what is real?
+3. In 1 sentence: what changed because of this story? What is different today?
+4. Close with: "Follow Dark Crime Decoded for more real stories behind your favourite crime series and films."
 
 {_facts_block("ch5")}
 
 STRICT SCOPE — this chapter does NOT:
-- Recap or summarize what was covered in Chapters 1–4
-- Re-state the untold angle, the real history, or any show comparison
-- Repeat ANY fact already used (see fence below)
-This chapter reflects and closes — it does not re-tell.
+- Recap or summarize Chapters 1–4
+- Repeat ANY fact from earlier chapters (see fence below)
+- Use words like "In conclusion", "To summarize", "As we have seen"
+This chapter delivers a final truth and lets it echo. It does not wrap things up neatly.
+
+NARRATION RULES:
+- The final fact should be delivered like a verdict — short, direct, no softening.
+- The insight paragraph should feel like the narrator is speaking directly to the viewer.
+- The closing sentence should have weight. Not a tagline — a thought that stays with the viewer.
 
 {_used_facts_block(4)}
 
@@ -2854,61 +2880,75 @@ def translate_script(en_script: dict) -> dict:
     return ar_data
 
 
+_SHORT_SCRIPT_SYSTEM = """You are writing spoken narration for viral short-form video (YouTube Shorts / TikTok / Instagram Reels).
+
+VOICE: Conversational. Direct. Urgent. Like a friend telling you something unbelievable — not a documentary narrator, not a journalist.
+NOT: academic, formal, essay-like, or article-style.
+
+SENTENCES: Short and varied. Mix punchy 5-word lines with 15-word builds. Never over 22 words per sentence.
+PARAGRAPHS: Maximum 3 sentences. No walls of text.
+FLOW: Every sentence must pull the listener forward to the next one.
+BANNED WORDS: "Furthermore", "In conclusion", "As we can see", "It is important to note", "Throughout history", "In summary".
+BANNED FORMAT: Any headings, labels, or section markers in the output (no "HOOK:", "SETUP:", "REVEAL:", etc.)."""
+
+
 def write_short_script(en_long_script: dict) -> dict:
-    """Extract the strongest moment from the long script and rewrite it as a 60-80 second standalone short."""
+    """Extract the strongest moment from the long script and rewrite it as a 45-90 second viral short."""
     topic       = en_long_script.get("topic", "")
     long_script = en_long_script.get("script", "")
     _angle_hook  = en_long_script.get("angle_hook", "")
     _angle_title = en_long_script.get("angle_title", "")
 
     _hook_instruction = (
-        f"HOOK (use this exact sentence to open): \"{_angle_hook}\"\n"
+        f"Open with EXACTLY this sentence: \"{_angle_hook}\"\n"
         if _angle_hook else
-        "HOOK: Write the strongest possible first sentence — a shocking question, bold fact, or mystery.\n"
+        "Open with the most shocking fact or unanswered question from the story. No setup. Drop straight in.\n"
     )
 
-    prompt = f"""You are writing a 60-80 second spoken script for a crime documentary short video.
+    prompt = f"""You are writing a spoken voiceover for a 45-90 second crime documentary short video.
 
-TASK: Read the full script below. Find the single most powerful moment — a shocking reveal, emotional confession, mystery, or twist. Do NOT summarize the whole story. Extract just that moment and rewrite it as a complete, standalone short script.
+TASK: Read the script below. Find the single most gripping moment — a shocking reveal, confession, twist, or hidden truth. Rewrite it as a standalone viral voiceover. Do NOT summarize the whole story. Tell one moment, fast and hard.
 
 Topic: {topic}
-{f"Untold angle: {_angle_title}" if _angle_title else ""}
+{f"Angle: {_angle_title}" if _angle_title else ""}
 
 {_hook_instruction}
-STRUCTURE (all 4 parts required):
-1. HOOK (2 sentences): Grab attention immediately. No setup, no background — jump straight into the most dramatic moment.
-2. SETUP (2-3 sentences): Just enough context for the viewer to understand what's at stake.
-3. REVEAL (3-4 sentences): The core of the moment — the confession, the twist, the truth that changes everything. This is the part you extracted from the long script.
-4. CLOSE (1-2 sentences): A strong ending line. End with "Follow Dark Crime Decoded for more."
+FLOW (4 beats — write them as continuous prose, NO headings or labels):
+- Beat 1 — HOOK: 2 sentences. Jump straight into the action or fact. No "In [year]...", no "This is the story of...", no setup.
+- Beat 2 — FAST SETUP: 2 sentences. Who was involved? What was at stake? Keep it tight.
+- Beat 3 — MAIN REVEAL: 3-4 sentences. The truth, the twist, the thing that changes everything.
+- Beat 4 — STRONG ENDING: 1-2 sentences. A line that lingers. End with: "Follow Dark Crime Decoded for more."
 
-RULES:
-- MINIMUM 150 words, MAXIMUM 200 words — count carefully
-- Flowing prose only — no bullet points, no lists, no standalone fragment sentences
-- Do NOT just summarize the whole story — focus on one powerful moment
-- Every sentence must earn its place — delete anything that doesn't add tension or emotion
-- Write for spoken delivery at 150 words per minute
+STYLE:
+- Short sentences mixed with medium ones. Never over 22 words.
+- Conversational — like you're telling someone something they cannot believe.
+- No formal transitions. No long paragraphs. No academic tone.
+- No ellipsis (...). No mid-sentence dashes. No parentheses.
 
-FULL LONG SCRIPT (find the best moment inside this):
+LENGTH: Exactly 120–180 words. Count every word.
+
+SOURCE SCRIPT (find the best moment inside):
 {long_script[:1800]}
 
-Output ONLY the spoken script text, nothing else."""
+Write ONLY the spoken words. No headings. No labels. No explanations."""
 
     script_text = ""
     for attempt in range(2):
         _p = prompt
         if attempt > 0:
-            _p += f"\n\nCRITICAL: Previous attempt was {clean_word_count(script_text)} words. Target is 150-200 words. Expand the reveal — more dramatic detail, deeper emotional impact."
-        script_text = _ai_script_call(_p, max_tokens=500, temperature=0.85).strip()
+            _p += f"\n\nPREVIOUS ATTEMPT: {clean_word_count(script_text)} words — need 120-180. {'Expand the reveal with more specific detail.' if clean_word_count(script_text) < 120 else 'Cut filler sentences to hit the target.'}"
+        script_text = _ai_script_call(_p, max_tokens=450, temperature=0.85,
+                                       system_prompt=_SHORT_SCRIPT_SYSTEM).strip()
         words   = clean_word_count(script_text)
         seconds = round(words / 2.5)
         print(f"[Script] Short attempt {attempt + 1}: {words} words = ~{seconds}s")
-        if words >= 150:
+        if words >= 120:
             break
         print(f"[Script] Short too short ({words} words) — retrying...")
 
-    if clean_word_count(script_text) > 210:
-        script_text = _trim_plain_text_to_words(script_text, 200)
-        print("[Script] Short trimmed to 200 words")
+    if clean_word_count(script_text) > 190:
+        script_text = _trim_plain_text_to_words(script_text, 180)
+        print("[Script] Short trimmed to 180 words")
 
     ar_script_text = translate_to_arabic(script_text) if script_text else ""
 
