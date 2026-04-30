@@ -407,6 +407,104 @@ def evaluate_and_fix_script(script: str) -> str:
     return script
 
 
+# ============================================================
+# MULTI-HOOK GENERATION + SCORING SYSTEM
+# ============================================================
+
+_HOOK_GEN_PROMPT = """You are a YouTube retention expert writing opening hooks for a true crime documentary.
+
+Read this script excerpt and generate 3 different opening hook variations.
+
+Rules:
+- Each hook is 1-2 sentences only
+- Strong curiosity, contradiction, or mystery
+- Spoken tone — sounds natural when read aloud by a narrator
+- No labels or headings inside the hook text itself
+
+Return EXACTLY this format:
+HOOK 1: [your hook here]
+HOOK 2: [your hook here]
+HOOK 3: [your hook here]
+
+SCRIPT EXCERPT:
+{script_excerpt}"""
+
+_HOOK_SCORE_PROMPT = """Score this documentary opening hook for YouTube retention.
+
+Score 0-10 based on:
+- Curiosity: does it make the viewer need to know more?
+- Clarity: is it immediately clear what the story is about?
+- Emotional impact: does it create tension, shock, or intrigue?
+- Mystery / contradiction: does it plant an unanswered question?
+
+Return EXACTLY:
+SCORE: X/10
+
+HOOK:
+{hook}"""
+
+
+def _parse_hooks(text: str) -> list[str]:
+    import re
+    hooks = []
+    for m in re.finditer(r"HOOK\s*\d+:\s*(.+?)(?=HOOK\s*\d+:|$)", text, re.IGNORECASE | re.DOTALL):
+        h = m.group(1).strip()
+        if h:
+            hooks.append(h)
+    return hooks[:3]
+
+
+def _score_hook(hook: str) -> int:
+    try:
+        prompt = _HOOK_SCORE_PROMPT.replace("{hook}", hook)
+        result = _ai_script_call(prompt, max_tokens=50, temperature=0.3, premium=False)
+        return _extract_score(result)
+    except Exception:
+        return 0
+
+
+def pick_best_hook(script: str) -> str:
+    try:
+        import re as _re
+        excerpt = _re.sub(r'\[SECTION:[^\]]*\]', '', script).strip()[:500]
+        prompt = _HOOK_GEN_PROMPT.replace("{script_excerpt}", excerpt)
+        raw = _ai_script_call(prompt, max_tokens=300, temperature=0.85, premium=False)
+        hooks = _parse_hooks(raw)
+        if not hooks:
+            print("[Hook] No hooks parsed — keeping original")
+            return script
+
+        print(f"[Hook] Generated {len(hooks)} candidates")
+        best_hook, best_score = hooks[0], 0
+        for h in hooks:
+            s = _score_hook(h)
+            print(f"[Hook] {s}/10: {h[:70]}")
+            if s > best_score:
+                best_score, best_hook = s, h
+        print(f"[Hook] Best score: {best_score}/10")
+
+        # Replace only first 2 sentences; preserve all [SECTION:] markers and rest of script
+        lines = script.splitlines()
+        rebuilt = []
+        replaced = False
+        for line in lines:
+            if not replaced:
+                stripped = line.strip()
+                if stripped.startswith("[SECTION:") or not stripped:
+                    rebuilt.append(line)
+                    continue
+                sentences = [s.strip() for s in stripped.split(".") if s.strip()]
+                rest = ". ".join(sentences[2:])
+                rebuilt.append(best_hook + (". " + rest + "." if rest else ""))
+                replaced = True
+            else:
+                rebuilt.append(line)
+        return "\n".join(rebuilt)
+    except Exception as e:
+        print(f"[Hook] Failed: {e}")
+        return script
+
+
 title_format = "Dark Crime Decoded: {person} & {series} — {curiosity_hook}"
 
 PERSON_TO_SERIES: dict[str, tuple[str, str]] = {
@@ -2262,7 +2360,10 @@ Return ONLY this JSON with no extra text:
     script_data["user_discovery_expanded"] = discovery_expanded
     # Carry show_characters forward so write_short_script can use them
     script_data["show_characters"]         = research.get("show_characters", [])
-    script_data["script"] = evaluate_and_fix_script(script_data["script"])
+    _s = script_data["script"]
+    _s = pick_best_hook(_s)
+    _s = evaluate_and_fix_script(_s)
+    script_data["script"] = _s
     print(f"[Script] Written (english): '{script_data['title']}'")
     return script_data
 
