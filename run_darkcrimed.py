@@ -487,6 +487,23 @@ def run_pipeline():
             fn(script, label=label)
         except Exception as e:
             print(f"  [WARN] Script preview failed ({label}): {e}")
+
+    # Send short scripts to Telegram (non-blocking, non-fatal)
+    _short_en_text = en_long.get("short_script_en", "")
+    _short_ar_text = ar_long.get("short_script_ar", "")
+    if _short_en_text:
+        try:
+            send_english_script_preview({**en_long, "script": _short_en_text},
+                                        label="English SHORT script (45-90s)")
+        except Exception as e:
+            print(f"  [WARN] EN short script preview failed: {e}")
+    if _short_ar_text:
+        try:
+            send_arabic_script_preview({**ar_long, "script": _short_ar_text},
+                                       label="Arabic SHORT script (45-90s)")
+        except Exception as e:
+            print(f"  [WARN] AR short script preview failed: {e}")
+
     _log("Telegram", "Scripts sent — continuing pipeline immediately.", "OK")
     _stage("Scripts sent to Telegram")
 

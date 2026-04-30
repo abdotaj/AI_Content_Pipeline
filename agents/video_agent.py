@@ -4412,6 +4412,8 @@ def _secs_to_ass_time(s: float) -> str:
     return f"{h}:{m:02d}:{sec:05.2f}"
 
 
+ENABLE_SUBTITLES = False  # set True to re-enable Whisper subtitles
+
 _WHISPER_MODEL = None   # module-level cache — loaded once per process
 
 
@@ -5559,10 +5561,11 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
     # â"€â"€ Image / clip counts â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
     # Whisper subtitles (word-level, for burning + timestamp sync)
     whisper_segments: list[dict] = []
-    try:
-        whisper_segments = generate_subtitles(audio_path, language)
-    except Exception as _ws_e:
-        print(f"[Subtitle] Skipping Whisper (non-fatal): {_ws_e}")
+    if ENABLE_SUBTITLES:
+        try:
+            whisper_segments = generate_subtitles(audio_path, language)
+        except Exception as _ws_e:
+            print(f"[Subtitle] Skipping Whisper (non-fatal): {_ws_e}")
 
     n_images = calculate_unique_images(is_short=is_short)
     calculate_total_images(user_images)
