@@ -530,6 +530,124 @@ def pick_best_hook(script: str) -> str:
         return script
 
 
+# ============================================================
+# SCRIPT UPGRADE SYSTEM (RETENTION ENHANCEMENT)
+# ============================================================
+
+_UPGRADE_PROMPT = """You are a true crime documentary script editor upgrading scripts for YouTube retention.
+
+DO NOT change: facts, names, dates, structure, or [SECTION:] markers.
+DO NOT remove any information.
+Return ONLY the improved script — no notes, no labels.
+
+MAKE THESE CHANGES:
+
+1. FIRST 3 SENTENCES — rewrite for maximum impact:
+   - Sentence 1: immediate tension, secret, or violation — no context or backstory
+   - Sentence 2: escalate — reveal something that raises an unanswered question
+   - Sentence 3: open loop — leave something unresolved that forces the viewer to continue
+   - BANNED openers: "In an era...", "This is the story of...", "He was born...", "Throughout history..."
+
+2. EXPLANATION to ACTION:
+   - Find paragraphs that explain rather than show — rewrite as scenes with action verbs
+   - Show what people DID, not what they WERE
+   - Wrong: "He was a ruthless drug lord who controlled an empire."
+   - Right: "He walked into the room last. Every man seated had already agreed to work for him."
+
+3. REMOVE REPETITION:
+   - Each adjective or descriptor may appear only ONCE in the entire script
+   - Remove repeated facts silently — do not announce the removal
+
+4. MICRO-TENSION:
+   - Every 2-3 sentences must introduce new tension, mystery, question, or reversal
+   - No flat paragraphs — every paragraph must move the story forward emotionally
+
+5. UNTOLD ANGLE SECTION:
+   - Emphasize: who was threatened, what was buried, who paid the price for knowing
+   - Add one specific consequence that was deliberately hidden from the public
+
+6. FINAL SECTION — last 2-3 sentences:
+   - Must feel like a verdict or revelation — not a summary
+   - BANNED endings: "So that is what happened.", "That is the story of...", "In the end..."
+   - End with a disturbing truth, reframing fact, or open question that lingers
+
+ORIGINAL SCRIPT:
+{script}"""
+
+
+_UPGRADE_ARABIC_PROMPT = """أنت محرر نصوص وثائقية محترف متخصص في الاحتفاظ بالمشاهدين.
+
+مهمتك: تحسين هذا النص دون تغيير أي حقائق أو أسماء أو تواريخ أو علامات [SECTION:].
+أعد النص المحسّن فقط — بدون ملاحظات أو شرح.
+
+التغييرات المطلوبة:
+
+1. أول 3 جمل — أعد كتابتها:
+   - الجملة الأولى: توتر فوري أو سر أو انتهاك — بدون سياق أو خلفية
+   - الجملة الثانية: تصعيد — شيء يثير سؤالاً
+   - الجملة الثالثة: حلقة مفتوحة — اترك شيئاً غير محلول يجبر المشاهد على الاستمرار
+
+2. حوّل الشرح إلى مشاهد:
+   - استخدم أفعالاً حركية بدلاً من الوصف الثابت
+   - أظهر ما فعله الناس وليس ما كانوا عليه
+
+3. اللغة المنطوقة:
+   - عربية محكية حديثة — ليست ترجمة حرفية
+   - جمل قصيرة لا تتجاوز 15 كلمة
+   - إيقاع طبيعي يناسب التعليق الصوتي المسموع
+
+4. توتر متصاعد:
+   - كل 2-3 جمل يجب أن تصعّد التوتر أو تطرح سؤالاً جديداً
+   - لا فقرات مسطحة — كل فقرة يجب أن تحرك القصة عاطفياً
+
+5. النهاية:
+   - يجب أن تكون مؤثرة — حقيقة مقلقة أو سؤال مفتوح يبقى في الذهن
+   - ممنوع: الملخصات أو الخواتيم العادية
+
+النص الأصلي:
+{script}"""
+
+
+def upgrade_script_for_retention(script: str) -> str:
+    try:
+        prompt = _UPGRADE_PROMPT.replace("{script}", script)
+        improved = _ai_script_call(prompt, max_tokens=4000, temperature=0.75, premium=True)
+        if not improved or len(improved.split()) < 200:
+            print("[Upgrade] Result too short — keeping original")
+            return script
+        import re as _re
+        orig_sections = _re.findall(r'\[SECTION:[^\]]+\]', script)
+        new_sections  = _re.findall(r'\[SECTION:[^\]]+\]', improved)
+        if orig_sections and not new_sections:
+            print("[Upgrade] Section markers lost — keeping original")
+            return script
+        print(f"[Upgrade] English script upgraded ({len(improved.split())} words)")
+        return improved
+    except Exception as e:
+        print(f"[Upgrade] Failed: {e}")
+        return script
+
+
+def upgrade_arabic_script(script: str) -> str:
+    try:
+        prompt = _UPGRADE_ARABIC_PROMPT.replace("{script}", script)
+        improved = _ai_script_call(prompt, max_tokens=4000, temperature=0.7, premium=True)
+        if not improved or len(improved.split()) < 100:
+            print("[Upgrade] Arabic result too short — keeping original")
+            return script
+        import re as _re
+        orig_sections = _re.findall(r'\[SECTION:[^\]]+\]', script)
+        new_sections  = _re.findall(r'\[SECTION:[^\]]+\]', improved)
+        if orig_sections and not new_sections:
+            print("[Upgrade] Arabic section markers lost — keeping original")
+            return script
+        print(f"[Upgrade] Arabic script upgraded ({len(improved.split())} words)")
+        return improved
+    except Exception as e:
+        print(f"[Upgrade] Arabic failed: {e}")
+        return script
+
+
 title_format = "Dark Crime Decoded: {person} & {series} — {curiosity_hook}"
 
 PERSON_TO_SERIES: dict[str, tuple[str, str]] = {
@@ -2386,6 +2504,7 @@ Return ONLY this JSON with no extra text:
     # Carry show_characters forward so write_short_script can use them
     script_data["show_characters"]         = research.get("show_characters", [])
     _s = script_data["script"]
+    _s = upgrade_script_for_retention(_s)
     _s = pick_best_hook(_s)
     _s = evaluate_and_fix_script(_s)
     script_data["script"] = _s
@@ -3092,6 +3211,7 @@ def translate_script(en_script: dict) -> dict:
     ar_data["series_name"]  = en_script.get("series_name", "")
     ar_data["series_type"]  = en_script.get("series_type", "")
     if ar_data.get("script"):
+        ar_data["script"] = upgrade_arabic_script(ar_data["script"])
         ar_data["script"] = evaluate_and_fix_script(ar_data["script"])
     print(f"[Script] Translated (arabic): '{ar_data['title']}'")
     return ar_data
