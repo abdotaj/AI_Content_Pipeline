@@ -40,7 +40,7 @@ from config_darkcrimed import (
 
 from agent.research_agent import research_topics, research_series, mark_covered, is_fictional, _detect_show_topic, _fetch_show_cast_from_wikipedia
 from agent.script_agent   import write_script, translate_script, detect_part_number, generate_chapters, write_short_script
-from agent.video_agent    import create_video, process_user_images_smart, load_part2_images, ensure_music_assets, cut_chapter_shorts, cut_best_short, load_all_content
+from agent.video_agent    import create_video, process_user_images_smart, load_part2_images, ensure_music_assets, cut_chapter_shorts, cut_best_short, load_all_content, find_content_folder
 from agent.notify_agent   import (
     send_message, send_for_manual_posting, send_daily_report,
     send_video_to_telegram, clear_telegram_queue,
@@ -517,10 +517,28 @@ def run_pipeline():
             print(f"[Pipeline] Added {len(_p2_paths)} saved Part 2 images")
             send_message(f"[Pipeline] Loaded {len(_p2_paths)} saved images for Part 2")
 
-    # ── Load GitHub content library for this topic ────────────
-    _gh_images, _gh_videos, _gh_music_long, _gh_music_short = load_all_content(
-        en_long.get("topic", "")
-    )
+    # ── Load GitHub content library for this topic (retry up to 5x) ──────────
+    _topic_for_media = en_long.get("topic", "")
+    _gh_images: list = []
+    _gh_videos: list = []
+    _gh_music_long  = None
+    _gh_music_short = None
+    for _media_attempt in range(5):
+        _gh_images, _gh_videos, _gh_music_long, _gh_music_short = load_all_content(_topic_for_media)
+        if _gh_images or _gh_videos:
+            break
+        if _media_attempt < 4:
+            _log("Media", f"No media loaded (attempt {_media_attempt + 1}/5) — retrying in 1s", "WARN")
+            time.sleep(1)
+    # Raise hard error if content folder exists but media is still empty
+    _content_folder = find_content_folder(_topic_for_media)
+    if _content_folder and os.path.exists(_content_folder) and not (_gh_images or _gh_videos):
+        raise RuntimeError(
+            f"[MEDIA] Content folder '{_content_folder}' exists but no media loaded after 5 retries — aborting"
+        )
+    if _gh_images or _gh_videos:
+        print(f"[MEDIA] Loaded {len(_gh_images)} images, {len(_gh_videos)} videos (user mode)")
+
     if _gh_music_long:
         import shutil as _shutil
         _shutil.copy(_gh_music_long, "assets/music/documentary_long.mp3")
@@ -797,7 +815,8 @@ def get_duration(video_path: str) -> str:
 def _make_video(script_data: dict, video_id: str, stats: dict, user_images: list | None = None, user_videos: list | None = None) -> str:
     """Create a video using ElevenLabs + Pollinations, update stats, return path."""
     try:
-        path = create_video(script_data, video_id, user_images=user_images, user_videos=user_videos)
+        _raw = create_video(script_data, video_id, user_images=user_images, user_videos=user_videos)
+        path = _raw[0] if isinstance(_raw, tuple) else _raw  # guard against accidental tuple return
         if path and Path(path).exists():
             stats["generated"] += 1
             print(f"  Video ready: {path}")

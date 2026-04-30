@@ -985,6 +985,16 @@ def _is_shopmart() -> bool:
         return False
 
 
+def _validate_on_topic(script: str, topic_name: str, series_label: str) -> bool:
+    """Return True if script mentions both the real person and the show/movie."""
+    t = script.lower()
+    t_words = [w for w in topic_name.lower().split() if len(w) > 3]
+    s_words = [w for w in series_label.lower().split() if len(w) > 3]
+    topic_ok  = any(w in t for w in t_words)  if t_words  else True
+    series_ok = any(w in t for w in s_words)  if s_words  else True
+    return topic_ok and series_ok
+
+
 def write_script(topic: dict, language: str = "english") -> dict:
     if _is_shopmart():
         return _write_shopmart_script(topic)
@@ -2447,6 +2457,19 @@ Do not summarize — give full detailed information."""
     # Final hard cap for YouTube-safe runtime in draft/publish workflows.
     script_text = _cap_script_max_words(script_text, LONG_SCRIPT_MAX_WORDS)
 
+    # ── Topic anchor validation: must mention real person + show ─────────────
+    if not _validate_on_topic(script_text, topic["topic"], series_label):
+        print(f"[Script] Long script missing topic anchors — regenerating once")
+        _anchor_p = part1_prompt + (
+            f"\n\nCRITICAL: You MUST explicitly name '{topic['topic']}' (real person) "
+            f"and '{series_label}' (the show/movie) and explain the connection. "
+            "Do NOT write generic crime content."
+        )
+        _anch = validate_script(_ai_script_call(_anchor_p, max_tokens=6000, temperature=0.85).strip())
+        if _anch and clean_word_count(_anch) >= LONG_SCRIPT_MIN_WORDS:
+            script_text = _cap_script_max_words(_anch, LONG_SCRIPT_MAX_WORDS)
+            print(f"[Script] Topic-anchored script: {clean_word_count(script_text)} words")
+
     # ── PART 2: Generate metadata only (title, hook, captions, etc.) ────────
     _series_info    = get_series_for_person(topic["topic"])
     _related_series = f"{_series_info[0]} {_series_info[1]}" if _series_info else series
@@ -3282,7 +3305,7 @@ SENTENCE RULES:
 - Mix 5-word punches with 12-word builds. Vary the rhythm.
 - No descriptive filler. Every sentence must move the story forward.
 
-LENGTH: Target 180-200 words. Minimum 180. Hard maximum 220.
+LENGTH: Target 170-190 words. Acceptable range 150-200. Hard maximum 210.
 
 BANNED OPENERS: "This video explains...", "In this story...", "In an era...", "Throughout history...", "This is the story of...", "He was...", "This is about..."
 BANNED FORMAT: Any headings, labels, or section markers in the output.
@@ -3336,22 +3359,22 @@ STYLE:
 - Every 2 sentences must increase tension — never flat.
 - NO summaries. NO "He was..." openers. NO educational tone.
 
-LENGTH: Target 180-200 words. Minimum 180. Hard maximum 220. Count every word.
+LENGTH: Target 170-190 words. Acceptable 150-200. Hard maximum 210. Count every word.
 
 SOURCE SCRIPT (extract the best moment from inside):
 {long_script[:2000]}
 
 Write ONLY the spoken words. No headings. No labels. No explanations."""
 
-    # ── Phase 1: OpenAI gpt-4o primary (2 attempts, minimum 180 words) ───────
+    # ── Phase 1: OpenAI gpt-4o primary — 3 attempts, accept >= 150 ───────────
     script_text = ""
     best_text   = ""
-    for attempt in range(2):
+    for attempt in range(3):
         _p = prompt
         if attempt > 0 and script_text:
             wc = clean_word_count(script_text)
-            _p += (f"\n\nPREVIOUS ATTEMPT: {wc} words — target 180-200, minimum 180. "
-                   f"{'Expand beats 2 and 3 with more specific facts from the script to reach 180 words.' if wc < 180 else 'Trim filler to hit 180-200.'}")
+            _p += (f"\n\nPREVIOUS ATTEMPT: {wc} words — target 170-190, minimum 150. "
+                   f"{'Expand beats 2 and 3 with more specific facts to reach 170 words.' if wc < 150 else 'Trim to 170-190 words.'}")
         result = _ai_script_call(_p, max_tokens=600, temperature=0.85,
                                   system_prompt=_SHORT_SCRIPT_SYSTEM, premium=True).strip()
         words   = clean_word_count(result)
@@ -3360,26 +3383,48 @@ Write ONLY the spoken words. No headings. No labels. No explanations."""
         if words > clean_word_count(best_text):
             best_text = result
         script_text = result
-        if words >= 180:
+        if words >= 150:
             break
-        print(f"[Script] Short under 180w ({words} words) — retrying with gpt-4o...")
+        print(f"[Script] Short under 150w ({words} words) — retrying with gpt-4o...")
 
-    # ── Phase 2: Groq fallback — only if gpt-4o produced < 180w, accept >= 170
-    if clean_word_count(script_text) < 180:
-        print("[Script] gpt-4o under 180w — Groq fallback (minimum 170)...")
-        _p = prompt + "\n\nIMPORTANT: Write at least 170 words. Target 180-200. Count every word."
+    # ── Phase 2: Groq fallback — only if all gpt-4o attempts < 150w ──────────
+    if clean_word_count(script_text) < 150:
+        print("[Script] gpt-4o under 150w after 3 attempts — Groq fallback...")
+        _p = prompt + "\n\nIMPORTANT: Write at least 150 words. Target 170-190. Count every word."
         result = _ai_script_call(_p, max_tokens=600, temperature=0.85,
                                   system_prompt=_SHORT_SCRIPT_SYSTEM, premium=False).strip()
         words = clean_word_count(result)
         print(f"[Script] Short Groq fallback: {words} words")
         if words > clean_word_count(best_text):
             best_text = result
-        script_text = result if words >= 170 else (best_text or result)
+        script_text = result if words >= 150 else (best_text or result)
 
     # Keep best result if current is still too short
-    if clean_word_count(script_text) < 140 and best_text:
+    if clean_word_count(script_text) < 100 and best_text:
         script_text = best_text
         print(f"[Script] Using best result: {clean_word_count(script_text)} words")
+
+    # ── Topic lock validation: must mention show name + real person ───────────
+    _tl_series = series_name or niche
+    _tl_topic  = topic
+    _tl_words_series = [w for w in _tl_series.lower().split() if len(w) > 3]
+    _tl_words_topic  = [w for w in _tl_topic.lower().split()  if len(w) > 3]
+    _tl_text = script_text.lower()
+    _tl_series_ok = any(w in _tl_text for w in _tl_words_series) if _tl_words_series else True
+    _tl_topic_ok  = any(w in _tl_text for w in _tl_words_topic)  if _tl_words_topic  else True
+    if not (_tl_series_ok and _tl_topic_ok):
+        print(f"[Script] Short failed topic lock (series={_tl_series_ok}, topic={_tl_topic_ok}) — regenerating")
+        _lock_p = (
+            prompt
+            + f"\n\nCRITICAL: You MUST mention '{series_name or topic}' (the show) "
+            + f"and '{topic}' (the real person) and the show-vs-reality angle. "
+            + "Stay strictly on topic. No generic crime content."
+        )
+        _lock_r = _ai_script_call(_lock_p, max_tokens=600, temperature=0.85,
+                                   system_prompt=_SHORT_SCRIPT_SYSTEM, premium=True).strip()
+        if _lock_r and clean_word_count(_lock_r) >= 150:
+            script_text = _lock_r
+            print(f"[Script] Topic-locked short: {clean_word_count(script_text)} words")
 
     # ── Hook scoring: improve if score < 8 ──────────────────────────────────
     _hook_score = _score_hook(" ".join(script_text.split(".")[:2]))
@@ -3391,7 +3436,7 @@ Write ONLY the spoken words. No headings. No labels. No explanations."""
         print(f"[Script] Hook score after improvement: {_hook_score}/10")
 
     # ── Word budget gated by hook score ─────────────────────────────────────
-    _max_short = 210 if _hook_score >= 9 else 200
+    _max_short = 200 if _hook_score >= 9 else 190
     if clean_word_count(script_text) > _max_short:
         script_text = _trim_plain_text_to_words(script_text, _max_short)
         print(f"[Script] Short trimmed to {_max_short} words (hook score {_hook_score}/10)")
