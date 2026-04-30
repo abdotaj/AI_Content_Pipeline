@@ -3227,7 +3227,7 @@ SENTENCE RULES:
 - Mix 5-word punches with 12-word builds. Vary the rhythm.
 - No descriptive filler. Every sentence must move the story forward.
 
-LENGTH: 150-250 words ONLY. Hard minimum 150. Hard maximum 250.
+LENGTH: Target 150-170 words. Allowed range 140-190. Hard maximum 200.
 
 BANNED OPENERS: "This video explains...", "In this story...", "In an era...", "Throughout history...", "This is the story of...", "He was...", "This is about..."
 BANNED FORMAT: Any headings, labels, or section markers in the output.
@@ -3269,7 +3269,7 @@ STYLE:
 - Every 2 sentences must increase tension — never flat.
 - NO summaries. NO "He was..." openers. NO educational tone.
 
-LENGTH: 150–250 words. Hard minimum 150. Hard maximum 250. Count every word.
+LENGTH: Target 150-170 words. Allowed 140-190. Hard maximum 200. Count every word.
 
 SOURCE SCRIPT (find the best moment inside):
 {long_script[:1800]}
@@ -3281,19 +3281,22 @@ Write ONLY the spoken words. No headings. No labels. No explanations."""
         _p = prompt
         if attempt > 0:
             wc = clean_word_count(script_text)
-            _p += f"\n\nPREVIOUS ATTEMPT: {wc} words — need 150-250. {'Expand each beat with more specific detail and tension.' if wc < 150 else 'Cut filler to stay under 250.'}"
-        script_text = _ai_script_call(_p, max_tokens=600, temperature=0.85,
+            _p += f"\n\nPREVIOUS ATTEMPT: {wc} words — target 150-170. {'Expand the reveal with more specific detail and tension.' if wc < 140 else 'Trim filler to hit 150-170.'}"
+        script_text = _ai_script_call(_p, max_tokens=500, temperature=0.85,
                                        system_prompt=_SHORT_SCRIPT_SYSTEM).strip()
         words   = clean_word_count(script_text)
         seconds = round(words / 2.5)
         print(f"[Script] Short attempt {attempt + 1}: {words} words = ~{seconds}s")
-        if words >= 150:
+        if words >= 140:
             break
         print(f"[Script] Short too short ({words} words) — retrying...")
 
-    if clean_word_count(script_text) > 260:
-        script_text = _trim_plain_text_to_words(script_text, 250)
-        print("[Script] Short trimmed to 250 words")
+    # Score the hook to decide max word budget
+    _hook_score = _score_hook(" ".join(script_text.split(".")[:2]))
+    _max_short  = 190 if _hook_score >= 9 else 170
+    if clean_word_count(script_text) > _max_short:
+        script_text = _trim_plain_text_to_words(script_text, _max_short)
+        print(f"[Script] Short trimmed to {_max_short} words (hook score {_hook_score}/10)")
 
     script_text = evaluate_and_fix_script(script_text)
     ar_script_text = translate_to_arabic(script_text) if script_text else ""
