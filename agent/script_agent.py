@@ -492,33 +492,49 @@ def pick_best_hook(script: str) -> str:
     try:
         import re as _re
         excerpt = _re.sub(r'\[SECTION:[^\]]*\]', '', script).strip()[:500]
-        prompt = _HOOK_GEN_PROMPT.replace("{script_excerpt}", excerpt)
-        raw = _ai_script_call(prompt, max_tokens=300, temperature=0.85, premium=False)
-        hooks = _parse_hooks(raw)
-        if not hooks:
-            print("[Hook] No hooks parsed — keeping original")
-            return script
+        base_prompt = _HOOK_GEN_PROMPT.replace("{script_excerpt}", excerpt)
 
-        print(f"[Hook] Generated {len(hooks)} candidates")
-        best_hook, best_score = hooks[0], 0
-        for h in hooks:
-            s = _score_hook(h)
-            print(f"[Hook] {s}/10: {h[:70]}")
-            if s > best_score:
-                best_score, best_hook = s, h
-        print(f"[Hook] Best score: {best_score}/10")
+        best_hook, best_score = "", 0
+        final_attempt = 1
 
-        # If best < 9, regenerate once and re-pick
-        if best_score < 9:
-            print("[Hook] Score < 9 — regenerating once for stronger hooks")
-            raw2 = _ai_script_call(prompt, max_tokens=300, temperature=0.9, premium=False)
-            hooks2 = _parse_hooks(raw2)
-            for h in hooks2:
+        # Fix 3: loop up to 5 attempts; pass previous best+score each time for progressive feedback
+        for attempt in range(1, 6):
+            final_attempt = attempt
+            if attempt == 1:
+                raw = _ai_script_call(base_prompt, max_tokens=300, temperature=0.85, premium=False)
+            else:
+                _feedback_prompt = (
+                    base_prompt
+                    + f"\n\nPREVIOUS BEST HOOK (scored {best_score}/10):\n{best_hook}\n\n"
+                    + f"This hook scored {best_score}/10. Write 3 completely different hooks that are "
+                    + "more shocking, specific, and curiosity-driven. Avoid generic phrases like "
+                    + "'what drove them' or 'a mother\\'s fear'. Use a specific name, specific crime "
+                    + "detail, or a shocking contradiction."
+                )
+                raw = _ai_script_call(_feedback_prompt, max_tokens=300, temperature=0.9, premium=False)
+
+            hooks = _parse_hooks(raw)
+            if not hooks:
+                print(f"[Hook] Attempt {attempt}: no hooks parsed")
+                continue
+
+            print(f"[Hook] Attempt {attempt}: {len(hooks)} candidates")
+            for h in hooks:
                 s = _score_hook(h)
-                print(f"[Hook] retry {s}/10: {h[:70]}")
+                print(f"[Hook] {s}/10: {h[:70]}")
                 if s > best_score:
                     best_score, best_hook = s, h
-            print(f"[Hook] Final best score: {best_score}/10")
+
+            print(f"[Hook] Attempt {attempt} best so far: {best_score}/10")
+            if best_score >= 9:
+                print(f"[Hook] ✅ Score {best_score}/10 reached — stopping after {attempt} attempt(s)")
+                break
+
+        if not best_hook:
+            print("[Hook] No hooks generated — keeping original")
+            return script
+
+        print(f"[Hook] Final: {best_score}/10 after {final_attempt} attempt(s)")
 
         # Replace only first 2 sentences; preserve all [SECTION:] markers and rest of script
         lines = script.splitlines()
@@ -1561,8 +1577,12 @@ Key facts: {(research.get('research_facts') or research.get('what_show_got_right
         emoji = "✅" if real >= min_w else "⚠️"
         print(f"[Script] Section {call_num} ({label}): {real} real words {emoji} "
               f"(target {min_w}–{max_w}, raw {raw})")
+
+        # Track best across all attempts
+        best_result, best_real = result, real
+
         # First retry if below minimum
-        if real < min_w:
+        if best_real < min_w:
             print(f"[Script] Section {call_num}: below minimum — retrying once")
             time.sleep(4)
             retry = _ai_script_call(prompt, max_tokens=_max_tok,
@@ -1573,16 +1593,16 @@ Key facts: {(research.get('research_facts') or research.get('what_show_got_right
                 emoji2 = "✅" if r_real >= min_w else "⚠️"
                 print(f"[Script] Section {call_num} retry: {r_real} real words {emoji2} "
                       f"(raw {r_raw})")
-                if r_real >= real:
-                    result = retry
-                    real = r_real
+                if r_real > best_real:
+                    best_result, best_real = retry, r_real
+
         # Third attempt with explicit detail instruction if still below minimum
-        if real < min_w:
+        if best_real < min_w:
             print(f"[Script] Section {call_num}: still below {min_w}w — 3rd attempt with detail instruction")
             time.sleep(4)
             _expand_prompt = (
                 prompt
-                + f"\n\nCRITICAL: Previous attempts produced only {real} words — you need at least {min_w}."
+                + f"\n\nCRITICAL: Previous attempts produced only {best_real} words — you need at least {min_w}."
                 + " Add more specific examples, names, dates, and narrative detail to every point."
                 + " Do not summarize or skip anything — expand each sentence into a full paragraph."
             )
@@ -1592,9 +1612,28 @@ Key facts: {(research.get('research_facts') or research.get('what_show_got_right
                 t_real = clean_word_count(third)
                 emoji3 = "✅" if t_real >= min_w else "⚠️"
                 print(f"[Script] Section {call_num} 3rd attempt: {t_real} real words {emoji3}")
-                if t_real > real:
-                    result = third
-                    real = t_real
+                if t_real > best_real:
+                    best_result, best_real = third, t_real
+
+        result, real = best_result, best_real
+
+        # Fix 2: hard enforcement — if still below min after 3 attempts, append continuation
+        if real < min_w:
+            print(f"[Script] Section {call_num}: STILL below {min_w}w after 3 attempts — appending continuation")
+            _cont_prompt = (
+                f"Continue this section with 2 more detailed paragraphs expanding on the same topic, "
+                f"adding specific names, dates, and events. Do not repeat what was already said.\n\n"
+                f"CURRENT TEXT:\n{result}"
+            )
+            try:
+                continuation = _ai_script_call(_cont_prompt, max_tokens=800,
+                                                system_prompt=_SCRIPT_SYSTEM_PROMPT, premium=True)
+                if continuation:
+                    result = result.rstrip() + "\n\n" + continuation.strip()
+                    real = clean_word_count(result)
+                    print(f"[Script] Section {call_num} after continuation: {real} real words")
+            except Exception as _ce:
+                print(f"[Script] Section {call_num} continuation failed: {_ce}")
 
         # Hard cap per section to stop runaway outputs from pushing total runtime.
         if real > max_w:

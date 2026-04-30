@@ -5787,12 +5787,15 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
             for uv in all_user_videos:
                 path = uv.get("path", "")
                 if path and os.path.exists(path):
-                    dest = os.path.join(IMAGES_DIR, f"{video_id}_uv_{len(image_paths)}.mp4")
+                    dest = os.path.abspath(os.path.join(IMAGES_DIR, f"{video_id}_uv_{len(image_paths)}.mp4"))
                     try:
                         import shutil as _shutil
                         _shutil.copy2(path, dest)
-                        image_paths.append(dest)
-                        print(f"[Video] User video added: {uv.get('caption','')[:60]}")
+                        if os.path.exists(dest):
+                            image_paths.append(dest)
+                            print(f"[Video] User video added: {uv.get('caption','')[:60]}")
+                        else:
+                            print(f"[Video] WARNING: Copy appeared to succeed but {dest} not found")
                     except Exception as _e:
                         print(f"[Video] Could not copy user video {path}: {_e}")
 
@@ -5811,12 +5814,15 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
                 path = ui.get("path", "")
                 if path and os.path.exists(path):
                     ext = os.path.splitext(path)[1] or ".jpg"
-                    dest = os.path.join(IMAGES_DIR, f"{video_id}_ui_{i}{ext}")
+                    dest = os.path.abspath(os.path.join(IMAGES_DIR, f"{video_id}_ui_{i}{ext}"))
                     try:
                         import shutil as _shutil
                         _shutil.copy2(path, dest)
-                        image_paths.append(dest)
-                        print(f"[Video] User image added: {ui.get('caption','')[:60]} → {dest}")
+                        if os.path.exists(dest):
+                            image_paths.append(dest)
+                            print(f"[Video] User image added: {ui.get('caption','')[:60]} → {dest}")
+                        else:
+                            print(f"[Video] WARNING: Copy appeared to succeed but {dest} not found")
                     except Exception as _e:
                         print(f"[Video] Could not copy user image {path}: {_e}")
 
