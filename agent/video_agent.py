@@ -5886,10 +5886,15 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
     # For MODE 1, skip moment matching — user images are already ordered correctly.
     if mode == "user_content":
         # User images are first in image_paths; just append any extra priority images
-        # (Wikipedia photo, AI-transformed versions) that aren't already present
+        # (Wikipedia photo, AI-transformed versions) that aren't already present.
+        # extra_paths may only add NEW content: AI-transformed versions and Wikipedia photos.
+        # Original user image paths must be excluded — they are already represented by their
+        # _ui_ copies and would duplicate the same image in the final pool.
+        _ui_originals = {ui["path"] for ui in all_user_images}
         extra_paths = [img["path"] for img in priority_images
                        if isinstance(img, dict) and img.get("path")
                        and img["path"] not in image_paths
+                       and img["path"] not in _ui_originals
                        and os.path.exists(img["path"])]
         all_image_paths = image_paths + extra_paths
         print(f"[DEBUG] MODE 1 final pool: {len(image_paths)} direct + {len(extra_paths)} extra priority = {len(all_image_paths)} total")
