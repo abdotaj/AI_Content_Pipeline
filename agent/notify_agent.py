@@ -907,8 +907,14 @@ def check_telegram_for_videos(after_timestamp: float = 0.0) -> list[dict]:
 def send_video_to_telegram(video_path: str, caption: str, label: str) -> dict:
     """Send a video to Telegram. Uses sendVideo under 50 MB, sendDocument above."""
     import os
+    import traceback as _tb
+
+    if not video_path or not os.path.exists(video_path):
+        print(f"[Notify] ERROR: {label} — video file does not exist: {video_path}")
+        return {"ok": False, "description": "file_not_found"}
+
     file_size_mb = os.path.getsize(video_path) / (1024 * 1024)
-    print(f"[Notify] Sending {label}: {file_size_mb:.1f}MB")
+    print(f"[Notify] Sending {label}: {file_size_mb:.1f}MB | path: {video_path}")
 
     if file_size_mb > 50:
         print(f"[Notify] File too large for sendVideo ({file_size_mb:.1f}MB) — sending as document")
@@ -918,26 +924,34 @@ def send_video_to_telegram(video_path: str, caption: str, label: str) -> dict:
         url       = f"{BASE_URL}/sendVideo"
         files_key = "video"
 
-    with open(video_path, "rb") as f:
-        response = requests.post(
-            url,
-            data={
-                "chat_id":           TELEGRAM_CHAT_ID,
-                "caption":           caption[:1024],
-                "supports_streaming": True,
-                "width":             1080,
-                "height":            1920,
-            },
-            files={files_key: f},
-            timeout=300,
-        )
+    try:
+        with open(video_path, "rb") as f:
+            response = requests.post(
+                url,
+                data={
+                    "chat_id":           TELEGRAM_CHAT_ID,
+                    "caption":           caption[:1024],
+                    "supports_streaming": True,
+                    "width":             1080,
+                    "height":            1920,
+                },
+                files={files_key: f},
+                timeout=300,
+            )
 
-    result = response.json()
-    if result.get("ok"):
-        print(f"[Notify] {label} sent successfully")
-    else:
-        print(f"[Notify] {label} failed: {result.get('description')}")
-    return result
+        print(f"[Notify] {label} HTTP status: {response.status_code}")
+        result = response.json()
+        if result.get("ok"):
+            print(f"[Notify] {label} sent successfully")
+        else:
+            print(f"[Notify] {label} FAILED — Telegram error_code: {result.get('error_code')} "
+                  f"| description: {result.get('description')} | full response: {result}")
+        return result
+
+    except Exception as e:
+        print(f"[Notify] ERROR sending {label}: {e}")
+        _tb.print_exc()
+        raise
 
 
 def send_topic_confirmation(

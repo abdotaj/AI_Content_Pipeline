@@ -111,7 +111,13 @@ def upload_to_youtube(video_path: str, script_data: dict, token_file: str = None
 
         if creds.expired and creds.refresh_token:
             print("[Publish] YouTube token expired — refreshing...")
-            creds.refresh(Request())
+            try:
+                creds.refresh(Request())
+            except Exception as _ref_err:
+                print(f"[Publish] ERROR: Token refresh failed: {_ref_err}")
+                _tb.print_exc()
+                return ""
+            print(f"[Publish] Token refresh complete — valid: {creds.valid}, expired: {creds.expired}")
             with open(token_file, "r+", encoding="utf-8") as f:
                 existing = _json.load(f)
                 updated  = _json.loads(creds.to_json())
@@ -119,7 +125,14 @@ def upload_to_youtube(video_path: str, script_data: dict, token_file: str = None
                     updated["channel_id"] = existing["channel_id"]
                 f.seek(0); f.truncate()
                 _json.dump(updated, f, indent=2)
-            print("[Publish] YouTube token refreshed.")
+            print("[Publish] YouTube token refreshed and saved.")
+        elif creds.expired and not creds.refresh_token:
+            print("[Publish] ERROR: Token is expired but has NO refresh_token — cannot refresh. Re-authorise the channel.")
+            return ""
+
+        if not creds.valid:
+            print(f"[Publish] ERROR: Credentials still invalid after refresh check — expired: {creds.expired}, scopes: {creds.scopes}")
+            return ""
 
         with open(token_file, encoding="utf-8") as f:
             _token_meta = _json.load(f)

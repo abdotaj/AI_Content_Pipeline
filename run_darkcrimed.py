@@ -15,6 +15,7 @@ import uuid
 import time
 import glob
 import datetime
+import traceback
 import requests
 from pathlib import Path
 
@@ -656,20 +657,37 @@ def run_pipeline():
 
     yt_en_url = None
     if en_long_path:
+        _en_exists = os.path.exists(en_long_path)
+        _en_mb = os.path.getsize(en_long_path) // 1024 // 1024 if _en_exists else 0
+        _log("Publish", f"EN video on disk: {_en_exists} | path: {en_long_path} | size: {_en_mb}MB",
+             "OK" if _en_exists else "ERROR")
         try:
             _log("Publish", "Uploading English long to YouTube...")
             yt_en_url = _with_retry(upload_to_youtube, en_long_path, en_long,
                                     token_file=YOUTUBE_TOKEN_FILE_EN,
                                     retries=3, delay=30, label="YT EN upload")
-            send_message(
-                f"✅ English Video Published on YouTube!\n\n"
-                f"🎬 {en_long.get('title', '')}\n"
-                f"🔗 {yt_en_url}\n\n"
-                f"Duration: {get_duration(en_long_path)}"
-            )
-            _log("Publish", f"English YouTube: {yt_en_url}", "OK")
+            # upload_to_youtube catches its own exceptions and returns "" on failure,
+            # so we must check the return value — a raised exception here is unlikely.
+            if yt_en_url:
+                send_message(
+                    f"✅ English Video Published on YouTube!\n\n"
+                    f"🎬 {en_long.get('title', '')}\n"
+                    f"🔗 {yt_en_url}\n\n"
+                    f"Duration: {get_duration(en_long_path)}"
+                )
+                _log("Publish", f"English YouTube: {yt_en_url}", "OK")
+            else:
+                _log("Publish",
+                     "upload_to_youtube returned empty string — scroll up for [Publish] ERROR + traceback",
+                     "ERROR")
+                _fail_msg = "❌ English YouTube upload failed (upload_to_youtube returned empty URL)"
+                if _artifact_url:
+                    _fail_msg += f"\n\nDownload video:\n{_artifact_url}"
+                send_message(_fail_msg)
+                stats["errors"] += 1
         except Exception as e:
-            _log("Publish", f"English YouTube upload failed: {e}", "ERROR")
+            _log("Publish", f"English YouTube upload raised exception: {e}", "ERROR")
+            _log("Publish", traceback.format_exc(), "ERROR")
             _fail_msg = f"❌ English YouTube upload failed: {e}"
             if _artifact_url:
                 _fail_msg += f"\n\nDownload video from GitHub artifact:\n{_artifact_url}"
@@ -678,20 +696,35 @@ def run_pipeline():
 
     yt_ar_url = None
     if ar_long_path:
+        _ar_exists = os.path.exists(ar_long_path)
+        _ar_mb = os.path.getsize(ar_long_path) // 1024 // 1024 if _ar_exists else 0
+        _log("Publish", f"AR video on disk: {_ar_exists} | path: {ar_long_path} | size: {_ar_mb}MB",
+             "OK" if _ar_exists else "ERROR")
         try:
             _log("Publish", "Uploading Arabic long to YouTube...")
             yt_ar_url = _with_retry(upload_to_youtube, ar_long_path, ar_long,
                                     token_file=YOUTUBE_TOKEN_FILE_AR,
                                     retries=3, delay=30, label="YT AR upload")
-            send_message(
-                f"✅ تم نشر الفيديو العربي على يوتيوب!\n\n"
-                f"🎬 {ar_long.get('title', '')}\n"
-                f"🔗 {yt_ar_url}\n\n"
-                f"المدة: {get_duration(ar_long_path)}"
-            )
-            _log("Publish", f"Arabic YouTube: {yt_ar_url}", "OK")
+            if yt_ar_url:
+                send_message(
+                    f"✅ تم نشر الفيديو العربي على يوتيوب!\n\n"
+                    f"🎬 {ar_long.get('title', '')}\n"
+                    f"🔗 {yt_ar_url}\n\n"
+                    f"المدة: {get_duration(ar_long_path)}"
+                )
+                _log("Publish", f"Arabic YouTube: {yt_ar_url}", "OK")
+            else:
+                _log("Publish",
+                     "upload_to_youtube returned empty string — scroll up for [Publish] ERROR + traceback",
+                     "ERROR")
+                _fail_msg = "❌ Arabic YouTube upload failed (upload_to_youtube returned empty URL)"
+                if _artifact_url:
+                    _fail_msg += f"\n\nDownload video:\n{_artifact_url}"
+                send_message(_fail_msg)
+                stats["errors"] += 1
         except Exception as e:
-            _log("Publish", f"Arabic YouTube upload failed: {e}", "ERROR")
+            _log("Publish", f"Arabic YouTube upload raised exception: {e}", "ERROR")
+            _log("Publish", traceback.format_exc(), "ERROR")
             _fail_msg = f"❌ Arabic YouTube upload failed: {e}"
             if _artifact_url:
                 _fail_msg += f"\n\nDownload video from GitHub artifact:\n{_artifact_url}"
@@ -701,36 +734,54 @@ def run_pipeline():
     # Send best English short to Telegram (1 video, reliable)
     if en_chapter_shorts:
         short = en_chapter_shorts[0]
-        try:
-            caption = (
-                f"MANUAL POST NEEDED\n\n"
-                f"{short['title']}\n"
-                f"Post to: {short['label']}\n\n"
-                f"Topic: {en_long.get('title', '')}\n"
-                f"{en_long.get('hashtags', '')}"
-            )
-            _with_retry(send_video_to_telegram, short["path"], caption,
-                        "EN Best Short",
-                        retries=3, delay=10, label="TG EN Best Short")
-        except Exception as e:
-            _log("Telegram", f"EN best short send failed: {e}", "WARN")
+        _s_path = short.get("path", "")
+        _s_exists = bool(_s_path) and os.path.exists(_s_path)
+        _s_mb = os.path.getsize(_s_path) / 1024 / 1024 if _s_exists else 0
+        _log("Telegram", f"EN short: path={_s_path} | exists={_s_exists} | size={_s_mb:.1f}MB")
+        if not _s_exists:
+            _log("Telegram", f"EN short video file missing on disk — cannot send", "ERROR")
+        else:
+            try:
+                caption = (
+                    f"MANUAL POST NEEDED\n\n"
+                    f"{short['title']}\n"
+                    f"Post to: {short['label']}\n\n"
+                    f"Topic: {en_long.get('title', '')}\n"
+                    f"{en_long.get('hashtags', '')}"
+                )
+                _with_retry(send_video_to_telegram, _s_path, caption,
+                            "EN Best Short",
+                            retries=3, delay=10, label="TG EN Best Short")
+                _log("Telegram", "EN best short sent to Telegram", "OK")
+            except Exception as e:
+                _log("Telegram", f"EN best short send failed: {e}", "WARN")
+                _log("Telegram", traceback.format_exc(), "WARN")
 
     # Send best Arabic short to Telegram (1 video, reliable)
     if ar_chapter_shorts:
         short = ar_chapter_shorts[0]
-        try:
-            caption = (
-                f"MANUAL POST NEEDED\n\n"
-                f"{short['title']}\n"
-                f"Post to: {short['label']}\n\n"
-                f"Topic: {ar_long.get('title', '')}\n"
-                f"{ar_long.get('hashtags', '')}"
-            )
-            _with_retry(send_video_to_telegram, short["path"], caption,
-                        "AR Best Short",
-                        retries=3, delay=10, label="TG AR Best Short")
-        except Exception as e:
-            _log("Telegram", f"AR best short send failed: {e}", "WARN")
+        _s_path = short.get("path", "")
+        _s_exists = bool(_s_path) and os.path.exists(_s_path)
+        _s_mb = os.path.getsize(_s_path) / 1024 / 1024 if _s_exists else 0
+        _log("Telegram", f"AR short: path={_s_path} | exists={_s_exists} | size={_s_mb:.1f}MB")
+        if not _s_exists:
+            _log("Telegram", f"AR short video file missing on disk — cannot send", "ERROR")
+        else:
+            try:
+                caption = (
+                    f"MANUAL POST NEEDED\n\n"
+                    f"{short['title']}\n"
+                    f"Post to: {short['label']}\n\n"
+                    f"Topic: {ar_long.get('title', '')}\n"
+                    f"{ar_long.get('hashtags', '')}"
+                )
+                _with_retry(send_video_to_telegram, _s_path, caption,
+                            "AR Best Short",
+                            retries=3, delay=10, label="TG AR Best Short")
+                _log("Telegram", "AR best short sent to Telegram", "OK")
+            except Exception as e:
+                _log("Telegram", f"AR best short send failed: {e}", "WARN")
+                _log("Telegram", traceback.format_exc(), "WARN")
 
     # ── Save manifest (2 long videos + shorts summary) ────────
     _save_manifest(
