@@ -2266,7 +2266,7 @@ def _apply_intro_outro_overlay(
     w, h = "iw", "ih"
 
     # Normalize resolution + pixel format to prevent "Error reinitializing filters"
-    norm_w, norm_h = ("1080:1920" if is_short else "1920:1080")
+    norm_w, norm_h = ("1080", "1920") if is_short else ("1920", "1080")
     filters = [f"scale={norm_w}:{norm_h},format=yuv420p"]
 
     if is_short:
