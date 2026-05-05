@@ -1,0 +1,153 @@
+================================================================
+  DARK CRIME DECODED — COMPLETE TOPIC REGISTRY
+  topics.py  |  Generated 2026-05-05
+  Total: 26 USA | 13 WORLD | 14 ARABIC  =  53 topics
+================================================================
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  🇺🇸 USA_TOPICS  (26 entries)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+── Serial Killers ──────────────────────────────────────────
+  ted bundy          → Extremely Wicked Shockingly Evil and Vile
+  jeffrey dahmer     → Monster (Netflix)
+  richard ramirez    → Night Stalker (Netflix)
+  john wayne gacy    → Gacy Tapes
+  charles manson     → Mindhunter                            [cult leader]
+  ed kemper          → Mindhunter
+  zodiac killer      → Zodiac                                [unsolved]
+  btk killer         → BTK Documentary (A&E)                 ★ NEW
+
+── Drug Cartels ────────────────────────────────────────────
+  pablo escobar      → Narcos
+  el chapo           → Narcos Mexico
+  griselda blanco    → Griselda (Netflix)
+
+── Mafia / Organized Crime ─────────────────────────────────
+  al capone          → Boardwalk Empire
+  john gotti         → Gotti
+  whitey bulger      → Black Mass
+  henry hill         → Goodfellas                            ★ NEW
+  frank lucas        → American Gangster                     ★ NEW
+
+── Fraud / White Collar ────────────────────────────────────
+  jordan belfort     → Wolf of Wall Street
+  anna delvey        → Inventing Anna
+  elizabeth holmes   → The Dropout
+  bernie madoff      → Madoff (Netflix)                      ★ NEW
+  tinder swindler    → The Tinder Swindler
+
+── True Crime / Scandal ────────────────────────────────────
+  gypsy rose blanchard → The Act
+  jeffrey epstein    → Filthy Rich (Netflix)                 [scandal]
+  bonnie and clyde   → Bonnie and Clyde (History Channel)   ★ NEW  [gangster]
+  d.b. cooper        → D.B. Cooper Where Are You? (Netflix)  ★ NEW  [unsolved]
+
+── Domestic Terrorism ──────────────────────────────────────
+  ted kaczynski      → Manhunt Unabomber (Netflix)           ★ NEW
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  🌍 WORLD_TOPICS  (13 entries)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+── India ────────────────────────────────────────────────────
+  nirav modi         → Bad Boy Billionaires                  [fraud]
+  delhi crime case   → Delhi Crime                           [crime]
+  abu salem          → Mumbai Mafia                          [mafia]
+  dawood ibrahim     → Sacred Games inspiration              [crime]
+
+── Japan ────────────────────────────────────────────────────
+  tokyo vice yakuza  → Tokyo Vice                            [mafia]
+
+── Italy ────────────────────────────────────────────────────
+  gomorrah mafia     → Gomorrah                              [mafia]
+  salvatore riina    → The Traitor (Il Traditore)            ★ NEW  [mafia]
+
+── Spain ────────────────────────────────────────────────────
+  money heist real inspiration → Money Heist                 [heist]
+
+── UK ───────────────────────────────────────────────────────
+  kray twins         → Legend                                ★ NEW  [gangster]
+
+── Asia ─────────────────────────────────────────────────────
+  charles sobhraj    → The Serpent (Netflix/BBC)             ★ NEW  [serial killer]
+
+── Mexico ───────────────────────────────────────────────────
+  amado carrillo fuentes → Narcos Mexico                     ★ NEW  [cartel]
+
+── Russia ───────────────────────────────────────────────────
+  semion mogilevich  → McMafia (BBC)                         ★ NEW  [organized crime]
+
+── North Korea ──────────────────────────────────────────────
+  kim jong nam assassination → Kim Jong Nam documentary      ★ NEW  [political crime]
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  🌙 ARABIC_TOPICS  (14 entries)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+── Egypt 🇪🇬 ──────────────────────────────────────────────
+  raya and sakina      ريا وسكينة           → Raya and Sakina series     [serial killers]
+  gezira serial killer سفاح الجيزة         → Gezira Killer Series       [serial killer]
+  ezzat hanafi         عزت حنفي             → El Gezira Movie            [crime]
+  rafat el hagan       رأفت الهجان          → Rafat El Hagan (series)    ★ NEW [espionage]
+  king farouk          الملك فاروق          → King Farouk (series)       ★ NEW [political crime]
+
+── Saudi Arabia 🇸🇦 ────────────────────────────────────
+  dammam kidnapper     خاطف الدمام          → Saudi crime documentaries  [crime]
+  khobar crime case    جريمة الخبر          → Saudi investigation shows  [crime]
+  juhayman al otaybi   جهيمان العتيبي       → Juhayman (Saudi series)    ★ NEW [siege crime]
+
+── UAE 🇦🇪 ─────────────────────────────────────────────
+  reem island murder   جريمة جزيرة الريم   → UAE crime documentary      [crime]
+
+── Kuwait 🇰🇼 ──────────────────────────────────────────
+  abdali cell kuwait   خلية العبدلي         → documentaries              [crime]
+
+── Morocco 🇲🇦 ─────────────────────────────────────────
+  taroudant serial killer سفاح تارودانت    → news coverage              [serial killer]
+
+── Iraq 🇮🇶 ────────────────────────────────────────────
+  saddam hussein       صدام حسين            → House of Saddam (HBO)      ★ NEW [dictatorship crime]
+  ali hassan al majid  علي حسن المجيد       → Chemical Ali documentary   ★ NEW [war crime]
+
+── Palestine / Israel 🇵🇸 ──────────────────────────────
+  fauda real story     فودا القصة الحقيقية → Fauda (Netflix)            ★ NEW [political crime]
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  🚫 SKIPPED (DUPLICATES / NEAR-DUPLICATES)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  "joaquin guzman"   → near-duplicate of "el chapo"
+  "escobar"          → near-duplicate of "pablo escobar"
+  "la casa de papel" → near-duplicate of "money heist real inspiration"
+  "yakuza"           → near-duplicate of "tokyo vice yakuza"
+  "camorra"          → near-duplicate of "gomorrah mafia"
+  "dennis rader"     → added as "btk killer" (same person, canonical key used)
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  📋 QUICK REFERENCE — PIPELINE USAGE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  from topics import generate_topic, build_title
+
+  # Pick a random topic
+  topic = generate_topic("arabic")   # "usa" | "world" | "arabic" | None (all)
+
+  # Build titles
+  en_title = build_title(topic)          # English
+  ar_title = build_title(topic, "ar")    # Arabic
+
+  # Output example
+  {
+    "keyword": "juhayman al otaybi",
+    "arabic":  "جهيمان العتيبي",
+    "show":    "Juhayman (Saudi series)",
+    "type":    "siege crime",
+    "region":  "saudi"
+  }
+
+================================================================
