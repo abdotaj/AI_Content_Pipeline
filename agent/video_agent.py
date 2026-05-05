@@ -4897,6 +4897,25 @@ def extract_first_frame(video_path: str, output_path: str) -> str:
     return ""
 
 
+def _smooth_transitions(clips: list, fade_dur: float = 0.15) -> list:
+    """Apply crossfadein to every clip except the first.
+
+    Skips a clip if it is too short for the transition (< 2× fade_dur) to prevent
+    MoviePy errors; those clips are appended as-is so the pipeline never crashes.
+    Caller must use method='compose' in concatenate_videoclips.
+    """
+    result = []
+    for i, clip in enumerate(clips):
+        if i == 0 or clip.duration < 2 * fade_dur:
+            result.append(clip)
+        else:
+            try:
+                result.append(clip.crossfadein(fade_dur))
+            except Exception:
+                result.append(clip)   # fallback: no transition
+    return result
+
+
 # â"€â"€ Hook-aware assembly (long videos only) â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 def assemble_video_with_hook(
@@ -5077,7 +5096,7 @@ def assemble_video_with_hook(
 
     try:
         all_clips = hook_clips + final_main
-        final = concatenate_videoclips(all_clips, method="chain")
+        final = concatenate_videoclips(_smooth_transitions(all_clips), method="compose")
         if final.duration > total_duration:
             final = final.subclip(0, total_duration)
         final = final.set_audio(audio)
@@ -5380,7 +5399,7 @@ def assemble_short_video(audio_path: str, image_paths: list[str], output_path: s
     print(f"[Video] Short: {len(final_clips)} clips covering {accumulated:.1f}s")
 
     try:
-        final = concatenate_videoclips(final_clips, method="chain")
+        final = concatenate_videoclips(_smooth_transitions(final_clips), method="compose")
         # Trim video to EXACT audio duration — prevents silence at end
         exact_duration = audio.duration
         if final.duration > exact_duration:
