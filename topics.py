@@ -2,6 +2,7 @@
 #  topics.py  —  Structured topic registry for Dark Crime Decoded
 #  Keys: lowercase, stripped, no duplicates
 #  Usage: from topics import USA_TOPICS, WORLD_TOPICS, ARABIC_TOPICS, generate_topic
+#         from topics import ALIASES, normalize_topic
 # ============================================================
 import random
 
@@ -317,6 +318,59 @@ ARABIC_TOPICS = {
 }
 
 
+# ── Alias map ────────────────────────────────────────────────
+# Maps common alternate inputs to canonical topic keys.
+# Values MUST match an existing key in USA_TOPICS, WORLD_TOPICS, or ARABIC_TOPICS.
+
+ALIASES: dict[str, str] = {
+    # USA
+    "escobar":              "pablo escobar",
+    "joaquin guzman":       "el chapo",
+    "el chapo guzman":      "el chapo",
+    "dennis rader":         "btk killer",
+    "btk":                  "btk killer",
+    "henry hill goodfellas":"henry hill",
+    "jordan belfort":       "jordan belfort",   # already canonical — kept for clarity
+    "unabomber":            "ted kaczynski",
+    "night stalker":        "richard ramirez",
+    "monster dahmer":       "jeffrey dahmer",
+    "godmother of cocaine":  "griselda blanco",
+    "nucky johnson":        "al capone",        # closest; boardwalk empire real person
+
+    # World
+    "la casa de papel":     "money heist real inspiration",
+    "yakuza":               "tokyo vice yakuza",
+    "camorra":              "gomorrah mafia",
+    "naples mafia":         "gomorrah mafia",
+    "sicilian mafia":       "salvatore riina",
+    "the serpent":          "charles sobhraj",
+    "ronnie kray":          "kray twins",
+    "reggie kray":          "kray twins",
+    "lord of the skies":    "amado carrillo fuentes",
+    "russian mob":          "semion mogilevich",
+    "mcmafia":              "semion mogilevich",
+    "kim jong nam":         "kim jong nam assassination",
+
+    # Arabic
+    "juhayman":             "juhayman al otaybi",
+    "mecca siege":          "juhayman al otaybi",
+    "rafat":                "rafat el hagan",
+    "al hagan":             "rafat el hagan",
+    "farouk":               "king farouk",
+    "saddam":               "saddam hussein",
+    "chemical ali":         "ali hassan al majid",
+    "fauda":                "fauda real story",
+    "raya sakina":          "raya and sakina",
+    "gezira killer":        "gezira serial killer",
+}
+
+
+def normalize_topic(topic: str) -> str:
+    """Resolve an alias to its canonical topic key. Returns unchanged if not an alias."""
+    key = topic.lower().strip()
+    return ALIASES.get(key, key)
+
+
 # ── Generator ────────────────────────────────────────────────
 
 def generate_topic(region: str | None = None) -> dict:
@@ -345,3 +399,26 @@ def build_title(topic: dict, lang: str = "en") -> str:
     if lang == "ar" and topic.get("arabic"):
         return f"القصة الحقيقية لـ {topic['arabic']} مقارنة بـ {topic['show']}"
     return f"The REAL story of {topic['keyword']} vs {topic['show']}"
+
+
+def lookup_topic(user_input: str) -> dict | None:
+    """
+    Resolve a user-supplied string (alias or canonical key) to a topic dict.
+    Returns None if no match found in any pool.
+
+    Usage:
+        topic = lookup_topic("escobar")      # → pablo escobar entry
+        topic = lookup_topic("juhayman")     # → juhayman al otaybi entry
+    """
+    canonical = normalize_topic(user_input)
+    combined = {**USA_TOPICS, **WORLD_TOPICS, **ARABIC_TOPICS}
+    data = combined.get(canonical)
+    if data is None:
+        return None
+    return {
+        "keyword": canonical,
+        "arabic":  data.get("arabic", ""),
+        "show":    data.get("show", ""),
+        "type":    data.get("type", ""),
+        "region":  data.get("region", ""),
+    }
