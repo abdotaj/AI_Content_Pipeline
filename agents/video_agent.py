@@ -2027,45 +2027,71 @@ def _load_user_images_from_folders(topic: str = "") -> list[dict]:
     return found
 
 
+_CONTENT_SKIP = {'_shared', 'images', 'pending', 'processed', 'shopmart', 'dark_crime'}
+
+def _normalize_for_match(s: str) -> str:
+    """Lowercase, strip non-ASCII (Arabic etc.), keep only a-z0-9 — for fuzzy folder matching."""
+    import re
+    s = s.lower()
+    s = re.sub(r'[^\x00-\x7F]', '', s)  # drop non-ASCII (Arabic, accented chars)
+    s = re.sub(r'[^a-z0-9]', '', s)      # drop punctuation, spaces, underscores, hyphens
+    return s
+
+
 def find_content_folder(topic: str) -> str | None:
-    """Return path to content/<folder> matching this topic, or None."""
-    topic_lower = topic.lower()
+    """Return path to content/<folder> matching this topic dynamically, or None.
 
-    # Slug-based check first — catches any topic whose folder was created by ensure_topic_content
-    from utils.content_manager import topic_to_slug
-    slug_path = f"content/{topic_to_slug(topic)}"
-    if os.path.exists(slug_path):
-        return slug_path
-
-    folder_map = {
-        'mindhunter':        'mindhunter',
-        'al capone':         'al_capone',
-        'capone':            'al_capone',
-        'pablo escobar':     'pablo_escobar',
-        'escobar':           'pablo_escobar',
+    Scans existing folders — never creates new ones.
+    Matching: normalize both sides (lowercase, drop non-ASCII, drop separators),
+    then try exact → containment. Prefers longest (most specific) containment match.
+    Alias map handles topics with no word overlap with their folder (e.g. narcos → pablo_escobar).
+    """
+    # Alias map for topics that share no words with their folder name
+    _ALIAS = {
         'narcos':            'pablo_escobar',
-        'frank lucas':       'frank_lucas',
         'american gangster': 'frank_lucas',
-        'charles manson':    'charles_manson',
-        'manson':            'charles_manson',
-        'ed kemper':         'ed_kemper',
-        'kemper':            'ed_kemper',
-        'dahmer':            'dahmer',
-        'jeffrey dahmer':    'dahmer',
-        'ted bundy':         'ted_bundy',
-        'bundy':             'ted_bundy',
-        'griselda':          'griselda',
-        'scarface':          'scarface',
-        'godfather':         'godfather',
-        'goodfellas':        'goodfellas',
+        'monster':           'dahmer',
+        'boardwalk empire':  'al_capone',
     }
-    for keyword, folder in folder_map.items():
-        if keyword in topic_lower:
-            return f'content/{folder}'
-    first_word = topic_lower.split()[0] if topic_lower.split() else ''
-    if first_word and os.path.exists(f'content/{first_word}'):
-        return f'content/{first_word}'
-    return None
+    topic_lower = topic.lower().strip()
+    for alias, folder_name in _ALIAS.items():
+        if alias in topic_lower:
+            p = f'content/{folder_name}'
+            if os.path.exists(p):
+                return p
+
+    norm_topic = _normalize_for_match(topic)
+    if not norm_topic:
+        return None
+
+    if not os.path.isdir('content'):
+        return None
+
+    best_path  = None
+    best_score = 0
+
+    for entry in os.scandir('content'):
+        if not entry.is_dir() or entry.name in _CONTENT_SKIP:
+            continue
+        norm_folder = _normalize_for_match(entry.name)
+        if not norm_folder:
+            continue
+
+        if norm_topic == norm_folder:
+            return entry.path                          # exact — return immediately
+
+        if norm_folder in norm_topic:                  # e.g. "dahmer" in "jeffreydahmer"
+            score = len(norm_folder)
+        elif norm_topic in norm_folder:                # e.g. "griselda" in "griseblanco" reverse
+            score = len(norm_topic)
+        else:
+            continue
+
+        if score > best_score:
+            best_score = score
+            best_path  = entry.path
+
+    return best_path
 
 
 def load_all_content(
@@ -2078,13 +2104,6 @@ def load_all_content(
     video_dicts: [{"path", "duration", "type": "pure"|"broll", "tags", "caption"}]
     All content-library videos are typed "pure" by default.
     """
-    # Guarantee content/{slug}/images/ and content/{slug}/videos/ exist before scanning.
-    # find_content_folder() below will then discover the folder via slug-based check.
-    try:
-        from utils.content_manager import ensure_topic_content
-        ensure_topic_content(topic)
-    except Exception as _e:
-        print(f"[Content] Folder init skipped (non-fatal): {_e}")
     _img_exts = {'.jpg', '.jpeg', '.png', '.webp', '.jfif'}
     _vid_exts = {'.mp4', '.mov', '.avi'}
 
@@ -5805,20 +5824,20 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
     language = script_data.get("language", "english")
     print(f"[Video] Starting: {title} ({language})")
 
-    # ── Content folder setup ────────────────────────────────────────────────────
+    # ── Content folder lookup (read-only — no folder creation) ─────────────────
     try:
-        from utils.content_manager import ensure_topic_content
-        _topic_key   = script_data.get("topic", niche or "default")
-        _content_info = ensure_topic_content(_topic_key)
-        print(f"[Content] {_content_info['topic']} → "
-              f"{_content_info['images_count']} images, "
-              f"{_content_info['videos_count']} videos")
-        if _content_info["videos_count"] > 0:
-            print("[Content] Using user-provided videos")
+        _topic_key     = script_data.get("topic", niche or "default")
+        _content_folder = find_content_folder(_topic_key)
+        if _content_folder:
+            _img_dir = os.path.join(_content_folder, "images")
+            _vid_dir = os.path.join(_content_folder, "videos")
+            _imgs = len([f for f in os.listdir(_img_dir) if f.lower().endswith((".jpg", ".png"))]) if os.path.isdir(_img_dir) else 0
+            _vids = len([f for f in os.listdir(_vid_dir) if f.lower().endswith(".mp4")]) if os.path.isdir(_vid_dir) else 0
+            print(f"[Content] Matched folder: {_content_folder} → {_imgs} images, {_vids} videos")
         else:
-            print("[Content] No user videos → fallback to AI or stock")
+            print(f"[Content] No content folder found for: {_topic_key}")
     except Exception as _ce:
-        print(f"[Content] Folder setup skipped (non-fatal): {_ce}")
+        print(f"[Content] Folder check skipped (non-fatal): {_ce}")
 
     # â"€â"€ Voiceover â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
     is_short = "short" in video_id
