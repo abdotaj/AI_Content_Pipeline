@@ -3230,6 +3230,112 @@ def translate_long_script_arabic(english_text: str, topic: str = "") -> str:
     return result
 
 
+def rewrite_arabic_expanded(text: str, topic: str = "") -> str:
+    """
+    Rewrite English script as expanded Arabic storytelling (NOT literal translation).
+    Adds narrative depth, dramatic pauses, and cinematic flow.
+    Enforces minimum 0.9× English word count — calls _expand_arabic_script_to_min if needed.
+    Falls back to try_translate_arabic if OpenAI is unavailable.
+    """
+    import os as _os
+    import requests as _req
+
+    en_words = len(text.split())
+    min_ar_words = max(int(en_words * 1.0), 100)
+
+    def _build_rewrite_prompt(strong: bool = False) -> str:
+        extra = (
+            "\n\nتحذير: المحاولة السابقة كانت قصيرة جداً. "
+            "يجب توسيع كل فقرة وإضافة مزيد من التفاصيل والعمق السردي."
+        ) if strong else ""
+        return f"""أعد كتابة النص التالي بالعربية بأسلوب قصصي سينمائي.
+
+هذا ليس ترجمةً حرفية — بل إعادة كتابة وتوسيع.
+
+القواعد الحاسمة:
+1. لا تختصر أي شيء — وسّع كل فقرة بتفاصيل وعمق سردي
+2. أضف توقفات طبيعية باستخدام "..." في المواضع المناسبة
+3. استخدم أسلوباً دراماتيكياً ومشوّقاً وسينمائياً
+4. احتفظ بجميع الأحداث والتواريخ والأسماء والأرقام
+5. جمل قصيرة وواضحة مناسبة للإلقاء الصوتي
+6. النص العربي يجب أن يكون {min_ar_words} كلمة على الأقل
+7. RSF = قوات الدعم السريع (لا تستخدم مراسلون بلا حدود)
+8. احتفظ بـ "Dark Crime Decoded" بالإنجليزية
+9. الذكر الأول لـ RSF: "قوات الدعم السريع (RSF)"
+10. احتفظ بأسماء المسلسلات والأفلام بالإنجليزية
+11. هذا توثيق جرائم حقيقي — الأسلوب جاد ومحترف{extra}
+
+عدد كلمات الإنجليزية: {en_words}
+يجب أن يكون نصك العربي {min_ar_words} كلمة على الأقل.
+
+النص الإنجليزي:
+{text}
+
+أعد النص العربي الكامل فقط. بدون شرح أو ملاحظات."""
+
+    api_key = _os.getenv("OPENAI_API_KEY", "").strip()
+    result = None
+
+    if api_key:
+        for attempt, strong in enumerate([False, True]):
+            try:
+                r = _req.post(
+                    "https://api.openai.com/v1/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": "gpt-4o-mini",
+                        "messages": [
+                            {
+                                "role": "system",
+                                "content": (
+                                    "أنت كاتب قصصي عربي محترف متخصص في الجريمة الحقيقية. "
+                                    "تُعيد كتابة النصوص بأسلوب سردي سينمائي عربي أصيل. "
+                                    "لا تترجم حرفياً — بل أعد الصياغة بعمق وتشويق. "
+                                    "جملك قصيرة وواضحة مناسبة للإلقاء الصوتي."
+                                ),
+                            },
+                            {"role": "user", "content": _build_rewrite_prompt(strong=strong)},
+                        ],
+                        "max_tokens": 6000,
+                        "temperature": 0.55,
+                    },
+                    timeout=90,
+                )
+                if r.status_code == 200:
+                    candidate = _fix_arabic(r.json()["choices"][0]["message"]["content"].strip())
+                    ar_words = len(candidate.split())
+                    ratio = ar_words / max(en_words, 1)
+                    print(f"[Script] Rewrite attempt {attempt + 1}: EN={en_words}w | AR={ar_words}w | ratio={ratio:.2f}")
+                    if en_words < 80 or ratio >= 0.9:
+                        result = candidate
+                        break
+                    if attempt == 0:
+                        print("[Script] Arabic rewrite too short — retrying with stronger instruction")
+                        continue
+                    result = candidate
+                    break
+            except Exception as e:
+                print(f"[Script] OpenAI rewrite attempt {attempt + 1} failed: {e}")
+                break
+
+    if not result:
+        print("[Script] OpenAI rewrite unavailable — falling back to translation chain")
+        result = try_translate_arabic(text, topic=topic)
+
+    if result:
+        result = _fix_arabic(result)
+        ar_words = len(result.split())
+        ratio = ar_words / max(en_words, 1)
+        if en_words >= 80 and ratio < 0.9:
+            print(f"[Script] Arabic ratio {ratio:.2f} < 0.9 — expanding to match English length")
+            result = _expand_arabic_script_to_min(result, target_min=min_ar_words)
+
+    return result or text
+
+
 def translate_to_arabic(text: str) -> str:
     """Public entry point — chunked for long scripts, otherwise single call with fallback chain."""
     if clean_word_count(text) > 1000:
@@ -3279,7 +3385,8 @@ def _to_arabic_section_name(name: str) -> str:
 
 def _translate_script_preserve_sections(english_script_text: str) -> str:
     """
-    Translate sectioned script while preserving normalized markers.
+    Rewrite sectioned script into Arabic while preserving normalized markers.
+    Uses rewrite_arabic_expanded (not literal translation) for each section body.
     Output marker format is always: [SECTION: <Arabic Label>]
     """
     sections = _split_english_sectioned_script(english_script_text)
@@ -3288,7 +3395,7 @@ def _translate_script_preserve_sections(english_script_text: str) -> str:
     translated_parts: list[str] = []
     for name, content in sections:
         ar_name = _to_arabic_section_name(name)
-        ar_body = translate_to_arabic(content)
+        ar_body = rewrite_arabic_expanded(content)
         translated_parts.append(f"[SECTION: {ar_name}]\n{ar_body.strip()}")
     return "\n\n".join(translated_parts).strip()
 
