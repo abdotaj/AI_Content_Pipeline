@@ -4904,6 +4904,7 @@ def assemble_video_with_hook(
     image_paths: list[str],
     output_path: str,
     video_id: str,
+    clip_durations: dict | None = None,
 ) -> str:
     """Assemble long video with fast-cut hook (0-90 s) and slow main section.
 
@@ -4990,16 +4991,27 @@ def assemble_video_with_hook(
     def _media_clip(src_path: str, dur: float, zoom_in: bool = True, first_clip: bool = False):
         fi = 0.0 if first_clip else 0.2
         if _is_video_file(src_path):
-            v = VideoFileClip(src_path)
+            try:
+                v = VideoFileClip(src_path)
+            except Exception as _vfe:
+                print(f"[Video] VideoFileClip failed ({os.path.basename(src_path)}): {_vfe} — using image fallback")
+                frame = _load_frame(src_path)
+                return _zoom_clip(frame, dur, 1.00, 1.06 if zoom_in else 1.00)
             if v.duration <= 0:
                 v.close()
                 frame = _load_frame(src_path)
                 return _zoom_clip(frame, dur, 1.00, 1.06 if zoom_in else 1.00)
-            max_start = max(0.0, v.duration - dur)
-            start = random.uniform(0, max_start) if max_start > 0 else 0.0
-            c = v.subclip(start, min(v.duration, start + dur))
+            # Timeline clip: start=0, end=min(assigned_duration, actual_duration)
+            tl_dur = (clip_durations or {}).get(src_path)
+            if tl_dur is not None:
+                end = min(tl_dur, v.duration)
+                c   = v.subclip(0, end)
+            else:
+                max_start = max(0.0, v.duration - dur)
+                start     = random.uniform(0, max_start) if max_start > 0 else 0.0
+                c         = v.subclip(start, min(v.duration, start + dur))
             c = _fit_vertical(c)
-            if c.duration < dur:
+            if tl_dur is None and c.duration < dur:
                 c = c.set_duration(dur)
             return c
         frame = _load_frame(src_path)
@@ -5212,7 +5224,7 @@ def _rank_visual_pool(paths: list[str], query: str = "", topic: str = "") -> lis
 
 # â"€â"€ Short video assembler â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
-def assemble_short_video(audio_path: str, image_paths: list[str], output_path: str) -> str:
+def assemble_short_video(audio_path: str, image_paths: list[str], output_path: str, clip_durations: dict | None = None) -> str:
     """Assemble short video: real footage first, image zoom-pairs as fill, loop to 60-90 s."""
     import traceback
     import numpy as np
@@ -5290,15 +5302,24 @@ def assemble_short_video(audio_path: str, image_paths: list[str], output_path: s
 
     def _media_clip(src_path: str, dur: float, zoom_in: bool = True):
         if _is_video_file(src_path):
-            v = VideoFileClip(src_path)
+            try:
+                v = VideoFileClip(src_path)
+            except Exception as _vfe:
+                print(f"[Video] VideoFileClip failed ({os.path.basename(src_path)}): {_vfe} — using image fallback")
+                return _zoom_clip(_load_frame(src_path), 1.00, 1.08 if zoom_in else 1.00, dur)
             if v.duration <= 0:
                 v.close()
                 return _zoom_clip(_load_frame(src_path), 1.00, 1.08 if zoom_in else 1.00, dur)
-            # Use natural duration — never pad past end with freeze-frame
-            actual_dur = min(dur, v.duration)
-            max_start  = max(0.0, v.duration - actual_dur)
-            start      = random.uniform(0, max_start) if max_start > 0 else 0.0
-            c = v.subclip(start, min(v.duration, start + actual_dur))
+            # Timeline clip: start=0, end=min(assigned_duration, actual_duration)
+            tl_dur = (clip_durations or {}).get(src_path)
+            if tl_dur is not None:
+                end = min(tl_dur, v.duration)
+                c   = v.subclip(0, end)
+            else:
+                actual_dur = min(dur, v.duration)
+                max_start  = max(0.0, v.duration - actual_dur)
+                start      = random.uniform(0, max_start) if max_start > 0 else 0.0
+                c          = v.subclip(start, min(v.duration, start + actual_dur))
             c = _fit_vertical(c)
             return c
         frame = _load_frame(src_path)
@@ -6449,11 +6470,23 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
     # ── Assembly ──────────────────────────────────────────────────────────────
     output_path = os.path.join(FINAL_DIR, f"{video_id}.mp4")
 
+    # Build clip→duration map from timeline for renderer trim control
+    _clip_durations: dict[str, float] = {}
+    for _seg in (_clip_timeline or []):
+        _cd = _seg.get("clip_duration")
+        if _cd:
+            for _cp in (_seg.get("clips") or []):
+                if _cp:
+                    _clip_durations[_cp] = float(_cd)
+    if _clip_durations:
+        print(f"[Clip] Passing {len(_clip_durations)} clip duration(s) to renderer")
+
     if is_short:
         video_path = assemble_short_video(
             audio_path=audio_path,
             image_paths=all_image_paths,
             output_path=output_path,
+            clip_durations=_clip_durations or None,
         )
     else:
         video_path = assemble_video_with_hook(
@@ -6461,6 +6494,7 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
             image_paths=all_image_paths,
             output_path=output_path,
             video_id=video_id,
+            clip_durations=_clip_durations or None,
         )
 
     if video_path:
