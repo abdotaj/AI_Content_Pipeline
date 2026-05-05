@@ -26,6 +26,6 @@ speech.js
 assets/music/*.mp3
 # Quality-processed video outputs — generated at runtime
 output_videos/
-*_processed.mp4
-*_short.mp4
+content/*/videos/*_processed.mp4
+content/*/videos/*_short.mp4
 temp_clips/
