@@ -24,3 +24,5 @@ speech.js
 *.js
 # Binary audio assets — downloaded at runtime, not committed
 assets/music/*.mp3
+# Quality-processed video outputs — generated at runtime
+output_videos/

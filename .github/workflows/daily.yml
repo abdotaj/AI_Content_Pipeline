@@ -132,6 +132,7 @@ jobs:
           path: |
             output/dark_crime/final/*.mp4
             output/shorts/*.mp4
+            output_videos/
             output/dark_crime/manifest_*.json
           retention-days: 5
           if-no-files-found: warn
@@ -141,7 +142,9 @@ jobs:
         uses: actions/upload-artifact@v4.6.2
         with:
           name: dark-crime-shorts-${{ github.run_id }}
-          path: output/shorts/*.mp4
+          path: |
+            output/shorts/*.mp4
+            output_videos/*_short.mp4
           retention-days: 5
           if-no-files-found: warn
 
