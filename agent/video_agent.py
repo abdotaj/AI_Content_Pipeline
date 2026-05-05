@@ -5771,6 +5771,21 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
     language = script_data.get("language", "english")
     print(f"[Video] Starting: {title} ({language})")
 
+    # ── Content folder setup ────────────────────────────────────────────────────
+    try:
+        from utils.content_manager import ensure_topic_content
+        _topic_key   = script_data.get("topic", niche or "default")
+        _content_info = ensure_topic_content(_topic_key)
+        print(f"[Content] {_content_info['topic']} → "
+              f"{_content_info['images_count']} images, "
+              f"{_content_info['videos_count']} videos")
+        if _content_info["videos_count"] > 0:
+            print("[Content] Using user-provided videos")
+        else:
+            print("[Content] No user videos → fallback to AI or stock")
+    except Exception as _ce:
+        print(f"[Content] Folder setup skipped (non-fatal): {_ce}")
+
     # â"€â"€ Voiceover â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
     is_short = "short" in video_id
     try:
