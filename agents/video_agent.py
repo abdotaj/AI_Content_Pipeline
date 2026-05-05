@@ -224,8 +224,17 @@ def generate_voiceover_edgetts(script_text: str, filename: str, language: str = 
     return audio_path
 
 
+def preprocess_arabic_tts(text: str) -> str:
+    """Add natural pause markers for Arabic TTS to improve rhythm and flow."""
+    text = text.replace("،", "،...")
+    text = text.replace(".", "...")
+    return text
+
+
 def generate_voiceover_openai(text: str, language: str, output_path: str,
-                              is_short: bool = False) -> str:
+                              is_short: bool = False,
+                              voice_override: str = None,
+                              speed_override: float = None) -> str:
     """Generate voiceover using OpenAI TTS (tts-1) with timeout and per-chunk retry."""
     global _OPENAI_QUOTA_EXCEEDED
     import openai
@@ -276,22 +285,23 @@ def generate_voiceover_openai(text: str, language: str, output_path: str,
 
     if language == "arabic":
         model = "tts-1"
-        voice = "alloy"
-        speed = TTS_SPEED
+        voice = voice_override or "nova"
+        speed = speed_override if speed_override is not None else 0.9
         label = "Arabic"
     else:
         model = "tts-1"
-        voice = "onyx"
-        speed = TTS_SPEED
+        voice = voice_override or "alloy"
+        speed = speed_override if speed_override is not None else 1.0
         label = "English"
 
     tts_instructions = None  # tts-1 does not support instructions param
 
-    print(f"[Voice] TTS speed: {speed} ({label}) | model={model} voice={voice}")
+    print(f"[TTS] Language={language}")
+    print(f"[TTS] Using OpenAI voice={voice} speed={speed}")
 
     # ── Persistent hash cache ──────────────────────────────────────────────────
     _cache_key  = hashlib.sha256(
-        f"{text}|{language}|{voice}|{model}".encode()
+        f"{text}|{language}|{voice}|{model}|{speed}".encode()
     ).hexdigest()[:16]
     _cache_path = os.path.join(AUDIO_DIR, f"tts_{_cache_key}.mp3")
     if os.path.exists(_cache_path) and os.path.getsize(_cache_path) > 0:
@@ -531,21 +541,31 @@ def generate_voiceover(script_text: str, filename: str, language: str = "english
     if language == "arabic":
         script_text = _apply_arabic_pronunciation(script_text)
 
-    # Priority 1: OpenAI TTS
+    # Priority 1: OpenAI TTS (primary — Arabic: nova/0.9, English: alloy/1.0)
     openai_key = os.getenv("OPENAI_API_KEY", "").strip()
     if openai_key and not _OPENAI_QUOTA_EXCEEDED:
-        print("[Voice] Trying OpenAI TTS...")
+        print("[Voice] Trying OpenAI TTS (primary)...")
         _oai_path = os.path.join(AUDIO_DIR, f"{filename}.mp3")
         _is_short = "short" in filename.lower()
-        result = generate_voiceover_openai(script_text, language, _oai_path, is_short=_is_short)
+        _primary_text = preprocess_arabic_tts(script_text) if language == "arabic" else script_text
+        result = generate_voiceover_openai(_primary_text, language, _oai_path, is_short=_is_short)
         if result:
             return result
-        if _OPENAI_QUOTA_EXCEEDED:
-            print("[TTS] OpenAI quota exceeded -> edge fallback")
-        else:
-            print("[Voice] OpenAI TTS failed — falling back to edge-tts")
 
-    # Priority 2: edge-tts (backup — used only when OpenAI unavailable)
+        # Priority 2: OpenAI safe fallback — alloy/1.0, no preprocessing
+        if not _OPENAI_QUOTA_EXCEEDED:
+            print("[TTS] OpenAI primary failed — trying safe fallback (alloy, 1.0, no preprocess)")
+            result = generate_voiceover_openai(
+                script_text, language, _oai_path, is_short=_is_short,
+                voice_override="alloy", speed_override=1.0,
+            )
+            if result:
+                return result
+            print("[TTS] OpenAI safe fallback failed — falling back to edge-tts")
+        else:
+            print("[TTS] OpenAI quota exceeded — falling back to edge-tts")
+
+    # Priority 3: edge-tts (final fallback — unchanged)
     print("[Voice] Using edge-tts")
     return generate_voiceover_edgetts(script_text, filename, language)
 
