@@ -3,13 +3,22 @@ import os
 BASE_CONTENT_DIR = "content"
 
 
+def topic_to_slug(topic: str) -> str:
+    """Convert a topic name to a filesystem-safe folder slug.
+
+    Single source of truth for topic → folder mapping across the pipeline.
+    'Pablo Escobar' → 'pablo_escobar', 'tokyo-vice' → 'tokyo_vice'
+    """
+    return topic.lower().strip().replace(" ", "_").replace("-", "_")
+
+
 def ensure_topic_content(topic: str) -> dict:
     """
     Ensure content/{topic}/images/ and content/{topic}/videos/ exist.
     Returns a dict with paths and media counts — safe to call even when
     the topic folder doesn't exist yet (folders are created on first call).
     """
-    topic = topic.lower().strip().replace(" ", "_")
+    topic = topic_to_slug(topic)
     topic_path   = os.path.join(BASE_CONTENT_DIR, topic)
     images_path  = os.path.join(topic_path, "images")
     videos_path  = os.path.join(topic_path, "videos")

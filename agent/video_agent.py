@@ -1951,7 +1951,8 @@ def _load_user_images_from_folders(topic: str = "") -> list[dict]:
     ]
     # Also check topic-specific subfolder
     if topic:
-        slug = topic.lower().replace(" ", "_").replace("-", "_")[:30]
+        from utils.content_manager import topic_to_slug
+        slug = topic_to_slug(topic)
         search_dirs.append(f"content/images/{slug}")
     image_exts = {".jpg", ".jpeg", ".png", ".webp", ".jfif"}
     found: list[dict] = []
@@ -2007,6 +2008,13 @@ def _load_user_images_from_folders(topic: str = "") -> list[dict]:
 def find_content_folder(topic: str) -> str | None:
     """Return path to content/<folder> matching this topic, or None."""
     topic_lower = topic.lower()
+
+    # Slug-based check first — catches any topic whose folder was created by ensure_topic_content
+    from utils.content_manager import topic_to_slug
+    slug_path = f"content/{topic_to_slug(topic)}"
+    if os.path.exists(slug_path):
+        return slug_path
+
     folder_map = {
         'mindhunter':        'mindhunter',
         'al capone':         'al_capone',
