@@ -2078,6 +2078,13 @@ def load_all_content(
     video_dicts: [{"path", "duration", "type": "pure"|"broll", "tags", "caption"}]
     All content-library videos are typed "pure" by default.
     """
+    # Guarantee content/{slug}/images/ and content/{slug}/videos/ exist before scanning.
+    # find_content_folder() below will then discover the folder via slug-based check.
+    try:
+        from utils.content_manager import ensure_topic_content
+        ensure_topic_content(topic)
+    except Exception as _e:
+        print(f"[Content] Folder init skipped (non-fatal): {_e}")
     _img_exts = {'.jpg', '.jpeg', '.png', '.webp', '.jfif'}
     _vid_exts = {'.mp4', '.mov', '.avi'}
 
