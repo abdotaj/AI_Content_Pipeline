@@ -5999,26 +5999,40 @@ def _section_intensity(text: str) -> str:
     return "calm"
 
 
+# ── Cinematic pacing constants ────────────────────────────────────────────────
+_PACING = {"intense": 2.5, "medium": 4.0, "calm": 6.0}  # seconds on screen
+_HOOK_DURATION = 2.0                                       # first 2 sections
+
+
+def _clip_source_key(path: str) -> str:
+    """Derive the source video stem from a temp_clips filename (stem_NNN.mp4 → stem)."""
+    stem  = os.path.splitext(os.path.basename(path or ""))[0]
+    parts = stem.rsplit("_", 1)
+    return parts[0] if len(parts) == 2 and parts[1].isdigit() else stem
+
+
 def assign_clips_to_script(
     script_sections: list[tuple[str, str]],
     clips: list[str],
 ) -> list[dict]:
-    """Map clips to script sections with hook priority and intensity-aware matching.
+    """Map clips to script sections with cinematic pacing and intensity-aware matching.
 
-    Expects clips pre-sorted best-first (as returned by select_best_clips).
-    - First section (hook) always receives the highest-scored clip.
-    - Intense sections draw from the top-score pool.
-    - Calm sections draw from the lower-score pool.
-    - Falls back to any remaining clip when the preferred pool is exhausted.
+    Pacing:  intense→2.5 s  |  medium→4 s  |  calm→6 s  |  hook (first 2)→2 s
+    Diversity: max 2 consecutive clips from same source; breathing-space entries
+               injected after 3+ intense cuts; 30% of calm sections go image-only.
+    Clip order in returned timeline drives image_paths ordering in create_video().
     """
     if not clips:
         return [
             {"section": n, "text": t, "clip": None, "clips": [],
-             "intensity": _section_intensity(t)}
+             "intensity": _section_intensity(t),
+             "clip_duration": _PACING.get(_section_intensity(t), 4.0),
+             "is_breathing": True}
             for n, t in script_sections
         ]
 
     from collections import deque as _deque
+    import random as _rnd
 
     n_clips = len(clips)
     t_top   = clips[:max(1, n_clips // 3)]
@@ -6027,44 +6041,88 @@ def assign_clips_to_script(
 
     pools = {
         "intense": _deque(t_top),
-        "medium":  _deque(t_mid + t_top),   # medium may borrow from top
+        "medium":  _deque(t_mid + t_top),
         "calm":    _deque(t_low + t_mid),
     }
-    overflow = _deque(clips)   # fallback pool — unlimited
+    overflow = _deque(clips)
 
-    def _pull(pool: _deque, n: int, exclude: str = "") -> list[str]:
-        result: list[str] = []
-        while pool and len(result) < n:
-            c = pool.popleft()
-            if c != exclude:
-                result.append(c)
-        while overflow and len(result) < n:
-            c = overflow.popleft()
-            if c != exclude and c not in result:
-                result.append(c)
-        return result
+    def _pull_diverse(pool, n, exclude="", last_srcs=None, max_consec=2):
+        """Pull n clips preferring source diversity; falls back to overflow."""
+        result, last, skipped = [], list(last_srcs or []), []
+        for src_pool in (pool, overflow):
+            while src_pool and len(result) < n:
+                c = src_pool.popleft()
+                if c == exclude or c in result:
+                    continue
+                c_src  = _clip_source_key(c)
+                recent = last[-max_consec:]
+                if recent and all(s == c_src for s in recent):
+                    skipped.append(c)   # defer — same source run, try later
+                else:
+                    result.append(c)
+                    last.append(c_src)
+        for c in skipped:               # best-effort: use deferred clips to fill
+            if len(result) >= n:
+                break
+            result.append(c)
+            last.append(_clip_source_key(c))
+        return result, last
 
-    total_len = sum(len(t) for _, t in script_sections) or 1
+    total_len         = sum(len(t) for _, t in script_sections) or 1
     timeline: list[dict] = []
+    consecutive_intense = 0
+    last_srcs: list[str] = []
 
     for i, (name, text) in enumerate(script_sections):
         intensity     = _section_intensity(text)
         frac          = len(text) / total_len
         n_for_section = max(1, round(frac * n_clips))
 
-        if i == 0:
-            # Hook: guarantee the best clip is first
+        # ── Breathing space: inject pause after 3+ back-to-back intense cuts ──
+        if consecutive_intense >= 3 and intensity == "intense":
+            timeline.append({
+                "section":      f"{name}_breath",
+                "text":         "",
+                "clip":         None,
+                "clips":        [],
+                "intensity":    "calm",
+                "clip_duration": _PACING["calm"],
+                "is_breathing":  True,
+            })
+            consecutive_intense = 0
+
+        # 30% of calm sections go image-only for visual breathing room
+        is_breathing  = (intensity == "calm" and _rnd.random() < 0.30)
+        # Hook: first 2 sections get fastest pacing regardless of intensity
+        clip_duration = _HOOK_DURATION if i < 2 else _PACING[intensity]
+
+        if is_breathing:
+            section_clips, chosen_clip = [], None
+        elif i == 0:
             best_clip     = clips[0]
-            section_clips = [best_clip] + _pull(pools[intensity], n_for_section - 1, exclude=best_clip)
+            rest, last_srcs = _pull_diverse(
+                pools[intensity], n_for_section - 1,
+                exclude=best_clip, last_srcs=last_srcs,
+            )
+            section_clips = [best_clip] + rest
+            chosen_clip   = best_clip
+            last_srcs     = [_clip_source_key(best_clip)] + last_srcs
         else:
-            section_clips = _pull(pools[intensity], n_for_section)
+            section_clips, last_srcs = _pull_diverse(
+                pools[intensity], n_for_section, last_srcs=last_srcs,
+            )
+            chosen_clip = section_clips[0] if section_clips else None
+
+        consecutive_intense = consecutive_intense + 1 if intensity == "intense" else 0
 
         timeline.append({
-            "section":   name,
-            "text":      text,
-            "clip":      section_clips[0] if section_clips else None,
-            "clips":     section_clips,
-            "intensity": intensity,
+            "section":      name,
+            "text":         text,
+            "clip":         chosen_clip,
+            "clips":        section_clips,
+            "intensity":    intensity,
+            "clip_duration": clip_duration,
+            "is_breathing":  is_breathing,
         })
 
     return timeline
@@ -6229,10 +6287,16 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
     try:
         if mode == "user_content":
             # MODE 1: User-provided content
-            # Step A: inject library clips first (highest visual priority)
-            image_paths: list[str] = list(_library_clips)
+            # Step A: inject library clips first, ordered by cinematic timeline
+            if _clip_timeline:
+                _tl_clips = [c for seg in _clip_timeline
+                             if not seg.get("is_breathing")
+                             for c in (seg.get("clips") or [])]
+                image_paths: list[str] = _tl_clips if _tl_clips else list(_library_clips)
+            else:
+                image_paths = list(_library_clips)
             if _library_clips:
-                print(f"[Clip] MODE 1: prepended {len(_library_clips)} library clip(s)")
+                print(f"[Clip] MODE 1: {len(image_paths)} library clip(s) (timeline-ordered)")
             for uv in all_user_videos:
                 path = uv.get("path", "")
                 if path and os.path.exists(path):
@@ -6294,9 +6358,15 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
                 image_paths.extend(gap_imgs)
         else:
             # MODE 2: Auto (no user content)
-            image_paths = list(_library_clips)  # library clips at front
+            if _clip_timeline:
+                _tl_clips = [c for seg in _clip_timeline
+                             if not seg.get("is_breathing")
+                             for c in (seg.get("clips") or [])]
+                image_paths = _tl_clips if _tl_clips else list(_library_clips)
+            else:
+                image_paths = list(_library_clips)
             if _library_clips:
-                print(f"[Clip] MODE 2: prepended {len(_library_clips)} library clip(s)")
+                print(f"[Clip] MODE 2: {len(image_paths)} library clip(s) (timeline-ordered)")
             stock = fetch_stock_videos(script_text, n_images, video_id, topic=topic_str)
             image_paths.extend(stock)
             if len(image_paths) < max(6, n_images // 2):
