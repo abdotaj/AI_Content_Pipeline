@@ -1241,21 +1241,88 @@ def get_person_images(
 
 
 
+_DEFAULT_STYLE = "true crime documentary, dark cinematic lighting, dramatic atmosphere"
 _IMAGE_PROMPT_SUFFIX = (
     ", dark cinematic documentary style, no text, "
     "no watermarks, photorealistic, high detail"
 )
 
 
-def build_image_prompt(chunk_text: str) -> str:
+def extract_style_from_user_images(user_images: list[dict]) -> str:
+    """
+    Analyze user-provided images to extract a visual style profile (era, lighting,
+    environment, mood) for injection into all AI-generated image prompts.
+    Uses OpenAI Vision on the first available image; falls back to captions/tags.
+    Returns empty string when no user images are available.
+    """
+    if not user_images:
+        return ""
+    first_path = next(
+        (img["path"] for img in user_images
+         if img.get("path") and os.path.exists(img.get("path", ""))),
+        None
+    )
+    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    if api_key and first_path:
+        try:
+            import base64 as _b64
+            with open(first_path, "rb") as _f:
+                img_b64 = _b64.b64encode(_f.read()).decode("utf-8")
+            ext  = os.path.splitext(first_path)[1].lower().lstrip(".")
+            mime = "image/png" if ext == "png" else "image/jpeg"
+            r = requests.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json={
+                    "model": "gpt-4o-mini",
+                    "messages": [{"role": "user", "content": [
+                        {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{img_b64}"}},
+                        {"type": "text", "text": (
+                            "Analyze this image and extract its visual style. "
+                            "Return ONLY a short comma-separated style description "
+                            "(max 15 words) covering: era, setting, lighting, mood, "
+                            "clothing if visible. "
+                            "DO NOT describe faces or identify any person. "
+                            "Example: '1970s FBI interview room, dim cold lighting, "
+                            "formal clothing, tense atmosphere'"
+                        )},
+                    ]}],
+                    "max_tokens": 60,
+                    "temperature": 0.2,
+                },
+                timeout=30,
+            )
+            if r.status_code == 200:
+                style = r.json()["choices"][0]["message"]["content"].strip().strip('"\'')
+                if style and len(style.split()) >= 3:
+                    print(f"[Style] Extracted from user image: {style}")
+                    return style
+        except Exception as e:
+            print(f"[Style] Vision analysis failed (non-fatal): {e}")
+    # Fallback: build style hint from captions and tags
+    captions = [img.get("caption", "").strip() for img in user_images if img.get("caption")]
+    tags = []
+    for img in user_images:
+        tags.extend(img.get("tags", []))
+    combined = ", ".join(captions[:2] + [t for t in tags[:4] if t not in captions])
+    if combined.strip():
+        style = combined.strip()[:120]
+        print(f"[Style] Caption-based style: {style}")
+        return style
+    return ""
+
+
+def build_image_prompt(chunk_text: str, style_profile: str = "") -> str:
     """Groq-first image prompt generation from a script chunk; OpenAI fallback."""
     first_200 = " ".join(chunk_text.split()[:200])
+    style_rule = f"\n- Match this visual style: {style_profile}" if style_profile else ""
+    style_suffix = f", {style_profile}" if style_profile else ""
 
     prompt = (
         "Read this script excerpt and write a specific visual image generation prompt "
         "(max 20 words) that represents the exact subject being described.\n\n"
-        "Rules:\n- Name real places, real objects, real events\n- No human faces\n"
-        "- Dark cinematic documentary style\n- Be specific not generic\n\n"
+        f"Rules:\n- Name real places, real objects, real events\n- No human faces\n"
+        f"- Dark cinematic documentary style\n- Be specific not generic{style_rule}\n\n"
         "Examples:\n"
         "GOOD: 'Burned village Darfur Sudan desert, smoke ruins, golden hour, cinematic aerial view'\n"
         "BAD: 'dark crime documentary background'\n\n"
@@ -1278,7 +1345,7 @@ def build_image_prompt(chunk_text: str) -> str:
             ).choices[0].message.content.strip().strip('"\'')
             if result:
                 print(f"[Image] Chunk prompt (Groq): {result[:70]}")
-                return f"{result}{_IMAGE_PROMPT_SUFFIX}"
+                return f"{result}{style_suffix}{_IMAGE_PROMPT_SUFFIX}"
         except Exception as e:
             print(f"[Image] Groq image prompt failed: {e}")
 
@@ -1296,11 +1363,11 @@ def build_image_prompt(chunk_text: str) -> str:
             if r.status_code == 200:
                 result = r.json()["choices"][0]["message"]["content"].strip().strip('"\'')
                 print(f"[Image] Chunk prompt (OpenAI): {result[:70]}")
-                return f"{result}{_IMAGE_PROMPT_SUFFIX}"
+                return f"{result}{style_suffix}{_IMAGE_PROMPT_SUFFIX}"
         except Exception as e:
             print(f"[Image] build_image_prompt OpenAI failed: {e}")
 
-    return f"true crime historical documentary scene cinematic dark{_IMAGE_PROMPT_SUFFIX}"
+    return f"true crime historical documentary scene cinematic dark{style_suffix}{_IMAGE_PROMPT_SUFFIX}"
 
 
 SCENE_PROMPTS: dict[str, list[str]] = {
@@ -1330,7 +1397,7 @@ def get_scene_prompts(topic: str, research: dict) -> list[str] | None:
     return None
 
 
-def generate_image_prompts(script_text: str, count: int, topic: str = "", research: dict | None = None) -> list[str]:
+def generate_image_prompts(script_text: str, count: int, topic: str = "", research: dict | None = None, style_profile: str = "") -> list[str]:
     """Split script into [count] equal chunks, call OpenAI once per chunk.
     Returns list of [count] specific image prompts.
     Falls back gracefully per chunk if OpenAI call fails.
@@ -1358,7 +1425,7 @@ def generate_image_prompts(script_text: str, count: int, topic: str = "", resear
         start      = i * chunk_size
         end        = start + chunk_size if i < count - 1 else len(words)
         chunk_text = " ".join(words[start:end])
-        prompts.append(build_image_prompt(chunk_text))
+        prompts.append(build_image_prompt(chunk_text, style_profile=style_profile))
         if i < count - 1:
             time.sleep(1)
 
@@ -2456,6 +2523,7 @@ def _fetch_gap_images(
     video_id: str,
     topic: str,
     coverage_ratio: float,
+    style_profile: str = "",
 ) -> list[str]:
     """Fill a visual gap with priority: Wikimedia → OpenAI search → Pollinations AI.
 
@@ -2467,7 +2535,7 @@ def _fetch_gap_images(
     results: list[str] = []
 
     # Priority 1: Wikimedia person photos + Commons
-    wiki_imgs = fetch_real_images(script_text, min(needed, 8), video_id, topic=topic)
+    wiki_imgs = fetch_real_images(script_text, min(needed, 8), video_id, topic=topic, style_profile=style_profile)
     results.extend(wiki_imgs)
     if len(results) >= needed:
         return results[:needed]
@@ -2485,7 +2553,8 @@ def _fetch_gap_images(
     if remaining > 0:
         print(f"[Video] Gap-fill last resort: generating {remaining} Pollinations AI images")
         for i in range(remaining):
-            prompt = f"{topic} cinematic documentary dark dramatic portrait"
+            style_hint = f", {style_profile}" if style_profile else ""
+            prompt = f"{topic} cinematic documentary dark dramatic portrait{style_hint}"
             out = os.path.join(IMAGES_DIR, f"{video_id}_gap_{i}.png")
             result = generate_ai_image(prompt, out)
             if result and os.path.exists(result):
@@ -3436,7 +3505,7 @@ def _get_search_query_for_chunk(chunk_text: str) -> str | None:
 
 
 def fetch_real_images(script_text: str, count: int, video_id: str,
-                      topic: str = "") -> list[str]:
+                      topic: str = "", style_profile: str = "") -> list[str]:
     """
     Universal image builder — works for any script topic.
 
@@ -3509,7 +3578,7 @@ def fetch_real_images(script_text: str, count: int, video_id: str,
     remaining = count - len(preloaded_paths)
 
     # AI fallback prompts (one per chunk)
-    ai_prompts = generate_image_prompts(script_text, remaining)
+    ai_prompts = generate_image_prompts(script_text, remaining, style_profile=style_profile)
 
     # Split script into equal word-chunks for remaining images
     chunk_size = max(1, len(words) // remaining)
@@ -5825,6 +5894,9 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
     if all_user_images:
         print(f"[DEBUG] User image paths: {[img['path'] for img in all_user_images]}")
 
+    # Extract visual style from user images for consistent AI prompt generation
+    _style_profile = extract_style_from_user_images(all_user_images) if all_user_images else ""
+
     # Detect assembly mode
     mode = _detect_assembly_mode(all_user_images, all_user_videos)
 
@@ -5886,7 +5958,8 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
                 missing = n_images - len(image_paths)
                 print(f"[Video] ⚠️ Gap: {missing} visuals needed (coverage {coverage_ratio*100:.0f}%)")
                 gap_imgs = _fetch_gap_images(
-                    script_text, missing, video_id, topic_str, coverage_ratio
+                    script_text, missing, video_id, topic_str, coverage_ratio,
+                    style_profile=_style_profile,
                 )
                 if gap_imgs:
                     gap_imgs = _rank_visual_pool(gap_imgs, topic=topic_str)
@@ -5898,7 +5971,7 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
                 missing = max(0, n_images - len(image_paths))
                 if missing:
                     print(f"[Stock] Fallback: generating {missing} image visuals")
-                    image_paths.extend(fetch_real_images(script_text, missing, video_id, topic=topic_str))
+                    image_paths.extend(fetch_real_images(script_text, missing, video_id, topic=topic_str, style_profile=_style_profile))
             if image_paths:
                 image_paths = _rank_visual_pool(image_paths, topic=topic_str)
     except Exception as e:
