@@ -5796,6 +5796,280 @@ def generate_tts_sections(script_text: str, video_id: str, language: str) -> tup
     return final_audio, chapters
 
 
+# â"€â"€ Clip system â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+
+def extract_clips(video_path: str, out_dir: str, chunk_len: float = 8.0) -> list[str]:
+    """Split a source video into fixed-length clips via ffmpeg segment muxer.
+
+    Returns sorted list of clip paths that are at least 2 s long.
+    Falls back gracefully if ffmpeg is missing or the source is too short.
+    """
+    import shutil as _sh
+    ffmpeg = _sh.which("ffmpeg")
+    if not ffmpeg or not os.path.exists(video_path):
+        return []
+
+    total_dur = _ffprobe_duration(video_path)
+    if total_dur < 2.0:
+        return []
+
+    os.makedirs(out_dir, exist_ok=True)
+    stem = re.sub(r"[^a-z0-9]", "_", os.path.splitext(os.path.basename(video_path))[0].lower())[:20]
+    out_pattern = os.path.join(out_dir, f"{stem}_%03d.mp4")
+
+    try:
+        subprocess.run(
+            [
+                ffmpeg, "-y", "-i", video_path,
+                "-c", "copy",
+                "-f", "segment",
+                "-segment_time", str(chunk_len),
+                "-reset_timestamps", "1",
+                out_pattern,
+            ],
+            capture_output=True,
+            timeout=120,
+        )
+    except Exception as e:
+        print(f"[Clip] Segment split failed for {os.path.basename(video_path)}: {e}")
+        return []
+
+    clips = sorted(
+        os.path.join(out_dir, f)
+        for f in os.listdir(out_dir)
+        if f.startswith(stem) and f.endswith(".mp4") and _ffprobe_duration(os.path.join(out_dir, f)) >= 2.0
+    )
+    print(f"[Clip] Extracted {len(clips)} clip(s) from {os.path.basename(video_path)}")
+    return clips
+
+
+def score_clip(path: str) -> float:
+    """Score a clip 0.0→1.0 using duration fitness, motion proxy, and brightness.
+
+    No heavy ML — duration from ffprobe, motion from bitrate, brightness from
+    a single 64×64 gray frame extracted by ffmpeg (~0.05 s per clip).
+    """
+    if not path or not os.path.exists(path):
+        return 0.0
+    try:
+        dur  = _ffprobe_duration(path)
+        size = os.path.getsize(path)
+    except Exception:
+        return 0.0
+
+    if dur < 1.0 or size < 5_000:
+        return 0.0
+
+    # ── Duration score: ramp 0→1 over 0-5 s, full 5-10 s, slow decay after ──
+    if dur < 5.0:
+        dur_score = dur / 5.0
+    elif dur <= 10.0:
+        dur_score = 1.0
+    else:
+        dur_score = max(0.3, 1.0 - (dur - 10.0) / 20.0)
+
+    # ── Motion score: KB/s as visual-richness proxy (high motion → less compression) ──
+    kbps = (size / 1024) / dur
+    if kbps < 30:
+        motion_score = 0.2
+    elif kbps < 100:
+        motion_score = 0.2 + 0.5 * (kbps - 30) / 70
+    elif kbps < 300:
+        motion_score = 0.7 + 0.3 * (kbps - 100) / 200
+    else:
+        motion_score = 1.0
+
+    # ── Brightness score: 1-frame 64×64 gray sample via ffmpeg ───────────────
+    brightness_score = 0.7  # safe default when ffmpeg call is unavailable
+    try:
+        _ffmpeg = shutil.which("ffmpeg")
+        if _ffmpeg:
+            _res = subprocess.run(
+                [_ffmpeg, "-ss", "1", "-i", path,
+                 "-vframes", "1", "-vf", "scale=64:64",
+                 "-f", "rawvideo", "-pix_fmt", "gray", "pipe:1"],
+                capture_output=True, timeout=5,
+            )
+            _data = _res.stdout
+            if _data:
+                avg_luma = sum(_data) / len(_data)   # 0–255
+                if avg_luma < 25:
+                    brightness_score = 0.0            # too dark — penalise heavily
+                elif avg_luma < 60:
+                    brightness_score = avg_luma / 60 * 0.5
+                elif avg_luma <= 200:
+                    brightness_score = 1.0            # good exposure range
+                else:
+                    brightness_score = max(0.5, 1.0 - (avg_luma - 200) / 110)  # overexposed
+    except Exception:
+        pass
+
+    return 0.40 * dur_score + 0.35 * motion_score + 0.25 * brightness_score
+
+
+def select_best_clips(video_folder: str, max_clips: int = 15) -> list[str]:
+    """Extract, score, and diversify clips from video_folder/videos/.
+
+    Diversity rules applied before final sort:
+    - Per-source cap: ceil(max_clips / n_sources) clips per source video.
+    - Time-window dedup: at most one clip per 30 s window within a source.
+    - Cross-source mix: clips interleaved round-robin before final score sort.
+    All chunks land in temp_clips/ and are cleaned up after assembly.
+    """
+    vid_dir = os.path.join(video_folder, "videos")
+    if not os.path.isdir(vid_dir):
+        return []
+
+    source_videos = [
+        os.path.join(vid_dir, f)
+        for f in sorted(os.listdir(vid_dir))
+        if f.lower().endswith((".mp4", ".mov", ".avi"))
+        and not f.endswith(("_processed.mp4", "_short.mp4"))
+        and os.path.getsize(os.path.join(vid_dir, f)) > 10_000
+    ]
+    if not source_videos:
+        return []
+
+    out_dir    = os.path.abspath("temp_clips")
+    os.makedirs(out_dir, exist_ok=True)
+    n_sources  = len(source_videos)
+    per_source = max(2, -(-max_clips // n_sources))   # ceiling division
+
+    source_pools: list[list[tuple[float, str]]] = []
+    for src in source_videos:
+        chunks = extract_clips(src, out_dir)
+
+        # Time-window dedup: one clip per 30 s window (chunk_len=8 → window=4 chunks)
+        seen_windows: set[int] = set()
+        deduped: list[tuple[float, str]] = []
+        for chunk in chunks:
+            try:
+                window = int(os.path.splitext(chunk)[0].rsplit("_", 1)[-1]) // 4
+            except ValueError:
+                window = len(deduped)
+            if window not in seen_windows:
+                seen_windows.add(window)
+                deduped.append((score_clip(chunk), chunk))
+
+        deduped.sort(key=lambda x: x[0], reverse=True)
+        capped = deduped[:per_source]
+        source_pools.append(capped)
+        print(f"[Clip] {os.path.basename(src)}: {len(capped)}/{len(chunks)} clip(s) kept")
+
+    # Round-robin interleave — guarantees no single source dominates
+    interleaved: list[tuple[float, str]] = []
+    for round_idx in range(per_source):
+        for pool in source_pools:
+            if round_idx < len(pool):
+                interleaved.append(pool[round_idx])
+            if len(interleaved) >= max_clips:
+                break
+        if len(interleaved) >= max_clips:
+            break
+
+    # Final sort by score so best clips are first (hook priority in assign step)
+    interleaved.sort(key=lambda x: x[0], reverse=True)
+    best = [p for _, p in interleaved[:max_clips]]
+    total_considered = sum(len(p) for p in source_pools)
+    print(f"[Clip] Selected {len(best)}/{total_considered} best clip(s) from {video_folder}")
+    return best
+
+
+# ── Intensity keyword sets for script-aware clip matching ────────────────────
+_INTENSE_KW = {
+    "confess", "confession", "kill", "killed", "murder", "murdered", "execute",
+    "executed", "shot", "shoot", "stab", "stabbed", "dead", "death", "arrested",
+    "caught", "massacre", "brutal", "torture", "ambush", "shootout", "raid",
+    "escape", "explosion", "convicted", "sentenced",
+}
+_MEDIUM_KW = {
+    "investigate", "investigation", "police", "detective", "suspect", "evidence",
+    "witness", "trial", "court", "judge", "charged", "crime", "prison", "smuggle",
+    "cartel", "gang", "trafficking", "operation", "surveillance",
+}
+
+
+def _section_intensity(text: str) -> str:
+    """Classify a script section as 'intense', 'medium', or 'calm' by keyword overlap."""
+    words = {w.strip(".,!?\"'()-") for w in text.lower().split()}
+    if words & _INTENSE_KW:
+        return "intense"
+    if words & _MEDIUM_KW:
+        return "medium"
+    return "calm"
+
+
+def assign_clips_to_script(
+    script_sections: list[tuple[str, str]],
+    clips: list[str],
+) -> list[dict]:
+    """Map clips to script sections with hook priority and intensity-aware matching.
+
+    Expects clips pre-sorted best-first (as returned by select_best_clips).
+    - First section (hook) always receives the highest-scored clip.
+    - Intense sections draw from the top-score pool.
+    - Calm sections draw from the lower-score pool.
+    - Falls back to any remaining clip when the preferred pool is exhausted.
+    """
+    if not clips:
+        return [
+            {"section": n, "text": t, "clip": None, "clips": [],
+             "intensity": _section_intensity(t)}
+            for n, t in script_sections
+        ]
+
+    from collections import deque as _deque
+
+    n_clips = len(clips)
+    t_top   = clips[:max(1, n_clips // 3)]
+    t_mid   = clips[len(t_top): len(t_top) + max(1, n_clips // 3)]
+    t_low   = clips[len(t_top) + len(t_mid):]
+
+    pools = {
+        "intense": _deque(t_top),
+        "medium":  _deque(t_mid + t_top),   # medium may borrow from top
+        "calm":    _deque(t_low + t_mid),
+    }
+    overflow = _deque(clips)   # fallback pool — unlimited
+
+    def _pull(pool: _deque, n: int, exclude: str = "") -> list[str]:
+        result: list[str] = []
+        while pool and len(result) < n:
+            c = pool.popleft()
+            if c != exclude:
+                result.append(c)
+        while overflow and len(result) < n:
+            c = overflow.popleft()
+            if c != exclude and c not in result:
+                result.append(c)
+        return result
+
+    total_len = sum(len(t) for _, t in script_sections) or 1
+    timeline: list[dict] = []
+
+    for i, (name, text) in enumerate(script_sections):
+        intensity     = _section_intensity(text)
+        frac          = len(text) / total_len
+        n_for_section = max(1, round(frac * n_clips))
+
+        if i == 0:
+            # Hook: guarantee the best clip is first
+            best_clip     = clips[0]
+            section_clips = [best_clip] + _pull(pools[intensity], n_for_section - 1, exclude=best_clip)
+        else:
+            section_clips = _pull(pools[intensity], n_for_section)
+
+        timeline.append({
+            "section":   name,
+            "text":      text,
+            "clip":      section_clips[0] if section_clips else None,
+            "clips":     section_clips,
+            "intensity": intensity,
+        })
+
+    return timeline
+
+
 # â"€â"€ Main entry point â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", user_images: list | None = None, user_videos: list | None = None) -> str:
@@ -5819,6 +6093,16 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
             print(f"[Content] No content folder found for: {_topic_key}")
     except Exception as _ce:
         print(f"[Content] Folder check skipped (non-fatal): {_ce}")
+
+    # ── Library clip extraction ───────────────────────────────────────────────
+    _library_clips: list[str] = []
+    try:
+        if _content_folder and os.path.isdir(_content_folder):
+            _library_clips = select_best_clips(_content_folder, max_clips=15)
+            if _library_clips:
+                print(f"[Clip] {len(_library_clips)} library clip(s) ready for assembly")
+    except Exception as _ce2:
+        print(f"[Clip] Library clip selection skipped (non-fatal): {_ce2}")
 
     # â"€â"€ Voiceover â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
     is_short = "short" in video_id
@@ -5927,14 +6211,28 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
     # Extract visual style from user images for consistent AI prompt generation
     _style_profile = extract_style_from_user_images(all_user_images) if all_user_images else ""
 
+    # ── Script → clip timeline ────────────────────────────────────────────────
+    _clip_timeline: list[dict] = []
+    try:
+        if _library_clips:
+            _sections = _parse_script_sections(script_text)
+            _clip_timeline = assign_clips_to_script(_sections, _library_clips)
+            _with_clips = sum(1 for s in _clip_timeline if s.get("clip"))
+            print(f"[Clip] Timeline: {len(_clip_timeline)} sections, {_with_clips} with clips, "
+                  f"{len(_clip_timeline) - _with_clips} image-fallback")
+    except Exception as _te:
+        print(f"[Clip] Timeline assignment skipped (non-fatal): {_te}")
+
     # Detect assembly mode
     mode = _detect_assembly_mode(all_user_images, all_user_videos)
 
     try:
         if mode == "user_content":
             # MODE 1: User-provided content
-            # Step A: copy user videos to clip pool
-            image_paths: list[str] = []
+            # Step A: inject library clips first (highest visual priority)
+            image_paths: list[str] = list(_library_clips)
+            if _library_clips:
+                print(f"[Clip] MODE 1: prepended {len(_library_clips)} library clip(s)")
             for uv in all_user_videos:
                 path = uv.get("path", "")
                 if path and os.path.exists(path):
@@ -5996,7 +6294,11 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
                 image_paths.extend(gap_imgs)
         else:
             # MODE 2: Auto (no user content)
-            image_paths = fetch_stock_videos(script_text, n_images, video_id, topic=topic_str)
+            image_paths = list(_library_clips)  # library clips at front
+            if _library_clips:
+                print(f"[Clip] MODE 2: prepended {len(_library_clips)} library clip(s)")
+            stock = fetch_stock_videos(script_text, n_images, video_id, topic=topic_str)
+            image_paths.extend(stock)
             if len(image_paths) < max(6, n_images // 2):
                 missing = max(0, n_images - len(image_paths))
                 if missing:
@@ -6202,4 +6504,14 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
                 script_data.pop("short_clip_path", None)
         except Exception as _qe:
             print(f"[Quality] Processing skipped (non-fatal): {_qe}")
+
+    # ── Cleanup temp_clips ────────────────────────────────────────────────────
+    try:
+        _tc = os.path.abspath("temp_clips")
+        if os.path.isdir(_tc):
+            shutil.rmtree(_tc, ignore_errors=True)
+            print("[Clip] temp_clips cleaned up")
+    except Exception as _cleanup_err:
+        print(f"[Clip] temp_clips cleanup skipped (non-fatal): {_cleanup_err}")
+
     return video_path
