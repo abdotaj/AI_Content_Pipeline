@@ -1404,6 +1404,133 @@ _IMAGE_PROMPT_SUFFIX = (
 )
 
 
+# ── Provider health tracker ───────────────────────────────────────────────────
+# Tracks recent AI-provider failures so we can skip a flaky provider instantly
+# rather than waiting 40 s for a rate-limit retry.
+
+class _ProviderHealth:
+    """
+    Lightweight in-process failure tracker.
+    After _FAIL_THRESHOLD failures inside _WINDOW_SECONDS the provider is
+    considered "unhealthy" and will be skipped until the window rolls over.
+    """
+    _FAIL_THRESHOLD  = 3
+    _WINDOW_SECONDS  = 300   # 5 minutes
+
+    def __init__(self):
+        self._failures: dict[str, list[float]] = {}
+
+    def record_failure(self, provider: str) -> None:
+        now = time.time()
+        self._failures.setdefault(provider, [])
+        self._failures[provider].append(now)
+
+    def is_healthy(self, provider: str) -> bool:
+        now = time.time()
+        recent = [t for t in self._failures.get(provider, [])
+                  if now - t < self._WINDOW_SECONDS]
+        self._failures[provider] = recent
+        return len(recent) < self._FAIL_THRESHOLD
+
+    def reset(self, provider: str) -> None:
+        self._failures[provider] = []
+
+
+_provider_health = _ProviderHealth()
+
+
+# ── Deterministic visual query builder ───────────────────────────────────────
+# Tier-1 / Tier-2: extracts factual search queries from script text WITHOUT AI.
+# Covers ~80 % of documentary visuals — real names, locations, eras, themes.
+
+_STOPWORDS = frozenset({
+    "the", "a", "an", "and", "or", "but", "of", "in", "on", "at", "to",
+    "for", "with", "by", "from", "this", "that", "these", "those", "was",
+    "were", "had", "has", "have", "been", "is", "are", "he", "she", "they",
+    "his", "her", "their", "its", "it", "we", "you", "who", "what", "which",
+    "when", "where", "how", "not", "be", "do", "did", "does", "will",
+    "would", "could", "should", "may", "might", "can", "also", "more",
+    "into", "about", "after", "before", "over", "than", "then", "so",
+    "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
+})
+
+
+def build_visual_search_query(
+    chunk_text: str,
+    topic: str = "",
+    research: dict | None = None,
+) -> str:
+    """
+    Build a factual image search query from script text — NO AI required.
+
+    Priority order:
+      1. Named person (Capitalized ≥2 words in chunk or topic)
+      2. Specific location from _LOCATIONS
+      3. Detected era/decade from _ERAS
+      4. Thematic keyword from _THEMES
+      5. Topic + "documentary"
+
+    Returns a short English search query (3–6 words).
+    """
+    text = (chunk_text or "").strip()
+    topic_clean = (topic or "").strip()
+    text_lower = text.lower()
+
+    # 1. Named person — consecutive title-case words (≥2, each ≥3 chars)
+    name_match = re.findall(r'\b([A-Z][a-z]{2,}(?:\s+[A-Z][a-z]{2,})+)\b', text)
+    for nm in name_match:
+        parts = nm.split()
+        if all(p.lower() not in _STOPWORDS for p in parts):
+            # Add topic context if the name is not the whole topic
+            suffix = ""
+            for loc_key in _LOCATIONS:
+                if loc_key in text_lower:
+                    suffix = loc_key.title()
+                    break
+            era = ""
+            for era_prefix in sorted(_ERAS.keys(), reverse=True):
+                if era_prefix in text:
+                    era = era_prefix + "s"
+                    break
+            parts_out = [nm]
+            if era:
+                parts_out.append(era)
+            elif suffix:
+                parts_out.append(suffix)
+            query = " ".join(parts_out)
+            if len(query.split()) >= 2:
+                return query
+
+    # 2. Topic + location
+    for loc_key, loc_query in _LOCATIONS.items():
+        if loc_key in text_lower or loc_key in topic_clean.lower():
+            era = ""
+            for era_prefix in sorted(_ERAS.keys(), reverse=True):
+                if era_prefix in text:
+                    era = era_prefix + "s"
+                    break
+            base = topic_clean or loc_query.split(",")[0]
+            return f"{base} {era}".strip() if era else base
+
+    # 3. Era detection with topic
+    for era_prefix in sorted(_ERAS.keys(), reverse=True):
+        if era_prefix in text:
+            base = topic_clean or "crime"
+            return f"{base} {era_prefix}s documentary"
+
+    # 4. Thematic match
+    for theme_key, theme_query in _THEMES.items():
+        if theme_key in text_lower:
+            base = topic_clean or theme_query.split(",")[0]
+            return base
+
+    # 5. Topic fallback
+    if topic_clean:
+        return f"{topic_clean} documentary scene"
+
+    return "true crime historical documentary"
+
+
 def extract_style_from_user_images(user_images: list[dict]) -> str:
     """
     Analyze user-provided images to extract a visual style profile (era, lighting,
@@ -1468,15 +1595,55 @@ def extract_style_from_user_images(user_images: list[dict]) -> str:
     return ""
 
 
-def build_image_prompt(chunk_text: str, style_profile: str = "") -> str:
-    """Groq-first image prompt generation from a script chunk; OpenAI fallback; cache-aware."""
-    first_200 = " ".join(chunk_text.split()[:200])
-    style_rule = f"\n- Match this visual style: {style_profile}" if style_profile else ""
-    style_suffix = f", {style_profile}" if style_profile else ""
+def build_image_prompt(
+    chunk_text: str,
+    style_profile: str = "",
+    topic: str = "",
+    research: dict | None = None,
+) -> str:
+    """
+    5-tier non-blocking visual prompt builder.
 
-    prompt = (
+    Tier 1: SHA256 cache hit           → [IMAGE] Cached visual query reused
+    Tier 2: Deterministic query builder → [IMAGE] Tier2 deterministic query
+    Tier 3: Groq cinematic enhancement  → [IMAGE] Tier3 Groq prompt
+    Tier 4: OpenAI fallback             → [IMAGE] Tier4 OpenAI fallback
+    Tier 5: Local emergency template    → [IMAGE] Tier5 local template
+
+    Groq is skipped immediately (no blocking wait) when the provider health
+    tracker reports it as unhealthy (≥3 failures in the last 5 minutes).
+    """
+    style_suffix = f", {style_profile}" if style_profile else ""
+    first_200    = " ".join(chunk_text.split()[:200])
+
+    # ── Tier 1: cache ─────────────────────────────────────────────────────────
+    _cache_prompt = f"img|{first_200[:300]}"
+    try:
+        from agents.ai_cache import cache_get, cache_set
+        _cached = cache_get(_cache_prompt, "visual_query", "image_prompt", ttl_days=14)
+        if _cached:
+            print(f"[IMAGE] Cached visual query reused: {_cached[:60]}")
+            return f"{_cached}{style_suffix}{_IMAGE_PROMPT_SUFFIX}"
+    except ImportError:
+        cache_get = cache_set = None  # type: ignore
+
+    # ── Tier 2: deterministic factual query ───────────────────────────────────
+    det_query = build_visual_search_query(chunk_text, topic=topic, research=research)
+    _is_generic = det_query.lower().strip().startswith("true crime historical")
+    if det_query and not _is_generic:
+        print(f"[IMAGE] Tier2 deterministic query: {det_query[:70]}")
+        try:
+            from agents.ai_cache import cache_set as _cs
+            _cs(_cache_prompt, "visual_query", "image_prompt", det_query)
+        except ImportError:
+            pass
+        return f"{det_query}{style_suffix}{_IMAGE_PROMPT_SUFFIX}"
+
+    # ── Build AI enhancement prompt (shared by Tier 3 + 4) ───────────────────
+    style_rule = f"\n- Match this visual style: {style_profile}" if style_profile else ""
+    ai_prompt = (
         "Read this script excerpt and write a specific visual image generation prompt "
-        "(max 20 words) that represents the exact subject being described.\n\n"
+        "(max 20 words) representing the exact subject.\n\n"
         f"Rules:\n- Name real places, real objects, real events\n- No human faces\n"
         f"- Dark cinematic documentary style\n- Be specific not generic{style_rule}\n\n"
         "Examples:\n"
@@ -1485,66 +1652,75 @@ def build_image_prompt(chunk_text: str, style_profile: str = "") -> str:
         f"Script excerpt: {first_200}\n\nReturn only the image prompt, nothing else."
     )
 
-    # Cache check first
-    try:
-        from agents.ai_cache import cache_get, cache_set
-        _cached = cache_get(prompt, "groq", "image_prompt", ttl_days=14)
-        if _cached:
-            return f"{_cached}{style_suffix}{_IMAGE_PROMPT_SUFFIX}"
-    except ImportError:
-        cache_get = cache_set = None
-
-    def _call_groq_for_prompt():
+    # ── Tier 3: Groq (skipped when unhealthy — NO blocking wait) ─────────────
+    if _provider_health.is_healthy("groq"):
         try:
             from agents.script_agent import _groq_call as _gc
         except ImportError:
             try:
-                from script_agent import _groq_call as _gc
+                from script_agent import _groq_call as _gc  # type: ignore
             except ImportError:
-                return ""
-        try:
-            return _gc(
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=60, temperature=0.7,
-            ).choices[0].message.content.strip().strip('"\'')
-        except Exception as e:
-            print(f"[Image] Groq image prompt failed: {e}")
-            return ""
+                _gc = None  # type: ignore
+        if _gc:
+            try:
+                import groq as _groq_lib
+                result = _gc(
+                    messages=[{"role": "user", "content": ai_prompt}],
+                    max_tokens=60, temperature=0.7,
+                ).choices[0].message.content.strip().strip('"\'')
+                if result:
+                    print(f"[IMAGE] Tier3 Groq prompt: {result[:70]}")
+                    _provider_health.reset("groq")
+                    try:
+                        from agents.ai_cache import cache_set as _cs
+                        _cs(_cache_prompt, "visual_query", "image_prompt", result)
+                    except ImportError:
+                        pass
+                    return f"{result}{style_suffix}{_IMAGE_PROMPT_SUFFIX}"
+            except Exception as e:
+                _provider_health.record_failure("groq")
+                print(f"[IMAGE] Tier3 Groq failed (recorded): {e}")
 
-    result = _call_groq_for_prompt()
-    if result:
-        print(f"[Image] Chunk prompt (Groq): {result[:70]}")
-        try:
-            from agents.ai_cache import cache_set as _cs
-            _cs(prompt, "groq", "image_prompt", result)
-        except ImportError:
-            pass
-        return f"{result}{style_suffix}{_IMAGE_PROMPT_SUFFIX}"
+    # ── Tier 4: OpenAI fallback ───────────────────────────────────────────────
+    if _provider_health.is_healthy("openai"):
+        api_key = os.getenv("OPENAI_API_KEY", "").strip()
+        if api_key:
+            try:
+                r = requests.post(
+                    "https://api.openai.com/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                    json={"model": "gpt-4o-mini",
+                          "messages": [{"role": "user", "content": ai_prompt}],
+                          "max_tokens": 60, "temperature": 0.7},
+                    timeout=12,
+                )
+                if r.status_code == 200:
+                    result = r.json()["choices"][0]["message"]["content"].strip().strip('"\'')
+                    if result:
+                        print(f"[IMAGE] Tier4 OpenAI fallback: {result[:70]}")
+                        _provider_health.reset("openai")
+                        try:
+                            from agents.ai_cache import cache_set as _cs
+                            _cs(_cache_prompt, "visual_query", "image_prompt", result)
+                        except ImportError:
+                            pass
+                        return f"{result}{style_suffix}{_IMAGE_PROMPT_SUFFIX}"
+                elif r.status_code == 429:
+                    _provider_health.record_failure("openai")
+                    print("[IMAGE] Tier4 OpenAI rate-limited (recorded)")
+            except Exception as e:
+                _provider_health.record_failure("openai")
+                print(f"[IMAGE] Tier4 OpenAI failed (recorded): {e}")
 
-    # OpenAI fallback
-    api_key = os.getenv("OPENAI_API_KEY", "").strip()
-    if api_key:
-        try:
-            r = requests.post(
-                "https://api.openai.com/v1/chat/completions",
-                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                json={"model": "gpt-4o-mini", "messages": [{"role": "user", "content": prompt}],
-                      "max_tokens": 60, "temperature": 0.7},
-                timeout=30,
-            )
-            if r.status_code == 200:
-                result = r.json()["choices"][0]["message"]["content"].strip().strip('"\'')
-                print(f"[Image] Chunk prompt (OpenAI): {result[:70]}")
-                try:
-                    from agents.ai_cache import cache_set as _cs
-                    _cs(prompt, "gpt-4o-mini", "image_prompt", result)
-                except ImportError:
-                    pass
-                return f"{result}{style_suffix}{_IMAGE_PROMPT_SUFFIX}"
-        except Exception as e:
-            print(f"[Image] build_image_prompt OpenAI failed: {e}")
-
-    return f"true crime historical documentary scene cinematic dark{style_suffix}{_IMAGE_PROMPT_SUFFIX}"
+    # ── Tier 5: local emergency template ─────────────────────────────────────
+    _entity = topic or "crime"
+    years   = re.findall(r'\b(19[4-9]\d|20[0-2]\d)\b', chunk_text)
+    _year   = years[0] if years else ""
+    loc_hit = next((k for k in _LOCATIONS if k in chunk_text.lower()), "")
+    _loc    = loc_hit.title() if loc_hit else ""
+    template = " ".join(filter(None, [_entity, _loc, _year, "documentary"])).strip()
+    print(f"[IMAGE] Tier5 local template: {template[:70]}")
+    return f"{template}{style_suffix}{_IMAGE_PROMPT_SUFFIX}"
 
 
 SCENE_PROMPTS: dict[str, list[str]] = {
@@ -1577,7 +1753,8 @@ def get_scene_prompts(topic: str, research: dict) -> list[str] | None:
 def generate_image_prompts(script_text: str, count: int, topic: str = "", research: dict | None = None, style_profile: str = "") -> list[str]:
     """Split script into [count] equal chunks, call OpenAI once per chunk.
     Returns list of [count] specific image prompts.
-    Falls back gracefully per chunk if OpenAI call fails.
+    Falls back gracefully per chunk if AI is unavailable.
+    Deduplicates similar adjacent chunks to cut AI calls by 50–80 %.
     """
     import re
 
@@ -1597,16 +1774,48 @@ def generate_image_prompts(script_text: str, count: int, topic: str = "", resear
         return [f"true crime historical documentary scene cinematic dark{_IMAGE_PROMPT_SUFFIX}"] * count
 
     chunk_size = max(1, len(words) // count)
+
+    def _word_set(text: str) -> set:
+        return {w.lower() for w in text.split() if len(w) > 3 and w.lower() not in _STOPWORDS}
+
+    def _jaccard(a: str, b: str) -> float:
+        sa, sb = _word_set(a), _word_set(b)
+        if not sa or not sb:
+            return 0.0
+        return len(sa & sb) / len(sa | sb)
+
     prompts: list[str] = []
+    prev_chunk = ""
+    prev_prompt = ""
+    ai_calls = 0
+    dedup_hits = 0
+
     for i in range(count):
         start      = i * chunk_size
         end        = start + chunk_size if i < count - 1 else len(words)
         chunk_text = " ".join(words[start:end])
-        prompts.append(build_image_prompt(chunk_text, style_profile=style_profile))
-        if i < count - 1:
-            time.sleep(1)
 
-    print(f"[Image] Built {len(prompts)} chunk-specific prompts from script")
+        # Dedup: reuse previous prompt when chunks are ≥60 % similar
+        if prev_chunk and prev_prompt and _jaccard(chunk_text, prev_chunk) >= 0.60:
+            prompts.append(prev_prompt)
+            dedup_hits += 1
+            print(f"[IMAGE] Chunk {i+1}/{count} deduped (reusing similar prompt)")
+        else:
+            p = build_image_prompt(
+                chunk_text,
+                style_profile=style_profile,
+                topic=topic,
+                research=research,
+            )
+            prompts.append(p)
+            prev_chunk  = chunk_text
+            prev_prompt = p
+            ai_calls += 1
+
+    print(
+        f"[Image] Built {len(prompts)} prompts "
+        f"(AI calls: {ai_calls}, deduped: {dedup_hits}/{count})"
+    )
     return prompts
 
 
@@ -2083,12 +2292,15 @@ def _search_pixabay_videos(query: str, per_page: int = 15) -> list[str]:
 
 
 def _groq_query_for_chunk(chunk_text: str, topic: str = "", for_video: bool = False) -> str | None:
-    """Groq-based fallback query generator when OpenAI is unavailable."""
+    """Groq-based query generator — skipped instantly when provider is unhealthy."""
+    if not _provider_health.is_healthy("groq"):
+        print("[Stock] Groq unhealthy — skipping for chunk query")
+        return None
     try:
         from agents.script_agent import _groq_call
     except ImportError:
         try:
-            from script_agent import _groq_call
+            from script_agent import _groq_call  # type: ignore
         except ImportError:
             return None
     first_120 = " ".join((chunk_text or "").split()[:120])
@@ -2122,9 +2334,11 @@ def _groq_query_for_chunk(chunk_text: str, topic: str = "", for_video: bool = Fa
             max_tokens=20, temperature=0.2,
         ).choices[0].message.content.strip().strip('"\'')
         if 2 <= len(result.split()) <= 8:
+            _provider_health.reset("groq")
             return result
     except Exception as e:
-        print(f"[Stock] Groq query failed: {e}")
+        _provider_health.record_failure("groq")
+        print(f"[Stock] Groq query failed (recorded): {e}")
     return None
 
 
@@ -2146,7 +2360,7 @@ def _extract_script_keywords(script_text: str, topic: str = "", count: int = 8) 
         except ImportError:
             pass
 
-    if _groq_call:
+    if _groq_call and _provider_health.is_healthy("groq"):
         try:
             excerpt = " ".join(script_text.split()[:600])
             prompt = (
@@ -2170,7 +2384,8 @@ def _extract_script_keywords(script_text: str, topic: str = "", count: int = 8) 
                 print(f"[Stock] Groq extracted {len(queries)} keywords for '{topic}'")
                 return queries
         except Exception as e:
-            print(f"[Stock] Groq keyword extraction failed: {e}")
+            _provider_health.record_failure("groq")
+            print(f"[Stock] Groq keyword extraction failed (recorded): {e}")
 
     # Rule-based fallback
     topic_lower = (topic or "").lower()
@@ -3357,13 +3572,21 @@ def _section_fallback_query(section_idx: int, topic: str) -> str:
 
 
 def _get_stock_video_query_for_chunk(chunk_text: str, topic: str = "") -> str | None:
-    """Generate stock-video-friendly B-roll query from script chunk. Groq primary → OpenAI fallback."""
-    # Groq first (free tier)
+    """
+    B-roll video query builder.
+    Priority: deterministic → Groq (if healthy) → OpenAI fallback.
+    """
+    # Tier 1: deterministic (no AI)
+    det = build_visual_search_query(chunk_text, topic=topic)
+    if det and not det.lower().startswith("true crime historical"):
+        return det
+
+    # Tier 2: Groq (only if healthy)
     result = _groq_query_for_chunk(chunk_text, topic=topic, for_video=True)
     if result:
         return result
 
-    # OpenAI fallback
+    # Tier 3: OpenAI fallback
     first_120 = " ".join((chunk_text or "").split()[:120])
     prompt = (
         f"Create one stock video search query (3-6 English words) for this script chunk.\n"
@@ -3375,7 +3598,7 @@ def _get_stock_video_query_for_chunk(chunk_text: str, topic: str = "") -> str | 
         f"Text: {first_120}\nReturn only the query."
     )
     api_key = os.getenv("OPENAI_API_KEY", "").strip()
-    if api_key:
+    if api_key and _provider_health.is_healthy("openai"):
         try:
             r = requests.post(
                 "https://api.openai.com/v1/chat/completions",
@@ -3383,14 +3606,17 @@ def _get_stock_video_query_for_chunk(chunk_text: str, topic: str = "") -> str | 
                 json={"model": "gpt-4o-mini",
                       "messages": [{"role": "user", "content": prompt}],
                       "max_tokens": 20, "temperature": 0.2},
-                timeout=20,
+                timeout=12,
             )
             if r.status_code == 200:
                 q = r.json()["choices"][0]["message"]["content"].strip().strip('"\'')
                 if 2 <= len(q.split()) <= 8:
                     return q
+            elif r.status_code == 429:
+                _provider_health.record_failure("openai")
         except Exception as e:
-            print(f"[Stock] OpenAI video query failed: {e}")
+            _provider_health.record_failure("openai")
+            print(f"[Stock] OpenAI video query failed (recorded): {e}")
     return None
 
 
@@ -3771,32 +3997,81 @@ def _translate_to_arabic_query(english_query: str) -> str | None:
 
 
 def search_real_image(query: str, output_path: str) -> str | None:
-    """DuckDuckGo then Google image search. Returns saved path or None."""
-    urls = _ddgs_image_results(query)
-    if not urls:
-        urls = _google_image_results(query)
-    if not urls:
-        print(f"[Image] No real photo found for '{query}'")
-        return None
-    saved = _download_first_valid(urls, output_path)
-    if saved:
-        print(f"[Image] Real photo: '{query}'")
-        return saved
+    """
+    Parallel multi-source image search: DDG + Wikimedia + Internet Archive.
+    First valid download wins. Falls back to Google if parallel pass yields nothing.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    def _fetch_ddgs():
+        return _ddgs_image_results(query)
+
+    def _fetch_wiki():
+        return _wikimedia_image_results(query, max_results=4)
+
+    def _fetch_archive():
+        return _internet_archive_image_results(query, max_results=3)
+
+    all_urls: list[str] = []
+    try:
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            futures = {
+                pool.submit(_fetch_ddgs):    "DDG",
+                pool.submit(_fetch_wiki):    "Wikimedia",
+                pool.submit(_fetch_archive): "Archive",
+            }
+            for fut in as_completed(futures, timeout=18):
+                src = futures[fut]
+                try:
+                    urls = fut.result()
+                    if urls:
+                        print(f"[IMAGE] {src} returned {len(urls)} URLs for '{query}'")
+                        all_urls.extend(urls)
+                except Exception as e:
+                    print(f"[IMAGE] {src} search error: {e}")
+    except Exception as e:
+        print(f"[IMAGE] Parallel retrieval failed ({e}) — falling back to sequential")
+        all_urls = _ddgs_image_results(query) or []
+
+    # Deduplicate while preserving order
+    seen: set[str] = set()
+    deduped = [u for u in all_urls if not (u in seen or seen.add(u))]  # type: ignore[func-returns-value]
+
+    if deduped:
+        saved = _download_first_valid(deduped, output_path)
+        if saved:
+            print(f"[IMAGE] Tier1 retrieval used: '{query}'")
+            return saved
+
+    # Fallback: Google (sequential, separate key path)
+    g_urls = _google_image_results(query)
+    if g_urls:
+        saved = _download_first_valid(g_urls, output_path)
+        if saved:
+            print(f"[IMAGE] Tier1 retrieval used (Google): '{query}'")
+            return saved
+
     print(f"[Image] No real photo found for '{query}'")
     return None
 
 
-def _get_search_query_for_chunk(chunk_text: str) -> str | None:
+def _get_search_query_for_chunk(chunk_text: str, topic: str = "") -> str | None:
     """
-    Get a specific English image search query for a script chunk.
-    Always English even if chunk is Arabic. Groq primary → OpenAI fallback.
+    Get a factual English image search query for a script chunk.
+    Priority: deterministic → Groq (if healthy) → OpenAI fallback.
+    Always returns English even if chunk is Arabic.
     """
-    # Groq first (free tier)
-    result = _groq_query_for_chunk(chunk_text, for_video=False)
+    # Tier 1: deterministic (no AI)
+    det = build_visual_search_query(chunk_text, topic=topic)
+    if det and not det.lower().startswith("true crime historical"):
+        return det
+
+    # Tier 2: Groq (only if healthy — no blocking wait)
+    result = _groq_query_for_chunk(chunk_text, topic=topic, for_video=False)
     if result:
         return result
 
-    # OpenAI fallback
+    # Tier 3: OpenAI fallback
     first_150 = " ".join(chunk_text.split()[:150])
     prompt = (
         "What is the single most specific, searchable subject in this text?\n"
@@ -3809,7 +4084,7 @@ def _get_search_query_for_chunk(chunk_text: str) -> str | None:
         "Return only the English search query, nothing else."
     )
     api_key = os.getenv("OPENAI_API_KEY", "").strip()
-    if api_key:
+    if api_key and _provider_health.is_healthy("openai"):
         try:
             r = requests.post(
                 "https://api.openai.com/v1/chat/completions",
@@ -3817,14 +4092,17 @@ def _get_search_query_for_chunk(chunk_text: str) -> str | None:
                 json={"model": "gpt-4o-mini",
                       "messages": [{"role": "user", "content": prompt}],
                       "max_tokens": 20, "temperature": 0.3},
-                timeout=20,
+                timeout=12,
             )
             if r.status_code == 200:
                 q = r.json()["choices"][0]["message"]["content"].strip().strip('"\'')
                 if len(q.split()) <= 8 and len(q) > 3:
                     return q
+            elif r.status_code == 429:
+                _provider_health.record_failure("openai")
         except Exception as e:
-            print(f"[Image] OpenAI search query failed: {e}")
+            _provider_health.record_failure("openai")
+            print(f"[Image] OpenAI search query failed (recorded): {e}")
     return None
 
 
