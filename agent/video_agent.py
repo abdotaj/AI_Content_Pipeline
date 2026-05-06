@@ -193,6 +193,145 @@ def _apply_arabic_pronunciation(text: str) -> str:
     return text
 
 
+# ── Selective tashkeel (diacritics) ──────────────────────────────────────────
+# Applied ONLY to high-ambiguity words — names, crime/legal terms, locations.
+# Never fully vowelize: that bloats the script and slows TTS.
+ARABIC_PRONUNCIATION_FIXES: dict[str, str] = {
+    # Serial killer names (common in pipeline)
+    "دهمر":          "دَاهمَر",
+    "داهمر":         "دَاهمَر",
+    "بندي":          "بَاندي",
+    "غيسي":          "غِيسي",
+    "بيرمر":         "بيرمَر",
+    # Investigative / police
+    "المحقق":        "المُحَقِّق",
+    "المحققون":      "المُحَقِّقون",
+    "المحققين":      "المُحَقِّقين",
+    "التحقيق":       "التَّحقيق",
+    "تحقيق":         "تَحقيق",
+    # Crime terms
+    "الجريمة":       "الجَريمة",
+    "الجرائم":       "الجَرائِم",
+    "الضحية":        "الضَّحِيَّة",
+    "الضحايا":       "الضَّحَايا",
+    "القاتل":        "القاتِل",
+    "القتل":         "القَتل",
+    "الاعتراف":      "الاعتِراف",
+    "الجثة":         "الجُثَّة",
+    "الجثث":         "الجُثَث",
+    "الشهود":        "الشُّهود",
+    "الأدلة":        "الأَدِلَّة",
+    "الاعتقال":      "الاعتِقال",
+    "الاختطاف":      "الاختِطاف",
+    "التعذيب":       "التَّعذيب",
+    "العصابة":       "العِصابة",
+    # Legal / court
+    "المحكمة":       "المَحكَمة",
+    "القضاء":        "القَضاء",
+    "العقوبة":       "العُقوبة",
+    "الإدانة":       "الإِدانة",
+    "البراءة":       "البَراءة",
+    "المتهم":        "المُتَّهم",
+    "المتهمون":      "المُتَّهمون",
+    # Prison
+    "السجن":         "السِّجن",
+    "المعتقل":       "المُعتَقَل",
+    # Locations (transliterated)
+    "ميلووكي":       "مِيلووكي",
+    "ويسكونسن":      "وِسكونسِن",
+}
+
+
+def apply_arabic_pronunciation_fixes(text: str) -> str:
+    """Apply selective tashkeel to high-ambiguity Arabic words for correct TTS pronunciation."""
+    for wrong, correct in ARABIC_PRONUNCIATION_FIXES.items():
+        text = text.replace(wrong, correct)
+    print("[AR] Selective tashkeel added")
+    return text
+
+
+# ── Arabic number expansion ───────────────────────────────────────────────────
+
+_AR_ONES = [
+    "", "واحد", "اثنان", "ثلاثة", "أربعة", "خمسة",
+    "ستة", "سبعة", "ثمانية", "تسعة", "عشرة",
+    "أحد عشر", "اثنا عشر", "ثلاثة عشر", "أربعة عشر", "خمسة عشر",
+    "ستة عشر", "سبعة عشر", "ثمانية عشر", "تسعة عشر",
+]
+_AR_TENS = [
+    "", "", "عشرون", "ثلاثون", "أربعون", "خمسون",
+    "ستون", "سبعون", "ثمانون", "تسعون",
+]
+_AR_HUNDREDS = [
+    "", "مائة", "مئتان", "ثلاثمائة", "أربعمائة", "خمسمائة",
+    "ستمائة", "سبعمائة", "ثمانمائة", "تسعمائة",
+]
+_AR_DECADES = {
+    "1920s": "العشرينيات", "1930s": "الثلاثينيات", "1940s": "الأربعينيات",
+    "1950s": "الخمسينيات", "1960s": "الستينيات",  "1970s": "السبعينيات",
+    "1980s": "الثمانينيات","1990s": "التسعينيات",  "2000s": "الألفينيات",
+    "2010s": "العشرينيات من الألفية الثالثة",
+    "2020s": "عشرينيات الألفية الثالثة",
+}
+
+
+def _int_to_arabic_words(n: int) -> str:
+    """Convert a non-negative integer to its spoken Arabic word form."""
+    if n == 0:
+        return "صفر"
+    parts: list[str] = []
+    if n >= 1000:
+        th = n // 1000
+        if th == 1:
+            parts.append("ألف")
+        elif th == 2:
+            parts.append("ألفان")
+        elif 3 <= th <= 10:
+            parts.append(_AR_ONES[th] + " آلاف")
+        else:
+            parts.append(_int_to_arabic_words(th) + " ألف")
+        n %= 1000
+    if n >= 100:
+        parts.append(_AR_HUNDREDS[n // 100])
+        n %= 100
+    if n >= 20:
+        t, o = n // 10, n % 10
+        if o:
+            parts.append(_AR_ONES[o] + " و" + _AR_TENS[t])
+        else:
+            parts.append(_AR_TENS[t])
+    elif n > 0:
+        parts.append(_AR_ONES[n])
+    return " و".join(parts)
+
+
+def expand_arabic_numbers(text: str) -> str:
+    """Convert digits in Arabic text to spoken Arabic word form before TTS."""
+    import re as _re
+
+    # 1. Decades first (e.g. "1990s" before the bare year "1990")
+    for decade, ar in _AR_DECADES.items():
+        text = text.replace(decade, ar)
+
+    # 2. 4-digit years 1900–2099
+    def _replace_year(m: re.Match) -> str:
+        return _int_to_arabic_words(int(m.group()))
+
+    text = _re.sub(r'\b(19\d{2}|20[012]\d)\b', _replace_year, text)
+
+    # 3. All remaining standalone numbers ≥ 2
+    def _replace_num(m: re.Match) -> str:
+        n = int(m.group())
+        if n < 2:
+            return m.group()   # keep 0/1 as-is; rarely cause issues
+        return _int_to_arabic_words(n)
+
+    text = _re.sub(r'\b\d+\b', _replace_num, text)
+
+    print("[AR] Numbers expanded")
+    return text
+
+
 def generate_voiceover_edgetts(script_text: str, filename: str, language: str = "english") -> str:
     """Generate voiceover using edge-tts."""
     try:
@@ -225,9 +364,26 @@ def generate_voiceover_edgetts(script_text: str, filename: str, language: str = 
 
 
 def preprocess_arabic_tts(text: str) -> str:
-    """Add natural pause markers for Arabic TTS to improve rhythm and flow."""
-    text = text.replace("،", "،...")
-    text = text.replace(".", "...")
+    """
+    Full Arabic TTS preprocessing pipeline:
+      1. apply_arabic_pronunciation_fixes — selective tashkeel
+      2. expand_arabic_numbers — digits → spoken Arabic words
+      3. punctuation pacing — commas, ellipses for natural narration rhythm
+    """
+    import re as _re
+
+    text = apply_arabic_pronunciation_fixes(text)
+    text = expand_arabic_numbers(text)
+
+    # Pacing: sentence-ending period → ellipsis for dramatic pause
+    text = _re.sub(r'\.\s*\n', '...\n', text)
+    text = _re.sub(r'\.\s*$', '...', text, flags=_re.MULTILINE)
+    # Comma → comma + pause hint (space before next word reads naturally)
+    text = text.replace("،", "،  ")
+    # Line breaks as breath pauses
+    text = _re.sub(r'\n+', '\n', text)
+
+    print("[AR] Pronunciation fixes applied")
     return text
 
 

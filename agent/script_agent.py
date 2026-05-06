@@ -3531,6 +3531,110 @@ def _expand_arabic_script_to_min(ar_script: str, target_min: int = 1800) -> str:
     return result
 
 
+def estimate_arabic_duration(text: str) -> float:
+    """Estimate Arabic TTS duration in minutes (130 WPM speaking rate)."""
+    return clean_word_count(text) / 130.0
+
+
+def expand_arabic_narration_style(section_text: str, topic: str = "") -> str:
+    """
+    Rewrite a compressed Arabic section in cinematic documentary narration style.
+    Expands atmosphere and pacing without repeating facts or adding filler.
+    """
+    wc = clean_word_count(section_text)
+    target = int(wc * 1.5)
+    topic_line = f"الموضوع: {topic}\n" if topic else ""
+    prompt = (
+        f"{topic_line}"
+        "أنت راوٍ وثائقي. أعد كتابة النص العربي التالي بأسلوب سينمائي أكثر توسعاً وإثارة.\n\n"
+        "القواعد الصارمة:\n"
+        "- لا تحذف أي معلومة أو اسم أو تاريخ من النص الأصلي\n"
+        "- أضف جملاً تصف المشهد والجو والتوتر الدرامي\n"
+        "- استخدم الحذف (...) بعد اللحظات المشحونة\n"
+        "- وسّع الجمل القصيرة إلى جمل أكثر سردية\n"
+        "- اكتب بأسلوب التعليق الوثائقي المنطوق لا المكتوب\n"
+        "- لا تضف معلومات خاطئة\n"
+        f"- الهدف: حوالي {target} كلمة\n\n"
+        "النص الأصلي:\n"
+        f"{section_text}\n\n"
+        "اكتب النص الموسّع فقط. لا شرح."
+    )
+    try:
+        result = _ai_script_call(prompt, max_tokens=2000, temperature=0.6, premium=True)
+        if result and clean_word_count(result) > wc:
+            print(f"[AR] Section expanded for pacing: {wc}w → {clean_word_count(result)}w")
+            return result
+    except Exception as e:
+        print(f"[AR] Narration expansion failed: {e}")
+    return section_text
+
+
+def expand_arabic_runtime(ar_script: str, target_min: float, topic: str = "") -> str:
+    """
+    Expand Arabic script section-by-section until estimated runtime reaches target_min.
+    Only expands sections that are shorter than their proportional share.
+    Does NOT regenerate the full script.
+    """
+    import re as _re
+    import time as _time
+
+    current_min = estimate_arabic_duration(ar_script)
+    if current_min >= target_min:
+        return ar_script
+
+    print(f"[AR] Runtime mismatch detected: {current_min:.1f}min < {target_min:.1f}min target")
+    print("[AR] Expanding Arabic narration")
+
+    # Split by [SECTION: ...] markers; fall back to paragraph chunks if no markers
+    raw = _re.split(r'(\[SECTION:[^\]]+\])', ar_script)
+    has_markers = len(raw) > 1
+
+    if has_markers:
+        # Pair each marker with its following body
+        sections: list[tuple[str, str]] = []
+        i = 0
+        if raw[0].strip():
+            sections.append(("", raw[0]))
+        while i < len(raw):
+            if _re.match(r'\[SECTION:[^\]]+\]', raw[i]):
+                body = raw[i + 1] if i + 1 < len(raw) else ""
+                sections.append((raw[i], body))
+                i += 2
+            else:
+                i += 1
+    else:
+        # No markers: treat each paragraph as a "section"
+        paras = [p.strip() for p in ar_script.split("\n\n") if p.strip()]
+        sections = [("", p) for p in paras]
+
+    total_wc  = max(clean_word_count(ar_script), 1)
+    need_wc   = int(target_min * 130)
+    gap_wc    = need_wc - total_wc
+    n_sec     = len(sections)
+
+    result_parts: list[str] = []
+    words_added = 0
+
+    for idx, (marker, body) in enumerate(sections):
+        sec_wc    = clean_word_count(body)
+        sec_share = sec_wc / total_wc if total_wc else 1.0 / max(n_sec, 1)
+        sec_gap   = int(gap_wc * sec_share)
+
+        if sec_gap >= 40 and sec_wc >= 30:
+            expanded = expand_arabic_narration_style(body.strip(), topic=topic)
+            words_added += max(0, clean_word_count(expanded) - sec_wc)
+            result_parts.append((marker + "\n" + expanded).strip())
+            if idx < n_sec - 1:
+                _time.sleep(1)          # avoid rate-limit on rapid Groq calls
+        else:
+            result_parts.append((marker + "\n" + body).strip() if marker else body.strip())
+
+    joined = "\n\n".join(result_parts)
+    new_min = estimate_arabic_duration(joined)
+    print(f"[AR] Arabic runtime balanced: {current_min:.1f}min → {new_min:.1f}min (+{words_added} words)")
+    return joined
+
+
 def translate_script(en_script: dict) -> dict:
     """Translate an English script_data dict into Arabic with stable section markers."""
     _topic_lower = en_script.get("topic", "").lower()
@@ -3566,6 +3670,23 @@ def translate_script(en_script: dict) -> dict:
     print(f"[Script] Arabic word count after translation: {_ar_wc}")
     if _ar_wc < 1800:
         ar_data["script"] = _expand_arabic_script_to_min(ar_data["script"], target_min=1800)
+
+    # ── Runtime parity check ──────────────────────────────────────────────────
+    # Arabic scripts often compress to 65-75% of English runtime even when
+    # word counts match, because Arabic TTS speaks fewer syllables per minute.
+    # Target: Arabic runtime must be ≥ 90% of English runtime.
+    _en_wc      = clean_word_count(en_script.get("script", ""))
+    _en_min     = _en_wc / 145.0          # English TTS ~145 WPM
+    _ar_min     = estimate_arabic_duration(ar_data.get("script", ""))
+    _ar_target  = _en_min * 0.90
+    print(f"[AR] EN runtime: ~{_en_min:.1f}min | AR runtime: ~{_ar_min:.1f}min "
+          f"| target ≥ {_ar_target:.1f}min")
+    if _ar_min < _ar_target:
+        _topic = en_script.get("topic", "")
+        ar_data["script"] = expand_arabic_runtime(
+            ar_data["script"], target_min=_ar_target, topic=_topic
+        )
+
     if ar_data.get("script"):
         ar_data["script"] = upgrade_arabic_script(ar_data["script"])
         ar_data["script"] = evaluate_and_fix_script(ar_data["script"])
