@@ -847,6 +847,12 @@ def run_pipeline():
     print(f"  YouTube AR: {yt_ar_url or 'FAILED'}")
     print(f"  Shorts sent: {_total_shorts} (1 EN + 1 AR best chapters)")
     print(f"{'='*60}\n")
+    print("[Render] Pipeline exiting cleanly")
+    # Force-exit to prevent daemon threads / orphan ffmpeg processes from
+    # keeping the GitHub Actions runner alive indefinitely after completion.
+    import gc as _gc
+    _gc.collect()
+    sys.exit(0)
 
 
 def get_duration(video_path: str) -> str:

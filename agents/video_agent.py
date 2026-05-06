@@ -4137,6 +4137,139 @@ def image_to_clips(image_path: str, n_variations: int = 4) -> list:
     return clips
 
 
+def _kill_orphan_ffmpeg() -> None:
+    """Kill any lingering ffmpeg child processes spawned by this Python session."""
+    try:
+        import psutil
+        current = psutil.Process()
+        killed  = 0
+        for child in current.children(recursive=True):
+            if "ffmpeg" in child.name().lower():
+                try:
+                    child.kill()
+                    killed += 1
+                    print(f"[Render] Killed ffmpeg PID {child.pid}")
+                except Exception as _ke:
+                    print(f"[Render] Could not kill PID {child.pid}: {_ke}")
+        print(f"[Render] ffmpeg cleanup: {killed} process(es) killed")
+        return
+    except ImportError:
+        pass
+    except Exception as _pe:
+        print(f"[Render] psutil cleanup failed: {_pe}")
+    # Linux fallback (GitHub Actions)
+    try:
+        subprocess.run(["pkill", "-TERM", "-f", "ffmpeg"],
+                       capture_output=True, timeout=10)
+        print("[Render] Sent TERM to ffmpeg via pkill")
+    except Exception:
+        pass
+
+
+def _validate_output_file(path: str) -> bool:
+    """Return True if path is a valid, non-corrupt MP4 file."""
+    if not os.path.exists(path):
+        print(f"[Render] Validation FAILED — file missing: {path}")
+        return False
+    size_mb = os.path.getsize(path) // (1024 * 1024)
+    if size_mb < 1:
+        print(f"[Render] Validation FAILED — too small ({size_mb} MB): {path}")
+        return False
+    ffmpeg_bin = _get_ffmpeg()
+    if not ffmpeg_bin:
+        print(f"[Render] Output validated (no ffprobe): {os.path.basename(path)} ({size_mb} MB)")
+        return True
+    try:
+        result = subprocess.run(
+            [ffmpeg_bin, "-v", "error", "-i", path, "-f", "null", "-"],
+            capture_output=True, text=True, timeout=60,
+        )
+        if "moov atom not found" in result.stderr or "Invalid data" in result.stderr:
+            print(f"[Render] Validation FAILED — corrupt MP4: {result.stderr[:200]}")
+            return False
+        print(f"[Render] Output validated: {os.path.basename(path)} ({size_mb} MB)")
+        return True
+    except Exception as _ve:
+        print(f"[Render] Validation error (assuming OK): {_ve}")
+        return True
+
+
+def _write_video_safe(
+    final_clip,
+    output_path: str,
+    clips_to_close: list,
+    timeout_seconds: int = 3600,
+    **write_kwargs,
+) -> bool:
+    """
+    Thread-with-timeout wrapper around MoviePy write_videofile.
+
+    Guarantees:
+    - Heartbeat log every 60 s — prevents GitHub Actions runner timeout
+    - Clips are closed in finally regardless of success / failure / timeout
+    - On timeout: kills orphan ffmpeg processes, returns False
+    - On success: returns True and logs export finish
+
+    Usage:
+        ok = _write_video_safe(final, path, [audio, final, *clips], timeout_seconds=3600,
+                               fps=30, codec="libx264", ...)
+    """
+    import threading
+    import gc as _gc
+
+    result: dict = {"ok": False, "error": None}
+
+    def _write():
+        try:
+            print(f"[Render] Export started: {os.path.basename(output_path)}")
+            final_clip.write_videofile(output_path, **write_kwargs)
+            result["ok"] = True
+            print(f"[Render] Export finished: {os.path.basename(output_path)}")
+        except Exception as _we:
+            result["error"] = _we
+
+    write_thread = threading.Thread(target=_write, daemon=True)
+    write_thread.start()
+
+    elapsed    = 0
+    check_sec  = 10         # poll completion every 10 s
+    next_log   = 60         # first heartbeat at 60 s
+
+    while write_thread.is_alive():
+        write_thread.join(timeout=check_sec)
+        elapsed += check_sec
+        if not write_thread.is_alive():
+            break
+        if elapsed >= next_log:
+            print(f"[Render] Still active... elapsed={elapsed // 60}min — {os.path.basename(output_path)}")
+            next_log += 60
+        if elapsed >= timeout_seconds:
+            print(f"[Render] TIMEOUT after {elapsed // 60}min — killing ffmpeg and aborting")
+            _kill_orphan_ffmpeg()
+            result["error"] = TimeoutError(f"write_videofile timed out after {elapsed // 60}min")
+            break
+
+    # Always close every clip
+    print("[Render] Closing MoviePy resources")
+    for clip in clips_to_close:
+        if clip is None:
+            continue
+        try:
+            clip.close()
+        except Exception:
+            pass
+    try:
+        _gc.collect()
+    except Exception:
+        pass
+    print("[Render] Resources closed")
+
+    if result["error"]:
+        print(f"[Render] Export error: {result['error']}")
+        return False
+    return result["ok"]
+
+
 def assemble_video(
     audio_path: str,
     image_clips: list,
@@ -4204,34 +4337,23 @@ def assemble_video(
         return ""
 
     # â"€â"€ Write video â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
-    # Removed -profile:v baseline and -level 3.0: these can conflict with
-    # libx264 on Ubuntu (GitHub Actions runner) and cause encoder init failures.
-    try:
-        final.write_videofile(
-            output_path,
-            fps=30,
-            codec="libx264",
-            audio_codec="aac",
-            preset="ultrafast",
-            ffmpeg_params=[
-                "-pix_fmt", "yuv420p",
-                "-movflags", "+faststart",
-            ],
-            temp_audiofile=temp_audio,
-            logger=None,
-        )
-    except Exception as e:
-        print(f"[Video] CRASH at write_videofile: {e}")
-        traceback.print_exc()
+    _clips_to_close = [audio, final] + list(before_clips or []) + list(after_clips or [])
+    _ok = _write_video_safe(
+        final, output_path, _clips_to_close,
+        timeout_seconds=3600,
+        fps=30, codec="libx264", audio_codec="aac", preset="ultrafast",
+        ffmpeg_params=["-pix_fmt", "yuv420p", "-movflags", "+faststart"],
+        temp_audiofile=temp_audio, logger=None,
+    )
+    for _ in range(5):
+        try:
+            if os.path.exists(temp_audio):
+                os.remove(temp_audio)
+            break
+        except OSError:
+            time.sleep(0.5)
+    if not _ok:
         return ""
-    finally:
-        for _ in range(5):
-            try:
-                if os.path.exists(temp_audio):
-                    os.remove(temp_audio)
-                break
-            except OSError:
-                time.sleep(0.5)
 
     # â"€â"€ Verify output â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
     if not os.path.exists(output_path):
@@ -5460,33 +5582,31 @@ def assemble_video_with_hook(
         if final.duration > total_duration:
             final = final.subclip(0, total_duration)
         final = final.set_audio(audio)
-
-        final.write_videofile(
-            output_path,
-            fps=24,
-            codec="libx264",
-            audio_codec="aac",
-            preset="ultrafast",
-            ffmpeg_params=[
-                "-pix_fmt", "yuv420p",
-                "-movflags", "+faststart",
-            ],
-            temp_audiofile=temp_audio,
-            remove_temp=True,
-            logger=None,
-        )
     except Exception as e:
         print(f"[Video] CRASH assembling hook video: {e}")
         traceback.print_exc()
+        for clip in [audio] + hook_clips + final_main:
+            try: clip.close()
+            except Exception: pass
         return ""
-    finally:
-        for _ in range(5):
-            try:
-                if os.path.exists(temp_audio):
-                    os.remove(temp_audio)
-                break
-            except OSError:
-                time.sleep(0.5)
+
+    _clips_to_close = [audio, final] + hook_clips + final_main
+    _ok = _write_video_safe(
+        final, output_path, _clips_to_close,
+        timeout_seconds=3600,
+        fps=24, codec="libx264", audio_codec="aac", preset="ultrafast",
+        ffmpeg_params=["-pix_fmt", "yuv420p", "-movflags", "+faststart"],
+        temp_audiofile=temp_audio, remove_temp=True, logger=None,
+    )
+    for _ in range(5):
+        try:
+            if os.path.exists(temp_audio):
+                os.remove(temp_audio)
+            break
+        except OSError:
+            time.sleep(0.5)
+    if not _ok:
+        return ""
 
     if not os.path.exists(output_path):
         print(f"[Video] ERROR: output not created: {output_path}")
@@ -5765,29 +5885,31 @@ def assemble_short_video(audio_path: str, image_paths: list[str], output_path: s
             final = final.subclip(0, exact_duration)
         final = final.set_audio(audio)
         print(f"[Video] Final duration: {final.duration:.1f}s  Audio: {audio.duration:.1f}s")
-        final.write_videofile(
-            output_path,
-            fps=30,
-            codec="libx264",
-            audio_codec="aac",
-            preset="ultrafast",
-            ffmpeg_params=["-pix_fmt", "yuv420p", "-movflags", "+faststart"],
-            temp_audiofile=temp_audio,
-            remove_temp=True,
-            logger=None,
-        )
     except Exception as e:
         print(f"[Video] CRASH assembling short video: {e}")
         traceback.print_exc()
+        for clip in [audio] + all_clips:
+            try: clip.close()
+            except Exception: pass
         return ""
-    finally:
-        for _ in range(5):
-            try:
-                if os.path.exists(temp_audio):
-                    os.remove(temp_audio)
-                break
-            except OSError:
-                time.sleep(0.5)
+
+    _clips_to_close = [audio, final] + all_clips
+    _ok = _write_video_safe(
+        final, output_path, _clips_to_close,
+        timeout_seconds=1800,
+        fps=30, codec="libx264", audio_codec="aac", preset="ultrafast",
+        ffmpeg_params=["-pix_fmt", "yuv420p", "-movflags", "+faststart"],
+        temp_audiofile=temp_audio, remove_temp=True, logger=None,
+    )
+    for _ in range(5):
+        try:
+            if os.path.exists(temp_audio):
+                os.remove(temp_audio)
+            break
+        except OSError:
+            time.sleep(0.5)
+    if not _ok:
+        return ""
 
     if not os.path.exists(output_path):
         print(f"[Video] ERROR: short output not created: {output_path}")
@@ -6835,12 +6957,20 @@ def run_fast_pipeline(
         )
         if _thumb:
             script_data["thumbnail_path"] = _thumb
+    if video_path:
+        _validate_output_file(video_path)
+    _kill_orphan_ffmpeg()
+    try:
+        import gc as _gc; _gc.collect()
+    except Exception:
+        pass
     try:
         _tc = os.path.abspath("temp_clips")
         if os.path.isdir(_tc):
             shutil.rmtree(_tc, ignore_errors=True)
     except Exception:
         pass
+    print("[Render] Artifact upload starting")
     return video_path or ""
 
 
@@ -7264,7 +7394,14 @@ def run_full_pipeline(
         except Exception as _qe:
             print(f"[Quality] Processing skipped (non-fatal): {_qe}")
 
-    # ── Cleanup ────────────────────────────────────────────────────────────
+    # ── Validate + resource cleanup ────────────────────────────────────────
+    if video_path:
+        _validate_output_file(video_path)
+    _kill_orphan_ffmpeg()
+    try:
+        import gc as _gc; _gc.collect()
+    except Exception:
+        pass
     try:
         _tc = os.path.abspath("temp_clips")
         if os.path.isdir(_tc):
@@ -7272,6 +7409,7 @@ def run_full_pipeline(
             print("[Clip] temp_clips cleaned up")
     except Exception as _cleanup_err:
         print(f"[Clip] temp_clips cleanup skipped (non-fatal): {_cleanup_err}")
+    print("[Render] Artifact upload starting")
     return video_path or ""
 
 
