@@ -5838,20 +5838,57 @@ def generate_tts_sections(script_text: str, video_id: str, language: str) -> tup
 
 # â"€â"€ Clip system â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
-def extract_clips(video_path: str, out_dir: str, chunk_len: float = 8.0) -> list[str]:
+# Set False to skip the entire clip system (instant image-only fallback).
+USE_CLIPS = True
+
+# Global start time for timeout tracking — reset at the top of create_video().
+_PIPELINE_START: float = 0.0
+_MAX_CLIP_RUNTIME: float = 12 * 60  # 12 minutes max for all clip work combined
+
+
+def _check_clip_timeout() -> bool:
+    """Return True if the clip system has been running too long.
+
+    Compares wall-clock time against _PIPELINE_START + _MAX_CLIP_RUNTIME.
+    Always returns False if _PIPELINE_START is 0 (not yet set).
+    """
+    if _PIPELINE_START <= 0:
+        return False
+    return (time.time() - _PIPELINE_START) > _MAX_CLIP_RUNTIME
+
+
+def extract_clips(video_path: str, out_dir: str, chunk_len: float = 8.0,
+                  max_clips: int = 10) -> list[str]:
     """Split a source video into fixed-length clips via ffmpeg segment muxer.
 
+    Stops early after max_clips to avoid long ffmpeg runs on slow CI runners.
     Returns sorted list of clip paths that are at least 2 s long.
-    Falls back gracefully if ffmpeg is missing or the source is too short.
+    Falls back to [] gracefully on any failure.
     """
-    import shutil as _sh
-    ffmpeg = _sh.which("ffmpeg")
+    _t0 = time.time()
+    if _check_clip_timeout():
+        print("[Clip] Skipped extract_clips — global timeout reached")
+        return []
+
+    ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg or not os.path.exists(video_path):
+        return []
+
+    # Skip files >100 MB — too slow to process on GitHub runners
+    try:
+        if os.path.getsize(video_path) > 100 * 1024 * 1024:
+            print(f"[Clip] Skipping large file (>100 MB): {os.path.basename(video_path)}")
+            return []
+    except OSError:
         return []
 
     total_dur = _ffprobe_duration(video_path)
     if total_dur < 2.0:
         return []
+
+    # Only extract enough video to cover max_clips × chunk_len seconds
+    extract_secs = max_clips * chunk_len
+    duration_arg = ["-t", str(extract_secs)] if total_dur > extract_secs else []
 
     os.makedirs(out_dir, exist_ok=True)
     stem = re.sub(r"[^a-z0-9]", "_", os.path.splitext(os.path.basename(video_path))[0].lower())[:20]
@@ -5859,16 +5896,14 @@ def extract_clips(video_path: str, out_dir: str, chunk_len: float = 8.0) -> list
 
     try:
         subprocess.run(
-            [
-                ffmpeg, "-y", "-i", video_path,
-                "-c", "copy",
-                "-f", "segment",
-                "-segment_time", str(chunk_len),
-                "-reset_timestamps", "1",
-                out_pattern,
-            ],
+            [ffmpeg, "-y", "-i", video_path]
+            + duration_arg
+            + ["-c", "copy", "-f", "segment",
+               "-segment_time", str(chunk_len),
+               "-reset_timestamps", "1",
+               out_pattern],
             capture_output=True,
-            timeout=120,
+            timeout=60,          # hard 60-second cap per video
         )
     except Exception as e:
         print(f"[Clip] Segment split failed for {os.path.basename(video_path)}: {e}")
@@ -5877,9 +5912,12 @@ def extract_clips(video_path: str, out_dir: str, chunk_len: float = 8.0) -> list
     clips = sorted(
         os.path.join(out_dir, f)
         for f in os.listdir(out_dir)
-        if f.startswith(stem) and f.endswith(".mp4") and _ffprobe_duration(os.path.join(out_dir, f)) >= 2.0
-    )
-    print(f"[Clip] Extracted {len(clips)} clip(s) from {os.path.basename(video_path)}")
+        if f.startswith(stem) and f.endswith(".mp4")
+        and _ffprobe_duration(os.path.join(out_dir, f)) >= 2.0
+    )[:max_clips]  # hard cap after sorting
+
+    elapsed = time.time() - _t0
+    print(f"[Clip] Extracted {len(clips)} clip(s) from {os.path.basename(video_path)} in {elapsed:.1f}s")
     return clips
 
 
@@ -5947,42 +5985,63 @@ def score_clip(path: str) -> float:
     return 0.40 * dur_score + 0.35 * motion_score + 0.25 * brightness_score
 
 
-def select_best_clips(video_folder: str, max_clips: int = 15) -> list[str]:
+def select_best_clips(video_folder: str, max_clips: int = 10) -> list[str]:
     """Extract, score, and diversify clips from video_folder/videos/.
 
-    Diversity rules applied before final sort:
-    - Per-source cap: ceil(max_clips / n_sources) clips per source video.
-    - Time-window dedup: at most one clip per 30 s window within a source.
-    - Cross-source mix: clips interleaved round-robin before final score sort.
+    GitHub Actions safe:
+    - Max 3 source videos processed (skip the rest)
+    - Max 10 clips total (hard cap)
+    - Skips files >100 MB
+    - Times out gracefully if global timeout is reached
     All chunks land in temp_clips/ and are cleaned up after assembly.
     """
+    _t0 = time.time()
+
+    if not USE_CLIPS:
+        print("[Clip] USE_CLIPS=False — skipping clip system")
+        return []
+
+    if _check_clip_timeout():
+        print("[Clip] Skipped select_best_clips — global timeout reached")
+        return []
+
     vid_dir = os.path.join(video_folder, "videos")
     if not os.path.isdir(vid_dir):
         return []
+
+    _MAX_SOURCES   = 3
+    _MAX_PER_SRC   = 4
+    _MAX_FILE_SIZE = 100 * 1024 * 1024  # 100 MB
 
     source_videos = [
         os.path.join(vid_dir, f)
         for f in sorted(os.listdir(vid_dir))
         if f.lower().endswith((".mp4", ".mov", ".avi"))
         and not f.endswith(("_processed.mp4", "_short.mp4"))
-        and os.path.getsize(os.path.join(vid_dir, f)) > 10_000
-    ]
+        and 10_000 < os.path.getsize(os.path.join(vid_dir, f)) <= _MAX_FILE_SIZE
+    ][:_MAX_SOURCES]
+
     if not source_videos:
         return []
 
     out_dir    = os.path.abspath("temp_clips")
     os.makedirs(out_dir, exist_ok=True)
     n_sources  = len(source_videos)
-    per_source = max(2, -(-max_clips // n_sources))   # ceiling division
+    per_source = max(2, -(-max_clips // n_sources))
 
     source_pools: list[list[tuple[float, str]]] = []
     for src in source_videos:
-        chunks = extract_clips(src, out_dir)
+        if _check_clip_timeout():
+            print(f"[Clip] Timeout during extraction — stopping at {len(source_pools)} source(s)")
+            break
 
-        # Time-window dedup: one clip per 30 s window (chunk_len=8 → window=4 chunks)
+        chunks = extract_clips(src, out_dir, max_clips=_MAX_PER_SRC)
+
         seen_windows: set[int] = set()
         deduped: list[tuple[float, str]] = []
         for chunk in chunks:
+            if _check_clip_timeout():
+                break
             try:
                 window = int(os.path.splitext(chunk)[0].rsplit("_", 1)[-1]) // 4
             except ValueError:
@@ -5996,7 +6055,9 @@ def select_best_clips(video_folder: str, max_clips: int = 15) -> list[str]:
         source_pools.append(capped)
         print(f"[Clip] {os.path.basename(src)}: {len(capped)}/{len(chunks)} clip(s) kept")
 
-    # Round-robin interleave — guarantees no single source dominates
+    if not source_pools:
+        return []
+
     interleaved: list[tuple[float, str]] = []
     for round_idx in range(per_source):
         for pool in source_pools:
@@ -6007,11 +6068,11 @@ def select_best_clips(video_folder: str, max_clips: int = 15) -> list[str]:
         if len(interleaved) >= max_clips:
             break
 
-    # Final sort by score so best clips are first (hook priority in assign step)
     interleaved.sort(key=lambda x: x[0], reverse=True)
     best = [p for _, p in interleaved[:max_clips]]
+    elapsed = time.time() - _t0
     total_considered = sum(len(p) for p in source_pools)
-    print(f"[Clip] Selected {len(best)}/{total_considered} best clip(s) from {video_folder}")
+    print(f"[Clip] Selected {len(best)}/{total_considered} best clip(s) from {video_folder} in {elapsed:.1f}s")
     return best
 
 
@@ -6172,6 +6233,9 @@ def assign_clips_to_script(
 
 def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", user_images: list | None = None, user_videos: list | None = None) -> str:
     import traceback
+    global _PIPELINE_START
+    _PIPELINE_START = time.time()   # reset timeout clock for this run
+
     title    = script_data.get("title", "")
     niche    = script_data.get("niche", "")
     language = script_data.get("language", "english")
@@ -6194,13 +6258,22 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
 
     # ── Library clip extraction ───────────────────────────────────────────────
     _library_clips: list[str] = []
-    try:
-        if _content_folder and os.path.isdir(_content_folder):
-            _library_clips = select_best_clips(_content_folder, max_clips=15)
-            if _library_clips:
-                print(f"[Clip] {len(_library_clips)} library clip(s) ready for assembly")
-    except Exception as _ce2:
-        print(f"[Clip] Library clip selection skipped (non-fatal): {_ce2}")
+    if USE_CLIPS:
+        try:
+            _ct0 = time.time()
+            if _content_folder and os.path.isdir(_content_folder) and not _check_clip_timeout():
+                _library_clips = select_best_clips(_content_folder, max_clips=10)
+                if _library_clips:
+                    print(f"[Clip] {len(_library_clips)} library clip(s) ready in {time.time()-_ct0:.1f}s")
+                else:
+                    print(f"[Clip] No clips found — image-only mode")
+            elif _check_clip_timeout():
+                print("[Clip] Skipped — global timeout reached before extraction")
+        except Exception as _ce2:
+            print(f"[Clip] SAFE MODE: clip selection failed ({_ce2}) — using images only")
+            _library_clips = []
+    else:
+        print("[Clip] USE_CLIPS=False — image-only mode")
 
     # â"€â"€ Voiceover â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
     is_short = "short" in video_id
