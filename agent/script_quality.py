@@ -4,12 +4,16 @@
 # No imports from script_agent (prevents circular imports).
 #
 # Public API:
-#   remove_filler_phrases(text)               -> str
-#   deduplicate_paragraphs(text, threshold)   -> str
-#   detect_quality_issues(text)               -> dict
-#   post_translation_cleanup_arabic(ar_text)  -> str
-#   filter_contaminated_facts(facts, topic, series) -> list[str]
-#   apply_all_quality_filters(text)           -> str
+#   remove_filler_phrases(text)                              -> str
+#   deduplicate_paragraphs(text, threshold)                  -> str
+#   detect_quality_issues(text)                              -> dict
+#   post_translation_cleanup_arabic(ar_text)                 -> str
+#   normalize_arabic_documentary_text(ar_text)               -> str  (enhanced)
+#   filter_contaminated_facts(facts, topic, series)          -> list[str]
+#   apply_all_quality_filters(text)                          -> str
+#   score_fact_density(text, topic, series)                  -> dict
+#   detect_fiction_bleed(text, fictional_names, section)     -> dict
+#   validate_timeline_consistency(text, topic, expected_era) -> dict
 
 import re
 from typing import List
@@ -270,6 +274,232 @@ def post_translation_cleanup_arabic(ar_text: str) -> str:
     # Collapse 3+ consecutive blank lines to 2
     result = re.sub(r"\n{3,}", "\n\n", result)
     return result.strip()
+
+
+# ── Enhanced Arabic normalization ─────────────────────────────────────────────
+
+# Organization / entity name substitutions: English pattern → Arabic equivalent.
+_ARABIC_ORG_SUBSTITUTIONS: List[tuple] = [
+    # Crime organizations
+    (r"['‘’]?[Nn]drangheta\b", "ندرانغيتا"),  # ندرانغيتا
+    (r"\bndrangheta\b",                  "ندرانغيتا"),
+    (r"\bCamorra\b",                     "كامورا"),                       # كامورا
+    (r"\bcamorra\b",                     "كامورا"),
+    (r"\bCosa Nostra\b",                 "كوزا نوسترا"),  # كوزا نوسترا
+    (r"\bcosa nostra\b",                 "كوزا نوسترا"),
+    (r"\bSicilian Mafia\b",              "المافيا الصقلية"),  # المافيا الصقلية
+    (r"\bItalian Mafia\b",               "المافيا الإيطالية"),  # المافيا الإيطالية
+    (r"\bCartel\b",                      "الكارتل"),                  # الكارتل
+    (r"\bcartel\b",                      "الكارتل"),
+    # Law enforcement
+    (r"\bFBI\b",    "مكتب التحقيقات الفيدرالي"),  # مكتب التحقيقات الفيدرالي
+    (r"\bDEA\b",    "وكالة مكافحة المخدرات"),  # وكالة مكافحة المخدرات
+    (r"\bCIA\b",    "وكالة الاستخبارات المركزية"),  # وكالة الاستخبارات المركزية
+    # Platforms
+    (r"\bNetflix\b",     "نتفليكس"),   # نتفليكس
+    (r"\bHBO\b",         "إتش بي أو"), # إتش بي أو
+    (r"\bAmazon Prime\b","أمازون برايم"),  # أمازون برايم
+    # Geographic proper nouns
+    (r"\bVatican\b",   "الفاتيكان"),  # الفاتيكان
+    (r"\bSicily\b",    "صقلية"),                           # صقلية
+    (r"\bNaples\b",    "نابولي"),                     # نابولي
+    (r"\bPalermo\b",   "باليرمو"),               # باليرمو
+    (r"\bColombia\b",  "كولومبيا"),         # كولومبيا
+    (r"\bMedellin\b",  "ميديلين"),               # ميديلين
+    (r"\bBogota\b",    "بوغوتا"),                     # بوغوتا
+    (r"\bChicago\b",   "شيكاغو"),                     # شيكاغو
+    (r"\bNew York\b",  "نيويورك"),              # نيويورك
+]
+
+# Short Latin tokens always acceptable inside Arabic text (brands, well-known acronyms)
+_ARABIC_KEEP_LATIN: frozenset = frozenset({
+    "dark", "crime", "decoded", "youtube", "tiktok", "instagram",
+    "facebook", "twitter", "ok", "vs",
+})
+
+
+def normalize_arabic_documentary_text(ar_text: str) -> str:
+    """
+    Enhanced Arabic documentary text normalization.
+
+    Applied in sequence:
+    1. Base cleanup (post_translation_cleanup_arabic): punctuation + Latin-heavy lines
+    2. Organization / entity name substitutions (e.g. FBI → مكتب التحقيقات الفيدرالي)
+    3. Stray short Latin word removal from majority-Arabic lines
+    4. Whitespace / punctuation artifact cleanup
+    """
+    if not ar_text:
+        return ar_text
+
+    # Step 1: base cleanup
+    result = post_translation_cleanup_arabic(ar_text)
+
+    # Step 2: org name substitutions
+    for pattern, replacement in _ARABIC_ORG_SUBSTITUTIONS:
+        result = re.sub(pattern, replacement, result)
+
+    # Step 3: remove stray short Latin words from majority-Arabic lines
+    def _clean_stray_latin(line: str) -> str:
+        ar_chars    = sum(1 for c in line if "؀" <= c <= "ۿ")
+        total_alpha = sum(1 for c in line if c.isalpha())
+        if total_alpha == 0 or ar_chars / total_alpha < 0.55:
+            return line  # not majority Arabic — leave alone
+        def _sub(m: re.Match) -> str:
+            w = m.group(0)
+            return w if w.lower() in _ARABIC_KEEP_LATIN else ""
+        return re.sub(r"\b[A-Za-z]{1,6}\b", _sub, line)
+
+    result = "\n".join(_clean_stray_latin(ln) for ln in result.split("\n"))
+
+    # Step 4: artifact cleanup
+    result = re.sub(r"  +", " ", result)
+    result = re.sub(r" ([،؛؟])", r"\1", result)
+    result = re.sub(r"\n{3,}", "\n\n", result)
+
+    return result.strip()
+
+
+# ── Timeline & entity consistency validation ─────────────────────────────────
+
+# Fictional characters from crime/drama shows that should NEVER appear in the
+# historical narration sections (only allowed in "Show vs Reality" chapters).
+_KNOWN_FICTIONAL_CHARACTERS: List[str] = [
+    "lucius vorenus", "vorenus", "titus pullo", "pullo",
+    "tony soprano", "christopher moltisanti",
+    "walter white", "heisenberg", "jesse pinkman",
+    "nucky thompson",
+    "saul goodman", "jimmy mcgill", "gus fring", "mike ehrmantraut",
+    "tommy shelby", "arthur shelby", "polly gray",
+    "marty byrde", "omar little", "stringer bell", "avon barksdale",
+    "don corleone", "michael corleone", "vito corleone",
+    "frank castle", "tony montana",
+    "suburra character", "suburra fictional",
+]
+
+# Pairs that signal cross-topic contamination:
+# (keyword_in_topic, keyword_that_should_NOT_appear_in_script)
+_CROSS_TOPIC_PAIRS: List[tuple] = [
+    ("rome",        "escobar"),
+    ("rome",        "ndrangheta"),
+    ("rome",        "camorra"),
+    ("rome",        "pablo"),
+    ("escobar",     "vorenus"),
+    ("escobar",     "pullo"),
+    ("escobar",     "tesla"),
+    ("narcos",      "vorenus"),
+    ("narcos",      "tesla"),
+    ("narcos",      "roman empire"),
+    ("tesla",       "mafia"),
+    ("tesla",       "cartel"),
+    ("tesla",       "pablo"),
+    ("godfather",   "tesla"),
+    ("godfather",   "roman empire"),
+    ("suburra",     "escobar"),
+    ("suburra",     "narcos"),
+    ("kuklinski",   "tesla"),
+    ("dahmer",      "narcos"),
+    ("legend",      "tesla"),
+    ("legend",      "roman empire"),
+    ("gacy",        "escobar"),
+    ("bundy",       "escobar"),
+]
+
+
+def validate_timeline_consistency(
+    text: str,
+    topic: str = "",
+    expected_era: str = "",
+) -> dict:
+    """
+    Detect entity/timeline contamination in a generated script.
+
+    Checks:
+    1. Known fictional character names in non-Show-vs-Reality sections
+    2. Year references far outside the expected era
+    3. Named criminals (from entity_guard) not related to the active topic
+    4. Known cross-topic pairs (e.g. 'Escobar' in a 'Rome' script)
+
+    Returns:
+        consistent:      bool — True if zero violations found
+        fiction_bleed:   list of fictional names found in wrong sections
+        era_violations:  list of years outside expected range
+        contamination:   list of blocked entity names found
+        cross_topic:     list of cross-topic pair violations
+        violation_count: total violation count
+    """
+    if not text:
+        return {
+            "consistent": True, "fiction_bleed": [], "era_violations": [],
+            "contamination": [], "cross_topic": [], "violation_count": 0,
+        }
+
+    topic_lower = topic.lower()
+
+    # ── 1. Split text into Show-vs-Reality vs everything else ────────────────
+    _sec_re = re.compile(r"\[SECTION:\s*([^\]]+)\]", re.IGNORECASE)
+    parts   = _sec_re.split(text)
+    # parts layout (capturing group): [pre, label1, body1, label2, body2, ...]
+    other_text = parts[0]
+    for i in range(1, len(parts), 2):
+        label   = parts[i].lower() if i < len(parts) else ""
+        body    = parts[i + 1] if i + 1 < len(parts) else ""
+        # Allow fictional names ONLY in Show vs Reality / Real vs Screen sections
+        if "show vs" in label or "real vs screen" in label or "show vs reality" in label:
+            continue
+        other_text += " " + body
+
+    other_lower = other_text.lower()
+
+    # ── 2. Fiction bleed ─────────────────────────────────────────────────────
+    fiction_bleed: List[str] = [
+        fc for fc in _KNOWN_FICTIONAL_CHARACTERS if fc in other_lower
+    ]
+
+    # ── 3. Cross-topic contamination ─────────────────────────────────────────
+    cross_topic: List[str] = []
+    for (topic_kw, forbidden_kw) in _CROSS_TOPIC_PAIRS:
+        if topic_kw in topic_lower and forbidden_kw in text.lower():
+            cross_topic.append(f"'{forbidden_kw}' in a '{topic_kw}' script")
+
+    # ── 4. Era year violations ────────────────────────────────────────────────
+    era_violations: List[str] = []
+    if expected_era:
+        year_refs = [int(y) for y in re.findall(r"\b(1[0-9]{3}|20[0-2][0-9])\b", expected_era)]
+        if year_refs:
+            era_min = min(year_refs) - 60
+            era_max = max(year_refs) + 40
+            script_years = re.findall(r"\b(1[0-9]{3}|20[0-2][0-9])\b", text)
+            era_violations = list({y for y in script_years if not (era_min <= int(y) <= era_max)})
+
+    # ── 5. Named-criminal contamination (entity_guard) ────────────────────────
+    contamination: List[str] = []
+    if topic:
+        try:
+            import sys, os
+            _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            if _root not in sys.path:
+                sys.path.insert(0, _root)
+            try:
+                from agents.entity_guard import build_active_entity, is_single_subject
+            except ImportError:
+                from agent.entity_guard import build_active_entity, is_single_subject
+            if is_single_subject(topic):
+                entity  = build_active_entity(topic)
+                blocked = entity.get("blocked_entities", [])
+                t_lower = text.lower()
+                contamination = [n for n in blocked if len(n) > 4 and n.lower() in t_lower]
+        except Exception:
+            pass
+
+    total = len(fiction_bleed) + len(cross_topic) + len(era_violations) + len(contamination)
+    return {
+        "consistent":      total == 0,
+        "fiction_bleed":   fiction_bleed[:5],
+        "era_violations":  era_violations[:5],
+        "contamination":   contamination[:5],
+        "cross_topic":     cross_topic[:5],
+        "violation_count": total,
+    }
 
 
 # ── Entity contamination filter ───────────────────────────────────────────────

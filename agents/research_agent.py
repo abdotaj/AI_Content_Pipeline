@@ -829,6 +829,95 @@ Return ONLY valid JSON. If info is not in Wikipedia, use null for strings or [] 
         return None
 
 
+# ── Research normalization ─────────────────────────────────
+
+def normalize_research_context(research: dict, topic: str, series: str = "") -> dict:
+    """
+    Normalize and clean a research dict before script generation.
+
+    Steps applied to research_facts, research_inaccuracies, research_shocking
+    (and their legacy-field aliases):
+      1. Filter off-topic facts (keyword overlap with topic/series)
+      2. Deduplicate near-identical facts (Jaccard ≥ 0.45)
+      3. Sort surviving facts by confidence: Wikipedia-corroborated first
+
+    Modifies the dict in-place and returns it.
+    Non-list fields and short facts (< 4 words) are left unchanged.
+    """
+    if not research:
+        return research
+
+    try:
+        try:
+            from agents.script_quality import filter_contaminated_facts
+        except ImportError:
+            from agent.script_quality import filter_contaminated_facts
+    except Exception:
+        return research
+
+    _stop = frozenset({
+        "the", "and", "was", "that", "had", "for", "with", "his", "her",
+        "they", "were", "from", "but", "not", "who", "all", "one", "have",
+        "this", "what", "when", "into", "than", "show", "real", "series",
+        "film", "movie", "also", "their", "about", "more", "after",
+    })
+
+    def _words(t: str) -> set:
+        import re as _re
+        return {w for w in _re.findall(r"[a-z]+", t.lower())
+                if len(w) > 3 and w not in _stop}
+
+    def _jaccard(a: str, b: str) -> float:
+        wa, wb = _words(a), _words(b)
+        if not wa or not wb:
+            return 0.0
+        return len(wa & wb) / len(wa | wb)
+
+    def _dedup(facts: list, threshold: float = 0.45) -> list:
+        kept: list = []
+        for fact in facts:
+            if not fact or not isinstance(fact, str) or len(fact.split()) < 4:
+                continue
+            if not any(_jaccard(fact, p) >= threshold for p in kept):
+                kept.append(fact)
+        return kept
+
+    def _sort_by_confidence(facts: list, wiki_text: str) -> list:
+        """Wikipedia-corroborated facts first; DDG-only last."""
+        wiki_words = _words(wiki_text) if wiki_text else set()
+
+        def _score(f: str) -> int:
+            hits = len(_words(f) & wiki_words)
+            return 3 if hits >= 3 else (2 if hits >= 1 else 1)
+
+        return sorted(facts, key=_score, reverse=True)
+
+    wiki_text     = research.get("real_story", "")
+    total_removed = 0
+
+    for key in (
+        "research_facts", "research_inaccuracies", "research_shocking",
+        "what_show_got_right", "what_show_got_wrong", "shocking_real_facts",
+    ):
+        raw = research.get(key)
+        if not isinstance(raw, list) or not raw:
+            continue
+        filtered = filter_contaminated_facts(raw, topic, series)
+        deduped  = _dedup(filtered)
+        sorted_f = _sort_by_confidence(deduped, wiki_text)
+        research[key] = sorted_f
+        removed = len(raw) - len(sorted_f)
+        if removed > 0:
+            print(f"[Research] Normalize {key}: {len(raw)} → {len(sorted_f)} "
+                  f"({removed} removed)")
+            total_removed += removed
+
+    if total_removed:
+        print(f"[Research] Normalized: {total_removed} noisy/duplicate entries removed total")
+
+    return research
+
+
 # ── DuckDuckGo fallback research ───────────────────────────
 
 def research_series_duckduckgo(topic: str) -> dict:
@@ -1226,7 +1315,7 @@ Return ONLY valid JSON."""
         inspired_out = inspired_out or ddg["research_inaccuracies"]
         shocking_out = shocking_out or ddg["research_shocking"]
 
-    return {
+    result_dict = {
         "series":                        series_name or topic,
         # Primary fields used by the script prompt
         "research_facts":                facts_out,
@@ -1268,3 +1357,6 @@ Return ONLY valid JSON."""
             "historical_context":  info.get("historical_context"),
         },
     }
+    # ── Normalize research: deduplicate, filter off-topic, sort by confidence ─
+    normalize_research_context(result_dict, topic, series_name or "")
+    return result_dict

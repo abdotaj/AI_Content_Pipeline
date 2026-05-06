@@ -495,6 +495,15 @@ def expand_section(existing_text: str, missing_words: int,
         if not continuation or clean_word_count(continuation) < 30:
             print("[Script] expand_section: expansion too short — keeping original")
             return existing_text
+        # Strip filler from the expansion before merging
+        try:
+            from agents.script_quality import remove_filler_phrases
+            continuation = remove_filler_phrases(continuation)
+        except Exception:
+            pass
+        if not continuation or clean_word_count(continuation) < 20:
+            print("[Script] expand_section: expansion was pure filler — keeping original")
+            return existing_text
         result  = existing_text.rstrip() + "\n\n" + continuation.strip()
         added   = clean_word_count(continuation)
         total   = clean_word_count(result)
@@ -730,33 +739,40 @@ def _hook_is_generic(hook: str) -> bool:
     return any(phrase in h for phrase in _HOOK_GENERIC_PHRASES)
 
 
-def _validate_hook_on_topic(hook: str, topic: str) -> bool:
+def _validate_hook_on_topic(hook: str, topic: str, series: str = "") -> bool:
     """Return True if hook is clearly about the active topic, not a random entity.
 
-    Rejects hooks that mention known criminals who are NOT the active topic,
-    or hooks with no keyword overlap with the topic at all.
+    For multi-word topics, requires ≥ 2 keyword hits (topic + optional series).
+    Rejects hooks that name blocked entities unrelated to the active topic.
     """
     if not hook:
         return False
     if not topic:
         return True
     h_lower = hook.lower()
-    t_lower = topic.lower()
 
-    # Must share at least one meaningful word with the topic
-    topic_words = [w for w in t_lower.split() if len(w) > 3]
-    if topic_words and not any(w in h_lower for w in topic_words):
-        print(f"[Hook] REJECTED (off-topic, no keyword overlap with '{topic}'): {hook[:70]}")
-        return False
+    # Build keyword pool: topic words + series words (all > 3 chars)
+    topic_words  = [w for w in topic.lower().split() if len(w) > 3]
+    series_words = [w for w in (series or "").lower().split() if len(w) > 3]
+    all_kw       = topic_words + series_words
 
-    # Check for forbidden entity bleed — names that are NOT the active topic
+    if all_kw:
+        matches = sum(1 for w in all_kw if w in h_lower)
+        # Require at least 2 matches for multi-word topics; 1 for single-word
+        min_required = 2 if len(topic_words) >= 2 else 1
+        if matches < min_required:
+            print(f"[Hook] REJECTED (only {matches}/{min_required} keyword(s) matched "
+                  f"from '{topic}'): {hook[:70]}")
+            return False
+
+    # Reject hooks containing blocked criminal names not related to this topic
     try:
         from agents.entity_guard import build_active_entity
-        entity = build_active_entity(topic)
+        entity  = build_active_entity(topic)
         blocked = entity.get("blocked_entities", [])
         for name in blocked:
             if len(name) > 4 and name.lower() in h_lower:
-                print(f"[Hook] REJECTED (contains forbidden entity '{name}'): {hook[:70]}")
+                print(f"[Hook] REJECTED (forbidden entity '{name}'): {hook[:70]}")
                 return False
     except Exception:
         pass
@@ -764,11 +780,24 @@ def _validate_hook_on_topic(hook: str, topic: str) -> bool:
     return True
 
 
-def pick_best_hook(script: str, topic: str = "") -> str:
+def pick_best_hook(script: str, topic: str = "", series: str = "") -> str:
     try:
         import re as _re
         excerpt = _re.sub(r'\[SECTION:[^\]]*\]', '', script).strip()[:500]
-        base_prompt = _HOOK_GEN_PROMPT.replace("{script_excerpt}", excerpt)
+
+        # Inject topic/series grounding so the hook generator can't hallucinate
+        # random crimes that have nothing to do with the active subject
+        _topic_lock = ""
+        if topic or series:
+            _subject = topic or series
+            _topic_lock = (
+                f"TOPIC LOCK — this hook is ONLY about:\n"
+                f"  Real person / subject: {topic or '(see script)'}\n"
+                f"  Related show / film:   {series or '(see script)'}\n"
+                f"Every hook MUST directly reference {_subject}.\n"
+                f"Do NOT reference any other crime, criminal, or unrelated person.\n\n"
+            )
+        base_prompt = _topic_lock + _HOOK_GEN_PROMPT.replace("{script_excerpt}", excerpt)
 
         best_hook, best_score = "", 0
         final_attempt = 1
@@ -783,7 +812,8 @@ def pick_best_hook(script: str, topic: str = "") -> str:
                     base_prompt
                     + f"\n\nPREVIOUS BEST HOOK scored {best_score}/10:\n{best_hook}\n\n"
                     + f"Write 3 completely different hooks that score higher. "
-                    + "Each must include a real name (person or place) or a concrete crime detail. "
+                    + f"Each MUST name '{topic or series}' directly. "
+                    + "Include a real name (person or place) or a concrete crime detail. "
                     + "Make them more disturbing and more specific. "
                     + "Do NOT use: 'what drove', 'someone', 'a killer', 'one man', 'a person'."
                 )
@@ -800,7 +830,7 @@ def pick_best_hook(script: str, topic: str = "") -> str:
                 if _hook_is_generic(h):
                     print(f"[Hook] REJECTED (generic): {h[:70]}")
                     continue
-                if topic and not _validate_hook_on_topic(h, topic):
+                if topic and not _validate_hook_on_topic(h, topic, series=series):
                     continue
                 s = _score_hook(h)
                 print(f"[Hook] {s}/10: {h[:70]}")
@@ -2211,18 +2241,26 @@ PREVIOUS CHAPTERS (context only — do NOT repeat anything from them):
 
     # ── Quality summary ───────────────────────────────────────────────────────
     try:
-        from agents.script_quality import detect_quality_issues
-        _qi = detect_quality_issues(full_script)
+        from agents.script_quality import (
+            detect_quality_issues, validate_timeline_consistency,
+        )
+        _qi  = detect_quality_issues(full_script)
+        _era = rvf.get("time_period", "") if rvf else ""
+        _tl  = validate_timeline_consistency(full_script, topic=name, expected_era=_era)
         _filler = _qi.get("filler_count", 0)
         _rep    = len(_qi.get("repeated_phrases", []))
         print(
             f"[Quality] SUMMARY — words: {_qi.get('word_count',0)} | "
-            f"filler phrases: {_filler} | repeated 6-gram patterns: {_rep}"
+            f"filler: {_filler} | repeats: {_rep} | "
+            f"timeline OK: {_tl.get('consistent',True)} | violations: {_tl.get('violation_count',0)}"
         )
-        if _filler > 0:
-            print(f"[Quality] Filler found: {_qi.get('filler_phrases', [])}")
-        if _rep > 0:
-            print(f"[Quality] Repeated patterns: {_qi.get('repeated_phrases', [])[:3]}")
+        if _filler:
+            print(f"[Quality] Filler: {_qi.get('filler_phrases',[])[:3]}")
+        if not _tl.get("consistent", True):
+            print(f"[Quality] Timeline violations — "
+                  f"fiction bleed: {_tl.get('fiction_bleed',[])} | "
+                  f"cross-topic: {_tl.get('cross_topic',[])} | "
+                  f"blocked entities: {_tl.get('contamination',[][:3])}")
     except Exception as _qe:
         print(f"[Quality] Summary check failed (non-fatal): {_qe}")
 
@@ -2968,11 +3006,11 @@ Return ONLY this JSON with no extra text:
     script_data["show_characters"]         = research.get("show_characters", [])
     _s = script_data["script"]
     _s = upgrade_script_for_retention(_s)
-    _s = pick_best_hook(_s, topic=topic.get("topic", ""))
+    _s = pick_best_hook(_s, topic=topic.get("topic", ""), series=_series_name_raw)
     _s = evaluate_and_fix_script(_s)
     from agents.script_quality import (
         apply_all_quality_filters, detect_quality_issues,
-        score_fact_density, detect_fiction_bleed,
+        score_fact_density, detect_fiction_bleed, validate_timeline_consistency,
     )
     _s = apply_all_quality_filters(_s)
     _qi = detect_quality_issues(_s)
@@ -2983,17 +3021,25 @@ Return ONLY this JSON with no extra text:
         if c.get("character")
     ]
     _fb = detect_fiction_bleed(_s, _fc_names) if _fc_names else {}
+    _era = (research.get("verified_facts") or {}).get("time_period", "")
+    _tl  = validate_timeline_consistency(_s, topic=topic.get("topic", ""), expected_era=_era)
     print(
         f"[Quality] SUMMARY — words: {_qi.get('word_count',0)} | "
         f"filler: {_qi.get('filler_count',0)} | "
         f"fact density: {_fd.get('density_pct',0)}% ({_fd.get('verdict','?')}) | "
-        f"fiction bleed: {_fb.get('bleed_count',0)} paragraph(s)"
+        f"fiction bleed: {_fb.get('bleed_count',0)} paragraph(s) | "
+        f"timeline OK: {_tl.get('consistent',True)} | violations: {_tl.get('violation_count',0)}"
     )
     if _qi.get("filler_count", 0):
         print(f"[Quality] Filler phrases detected: {_qi.get('filler_phrases',[])}")
     if _fb.get("bleed_count", 0):
         print(f"[Quality] Fiction bleed detected — fictional names outside Show vs Reality: "
               f"{[o[1] for o in _fb.get('offenders',[])[:3]]}")
+    if not _tl.get("consistent", True):
+        print(f"[Quality] Timeline violations — "
+              f"fiction bleed: {_tl.get('fiction_bleed',[])} | "
+              f"cross-topic: {_tl.get('cross_topic',[])} | "
+              f"blocked entities: {_tl.get('contamination',[])[:3]}")
     script_data["script"] = _s
     print(f"[Script] Written (english): '{script_data['title']}'")
     return script_data
@@ -3880,8 +3926,8 @@ def translate_script(en_script: dict) -> dict:
     if ar_data.get("script"):
         ar_data["script"] = upgrade_arabic_script(ar_data["script"])
         ar_data["script"] = evaluate_and_fix_script(ar_data["script"])
-        from agents.script_quality import post_translation_cleanup_arabic
-        ar_data["script"] = post_translation_cleanup_arabic(ar_data["script"])
+        from agents.script_quality import normalize_arabic_documentary_text
+        ar_data["script"] = normalize_arabic_documentary_text(ar_data["script"])
     print(f"[Script] Translated (arabic): '{ar_data['title']}'")
     return ar_data
 
@@ -4040,7 +4086,7 @@ Write ONLY the spoken words. No headings. No labels. No explanations."""
     print(f"[Script] Short hook score: {_hook_score}/10")
     if _hook_score < 8:
         print("[Script] Hook score < 8 — running pick_best_hook with gpt-4o...")
-        script_text = pick_best_hook(script_text, topic=topic)
+        script_text = pick_best_hook(script_text, topic=topic, series=series_name)
         _hook_score = _score_hook(" ".join(script_text.split(".")[:2]))
         print(f"[Script] Hook score after improvement: {_hook_score}/10")
 
