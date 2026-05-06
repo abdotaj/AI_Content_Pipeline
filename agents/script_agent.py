@@ -76,18 +76,36 @@ NARRATION FLOW:
 - Show cause and effect: decisions lead to consequences, actions reveal character.
 - Always write COMPLETE sentences. Never end mid-thought.
 
-TRANSITION PHRASES — use a DIFFERENT one for each chapter, never repeat:
-- "What nobody expected was..."
-- "The truth was far more disturbing..."
-- "Behind closed doors, however..."
-- "What the cameras never showed..."
-- "Decades later, the full picture finally emerged..."
-- "The official story was only half the truth..."
-- "What they never spoke about publicly was..."
-- "The case files told a different story..."
-- "What would later emerge changed everything..."
-- "The reality was far darker than anyone knew..."
-FORBIDDEN: Never repeat the same transition phrase twice in the same script.
+BANNED PHRASES — never write any of these under any circumstances:
+- "the reality was darker than anyone knew"
+- "the truth was far more disturbing"
+- "the truth was far more sinister"
+- "the reality was far darker"
+- "what would later emerge changed everything"
+- "what nobody expected was"
+- "what came next shocked everyone"
+- "what happened next shocked everyone"
+- "little did anyone know"
+- "little did they know"
+- "in a shocking twist"
+- "in a stunning twist"
+- "nobody could have predicted"
+- "no one could have predicted"
+- "behind the scenes"
+- "throughout history"
+- "this is a story about"
+- "it all started when"
+- "it all began when"
+- "years later the truth finally emerged"
+- "the world would never be the same"
+- "changed the world forever"
+- "introduced millions of people to this incredible true story"
+- "but the real events were even more extraordinary"
+- "the real story is even more fascinating"
+- "and that was just the beginning"
+- "but there was more to the story"
+- "the truth was about to come out"
+Instead, name the exact fact, person, or date that carries the tension. Make the fact do the work.
 
 NO REPETITION RULES — absolute:
 - Never repeat a fact, name, date, or event that appeared in an earlier chapter.
@@ -2626,7 +2644,7 @@ The host found something most viewers don't know — celebrate that discovery.
 Write a 1800-2500 word 12-16 minute documentary script about: {topic['topic']}
 The related series/movie is: {series_label}
 {_dc_entity_lock}
-NARRATION STYLE: Write like Morgan Freeman narrating a documentary. Flowing paragraphs, no lists, no bullet points. Minimum 3 sentences per paragraph. Use transition phrases like "But what happened next shocked everyone...", "What nobody knew at the time was...", "Years later, the truth finally emerged..."
+NARRATION STYLE: Write like Morgan Freeman narrating a documentary. Flowing paragraphs, no lists, no bullet points. Minimum 3 sentences per paragraph. Make every transition carry a specific fact — name the date, the person, the amount, the place. Generic suspense phrases are forbidden (see BANNED PHRASES in the system prompt).
 
 COVER ALL CHARACTERS: Dedicate at least one full paragraph to EACH major character. Never focus on just one person.
 {_mandatory_fb}{_rvf_fb_block}
@@ -2652,9 +2670,10 @@ TONE: Celebrate BOTH the real story AND the show. The show is great entertainmen
 Use this EXACT structure (no section labels in the output — spoken words only):
 
 HOOK (100 words = ~46 seconds):
-- Most fascinating single fact about this real story
-- Something that makes the viewer want to know more
-- Example: "{series_label} introduced millions of people to this incredible true story. But the real events were even more extraordinary than anything the show could portray."
+- Lead with ONE specific shocking fact: a real number, a real date, a real decision that defies belief.
+- Something that makes the viewer want to know more — a contradiction, a hidden truth, or an open question.
+- NEVER use generic suspense openers. The fact itself must be the hook.
+- Strong example: "In 1989, Pablo Escobar offered to pay Colombia's entire national debt — $10 billion — if the government would stop extraditing traffickers. They said no."
 
 SERIES INTRO (220 words = ~1.4 minutes):
 - Celebrate what {series_label} showed the world — it is great television
@@ -2893,6 +2912,11 @@ Return ONLY this JSON with no extra text:
     _s = upgrade_script_for_retention(_s)
     _s = pick_best_hook(_s, topic=topic.get("topic", ""))
     _s = evaluate_and_fix_script(_s)
+    from agents.script_quality import apply_all_quality_filters, detect_quality_issues
+    _s = apply_all_quality_filters(_s)
+    _qi = detect_quality_issues(_s)
+    if _qi.get("filler_count", 0) or _qi.get("repeated_phrases"):
+        print(f"[Quality] Post-filter report: {_qi}")
     script_data["script"] = _s
     print(f"[Script] Written (english): '{script_data['title']}'")
     return script_data
@@ -3779,6 +3803,8 @@ def translate_script(en_script: dict) -> dict:
     if ar_data.get("script"):
         ar_data["script"] = upgrade_arabic_script(ar_data["script"])
         ar_data["script"] = evaluate_and_fix_script(ar_data["script"])
+        from agents.script_quality import post_translation_cleanup_arabic
+        ar_data["script"] = post_translation_cleanup_arabic(ar_data["script"])
     print(f"[Script] Translated (arabic): '{ar_data['title']}'")
     return ar_data
 

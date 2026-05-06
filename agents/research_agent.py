@@ -889,6 +889,15 @@ Return ONLY this JSON:
         wrong_out    = [raw_inspiration[:400]] if raw_inspiration else []
         shocking_out = [raw_shocking[:400]]    if raw_shocking    else []
 
+    # Filter out facts that have no keyword overlap with the topic
+    try:
+        from agents.script_quality import filter_contaminated_facts
+        facts_out    = filter_contaminated_facts(facts_out,    topic)
+        wrong_out    = filter_contaminated_facts(wrong_out,    topic)
+        shocking_out = filter_contaminated_facts(shocking_out, topic)
+    except Exception as _fe:
+        print(f"[Research] Contamination filter error (non-fatal): {_fe}")
+
     return {
         "series":                        topic,
         "research_facts":                facts_out,
