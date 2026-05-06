@@ -145,8 +145,13 @@ def clean_word_count(text: str) -> int:
     return len([w for w in cleaned.split() if w.strip()])
 
 
-LONG_SCRIPT_MIN_WORDS = 1800
-LONG_SCRIPT_MAX_WORDS = 2500
+import os as _os
+_PIPELINE_MODE = _os.getenv("PIPELINE_MODE", "fast").lower().strip()
+
+# 10 min × 156 WPM = 1,560 (FAST floor); FULL keeps the existing 1,800 (11.5 min)
+LONG_SCRIPT_MIN_WORDS: int = 1_560 if _PIPELINE_MODE == "fast" else 1_800
+# 15 min × 156 WPM = 2,340 (FAST ceiling); FULL keeps existing 2,500 (16 min)
+LONG_SCRIPT_MAX_WORDS: int = 2_340 if _PIPELINE_MODE == "fast" else 2_500
 
 
 def _cap_script_max_words(script_text: str, max_words: int = LONG_SCRIPT_MAX_WORDS) -> str:

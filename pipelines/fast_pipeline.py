@@ -50,12 +50,13 @@ from config_darkcrimed import (
 )
 
 from agent.research_agent import research_topics, research_series, mark_covered, is_fictional
-from agent.script_agent   import write_script, translate_script, generate_chapters, write_short_script
+from agent.script_agent   import write_script, translate_script, generate_chapters, write_short_script, clean_word_count
 from agent.video_agent    import create_video, ensure_music_assets, cut_best_short, load_all_content
 from agent.notify_agent   import (
     send_message, send_video_to_telegram, send_daily_report,
 )
 from agent.publish_agent  import upload_to_youtube
+from pipelines.pipeline_config import SCRIPT_WORD_MIN, WORDS_PER_MINUTE
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -152,6 +153,19 @@ def run_pipeline() -> None:
         send_message(f"[FAST] Script failed: {e}")
         _log("Scripts", str(e), "ERROR")
         return
+
+    # Enforce minimum duration floor: reject scripts that would produce < 10 min video.
+    _en_wc = clean_word_count(en_long.get("script", ""))
+    _est_min = round(_en_wc / WORDS_PER_MINUTE, 1)
+    if _en_wc < SCRIPT_WORD_MIN:
+        _msg = (
+            f"[FAST] Script too short: {_en_wc} words (~{_est_min} min) — "
+            f"minimum is {SCRIPT_WORD_MIN} words (~{SCRIPT_WORD_MIN // WORDS_PER_MINUTE} min). Aborting."
+        )
+        _log("Scripts", _msg, "ERROR")
+        send_message(_msg)
+        return
+    _log("Scripts", f"Length OK: {_en_wc} words (~{_est_min} min)", "OK")
 
     try:
         ar_long = translate_script(en_long)

@@ -5839,25 +5839,25 @@ def generate_tts_sections(script_text: str, video_id: str, language: str) -> tup
 # â"€â"€ Clip system â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 # ── Pipeline mode ────────────────────────────────────────────────────────────
-# FAST (default): CI-safe, <20 min total, minimal clip work, SAFE MODE fallback
+# FAST (default): CI-safe, minimal clip work, SAFE MODE fallback
 # FULL          : cinematic pipeline, full scoring + diversity, higher quality
 PIPELINE_MODE: str = os.getenv("PIPELINE_MODE", "fast").lower().strip()
 
-# # SHARED LOGIC
 # FULL mode enables the heavy clip system; FAST uses select_best_clips_fast()
 USE_CLIPS: bool = PIPELINE_MODE == "full"
 
 # Global start time for timeout tracking — reset at the top of create_video().
 _PIPELINE_START: float = 0.0
-# FAST MODE: 5-min clip budget  |  FULL MODE: 20-min clip budget
-_MAX_CLIP_RUNTIME: float = 5 * 60 if PIPELINE_MODE == "fast" else 20 * 60
+# Budget for the CLIP PROCESSING phase only — NOT the total pipeline duration.
+# FAST: 25 min  |  FULL: 30 min
+_MAX_CLIP_PROCESSING_SECONDS: float = 25 * 60 if PIPELINE_MODE == "fast" else 30 * 60
 
 
 def _check_clip_timeout() -> bool:
-    """Return True if the clip system has exceeded its mode-dependent time budget."""
+    """Return True if clip processing has exceeded its mode-dependent time budget."""
     if _PIPELINE_START <= 0:
         return False
-    return (time.time() - _PIPELINE_START) > _MAX_CLIP_RUNTIME
+    return (time.time() - _PIPELINE_START) > _MAX_CLIP_PROCESSING_SECONDS
 
 
 def extract_clips(video_path: str, out_dir: str, chunk_len: float = 8.0,

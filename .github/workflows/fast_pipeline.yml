@@ -6,7 +6,7 @@ on:
 jobs:
   fast-pipeline:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 120
     concurrency:
       group: fast-pipeline
       cancel-in-progress: true
