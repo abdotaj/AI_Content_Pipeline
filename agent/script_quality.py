@@ -321,6 +321,105 @@ def filter_contaminated_facts(
     return kept if kept else facts  # never return empty — fall back to original
 
 
+# ── Fact density scoring ──────────────────────────────────────────────────────
+
+def score_fact_density(text: str, topic: str = "", series: str = "") -> dict:
+    """
+    Score the factual density of a script.
+
+    Returns a dict with:
+        fact_count          — sentences containing a year, number, or proper noun
+        total_sentences     — total sentence count
+        density_pct         — fact_count / total_sentences * 100
+        topic_mentions      — how often the topic name appears
+        series_mentions     — how often the series name appears
+        verdict             — "HIGH" / "MEDIUM" / "LOW"
+    """
+    if not text:
+        return {}
+
+    sentences = re.split(r"(?<=[.?!؟])\s+", text.strip())
+    total = len([s for s in sentences if len(s.split()) >= 5])
+    if total == 0:
+        return {"verdict": "EMPTY"}
+
+    # Sentence has a year (1900-2099), a number, or starts with a capitalized proper noun
+    _year_re     = re.compile(r"\b(1[89]\d{2}|20\d{2})\b")
+    _number_re   = re.compile(r"\b\d+\b")
+    _proper_re   = re.compile(r"\b[A-Z][a-z]{2,}")
+
+    fact_count = 0
+    for sent in sentences:
+        if len(sent.split()) < 5:
+            continue
+        if _year_re.search(sent) or _number_re.search(sent) or len(_proper_re.findall(sent)) >= 2:
+            fact_count += 1
+
+    density = (fact_count / total) * 100 if total else 0
+    topic_kw    = topic.lower().split() if topic else []
+    series_kw   = series.lower().split() if series else []
+    text_lower  = text.lower()
+    t_mentions  = sum(text_lower.count(w) for w in topic_kw if len(w) > 3)
+    s_mentions  = sum(text_lower.count(w) for w in series_kw if len(w) > 3)
+
+    verdict = "HIGH" if density >= 60 else "MEDIUM" if density >= 35 else "LOW"
+    return {
+        "fact_count":      fact_count,
+        "total_sentences": total,
+        "density_pct":     round(density, 1),
+        "topic_mentions":  t_mentions,
+        "series_mentions": s_mentions,
+        "verdict":         verdict,
+    }
+
+
+# ── Fiction bleed detection ───────────────────────────────────────────────────
+
+def detect_fiction_bleed(
+    text: str,
+    fictional_names: List[str],
+    allowed_section: str = "show vs reality",
+) -> dict:
+    """
+    Detect fictional character names appearing OUTSIDE the allowed section.
+
+    Returns dict with:
+        bleed_count   — number of contaminated paragraphs
+        offenders     — list of (paragraph_excerpt, fictional_name) pairs
+    """
+    if not text or not fictional_names:
+        return {"bleed_count": 0, "offenders": []}
+
+    # Split into labelled sections if markers present
+    section_pattern = re.compile(r"\[SECTION:\s*([^\]]+)\]", re.IGNORECASE)
+    parts = section_pattern.split(text)
+
+    offenders = []
+    current_section = "unknown"
+
+    for chunk in parts:
+        # section label — update tracker
+        if section_pattern.fullmatch(chunk.strip()):
+            current_section = chunk.strip().lower()
+            continue
+        # Check if this is the allowed section
+        if allowed_section.lower() in current_section:
+            continue
+        # Look for fictional names in non-allowed sections
+        chunk_lower = chunk.lower()
+        for name in fictional_names:
+            if len(name) < 4:
+                continue
+            if name.lower() in chunk_lower:
+                excerpt = chunk.strip()[:80]
+                offenders.append((excerpt, name))
+
+    return {
+        "bleed_count": len(offenders),
+        "offenders":   offenders[:5],
+    }
+
+
 # ── Master filter ─────────────────────────────────────────────────────────────
 
 def apply_all_quality_filters(text: str) -> str:

@@ -472,9 +472,15 @@ def expand_section(existing_text: str, missing_words: int,
     """
     target = max(missing_words, 80)
     prompt = (
-        f"Expand the following documentary section by approximately {target} words. "
-        f"Add new specific details, real names, dates, or narrative depth. "
-        f"Do NOT repeat, summarise, or restate anything already written. "
+        f"Continue the following documentary section with approximately {target} new words.\n\n"
+        f"RULES — the continuation MUST:\n"
+        f"- Add at least one new VERIFIABLE FACT: a real name, date, number, location, or documented event\n"
+        f"- Advance the narrative — new cause, new consequence, new evidence, or new person\n"
+        f"- Match the investigative documentary voice already established\n\n"
+        f"RULES — the continuation must NOT:\n"
+        f"- Repeat, restate, or paraphrase anything already written\n"
+        f"- Add generic suspense language or filler phrases\n"
+        f"- Summarise what was just said\n\n"
         f"Write ONLY the new continuation text — do not include the original section.\n\n"
         f"EXISTING SECTION:\n{existing_text}"
     )
@@ -1704,19 +1710,24 @@ def generate_untold_angle(topic: str, series_label: str) -> dict:
 What is ONE specific hidden truth, controversy, or detail that most people missed?
 Must be about a specific moment, person, or decision — not general.
 
-Good examples:
-- The psychological breakdown that almost ended the FBI Behavioral Science Unit
-- The woman whose contribution was completely erased from the Netflix show
-- The serial killer interview that nobody was supposed to know about
-- Why the FBI leadership tried to shut down the entire unit
-- What really happened off camera that changed everything
+⚠️ ENTITY RULE — the angle MUST:
+- Be DIRECTLY and SPECIFICALLY about {topic} or {series_label}
+- Name a real person, date, or decision from THIS story
+- NOT reference unrelated historical figures, crimes from other eras, or other shows
+- NOT invent people or events not documented in {topic}'s actual history
+
+Good example formats (adapted to THIS topic):
+- "The moment [real person from {topic}] made the decision that changed everything"
+- "The [date/year] document about {topic} that was never made public"
+- "The real figure behind [character from {series_label}] that the show completely erased"
+- "Why [key decision-maker in {topic}'s story] was never charged despite the evidence"
 
 Return JSON only, no extra text:
 {{"angle_title": "...", "angle_hook": "...", "angle_content": "..."}}
 
-angle_title: 5-8 word punchy title (e.g. "The Interview That Broke John Douglas")
-angle_hook: One shocking sentence that opens the chapter — the most arresting fact
-angle_content: 2-3 sentences of specific detail to build the chapter around"""
+angle_title: 5-8 words — must name {topic} or a specific figure from this story
+angle_hook: One sentence — must contain a real name, date, or fact from {topic}'s documented history
+angle_content: 2-3 sentences — all facts must be from {topic}'s actual documented story"""
 
     try:
         result = _ai_script_call(prompt, max_tokens=350, temperature=0.85, json_mode=True)
@@ -1771,37 +1782,69 @@ def write_long_script_split(topic: dict, research: dict, series_info: tuple | No
     _show_chars = research.get("show_characters") or []
     _is_show_topic = research.get("is_show_topic", False) or bool(_show_chars)
     _show_chars_block = ""
-    _mandatory_instruction = ""
+    _ch3_mandatory = ""
+    _ch4_mandatory = ""
     if _show_chars:
         sc_lines = [
             f"  - {c['character']} (played by {c.get('actor','?')}) → real person: {c.get('based_on','?')} — {c.get('real_role','')}"
             for c in _show_chars
         ]
-        _show_chars_block = "SHOW CAST (cover EVERY character below):\n" + "\n".join(sc_lines) + "\n"
+        _show_chars_block = "SHOW CAST — compare EACH character below to their real counterpart:\n" + "\n".join(sc_lines) + "\n"
+        real_names = ", ".join(
+            c.get('based_on','') for c in _show_chars
+            if c.get('based_on') and c.get('based_on','').lower() not in ('null','none','various','')
+        )
+        # Ch3: cover REAL PEOPLE only — no fictional character names in the historical narrative
+        if real_names:
+            _ch3_mandatory = (
+                f"\nMANDATORY — REAL PEOPLE TO COVER IN THIS CHAPTER:\n"
+                f"Give each of these real people at least one full paragraph about their actual history:\n"
+                f"{real_names}\n"
+                f"⚠️ Do NOT use fictional character names in this chapter. "
+                f"Fictional character names belong ONLY in the Show vs Reality chapter.\n"
+            )
+        # Ch4: character-by-character show vs reality — fictional names allowed ONLY here
         char_names = ", ".join(c['character'] for c in _show_chars)
-        real_names = ", ".join(c.get('based_on','?') for c in _show_chars if c.get('based_on') and c.get('based_on','').lower() not in ('null','none','various'))
-        _mandatory_instruction = (
-            f"\nMANDATORY — THIS VIDEO IS ABOUT A TV SHOW BASED ON TRUE EVENTS:\n"
-            f"You MUST cover ALL {len(_show_chars)} main characters: {char_names}\n"
-            f"AND their real counterparts: {real_names}\n"
-            f"Give each character at least one full paragraph.\n"
-            f"Include: what the show got right vs what really happened.\n"
-            f"Never focus on just one character or just the real story — show BOTH worlds.\n"
+        _ch4_mandatory = (
+            f"\nMANDATORY — CHARACTER-BY-CHARACTER COMPARISON (fictional names ONLY allowed in THIS chapter):\n"
+            f"{_show_chars_block}"
+            f"For each character: state what the show depicted, then what the documented record shows.\n"
         )
 
-    # Topic facts visible to every chapter (no coverage instruction — that goes in Ch3 only)
-    _topic_context = f"""Topic: {name}
-Series/Movie: {series} ({stype})
-Real person: {research.get('real_person', name)}
-Key facts: {(research.get('research_facts') or research.get('what_show_got_right', []))[:3]}
-{_show_chars_block}{_real_people_block}{_chars_block}{_rvs_block}{_time_loc}"""
+    # ── Era / geography lock (prevents cross-era contamination) ──────────────
+    _era_lock = ""
+    if rvf.get("time_period") or rvf.get("real_locations"):
+        _era_lock = (
+            f"\n⚠️ ERA & GEOGRAPHY LOCK — this story is set in:\n"
+            f"  Time period: {rvf.get('time_period', 'as per research')}\n"
+            f"  Locations: {', '.join(rvf.get('real_locations', []) or [])}\n"
+            f"STRICT: All entities and events MUST belong to this era and geography. "
+            f"Do NOT introduce figures, events, or organisations from different eras or unrelated regions.\n"
+        )
+
+    # _topic_context for HISTORICAL chapters (Ch1, Ch2, Ch3, Ch5) — NO fictional characters
+    _topic_context = (
+        f"Topic: {name}\n"
+        f"Series/Movie: {series} ({stype})\n"
+        f"Real person: {research.get('real_person', name)}\n"
+        f"Key facts: {(research.get('research_facts') or research.get('what_show_got_right', []))[:3]}\n"
+        f"{_real_people_block}{_time_loc}{_era_lock}"
+    )
+
+    # _ch4_context for Show vs Reality — adds fictional character mapping + rvs comparisons
+    _ch4_fiction_block = ""
+    if _chars_block or _show_chars_block or _rvs_block:
+        _ch4_fiction_block = (
+            f"\n--- FICTIONAL CHARACTERS (these are SHOW characters — NOT historical figures) ---\n"
+            f"{_chars_block}"
+            f"⚠️ The names above are fictional. Use them ONLY in this chapter.\n"
+            f"{_rvs_block}"
+        )
+    _ch4_context = _topic_context + _ch4_fiction_block
 
     # ── Entity guard setup ────────────────────────────────────────────────────
     _active_entity  = build_active_entity(name) if is_single_subject(name) else {}
     _entity_lock    = entity_lock_instruction(_active_entity)
-
-    # Full character-coverage instruction — belongs ONLY in Chapter 3
-    _ch3_mandatory = _mandatory_instruction
 
     base_context = _topic_context  # kept for any legacy references
 
@@ -1842,20 +1885,6 @@ Key facts: {(research.get('research_facts') or research.get('what_show_got_right
             "No filler. No repetition. Every sentence adds new information. "
             + conclude
         )
-
-    # 10 distinct transition phrases — one picked per section to avoid repetition
-    _TRANSITION_PHRASES = [
-        "What nobody expected was...",
-        "The truth was far more disturbing...",
-        "Behind closed doors, however...",
-        "What the cameras never showed...",
-        "Decades later, the full picture finally emerged...",
-        "The official story, however, was only half the truth...",
-        "What the case files revealed changed everything...",
-        "The reality they faced was far darker than anyone knew...",
-        "But something else was happening that the world never saw...",
-        "What happened next would shock even the most seasoned investigators...",
-    ]
 
     def _call_section(prompt: str, label: str, min_w: int, max_w: int,
                       call_num: int) -> str | None:
@@ -2045,6 +2074,8 @@ PREVIOUS CHAPTER (context only — do NOT repeat anything from it):
 {sections[0]}""",
 
         # ── Chapter 3: The Real Story ─────────────────────────────────────────
+        # _topic_context has NO fictional characters — only real people and verified facts.
+        # _ch3_mandatory names ONLY the real counterparts, not fictional show characters.
         lambda: f"""{_topic_context}{_ch3_mandatory}{_entity_lock}
 Write CHAPTER 3 — THE REAL STORY for a documentary about {name}.
 
@@ -2075,12 +2106,13 @@ PREVIOUS CHAPTERS (context only — do NOT repeat anything from them):
 {sections[1]}""",
 
         # ── Chapter 4: Show vs Reality ────────────────────────────────────────
-        lambda: f"""{_topic_context}{_entity_lock}
+        lambda: f"""{_ch4_context}{_ch4_mandatory}{_entity_lock}
 Write CHAPTER 4 — SHOW VS REALITY for a documentary about {name}.
 
 YOUR EXCLUSIVE JOB in this chapter:
 Make direct comparisons between what {series} depicted and what the documented record shows.
 This is the ONLY chapter that compares screen to reality — do it thoroughly.
+Fictional character names from the show (listed above) may be used HERE and only here.
 
 {_facts_block("ch4")}
 
@@ -2176,6 +2208,23 @@ PREVIOUS CHAPTERS (context only — do NOT repeat anything from them):
         # Safety valve only — extremely rare; cap at ~60 min to prevent runaway generation
         print(f"[Script] Safety cap: {total_real}w > {LONG_SCRIPT_MAX_WORDS}w — trimming to ~60 min")
         full_script = _cap_script_max_words(full_script, LONG_SCRIPT_MAX_WORDS)
+
+    # ── Quality summary ───────────────────────────────────────────────────────
+    try:
+        from agents.script_quality import detect_quality_issues
+        _qi = detect_quality_issues(full_script)
+        _filler = _qi.get("filler_count", 0)
+        _rep    = len(_qi.get("repeated_phrases", []))
+        print(
+            f"[Quality] SUMMARY — words: {_qi.get('word_count',0)} | "
+            f"filler phrases: {_filler} | repeated 6-gram patterns: {_rep}"
+        )
+        if _filler > 0:
+            print(f"[Quality] Filler found: {_qi.get('filler_phrases', [])}")
+        if _rep > 0:
+            print(f"[Quality] Repeated patterns: {_qi.get('repeated_phrases', [])[:3]}")
+    except Exception as _qe:
+        print(f"[Quality] Summary check failed (non-fatal): {_qe}")
 
     return full_script
 
@@ -2610,31 +2659,40 @@ The host found something most viewers don't know — celebrate that discovery.
     _rvf_fb_block = ""
     if _rvf_fb.get("real_people"):
         _rp_lines = [f"  - {p['name']}: {p.get('role','')} ({p.get('era','')})" for p in _rvf_fb["real_people"][:6]]
-        _rvf_fb_block += "REAL PEOPLE (cover ALL of them):\n" + "\n".join(_rp_lines) + "\n"
+        _rvf_fb_block += "REAL PEOPLE (cover ALL of them in the historical sections):\n" + "\n".join(_rp_lines) + "\n"
     if _rvf_fb.get("fictional_characters"):
-        _fc_lines = [f"  - {c['name']} (played by {c.get('played_by','?')}) → real person: {c.get('based_on','?')}" for c in _rvf_fb["fictional_characters"][:6]]
-        _rvf_fb_block += "FICTIONAL→REAL CHARACTER MAP:\n" + "\n".join(_fc_lines) + "\n"
+        _fc_lines = [f"  - {c['name']} (played by {c.get('played_by','?')}) → real counterpart: {c.get('based_on','?')}" for c in _rvf_fb["fictional_characters"][:6]]
+        _rvf_fb_block += (
+            "FICTIONAL→REAL MAP (use ONLY in the 'Real Story vs Screen Story' section — "
+            "NEVER use fictional names in the historical narrative sections):\n"
+            + "\n".join(_fc_lines) + "\n"
+        )
     if _rvf_fb.get("real_vs_show"):
         _rvs_lines = [f"  - {r['aspect']}: reality='{r.get('reality','')}' vs show='{r.get('show','')}'" for r in _rvf_fb["real_vs_show"][:4]]
-        _rvf_fb_block += "SHOW VS REALITY (use at least one of these):\n" + "\n".join(_rvs_lines) + "\n"
+        _rvf_fb_block += "SHOW VS REALITY COMPARISONS (for the comparison section only):\n" + "\n".join(_rvs_lines) + "\n"
 
     # Inject show_characters (populated by research_agent STEP 0)
     _sc_fb = research.get("show_characters") or []
     _mandatory_fb = ""
     if _sc_fb:
         sc_lines_fb = [
-            f"  - {c['character']} ({c.get('actor','?')}) → {c.get('based_on','?')}: {c.get('real_role','')}"
+            f"  - {c['character']} ({c.get('actor','?')}) → real person: {c.get('based_on','?')}: {c.get('real_role','')}"
             for c in _sc_fb
         ]
-        _rvf_fb_block += "SHOW CAST — cover EVERY character:\n" + "\n".join(sc_lines_fb) + "\n"
-        char_names_fb = ", ".join(c['character'] for c in _sc_fb)
-        real_names_fb = ", ".join(c.get('based_on','?') for c in _sc_fb if safe_lower(c.get('based_on')) not in ('null','none','various',''))
+        real_names_fb = ", ".join(
+            c.get('based_on','') for c in _sc_fb
+            if safe_lower(c.get('based_on')) not in ('null','none','various','')
+        )
+        _rvf_fb_block += (
+            "SHOW CAST (use fictional names ONLY in the Show vs Reality section):\n"
+            + "\n".join(sc_lines_fb) + "\n"
+        )
         _mandatory_fb = (
-            f"\nMANDATORY — THIS VIDEO IS ABOUT A TV SHOW BASED ON TRUE EVENTS:\n"
-            f"You MUST cover ALL {len(_sc_fb)} main characters: {char_names_fb}\n"
-            f"AND their real counterparts: {real_names_fb}\n"
-            f"Give each character at least one full paragraph. Show BOTH worlds — the show and reality.\n"
-            f"Include what the show got right vs what really happened.\n"
+            f"\nMANDATORY — REAL PEOPLE (cover ALL of these in the historical sections):\n"
+            f"{real_names_fb}\n"
+            f"Give each real person at least one full paragraph.\n"
+            f"⚠️ Use fictional character names ONLY in the 'Real Story vs Screen Story' section.\n"
+            f"NEVER use fictional character names as historical anchors.\n"
         )
 
     _dc_active_entity = build_active_entity(topic["topic"]) if is_single_subject(topic["topic"]) else {}
@@ -2912,11 +2970,30 @@ Return ONLY this JSON with no extra text:
     _s = upgrade_script_for_retention(_s)
     _s = pick_best_hook(_s, topic=topic.get("topic", ""))
     _s = evaluate_and_fix_script(_s)
-    from agents.script_quality import apply_all_quality_filters, detect_quality_issues
+    from agents.script_quality import (
+        apply_all_quality_filters, detect_quality_issues,
+        score_fact_density, detect_fiction_bleed,
+    )
     _s = apply_all_quality_filters(_s)
     _qi = detect_quality_issues(_s)
-    if _qi.get("filler_count", 0) or _qi.get("repeated_phrases"):
-        print(f"[Quality] Post-filter report: {_qi}")
+    _fd = score_fact_density(_s, topic=topic.get("topic",""), series=_series_name_raw)
+    _fc_names = [
+        c.get("based_on","") or c.get("character","")
+        for c in (research.get("show_characters") or [])
+        if c.get("character")
+    ]
+    _fb = detect_fiction_bleed(_s, _fc_names) if _fc_names else {}
+    print(
+        f"[Quality] SUMMARY — words: {_qi.get('word_count',0)} | "
+        f"filler: {_qi.get('filler_count',0)} | "
+        f"fact density: {_fd.get('density_pct',0)}% ({_fd.get('verdict','?')}) | "
+        f"fiction bleed: {_fb.get('bleed_count',0)} paragraph(s)"
+    )
+    if _qi.get("filler_count", 0):
+        print(f"[Quality] Filler phrases detected: {_qi.get('filler_phrases',[])}")
+    if _fb.get("bleed_count", 0):
+        print(f"[Quality] Fiction bleed detected — fictional names outside Show vs Reality: "
+              f"{[o[1] for o in _fb.get('offenders',[])[:3]]}")
     script_data["script"] = _s
     print(f"[Script] Written (english): '{script_data['title']}'")
     return script_data
