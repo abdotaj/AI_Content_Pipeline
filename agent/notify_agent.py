@@ -454,9 +454,7 @@ def check_telegram_for_script(timeout: int = 30) -> dict | None:
         msg      = upd.get("message", {})
         msg_time = msg.get("date", 0)
         msg_text = msg.get("text", "")[:60]
-        if age < 0:
-            print("[Notify] Future timestamp detected → accepting message")
-            age = 0
+        age      = current_time - msg_time
         print(f"[Notify] Message age: {age:.0f}s  text: {msg_text!r}")
 
     if not updates:
@@ -476,9 +474,7 @@ def check_telegram_for_script(timeout: int = 30) -> dict | None:
         text     = message.get("text", "").strip()
         chat_id  = str(message.get("chat", {}).get("id", ""))
         msg_time = message.get("date", 0)
-        if age < 0:
-            print("[Notify] Future timestamp detected → accepting message")
-            age = 0
+        age      = current_time - msg_time
 
         # Only owner chat
         if chat_id != str(TELEGRAM_CHAT_ID):
@@ -675,15 +671,8 @@ def check_telegram_for_images(after_timestamp: float = 0.0) -> list[dict]:
 
         if chat_id != str(TELEGRAM_CHAT_ID):
             continue
-
-        age = current_time - msg_time
-
-        if age < 0:
-            print("[Notify] Future timestamp → accepting message")
-            age = 0
-
-        if age > MAX_AGE:
-            print(f"[Notify] Skipping old message: {text[:40]!r}")
+        if msg_time < cutoff:
+            print(f"[Notify] Skipping old message (before cutoff): {caption[:40]!r}")
             continue
 
         # ── Photos ────────────────────────────────────────────────────────────
@@ -874,13 +863,7 @@ def check_telegram_for_videos(after_timestamp: float = 0.0) -> list[dict]:
 
         if chat_id != str(TELEGRAM_CHAT_ID):
             continue
-        age = current_time - msg_time
-
-        if age < 0:
-            print("[Notify] Future timestamp → accepting message")
-            age = 0
-
-        if age > MAX_AGE:
+        if msg_time < cutoff:
             continue
 
         file_id   = None
