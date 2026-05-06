@@ -2513,7 +2513,7 @@ def _mix_pure_video_audio(final_video_path: str, pure_video_paths: list[str]) ->
             "-i", final_video_path,
             "-filter_complex",
             "[0:a]volume=0.25[orig];[1:a]volume=1.0[narr];"
-            "[orig][narr]amix=inputs=2:duration=shortest[aout]",
+            "[orig][narr]amix=inputs=2:duration=shortest:normalize=0[aout]",
             "-map", "1:v",
             "-map", "[aout]",
             "-c:v", "copy",
@@ -5879,6 +5879,62 @@ def ensure_music_assets() -> None:
         print(f"[Music] Generating {fallback_seconds}s brown-noise ambient track: {path}")
         if not _create_ambient_music_fallback(path, fallback_seconds):
             print(f"[Music] Could not generate ambient track for {path} -- voice-only mode")
+def _measure_audio_levels(path: str, label: str = "") -> None:
+    """Log peak dB and mean volume (RMS) of an audio file via ffmpeg volumedetect."""
+    import subprocess, re as _re
+    ffmpeg_bin = _get_ffmpeg()
+    if not ffmpeg_bin or not os.path.exists(path):
+        return
+    try:
+        result = subprocess.run(
+            [ffmpeg_bin, "-y", "-i", path, "-af", "volumedetect", "-f", "null", "-"],
+            capture_output=True, text=True, timeout=30,
+        )
+        out   = result.stderr
+        peak  = _re.search(r'max_volume:\s*([-\d.]+)\s*dB', out)
+        mean  = _re.search(r'mean_volume:\s*([-\d.]+)\s*dB', out)
+        tag   = f" [{label}]" if label else ""
+        if peak:
+            print(f"[Audio]{tag} Peak: {peak.group(1)} dB")
+        if mean:
+            print(f"[Audio]{tag} RMS: {mean.group(1)} dB")
+    except Exception as e:
+        print(f"[Audio] Level measurement failed ({label}): {e}")
+
+
+def _check_and_boost_audio(path: str) -> None:
+    """Emergency failsafe: if peak is below -18 dBFS after processing, apply gain correction."""
+    import subprocess, re as _re
+    ffmpeg_bin = _get_ffmpeg()
+    if not ffmpeg_bin or not os.path.exists(path):
+        return
+    try:
+        result = subprocess.run(
+            [ffmpeg_bin, "-y", "-i", path, "-af", "volumedetect", "-f", "null", "-"],
+            capture_output=True, text=True, timeout=30,
+        )
+        peak_m = _re.search(r'max_volume:\s*([-\d.]+)\s*dB', result.stderr)
+        if not peak_m:
+            return
+        peak = float(peak_m.group(1))
+        if peak >= -8.0:
+            return   # already loud enough
+        # Boost to bring peak to -4 dBFS; cap at +12 dB to avoid distortion
+        boost_db = min(-4.0 - peak, 12.0)
+        print(f"[Audio] Emergency failsafe: peak={peak:.1f} dB → applying +{boost_db:.1f} dB boost")
+        tmp = path + ".boost.mp3"
+        subprocess.run(
+            [ffmpeg_bin, "-y", "-i", path,
+             "-af", f"volume={boost_db:.1f}dB,alimiter=limit=0.95:attack=3:release=30",
+             "-c:a", "libmp3lame", "-q:a", "2", tmp],
+            check=True, capture_output=True, timeout=60,
+        )
+        os.replace(tmp, path)
+        print(f"[Audio] Emergency boost applied successfully")
+    except Exception as e:
+        print(f"[Audio] Emergency boost failed: {e}")
+
+
 def mix_background_music(voice_path: str, is_short: bool = False) -> str:
     """Mix looping background music under the voice track at -24 dB (volume=0.06)."""
     import subprocess
@@ -5904,7 +5960,8 @@ def mix_background_music(voice_path: str, is_short: bool = False) -> str:
              "-i", voice_path,
              "-stream_loop", "-1",
              "-i", music_file,
-             "-filter_complex", "[1]volume=0.06[bg];[0][bg]amix=inputs=2:duration=first",
+             "-filter_complex",
+             "[1]volume=0.06[bg];[0][bg]amix=inputs=2:duration=first:normalize=0",
              "-c:a", "libmp3lame", "-q:a", "2",
              "-y", output],
             check=True, capture_output=True,
@@ -5919,76 +5976,94 @@ def mix_background_music(voice_path: str, is_short: bool = False) -> str:
 
 # â"€â"€ Netflix-quality audio post-processing â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
-def process_audio_netflix(input_path: str) -> str:
+def process_audio_netflix(input_path: str, is_short: bool = None) -> str:
     """
-    Apply a 5-step ffmpeg chain for cinematic audio quality.
-    Returns the processed file path (replaces input in-place).
-    Skips silently if ffmpeg is unavailable.
+    3-step audio chain: EQ → compress+makeup → loudnorm+limiter → music mix.
+
+    Targets (mobile/phone-speaker optimised):
+      Shorts  → -14 LUFS, TP=-1.0  (TikTok/Reels/Shorts autoplay)
+      Long    → -16 LUFS, TP=-1.0  (YouTube mobile)
+
+    Key fixes vs. old chain:
+      - Reverb (aecho) REMOVED: added blur and cut perceived loudness on phone speakers
+      - Compressor uses makeup=6 dB: compresses dynamics AND restores+boosts loudness
+      - amix uses normalize=0: voice level is preserved after music mix (was halved)
+      - Emergency failsafe applied if peak is still below -18 dBFS after chain
     """
     import subprocess
     import shutil
 
     ffmpeg_bin = _get_ffmpeg()
     if not ffmpeg_bin:
-        print("[Audio] ffmpeg not found — skipping Netflix processing")
+        print("[Audio] ffmpeg not found — skipping audio processing")
         return input_path
 
-    base   = input_path.replace(".mp3", "")
-    steps  = [
-        # 1. Bass boost — warmth
+    if is_short is None:
+        is_short = "short" in os.path.basename(input_path).lower()
+
+    lufs_target = "-14" if is_short else "-16"
+    lra         = "9"   if is_short else "11"
+    base        = input_path.replace(".mp3", "")
+
+    _measure_audio_levels(input_path, "Raw TTS")
+
+    steps = [
+        # Step 1: EQ — highpass removes low-frequency rumble, mild bass boost adds warmth
         ([ffmpeg_bin, "-y", "-i", input_path,
-          "-af", "equalizer=f=120:width_type=o:width=2:g=3",
-          f"{base}_s1.mp3"], "bass boost"),
-        # 3. Light compression — consistent volume
+          "-af", "highpass=f=80,equalizer=f=120:width_type=o:width=2:g=2",
+          f"{base}_s1.mp3"], "eq"),
+        # Step 2: Compression + makeup gain
+        # threshold=0.089 ≈ -21 dBFS catches most voice; ratio=3:1; makeup=6 dB restores+boosts
         ([ffmpeg_bin, "-y", "-i", f"{base}_s1.mp3",
-          "-af", "acompressor=threshold=0.5:ratio=4:attack=5:release=50",
-          f"{base}_s3.mp3"], "compression"),
-        # 4. Subtle reverb — space and depth
-        ([ffmpeg_bin, "-y", "-i", f"{base}_s3.mp3",
-          "-af", "aecho=0.8:0.9:40:0.3",
-          f"{base}_s4.mp3"], "reverb"),
-        # 5. Loudness normalisation
-        ([ffmpeg_bin, "-y", "-i", f"{base}_s4.mp3",
-          "-af", "loudnorm=I=-16:TP=-1.5:LRA=11",
-          f"{base}_processed.mp3"], "loudnorm"),
+          "-af", "acompressor=threshold=0.089:ratio=3:attack=5:release=100:makeup=6",
+          f"{base}_s2.mp3"], "compress+makeup"),
+        # Step 3: Loudness normalisation to target LUFS + hard limiter prevents clipping
+        ([ffmpeg_bin, "-y", "-i", f"{base}_s2.mp3",
+          "-af", f"loudnorm=I={lufs_target}:TP=-1.0:LRA={lra},"
+                 "alimiter=limit=0.95:attack=3:release=30",
+          f"{base}_s3.mp3"], "loudnorm+limit"),
     ]
 
-    prev = input_path
     step_files: list[str] = []
     for cmd, label in steps:
         try:
             subprocess.run(cmd, check=True, capture_output=True)
             step_files.append(cmd[-1])
-            prev = cmd[-1]
+            print(f"[Audio] Step '{label}' done")
         except Exception as e:
-            print(f"[Audio] Netflix step '{label}' failed: {e} — stopping chain")
+            print(f"[Audio] Step '{label}' failed: {e} — stopping chain")
             break
 
     if not step_files:
         return input_path
 
     final_processed = step_files[-1]
+    _measure_audio_levels(final_processed, "After processing")
 
-    # Mix background music via dedicated function
-    _is_short = "short" in os.path.basename(input_path).lower()
-    mixed = mix_background_music(final_processed, is_short=_is_short)
+    # Mix background music (amix normalize=0 preserves voice level)
+    mixed = mix_background_music(final_processed, is_short=is_short)
     if mixed != final_processed:
         final_processed = mixed
+        _measure_audio_levels(final_processed, "After music mix")
 
-    # Replace original with processed
+    # Emergency failsafe — if audio is still too quiet, apply gain correction
+    _check_and_boost_audio(final_processed)
+
+    # Replace original with processed version
     try:
         shutil.move(final_processed, input_path)
     except Exception as e:
-        print(f"[Audio] Could not replace original with processed: {e}")
+        print(f"[Audio] Could not replace original: {e}")
         return final_processed
 
-    # Clean up intermediate step files
+    # Remove intermediate temp files
     for f in step_files:
         if f != final_processed and os.path.exists(f):
             try: os.remove(f)
             except OSError: pass
 
-    print("[Audio] Audio post-processed: bass boost + compression + reverb + music mixed")
+    _measure_audio_levels(input_path, "Final export")
+    print(f"[Audio] Post-processing complete: EQ + compress+makeup + loudnorm({lufs_target} LUFS) + limiter + music")
     return input_path
 
 
@@ -6671,13 +6746,15 @@ def run_fast_pipeline(
         elif is_short:
             audio_path = generate_voiceover(script_data["script"], video_id, language)
             if audio_path and os.path.exists(audio_path):
-                audio_path = mix_background_music(audio_path, is_short=True)
+                audio_path = process_audio_netflix(audio_path, is_short=True)
         else:
             audio_path, dynamic_chapters = generate_tts_sections(
                 script_data["script"], video_id, language
             )
             if dynamic_chapters:
                 script_data["chapters"] = dynamic_chapters
+            if audio_path and os.path.exists(audio_path):
+                audio_path = process_audio_netflix(audio_path, is_short=False)
         print(f"[FAST] Audio ready: {audio_path}")
     except Exception as e:
         print(f"[FAST] Audio failed: {e}")
@@ -6827,11 +6904,11 @@ def run_full_pipeline(
                 script_data["chapters"] = dynamic_chapters
                 print("[FULL] Dynamic chapters saved")
             if audio_path and os.path.exists(audio_path):
-                audio_path = process_audio_netflix(audio_path)
+                audio_path = process_audio_netflix(audio_path, is_short=False)
         else:
             audio_path = generate_voiceover(script_data["script"], video_id, language)
             if audio_path and os.path.exists(audio_path):
-                audio_path = mix_background_music(audio_path, is_short=True)
+                audio_path = process_audio_netflix(audio_path, is_short=True)
         print(f"[FULL] Audio ready: {audio_path}")
         try:
             try:
