@@ -124,39 +124,69 @@ def get_voice(language: str) -> str:
     return voices.get(language.lower(), "en-US-GuyNeural")
 
 
+# ── Arabic TTS pronunciation map ──────────────────────────────────────────────
+# Replaces foreign names/brands that appear in Arabic script with phonetic Arabic
+# equivalents so the TTS engine doesn't mispronounce Latin characters.
+# Listed longest-first so multi-word phrases match before single words.
 _ARABIC_PRONUNCIATION = [
-    ("Netflix", "نتفليكس"), ("HBO", "إتش بي أو"), ("FBI", "إف بي آي"),
-    ("CIA", "سي آي إيه"), ("DEA", "دي إي إيه"), ("NYPD", "شرطة نيويورك"),
-    ("Mindhunter", "مايند هانتر"), ("Breaking Bad", "بريكينج باد"),
-    ("Better Call Saul", "بيتر كول سول"), ("Narcos", "ناركوس"),
-    ("Narcos Mexico", "ناركوس المكسيك"), ("Scarface", "سكارفيس"),
-    ("Goodfellas", "غودفيلاز"), ("The Godfather", "العراب"),
-    ("Godfather", "العراب"), ("Casino", "كازينو"),
-    ("The Irishman", "الإيرلندي"), ("Donnie Brasco", "دوني براسكو"),
-    ("American Gangster", "الغانغستر الأمريكي"), ("Sicario", "سيكاريو"),
-    ("City of God", "مدينة الله"), ("Ozark", "أوزارك"),
-    ("The Wire", "ذا واير"), ("Peaky Blinders", "بيكي بلايندرز"),
-    ("Money Heist", "مانيي هيست"), ("La Casa de Papel", "لا كاسا دي بابيل"),
-    ("Griselda", "غريزيلدا"), ("El Chapo", "إل تشابو"),
-    ("Pablo Escobar", "بابلو إسكوبار"), ("Al Capone", "آل كابوني"),
-    ("John Gotti", "جون غوتي"), ("Whitey Bulger", "وايتي بولغر"),
-    ("Henry Hill", "هنري هيل"), ("Frank Lucas", "فرانك لوكاس"),
-    ("Griselda Blanco", "غريزيلدا بلانكو"), ("Amado Carrillo", "أمادو كاريو"),
-    ("Miguel Angel Gallardo", "ميغيل أنخيل غالاردو"),
-    ("Willy Falcon", "ويلي فالكون"), ("Jon Hamm", "جون هام"),
-    ("Bryan Cranston", "براين كرانستون"), ("Bob Odenkirk", "بوب أودنكيرك"),
-    ("Al Pacino", "آل باتشينو"), ("Robert De Niro", "روبرت دي نيرو"),
-    ("Joe Pesci", "جو بيشي"), ("Martin Scorsese", "مارتن سكورسيزي"),
-    ("John Douglas", "جون دوغلاس"), ("James Comey", "جيمس كومي"),
-    ("Robert Mueller", "روبرت مولر"), ("Jeffrey Dahmer", "جيفري دامر"),
-    ("Ted Bundy", "تيد باندي"), ("John Wayne Gacy", "جون واين غيسي"),
-    ("Charles Manson", "تشارلز مانسون"), ("El Mayo", "إل مايو"),
-    ("Los Zetas", "لوس زيتاس"), ("Sinaloa", "سينالوا"),
-    ("Medellin", "ميديين"), ("Cali Cartel", "كارتيل كالي"),
-    ("Cosa Nostra", "كوزا نوسترا"), ("Ndrangheta", "ندرانغيتا"),
+    # Streaming / platforms
+    ("Netflix",          "نتفليكس"),
+    ("YouTube",          "يوتيوب"),
+    ("Amazon Prime",     "أمازون برايم"),
+    ("Amazon",           "أمازون"),
+    ("HBO",              "إتش بي أو"),
+    ("TikTok",           "تيك توك"),
+    ("Instagram",        "إنستغرام"),
+    ("WhatsApp",         "واتساب"),
+    ("Google",           "غوغل"),
+    ("Twitter",          "تويتر"),
+    # Law enforcement / agencies
+    ("FBI",              "إف بي آي"),
+    ("CIA",              "سي آي إيه"),
+    ("DEA",              "دي إيه إيه"),
+    ("NSA",              "إن إس إيه"),
+    ("LAPD",             "شرطة لوس أنجلوس"),
+    ("Interpol",         "الإنتربول"),
+    # Shows / films from pipeline topics
+    ("Mindhunter",       "مايند هانتر"),
+    ("Breaking Bad",     "بريكينج باد"),
+    ("Narcos Mexico",    "ناركوس المكسيك"),
+    ("Narcos",           "ناركوس"),
+    ("Scarface",         "سكارفيس"),
+    ("Goodfellas",       "غودفيلاز"),
+    ("The Godfather",    "العراب"),
+    ("Godfather",        "العراب"),
+    ("The Sopranos",     "سوبرانوز"),
+    ("Sopranos",         "سوبرانوز"),
+    ("The Wire",         "ذا واير"),
+    ("Ozark",            "أوزارك"),
+    ("Casino",           "كازينو"),
+    ("Donnie Brasco",    "دوني براسكو"),
+    ("Sicario",          "سيكاريو"),
+    ("Griselda",         "غريسيلدا"),
+    ("American Gangster","الغانغستر الأمريكي"),
+    ("City of God",      "مدينة الله"),
+    ("Peaky Blinders",   "بيكي بلايندرز"),
+    ("Money Heist",      "سرقة الأموال"),
+    # Key people
+    ("John Douglas",     "جون دوغلاس"),
+    ("Pablo Escobar",    "بابلو إسكوبار"),
+    ("El Chapo",         "إل تشابو"),
+    ("Al Capone",        "آل كابوني"),
+    ("Frank Lucas",      "فرانك لوكاس"),
+    ("Tony Montana",     "توني مونتانا"),
+    ("Walter White",     "والتر وايت"),
+    ("Jesse Pinkman",    "جيسي بينكمان"),
+    ("Griselda Blanco",  "غريسيلدا بلانكو"),
+    ("Whitey Bulger",    "وايتي بولجر"),
+    ("Henry Hill",       "هنري هيل"),
+    ("Michael Corleone", "مايكل كورليوني"),
+    ("Vito Corleone",    "فيتو كورليوني"),
 ]
 
+
 def _apply_arabic_pronunciation(text: str) -> str:
+    """Replace foreign names in Arabic text with phonetic Arabic equivalents."""
     import re as _pre
     for en, ar in sorted(_ARABIC_PRONUNCIATION, key=lambda x: len(x[0]), reverse=True):
         text = _pre.sub(_pre.escape(en), ar, text, flags=_pre.IGNORECASE)
@@ -497,8 +527,6 @@ def _elevenlabs_chunk(chunk: str, voice_id: str, api_key: str, chunk_path: str) 
 def generate_voiceover(script_text: str, filename: str, language: str = "english") -> str:
     """Generate voiceover — OpenAI TTS (tts-1-hd) → edge-tts fallback."""
     script_text = _strip_section_markers(script_text)
-    if language == "arabic":
-        script_text = _apply_arabic_pronunciation(script_text)
     try:
         from agents.script_agent import format_for_tts as _fmt
     except ImportError:
@@ -508,6 +536,10 @@ def generate_voiceover(script_text: str, filename: str, language: str = "english
             _fmt = None
     if _fmt:
         script_text = _fmt(script_text)
+
+    # Replace foreign names with Arabic phonetic equivalents before any TTS engine
+    if language == "arabic":
+        script_text = _apply_arabic_pronunciation(script_text)
 
     # Priority 1: OpenAI TTS (primary — Arabic: nova/0.9, English: alloy/1.0)
     openai_key = os.getenv("OPENAI_API_KEY", "").strip()
@@ -1220,20 +1252,16 @@ def extract_style_from_user_images(user_images: list[dict]) -> str:
     """
     Analyze user-provided images to extract a visual style profile (era, lighting,
     environment, mood) for injection into all AI-generated image prompts.
-
     Uses OpenAI Vision on the first available image; falls back to captions/tags.
-    Returns a style string like "1970s FBI interview room, dim cold lighting, tense atmosphere".
     Returns empty string when no user images are available.
     """
     if not user_images:
         return ""
-
     first_path = next(
         (img["path"] for img in user_images
          if img.get("path") and os.path.exists(img.get("path", ""))),
         None
     )
-
     api_key = os.getenv("OPENAI_API_KEY", "").strip()
     if api_key and first_path:
         try:
@@ -1247,22 +1275,18 @@ def extract_style_from_user_images(user_images: list[dict]) -> str:
                 headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
                 json={
                     "model": "gpt-4o-mini",
-                    "messages": [{
-                        "role": "user",
-                        "content": [
-                            {"type": "image_url",
-                             "image_url": {"url": f"data:{mime};base64,{img_b64}"}},
-                            {"type": "text", "text": (
-                                "Analyze this image and extract its visual style. "
-                                "Return ONLY a short comma-separated style description "
-                                "(max 15 words) covering: era, setting, lighting, mood, "
-                                "clothing if visible. "
-                                "DO NOT describe faces or identify any person. "
-                                "Example: '1970s FBI interview room, dim cold lighting, "
-                                "formal clothing, tense atmosphere'"
-                            )},
-                        ],
-                    }],
+                    "messages": [{"role": "user", "content": [
+                        {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{img_b64}"}},
+                        {"type": "text", "text": (
+                            "Analyze this image and extract its visual style. "
+                            "Return ONLY a short comma-separated style description "
+                            "(max 15 words) covering: era, setting, lighting, mood, "
+                            "clothing if visible. "
+                            "DO NOT describe faces or identify any person. "
+                            "Example: '1970s FBI interview room, dim cold lighting, "
+                            "formal clothing, tense atmosphere'"
+                        )},
+                    ]}],
                     "max_tokens": 60,
                     "temperature": 0.2,
                 },
@@ -1275,7 +1299,6 @@ def extract_style_from_user_images(user_images: list[dict]) -> str:
                     return style
         except Exception as e:
             print(f"[Style] Vision analysis failed (non-fatal): {e}")
-
     # Fallback: build style hint from captions and tags
     captions = [img.get("caption", "").strip() for img in user_images if img.get("caption")]
     tags = []
@@ -1286,7 +1309,6 @@ def extract_style_from_user_images(user_images: list[dict]) -> str:
         style = combined.strip()[:120]
         print(f"[Style] Caption-based style: {style}")
         return style
-
     return ""
 
 
@@ -1423,6 +1445,43 @@ def clean_prompt(prompt: str) -> str:
     return prompt[:200]
 
 
+def safe_download_image(url: str, output_path: str, timeout: int = 15) -> str | None:
+    """
+    Download an image URL with strict validation. Never raises.
+
+    Rejects: HTML pages, text/html redirects, files < 5 KB, bad magic bytes.
+    Returns output_path on success, None on any failure.
+    """
+    import io
+    from PIL import Image as PILImage
+    try:
+        r = requests.get(
+            url, timeout=timeout,
+            headers={"User-Agent": "DarkCrimeDecoded/1.0"},
+            allow_redirects=True,
+        )
+        if r.status_code != 200:
+            return None
+        ct = r.headers.get("Content-Type", "").lower()
+        if ct and not ct.startswith("image/"):
+            print(f"[Image] safe_download: rejected non-image Content-Type '{ct.split(';')[0].strip()}'")
+            return None
+        if len(r.content) < 5_000:
+            print(f"[Image] safe_download: rejected tiny file ({len(r.content)} bytes)")
+            return None
+        if not _check_image_bytes(r.content[:12]):
+            print(f"[Image] safe_download: rejected bad magic bytes from {url[:60]}")
+            return None
+        img = PILImage.open(io.BytesIO(r.content)).convert("RGB")
+        img = img.resize((1080, 1920), PILImage.LANCZOS)
+        output_path = output_path.replace(".jpg", ".png")
+        img.save(output_path, "PNG")
+        return output_path
+    except Exception as e:
+        print(f"[Image] safe_download failed ({url[:60]}): {e}")
+        return None
+
+
 def generate_ai_image(prompt: str, output_path: str, seed: int = None) -> str:
     """Fetch an AI-generated image from Pollinations with retry + dark fallback."""
     import io
@@ -1436,9 +1495,9 @@ def generate_ai_image(prompt: str, output_path: str, seed: int = None) -> str:
         f"?width=1080&height=1920&nologo=true&seed={_seed}"
     )
 
-    for attempt in range(3):
+    for attempt in range(2):
         try:
-            response = requests.get(url, timeout=120)
+            response = requests.get(url, timeout=90)
             if response.status_code == 200:
                 img = PILImage.open(io.BytesIO(response.content)).convert("RGB")
                 img = img.resize((1080, 1920), PILImage.LANCZOS)
@@ -1447,14 +1506,21 @@ def generate_ai_image(prompt: str, output_path: str, seed: int = None) -> str:
                 time.sleep(5)
                 return output_path
             elif response.status_code == 429:
-                print(f"[Image] Rate limited, waiting 30s... (attempt {attempt + 1}/3)")
+                print(f"[Image] Rate limited, waiting 30s... (attempt {attempt + 1}/2)")
                 time.sleep(30)
             else:
-                print(f"[Image] Pollinations returned {response.status_code} (attempt {attempt + 1}/3)")
+                print(f"[Image] Pollinations returned {response.status_code} (attempt {attempt + 1}/2)")
                 time.sleep(10)
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+            print(f"[Image] Network error attempt {attempt + 1}: {e} — switching to AI fallback")
+            break
         except Exception as e:
+            err = str(e)
+            if "cancel" in err.lower() or "operation" in err.lower():
+                print(f"[Image] Search cancelled — switching to AI fallback")
+                break
             print(f"[Image] Attempt {attempt + 1} failed: {e}")
-            time.sleep(15)
+            time.sleep(10)
 
     # Fallback: solid dark background so assembly never crashes
     img = PILImage.new("RGB", (1080, 1920), color=(13, 13, 26))
@@ -1558,7 +1624,7 @@ def _wikimedia_image_results(query: str, max_results: int = 5) -> list[str]:
             'gsrnamespace': '6', 'gsrsearch': query, 'gsrlimit': max_results * 3,
             'prop': 'imageinfo', 'iiprop': 'url|mediatype', 'iiurlwidth': 1080,
         }
-        r = requests.get('https://commons.wikimedia.org/w/api.php', params=params, timeout=15)
+        r = requests.get('https://commons.wikimedia.org/w/api.php', params=params, timeout=12)
         if r.status_code != 200:
             return []
         pages = r.json().get('query', {}).get('pages', {}).values()
@@ -1572,8 +1638,15 @@ def _wikimedia_image_results(query: str, max_results: int = 5) -> list[str]:
             if len(urls) >= max_results:
                 break
         return urls
+    except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
+        print(f'[Image] Wikimedia search cancelled/timeout for: {query} — using AI fallback')
+        return []
     except Exception as e:
-        print(f'[Image] Wikimedia search failed: {e}')
+        err = str(e)
+        if "cancel" in err.lower() or "operation" in err.lower():
+            print(f'[Image] Search cancelled — switching to AI fallback')
+        else:
+            print(f'[Image] Wikimedia search failed: {e}')
         return []
 
 
@@ -1627,7 +1700,7 @@ def _search_images_openai(query: str, max_results: int = 5) -> list[str]:
                 'tools': [{'type': 'web_search_preview'}],
                 'input': f'Find real photographs of {query}. Return only direct image URLs ending in .jpg .jpeg .png or .webp. One URL per line. No explanation, no markdown.'
             },
-            timeout=30
+            timeout=20,
         )
         data = r.json()
         print(f'[Image] OpenAI search status: {r.status_code} for: {query}')
@@ -1648,8 +1721,15 @@ def _search_images_openai(query: str, max_results: int = 5) -> list[str]:
         print(f'[Image] OpenAI search found {len(urls)} URLs for: {query}')
         return urls[:max_results]
 
+    except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
+        print(f'[Image] OpenAI search cancelled/timeout for: {query} — switching to AI fallback')
+        return []
     except Exception as e:
-        print(f'[Image] OpenAI search error: {e}')
+        err = str(e)
+        if "cancel" in err.lower() or "operation" in err.lower():
+            print(f'[Image] Search cancelled — switching to AI fallback')
+        else:
+            print(f'[Image] OpenAI search error: {e}')
         return []
 
 
@@ -3302,7 +3382,6 @@ def _refine_with_youtube_metadata(queries: list[str], topic: str) -> list[str]:
             proc = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
             titles = [ln.strip() for ln in proc.stdout.splitlines() if ln.strip()]
             if titles:
-                # Count words appearing in 2+ titles
                 freq: dict[str, int] = {}
                 q_words = set(q.lower().split())
                 for title in titles:
@@ -5008,18 +5087,18 @@ def assemble_video_with_hook(
         return VideoClip(make_frame=make_frame, duration=dur)
 
     def _media_clip(src_path: str, dur: float, zoom_in: bool = True, first_clip: bool = False):
-        fi = 0.0 if first_clip else 0.2
+        fi = 0.0 if first_clip else 0.2   # no fade-in on opening shot
         if _is_video_file(src_path):
             try:
                 v = VideoFileClip(src_path)
             except Exception as _vfe:
                 print(f"[Video] VideoFileClip failed ({os.path.basename(src_path)}): {_vfe} — using image fallback")
                 frame = _load_frame(src_path)
-                return _zoom_clip(frame, dur, 1.00, 1.06 if zoom_in else 1.00)
+                return _zoom_clip(frame, dur, 1.00, 1.06 if zoom_in else 1.00, fade_in=fi)
             if v.duration <= 0:
                 v.close()
                 frame = _load_frame(src_path)
-                return _zoom_clip(frame, dur, 1.00, 1.06 if zoom_in else 1.00)
+                return _zoom_clip(frame, dur, 1.00, 1.06 if zoom_in else 1.00, fade_in=fi)
             # Timeline clip: start=0, end=min(assigned_duration, actual_duration)
             tl_dur = (clip_durations or {}).get(src_path)
             if tl_dur is not None:
@@ -5244,7 +5323,7 @@ def _rank_visual_pool(paths: list[str], query: str = "", topic: str = "") -> lis
 # â"€â"€ Short video assembler â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 def assemble_short_video(audio_path: str, image_paths: list[str], output_path: str, clip_durations: dict | None = None) -> str:
-    """Assemble short video: real footage first, image zoom-pairs as fill, loop to 60-90 s."""
+    """Assemble short video: 2 zoom variations per image, loop to fill 60-90 s."""
     import traceback
     import numpy as np
     from PIL import Image as PILImage
@@ -5349,33 +5428,32 @@ def assemble_short_video(audio_path: str, image_paths: list[str], output_path: s
         print("[Video] No media for short video, aborting")
         return ""
 
-    # Split pool: real footage gets priority placement and longer screen time
+    # Separate real footage from static images — videos anchor the front
     video_sources = [p for p in media_sources if _is_video_file(p)]
     image_sources = [p for p in media_sources if not _is_video_file(p)]
-    print(f"[Video] Short pool: {len(video_sources)} video clips, {len(image_sources)} images")
 
-    # Real footage: two segments per source at 10-14 s — natural motion, no zoom
+    # Video clips: 10-14s, two segments per source
     video_clips: list = []
     for src in video_sources:
         try:
             video_clips.append(_media_clip(src, random.uniform(10, 14)))
             video_clips.append(_media_clip(src, random.uniform(10, 14)))
         except Exception as e:
-            print(f"[Video] Short video clip error ({os.path.basename(src)}): {e}")
+            print(f"[Video] Short video clip error: {e}")
 
-    # Static images: zoom-in / zoom-out pair at 5-7 s
+    # Image clips: 5-7s zoom pairs
     image_clips: list = []
     for src in image_sources:
         try:
             image_clips.append(_media_clip(src, random.uniform(5, 7), zoom_in=True))
             image_clips.append(_media_clip(src, random.uniform(5, 7), zoom_in=False))
         except Exception as e:
-            print(f"[Video] Short image clip error ({os.path.basename(src)}): {e}")
+            print(f"[Video] Short image clip error: {e}")
 
-    random.shuffle(image_clips)               # shuffle images only
-    all_clips = video_clips + image_clips     # real footage anchors the front
+    random.shuffle(image_clips)
+    all_clips = video_clips + image_clips
 
-    # Gap-fill: prefer video sources so refills stay authentic
+    # Gap-fill: prefer real footage when available
     refill_pool = video_sources if video_sources else media_sources
     while sum(c.duration for c in all_clips) < total_duration + 5:
         src = refill_pool[random.randint(0, len(refill_pool) - 1)]
@@ -6013,7 +6091,7 @@ def select_best_clips(video_folder: str, max_clips: int = 10) -> list[str]:
         return []
 
     _MAX_SOURCES   = 3
-    _MAX_PER_SRC   = 4
+    _MAX_PER_SRC   = 4   # clips per source (→ max 12 before interleave cap)
     _MAX_FILE_SIZE = 100 * 1024 * 1024  # 100 MB
 
     source_videos = [
@@ -6022,7 +6100,7 @@ def select_best_clips(video_folder: str, max_clips: int = 10) -> list[str]:
         if f.lower().endswith((".mp4", ".mov", ".avi"))
         and not f.endswith(("_processed.mp4", "_short.mp4"))
         and 10_000 < os.path.getsize(os.path.join(vid_dir, f)) <= _MAX_FILE_SIZE
-    ][:_MAX_SOURCES]
+    ][:_MAX_SOURCES]   # hard source cap
 
     if not source_videos:
         return []
@@ -6061,6 +6139,7 @@ def select_best_clips(video_folder: str, max_clips: int = 10) -> list[str]:
     if not source_pools:
         return []
 
+    # Round-robin interleave across sources
     interleaved: list[tuple[float, str]] = []
     for round_idx in range(per_source):
         for pool in source_pools:
@@ -6281,8 +6360,6 @@ def assign_clips_to_script(
 
     return timeline
 
-
-# â"€â"€ Main entry point â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 
 

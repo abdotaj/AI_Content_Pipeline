@@ -213,6 +213,39 @@ def _cap_script_max_words(script_text: str, max_words: int = LONG_SCRIPT_MAX_WOR
     return result
 
 
+_TTS_WPM = {"english": 145, "arabic": 130}
+
+# Hard runtime caps (minutes) by mode
+_RUNTIME_CAPS = {
+    "full":  {"min": 10, "max": 14},
+    "fast":  {"min": 8,  "max": 10},
+    "short": {"min": 0,  "max": 1.5},
+}
+
+
+def estimate_runtime_minutes(word_count: int, language: str = "english") -> float:
+    """Estimate spoken duration in minutes using language-specific WPM."""
+    wpm = _TTS_WPM.get(language.lower(), 145)
+    return round(word_count / wpm, 2)
+
+
+def trim_to_runtime_budget(script_text: str, max_minutes: float,
+                           language: str = "english") -> str:
+    """
+    Hard-trim script so estimated spoken duration stays under max_minutes.
+    Applies BEFORE TTS — avoids expensive re-generation after the fact.
+    Preserves [SECTION:] markers; removes excess content from the end.
+    """
+    wpm = _TTS_WPM.get(language.lower(), 145)
+    max_words = int(max_minutes * wpm)
+    current = clean_word_count(script_text)
+    if current <= max_words:
+        return script_text
+    print(f"[Runtime] {estimate_runtime_minutes(current, language):.1f}min estimated "
+          f"({current}w) exceeds {max_minutes}min cap — trimming to {max_words}w")
+    return _cap_script_max_words(script_text, max_words)
+
+
 def _trim_plain_text_to_words(text: str, max_words: int) -> str:
     """Trim plain text to at most max_words while preserving original punctuation."""
     import re
@@ -567,6 +600,7 @@ _HOOK_GENERIC_PHRASES = [
     "what drove", "a mother's fear", "someone", "a killer", "one man", "one woman",
     "a person", "in an era", "this is the story", "you won't believe", "once upon",
     "throughout history", "it all began", "nobody knew", "little did", "the world",
+    "dark secret", "shocking truth", "untold story",
 ]
 
 
@@ -576,7 +610,39 @@ def _hook_is_generic(hook: str) -> bool:
     return any(phrase in h for phrase in _HOOK_GENERIC_PHRASES)
 
 
-def pick_best_hook(script: str) -> str:
+def _validate_hook_on_topic(hook: str, topic: str) -> bool:
+    """Return True if hook is clearly about the active topic, not a random entity.
+
+    Rejects hooks that mention known criminals who are NOT the active topic,
+    or hooks with no keyword overlap with the topic at all.
+    """
+    if not topic:
+        return True
+    h_lower = hook.lower()
+    t_lower = topic.lower()
+
+    # Must share at least one meaningful word with the topic
+    topic_words = [w for w in t_lower.split() if len(w) > 3]
+    if topic_words and not any(w in h_lower for w in topic_words):
+        print(f"[Hook] REJECTED (off-topic, no keyword overlap with '{topic}'): {hook[:70]}")
+        return False
+
+    # Check for forbidden entity bleed — names that are NOT the active topic
+    try:
+        from agents.entity_guard import build_active_entity
+        entity = build_active_entity(topic)
+        blocked = entity.get("blocked_entities", [])
+        for name in blocked:
+            if len(name) > 4 and name.lower() in h_lower:
+                print(f"[Hook] REJECTED (contains forbidden entity '{name}'): {hook[:70]}")
+                return False
+    except Exception:
+        pass
+
+    return True
+
+
+def pick_best_hook(script: str, topic: str = "") -> str:
     try:
         import re as _re
         excerpt = _re.sub(r'\[SECTION:[^\]]*\]', '', script).strip()[:500]
@@ -585,7 +651,8 @@ def pick_best_hook(script: str) -> str:
         best_hook, best_score = "", 0
         final_attempt = 1
 
-        for attempt in range(1, 6):
+        # Max 2 rounds — stop early if score >= 8
+        for attempt in range(1, 3):
             final_attempt = attempt
             if attempt == 1:
                 raw = _ai_script_call(base_prompt, max_tokens=350, temperature=0.85, premium=False)
@@ -607,9 +674,11 @@ def pick_best_hook(script: str) -> str:
 
             print(f"[Hook] Attempt {attempt}: {len(hooks)} candidates")
             for h in hooks:
-                # Hard filter: reject hooks with generic phrasing before scoring
+                # Hard filter: generic phrasing + off-topic entity bleed
                 if _hook_is_generic(h):
                     print(f"[Hook] REJECTED (generic): {h[:70]}")
+                    continue
+                if topic and not _validate_hook_on_topic(h, topic):
                     continue
                 s = _score_hook(h)
                 print(f"[Hook] {s}/10: {h[:70]}")
@@ -617,8 +686,8 @@ def pick_best_hook(script: str) -> str:
                     best_score, best_hook = s, h
 
             print(f"[Hook] Attempt {attempt} best so far: {best_score}/10")
-            if best_score >= 9:
-                print(f"[Hook] ✅ Score {best_score}/10 reached — stopping after {attempt} attempt(s)")
+            if best_score >= 8:
+                print(f"[Hook] Score {best_score}/10 reached — stopping after {attempt} attempt(s)")
                 break
 
         if not best_hook:
@@ -2621,6 +2690,10 @@ Do not summarize — give full detailed information."""
 
     # Final hard cap for YouTube-safe runtime in draft/publish workflows.
     script_text = _cap_script_max_words(script_text, LONG_SCRIPT_MAX_WORDS)
+    # Runtime budget: trim BEFORE TTS so we never generate 15-min audio for a 10-min slot
+    _pipeline_mode = os.getenv("PIPELINE_MODE", "full").lower()
+    _mode_cap = _RUNTIME_CAPS.get(_pipeline_mode, _RUNTIME_CAPS["full"])
+    script_text = trim_to_runtime_budget(script_text, _mode_cap["max"], language="english")
 
     # ── Entity contamination guard ────────────────────────────────────────────
     if _dc_active_entity:
@@ -2721,7 +2794,7 @@ Return ONLY this JSON with no extra text:
     script_data["show_characters"]         = research.get("show_characters", [])
     _s = script_data["script"]
     _s = upgrade_script_for_retention(_s)
-    _s = pick_best_hook(_s)
+    _s = pick_best_hook(_s, topic=topic.get("topic", ""))
     _s = evaluate_and_fix_script(_s)
     script_data["script"] = _s
     print(f"[Script] Written (english): '{script_data['title']}'")
@@ -3646,7 +3719,7 @@ Write ONLY the spoken words. No headings. No labels. No explanations."""
     print(f"[Script] Short hook score: {_hook_score}/10")
     if _hook_score < 8:
         print("[Script] Hook score < 8 — running pick_best_hook with gpt-4o...")
-        script_text = pick_best_hook(script_text)
+        script_text = pick_best_hook(script_text, topic=topic)
         _hook_score = _score_hook(" ".join(script_text.split(".")[:2]))
         print(f"[Script] Hook score after improvement: {_hook_score}/10")
 

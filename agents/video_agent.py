@@ -1445,6 +1445,43 @@ def clean_prompt(prompt: str) -> str:
     return prompt[:200]
 
 
+def safe_download_image(url: str, output_path: str, timeout: int = 15) -> str | None:
+    """
+    Download an image URL with strict validation. Never raises.
+
+    Rejects: HTML pages, text/html redirects, files < 5 KB, bad magic bytes.
+    Returns output_path on success, None on any failure.
+    """
+    import io
+    from PIL import Image as PILImage
+    try:
+        r = requests.get(
+            url, timeout=timeout,
+            headers={"User-Agent": "DarkCrimeDecoded/1.0"},
+            allow_redirects=True,
+        )
+        if r.status_code != 200:
+            return None
+        ct = r.headers.get("Content-Type", "").lower()
+        if ct and not ct.startswith("image/"):
+            print(f"[Image] safe_download: rejected non-image Content-Type '{ct.split(';')[0].strip()}'")
+            return None
+        if len(r.content) < 5_000:
+            print(f"[Image] safe_download: rejected tiny file ({len(r.content)} bytes)")
+            return None
+        if not _check_image_bytes(r.content[:12]):
+            print(f"[Image] safe_download: rejected bad magic bytes from {url[:60]}")
+            return None
+        img = PILImage.open(io.BytesIO(r.content)).convert("RGB")
+        img = img.resize((1080, 1920), PILImage.LANCZOS)
+        output_path = output_path.replace(".jpg", ".png")
+        img.save(output_path, "PNG")
+        return output_path
+    except Exception as e:
+        print(f"[Image] safe_download failed ({url[:60]}): {e}")
+        return None
+
+
 def generate_ai_image(prompt: str, output_path: str, seed: int = None) -> str:
     """Fetch an AI-generated image from Pollinations with retry + dark fallback."""
     import io
@@ -1458,9 +1495,9 @@ def generate_ai_image(prompt: str, output_path: str, seed: int = None) -> str:
         f"?width=1080&height=1920&nologo=true&seed={_seed}"
     )
 
-    for attempt in range(3):
+    for attempt in range(2):
         try:
-            response = requests.get(url, timeout=120)
+            response = requests.get(url, timeout=90)
             if response.status_code == 200:
                 img = PILImage.open(io.BytesIO(response.content)).convert("RGB")
                 img = img.resize((1080, 1920), PILImage.LANCZOS)
@@ -1469,14 +1506,21 @@ def generate_ai_image(prompt: str, output_path: str, seed: int = None) -> str:
                 time.sleep(5)
                 return output_path
             elif response.status_code == 429:
-                print(f"[Image] Rate limited, waiting 30s... (attempt {attempt + 1}/3)")
+                print(f"[Image] Rate limited, waiting 30s... (attempt {attempt + 1}/2)")
                 time.sleep(30)
             else:
-                print(f"[Image] Pollinations returned {response.status_code} (attempt {attempt + 1}/3)")
+                print(f"[Image] Pollinations returned {response.status_code} (attempt {attempt + 1}/2)")
                 time.sleep(10)
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+            print(f"[Image] Network error attempt {attempt + 1}: {e} — switching to AI fallback")
+            break
         except Exception as e:
+            err = str(e)
+            if "cancel" in err.lower() or "operation" in err.lower():
+                print(f"[Image] Search cancelled — switching to AI fallback")
+                break
             print(f"[Image] Attempt {attempt + 1} failed: {e}")
-            time.sleep(15)
+            time.sleep(10)
 
     # Fallback: solid dark background so assembly never crashes
     img = PILImage.new("RGB", (1080, 1920), color=(13, 13, 26))
@@ -1580,7 +1624,7 @@ def _wikimedia_image_results(query: str, max_results: int = 5) -> list[str]:
             'gsrnamespace': '6', 'gsrsearch': query, 'gsrlimit': max_results * 3,
             'prop': 'imageinfo', 'iiprop': 'url|mediatype', 'iiurlwidth': 1080,
         }
-        r = requests.get('https://commons.wikimedia.org/w/api.php', params=params, timeout=15)
+        r = requests.get('https://commons.wikimedia.org/w/api.php', params=params, timeout=12)
         if r.status_code != 200:
             return []
         pages = r.json().get('query', {}).get('pages', {}).values()
@@ -1594,8 +1638,15 @@ def _wikimedia_image_results(query: str, max_results: int = 5) -> list[str]:
             if len(urls) >= max_results:
                 break
         return urls
+    except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
+        print(f'[Image] Wikimedia search cancelled/timeout for: {query} — using AI fallback')
+        return []
     except Exception as e:
-        print(f'[Image] Wikimedia search failed: {e}')
+        err = str(e)
+        if "cancel" in err.lower() or "operation" in err.lower():
+            print(f'[Image] Search cancelled — switching to AI fallback')
+        else:
+            print(f'[Image] Wikimedia search failed: {e}')
         return []
 
 
@@ -1649,7 +1700,7 @@ def _search_images_openai(query: str, max_results: int = 5) -> list[str]:
                 'tools': [{'type': 'web_search_preview'}],
                 'input': f'Find real photographs of {query}. Return only direct image URLs ending in .jpg .jpeg .png or .webp. One URL per line. No explanation, no markdown.'
             },
-            timeout=30
+            timeout=20,
         )
         data = r.json()
         print(f'[Image] OpenAI search status: {r.status_code} for: {query}')
@@ -1670,8 +1721,15 @@ def _search_images_openai(query: str, max_results: int = 5) -> list[str]:
         print(f'[Image] OpenAI search found {len(urls)} URLs for: {query}')
         return urls[:max_results]
 
+    except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
+        print(f'[Image] OpenAI search cancelled/timeout for: {query} — switching to AI fallback')
+        return []
     except Exception as e:
-        print(f'[Image] OpenAI search error: {e}')
+        err = str(e)
+        if "cancel" in err.lower() or "operation" in err.lower():
+            print(f'[Image] Search cancelled — switching to AI fallback')
+        else:
+            print(f'[Image] OpenAI search error: {e}')
         return []
 
 
