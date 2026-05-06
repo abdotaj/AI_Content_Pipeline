@@ -1313,7 +1313,7 @@ def extract_style_from_user_images(user_images: list[dict]) -> str:
 
 
 def build_image_prompt(chunk_text: str, style_profile: str = "") -> str:
-    """Groq-first image prompt generation from a script chunk; OpenAI fallback."""
+    """Groq-first image prompt generation from a script chunk; OpenAI fallback; cache-aware."""
     first_200 = " ".join(chunk_text.split()[:200])
     style_rule = f"\n- Match this visual style: {style_profile}" if style_profile else ""
     style_suffix = f", {style_profile}" if style_profile else ""
@@ -1329,25 +1329,41 @@ def build_image_prompt(chunk_text: str, style_profile: str = "") -> str:
         f"Script excerpt: {first_200}\n\nReturn only the image prompt, nothing else."
     )
 
-    # Groq first (free tier)
+    # Cache check first
     try:
-        from agents.script_agent import _groq_call as _gc
+        from agents.ai_cache import cache_get, cache_set
+        _cached = cache_get(prompt, "groq", "image_prompt", ttl_days=14)
+        if _cached:
+            return f"{_cached}{style_suffix}{_IMAGE_PROMPT_SUFFIX}"
     except ImportError:
+        cache_get = cache_set = None
+
+    def _call_groq_for_prompt():
         try:
-            from script_agent import _groq_call as _gc
+            from agents.script_agent import _groq_call as _gc
         except ImportError:
-            _gc = None
-    if _gc:
+            try:
+                from script_agent import _groq_call as _gc
+            except ImportError:
+                return ""
         try:
-            result = _gc(
+            return _gc(
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=60, temperature=0.7,
             ).choices[0].message.content.strip().strip('"\'')
-            if result:
-                print(f"[Image] Chunk prompt (Groq): {result[:70]}")
-                return f"{result}{style_suffix}{_IMAGE_PROMPT_SUFFIX}"
         except Exception as e:
             print(f"[Image] Groq image prompt failed: {e}")
+            return ""
+
+    result = _call_groq_for_prompt()
+    if result:
+        print(f"[Image] Chunk prompt (Groq): {result[:70]}")
+        try:
+            from agents.ai_cache import cache_set as _cs
+            _cs(prompt, "groq", "image_prompt", result)
+        except ImportError:
+            pass
+        return f"{result}{style_suffix}{_IMAGE_PROMPT_SUFFIX}"
 
     # OpenAI fallback
     api_key = os.getenv("OPENAI_API_KEY", "").strip()
@@ -1363,6 +1379,11 @@ def build_image_prompt(chunk_text: str, style_profile: str = "") -> str:
             if r.status_code == 200:
                 result = r.json()["choices"][0]["message"]["content"].strip().strip('"\'')
                 print(f"[Image] Chunk prompt (OpenAI): {result[:70]}")
+                try:
+                    from agents.ai_cache import cache_set as _cs
+                    _cs(prompt, "gpt-4o-mini", "image_prompt", result)
+                except ImportError:
+                    pass
                 return f"{result}{style_suffix}{_IMAGE_PROMPT_SUFFIX}"
         except Exception as e:
             print(f"[Image] build_image_prompt OpenAI failed: {e}")
@@ -2609,6 +2630,55 @@ def check_content_sufficiency(
     return ratio >= 0.80, ratio
 
 
+def parallel_map_safe(fn, items: list, max_workers: int = 3,
+                      timeout: int = 60, label: str = "task") -> list:
+    """
+    Apply fn to each item concurrently using ThreadPoolExecutor.
+
+    Returns a list of results (None for any failed item).
+    Never raises — individual task failures are logged and skipped.
+    Safe for GitHub Actions: no shared mutable state, bounded concurrency.
+
+    Args:
+        fn:          Callable(item) -> result
+        items:       List of inputs
+        max_workers: Max parallel threads (keep <= 5 to avoid API rate limits)
+        timeout:     Per-task timeout in seconds
+        label:       Log label for progress messages
+    """
+    import concurrent.futures
+
+    results: list = [None] * len(items)
+    if not items:
+        return results
+
+    print(f"[Parallel] Starting {len(items)} {label}(s) (max_workers={max_workers})")
+    completed = 0
+
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as ex:
+            future_to_idx = {ex.submit(fn, item): i for i, item in enumerate(items)}
+            done_iter = concurrent.futures.as_completed(
+                future_to_idx, timeout=timeout * max(len(items), 1)
+            )
+            for future in done_iter:
+                idx = future_to_idx[future]
+                try:
+                    results[idx] = future.result(timeout=timeout)
+                    completed += 1
+                except concurrent.futures.TimeoutError:
+                    print(f"[Parallel] {label} {idx} timed out — continuing")
+                except Exception as e:
+                    print(f"[Parallel] {label} {idx} failed: {e} — continuing")
+    except concurrent.futures.TimeoutError:
+        print(f"[Parallel] Overall timeout — partial results returned")
+    except Exception as e:
+        print(f"[Parallel] Executor error: {e}")
+
+    print(f"[Parallel] {completed}/{len(items)} {label}(s) completed")
+    return results
+
+
 def _fetch_gap_images(
     script_text: str,
     needed: int,
@@ -2640,17 +2710,23 @@ def _fetch_gap_images(
     if len(results) >= needed:
         return results[:needed]
 
-    # Priority 3: Pollinations AI generation (last resort)
+    # Priority 3: Pollinations AI generation in parallel (last resort)
     remaining = needed - len(results)
     if remaining > 0:
-        print(f"[Video] Gap-fill last resort: generating {remaining} Pollinations AI images")
-        for i in range(remaining):
-            style_hint = f", {style_profile}" if style_profile else ""
-            prompt = f"{topic} cinematic documentary dark dramatic portrait{style_hint}"
-            out = os.path.join(IMAGES_DIR, f"{video_id}_gap_{i}.png")
-            result = generate_ai_image(prompt, out)
-            if result and os.path.exists(result):
-                results.append(result)
+        print(f"[Video] Gap-fill last resort: generating {remaining} Pollinations AI images in parallel")
+        style_hint = f", {style_profile}" if style_profile else ""
+        _tasks = [
+            (f"{topic} cinematic documentary dark dramatic portrait{style_hint}",
+             os.path.join(IMAGES_DIR, f"{video_id}_gap_{i}.png"))
+            for i in range(remaining)
+        ]
+        gen_results = parallel_map_safe(
+            lambda args: generate_ai_image(args[0], args[1]),
+            _tasks, max_workers=3, timeout=120, label="AI image",
+        )
+        for r in gen_results:
+            if r and os.path.exists(r):
+                results.append(r)
 
     print(f"[Video] Gap-fill complete: {len(results)}/{needed} images (Wikimedia + OpenAI + Pollinations)")
     return results[:needed]
@@ -5086,6 +5162,28 @@ def assemble_video_with_hook(
             return np.clip(rgb, 0, 255).astype("uint8")
         return VideoClip(make_frame=make_frame, duration=dur)
 
+    def _pan_clip(frame, dur: float, pan_right: bool = True,
+                  fade_in: float = 0.0, fade_out: float = 0.0):
+        """Slow horizontal pan — creates lateral cinematic movement distinct from zoom."""
+        def make_frame(t):
+            progress = t / max(dur, 0.001)
+            scale = 1.10
+            sw = int(TARGET_W * scale); sw += sw % 2
+            sh = int(TARGET_H * scale); sh += sh % 2
+            pil = PILImage.fromarray(frame).resize((sw, sh), PILImage.LANCZOS)
+            pan_range = sw - TARGET_W
+            x = int(progress * pan_range) if pan_right else int((1.0 - progress) * pan_range)
+            x = max(0, min(x, pan_range))
+            y = (sh - TARGET_H) // 2
+            rgb = np.array(pil.crop((x, y, x + TARGET_W, y + TARGET_H)), dtype=np.float32)
+            fade = 1.0
+            if fade_in > 0 and t < fade_in:
+                fade = t / fade_in
+            elif fade_out > 0 and t > dur - fade_out:
+                fade = (dur - t) / fade_out
+            return np.clip(rgb * max(0.0, min(1.0, fade)), 0, 255).astype("uint8")
+        return VideoClip(make_frame=make_frame, duration=dur)
+
     def _media_clip(src_path: str, dur: float, zoom_in: bool = True, first_clip: bool = False):
         fi = 0.0 if first_clip else 0.2   # no fade-in on opening shot
         if _is_video_file(src_path):
@@ -5136,14 +5234,41 @@ def assemble_video_with_hook(
 
     print(f"[Video] Hook: {len(hook_clips)} fast cuts in {hook_total:.1f}s")
 
-    # â"€â"€ MAIN CONTENT (1:30 to end): slow cuts every 8-12 s â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
-    # Each image gets a zoom-in clip + zoom-out clip; then shuffled
+    # -- MAIN CONTENT (1:30 to end): adaptive slow cuts with zoom + pan variety --
+    # Adaptive duration: scale up per-clip length when image count is low vs target
+    _n_imgs = max(len(image_paths), 1)
+    _adaptive_base = max(6.0, min(18.0, main_duration / (2.0 * _n_imgs + 1)))
+    if _adaptive_base > 9.0:
+        print(f"[Visual] Dynamic stretch activated: {_adaptive_base:.1f}s/clip "
+              f"({_n_imgs} images for {main_duration:.0f}s target)")
+    else:
+        print(f"[Visual] Standard clip duration: {_adaptive_base:.1f}s/clip")
+
     main_clips = []
-    for img_path in image_paths:
+    for idx, img_path in enumerate(image_paths):
         try:
-            dur1  = random.uniform(6, 8)
+            dur1 = random.uniform(_adaptive_base, _adaptive_base * 1.15)
+            dur2 = random.uniform(_adaptive_base, _adaptive_base * 1.15)
+            # Rotate through 4 motion styles for cinematic variety
+            if not _is_video_file(img_path) and idx % 4 == 1:
+                try:
+                    frame = _load_frame(img_path)
+                    main_clips.append(_pan_clip(frame, dur1, pan_right=True,  fade_in=0.2, fade_out=0.2))
+                    main_clips.append(_zoom_clip(frame, dur2, 1.00, 1.06, fade_in=0.2, fade_out=0.2))
+                    print(f"[Visual] Reusing cinematic montage (pan-R): {os.path.basename(img_path)[:40]}")
+                    continue
+                except Exception:
+                    pass
+            elif not _is_video_file(img_path) and idx % 4 == 3:
+                try:
+                    frame = _load_frame(img_path)
+                    main_clips.append(_pan_clip(frame, dur1, pan_right=False, fade_in=0.2, fade_out=0.2))
+                    main_clips.append(_zoom_clip(frame, dur2, 1.06, 1.00, fade_in=0.2, fade_out=0.2))
+                    print(f"[Visual] Reusing cinematic montage (pan-L): {os.path.basename(img_path)[:40]}")
+                    continue
+                except Exception:
+                    pass
             main_clips.append(_media_clip(img_path, dur1, zoom_in=True))
-            dur2  = random.uniform(6, 8)
             main_clips.append(_media_clip(img_path, dur2, zoom_in=False))
         except Exception as e:
             print(f"[Video] Main clip error: {e}")
@@ -5153,12 +5278,12 @@ def assemble_video_with_hook(
     # Loop main clips until they cover main_duration + buffer
     while sum(c.duration for c in main_clips) < main_duration + 20:
         src = image_paths[random.randint(0, len(image_paths) - 1)]
-        dur = random.uniform(6, 8)
+        dur = random.uniform(_adaptive_base, _adaptive_base * 1.15)
         try:
             main_clips.append(_media_clip(src, dur, zoom_in=True))
+            print("[Visual] Coverage recovered via animation: looping clips")
         except Exception:
             pass
-
     # Trim to main_duration
     accumulated = 0.0
     final_main  = []

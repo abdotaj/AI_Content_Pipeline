@@ -590,7 +590,15 @@ def _parse_hooks(text: str) -> list[str]:
 def _score_hook(hook: str) -> int:
     try:
         prompt = _HOOK_SCORE_PROMPT.replace("{hook}", hook)
-        result = _ai_script_call(prompt, max_tokens=50, temperature=0.3, premium=False)
+        try:
+            from agents.ai_cache import cached_ai_call as _cac
+            result = _cac(
+                prompt, "groq", "hook_score",
+                fn=lambda: _ai_script_call(prompt, max_tokens=50, temperature=0.3, premium=False),
+                ttl_days=30,
+            )
+        except ImportError:
+            result = _ai_script_call(prompt, max_tokens=50, temperature=0.3, premium=False)
         return _extract_score(result)
     except Exception:
         return 0

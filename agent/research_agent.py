@@ -383,6 +383,61 @@ def is_real_story(topic: str, series_name: str | None = None) -> bool:
 
 # ── Wikipedia fetchers ──────────────────────────────────────
 
+def compress_research_context(wiki_text: str, ddg_dict: dict,
+                              max_chars: int = 6000) -> tuple[str, dict]:
+    """
+    Deduplicate and compress research context before AI calls.
+
+    Removes duplicate lines, low-information snippets, and excess entity
+    repetition. Respects a total char budget split proportionally between
+    Wikipedia and DuckDuckGo sources.
+
+    Returns (compressed_wiki, compressed_ddg_dict).
+    """
+    def _compress_block(text: str, budget: int) -> str:
+        if not text:
+            return ""
+        lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        seen: set[str] = set()
+        unique: list[str] = []
+        dup_count = 0
+        for line in lines:
+            key = line.lower()
+            # Skip near-duplicate (exact lower-case match)
+            if key in seen:
+                dup_count += 1
+                continue
+            # Skip very short / vague lines
+            if len(line) < 40 and not any(c.isdigit() for c in line):
+                continue
+            seen.add(key)
+            unique.append(line)
+        if dup_count:
+            print(f"[Research] Removed {dup_count} duplicate lines")
+        result = "\n".join(unique)
+        if len(result) > budget:
+            result = result[:budget]
+        return result
+
+    n_ddg = max(len(ddg_dict), 1)
+    wiki_budget = max_chars // 2
+    ddg_budget_total = max_chars - wiki_budget
+    per_key_budget = ddg_budget_total // n_ddg
+
+    wiki_compressed = _compress_block(wiki_text or "", wiki_budget)
+
+    ddg_compressed: dict[str, str] = {}
+    for key, val in ddg_dict.items():
+        ddg_compressed[key] = _compress_block(val or "", per_key_budget)
+
+    orig_chars = len(wiki_text or "") + sum(len(v or "") for v in ddg_dict.values())
+    new_chars  = len(wiki_compressed) + sum(len(v) for v in ddg_compressed.values())
+    if orig_chars > new_chars:
+        print(f"[Research] Compressed {orig_chars // 1024}KB -> {new_chars // 1024}KB")
+
+    return wiki_compressed, ddg_compressed
+
+
 def fetch_wikipedia(query: str, lang: str = "en") -> str | None:
     """Fetch Wikipedia article content with retry, empty-response guard, and User-Agent."""
     import time as _time
@@ -1054,6 +1109,11 @@ ADDITIONAL RESEARCH ON HOST DISCOVERY:
     if _real_people_combined:
         _show_cast_section += f"\nREAL PEOPLE WIKIPEDIA PAGES:\n{_real_people_combined[:2000]}\n"
 
+    # Compress research context before building the prompt — deduplicates lines,
+    # removes noise, and enforces a 6 KB total budget to reduce token waste.
+    _wiki_combined = f"{(person_wiki or '')}\\n{(series_wiki or '')}"
+    _wiki_c, _ddg_c = compress_research_context(_wiki_combined, ddg_combined, max_chars=6000)
+
     prompt = f"""You are a true crime documentary researcher.
 Combine Wikipedia facts with web research to create accurate research data.
 The goal is to tell the REAL story that inspired {series_name or topic}.
@@ -1061,14 +1121,13 @@ Not to criticize the show — it is great entertainment. But the real story is
 even more fascinating and needs to be told.
 {user_note_section}{_show_cast_section}
 WIKIPEDIA (primary - most accurate):
-Person: {(person_wiki or "Not found")[:2000]}
-Series: {(series_wiki or "Not found")[:1500]}
+{_wiki_c[:3500]}
 
 DUCKDUCKGO (additional details):
-Real story: {ddg_combined['real_story'][:1000]}
-Inspiration: {ddg_combined['inspiration'][:800]}
-Shocking facts: {ddg_combined['shocking'][:800]}
-Real life events: {ddg_combined['real_life'][:800]}
+Real story: {_ddg_c.get('real_story', '')[:900]}
+Inspiration: {_ddg_c.get('inspiration', '')[:700]}
+Shocking facts: {_ddg_c.get('shocking', '')[:700]}
+Real life events: {_ddg_c.get('real_life', '')[:700]}
 
 RULES:
 1. Wikipedia facts take priority over DuckDuckGo
