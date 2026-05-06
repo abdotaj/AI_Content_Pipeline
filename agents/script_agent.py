@@ -8,6 +8,14 @@ import re
 import groq as groq_lib
 from groq import Groq
 from config import GROQ_API_KEY, LONG_VIDEO_DURATION
+from agents.entity_guard import (
+    build_active_entity,
+    entity_lock_instruction,
+    is_single_subject,
+    sanitize_script,
+    validate_entity_consistency,
+)
+from agents.json_utils import safe_json_parse, is_valid_json_response
 
 _groq = Groq(api_key=GROQ_API_KEY)
 
@@ -1105,7 +1113,10 @@ Return ONLY this JSON with no extra text:
   "thumbnail_text": "4-word thumbnail text"
 }}"""
 
-    meta = json.loads(_ai_script_call(part2_prompt, max_tokens=600, temperature=0.3, json_mode=True).strip())
+    meta = safe_json_parse(
+        _ai_script_call(part2_prompt, max_tokens=600, temperature=0.3, json_mode=True),
+        fallback={},
+    )
     script_data = {
         "title":           meta.get("title", f"Shopmart: {topic['topic']}"),
         "hook":            meta.get("hook", ""),
@@ -1188,7 +1199,10 @@ def load_queued_part2() -> dict | None:
     if not queue_path.exists():
         return None
     try:
-        entry = json.loads(queue_path.read_text(encoding="utf-8"))
+        entry = safe_json_parse(queue_path.read_text(encoding="utf-8"), fallback=None)
+        if not entry:
+            print("[Script] Part 2 queue file is empty or invalid — skipping")
+            return None
         queue_path.unlink()
         print(f"[Script] Loaded queued Part 2: {entry.get('topic', '')}")
         return entry
@@ -1389,11 +1403,14 @@ def _write_documentary_script(topic: dict, research: dict, part_number: int | No
         f'\nEnd with: "Follow Dark Crime Decoded for stories Hollywood has not told yet."'
     )
 
+    _doc_active_entity = build_active_entity(name) if is_single_subject(name) else {}
+    _doc_entity_lock   = entity_lock_instruction(_doc_active_entity)
+
     prompt = f"""You are a documentary scriptwriter covering under-reported world events.
 Write a 1800-2000 word documentary script about: {name}{part_label}
 
 This is a DOCUMENTARY style — no movie or series exists for this topic.
-
+{_doc_entity_lock}
 VERIFIED FACTS:
 {facts}
 
@@ -1477,12 +1494,13 @@ angle_content: 2-3 sentences of specific detail to build the chapter around"""
 
     try:
         result = _ai_script_call(prompt, max_tokens=350, temperature=0.85, json_mode=True)
-        data = json.loads(result.strip())
+        data   = safe_json_parse(result, fallback={})
         if all(k in data for k in ('angle_title', 'angle_hook', 'angle_content')):
             print(f"[Script] Untold angle: {data['angle_title']}")
             return data
+        print("[Fallback] Angle generation returned incomplete data — using default angle")
     except Exception as e:
-        print(f"[Script] Angle generation failed: {e}")
+        print(f"[Fallback] Angle generation failed: {e} — using default angle")
 
     return {
         "angle_title": f"The Hidden Truth Behind {topic}",
@@ -1548,6 +1566,10 @@ Series/Movie: {series} ({stype})
 Real person: {research.get('real_person', name)}
 Key facts: {(research.get('research_facts') or research.get('what_show_got_right', []))[:3]}
 {_show_chars_block}{_real_people_block}{_chars_block}{_rvs_block}{_time_loc}"""
+
+    # ── Entity guard setup ────────────────────────────────────────────────────
+    _active_entity  = build_active_entity(name) if is_single_subject(name) else {}
+    _entity_lock    = entity_lock_instruction(_active_entity)
 
     # Full character-coverage instruction — belongs ONLY in Chapter 3
     _ch3_mandatory = _mandatory_instruction
@@ -1682,6 +1704,16 @@ Key facts: {(research.get('research_facts') or research.get('what_show_got_right
         if real > max_w:
             result = _trim_plain_text_to_words(result, max_w)
             print(f"[Script] Section {call_num} trimmed to max {max_w} words")
+
+        # Entity contamination guard — sanitise & warn; do not block on single mentions
+        if _active_entity:
+            passed, offending = validate_entity_consistency(result, _active_entity)
+            if not passed:
+                result = sanitize_script(result, _active_entity)
+                if offending:
+                    print(f"[EntityGuard] Section {call_num} sanitised — "
+                          f"{len(offending)} offending line(s) removed")
+
         return result
 
     sections: list[str] = []
@@ -1739,15 +1771,18 @@ Return ONLY valid JSON, no explanation:
 {{"ch1": ["...", "..."], "ch2": ["...", "...", "..."], "ch3": ["...", "...", "...", "..."], "ch4": ["...", "...", "..."], "ch5": ["...", "..."]}}"""
 
         try:
-            raw = _ai_script_call(_outline_prompt, max_tokens=900, json_mode=True, temperature=0.4)
-            data = json.loads(raw.strip())
+            raw  = _ai_script_call(_outline_prompt, max_tokens=900, json_mode=True, temperature=0.4)
+            data = safe_json_parse(raw, fallback={})
             if all(k in data for k in ("ch1", "ch2", "ch3", "ch4", "ch5")):
                 total = sum(len(v) for v in data.values())
                 print(f"[Script] Master outline: {total} unique facts pre-assigned across 5 chapters")
                 return data
-            print("[Script] Master outline: incomplete keys — proceeding without outline")
+            if data:
+                print("[Script] Master outline: incomplete keys — proceeding without outline")
+            else:
+                print("[Fallback] Master outline returned empty — proceeding without pre-assignment")
         except Exception as e:
-            print(f"[Script] Master outline failed ({e}) — proceeding without outline")
+            print(f"[Fallback] Master outline failed ({e}) — proceeding without outline")
         return {}
 
     _outline = _generate_master_outline()
@@ -1768,7 +1803,7 @@ Return ONLY valid JSON, no explanation:
 
     section_prompts = [
         # ── Chapter 1: Hook Intro ─────────────────────────────────────────────
-        lambda: f"""{_topic_context}
+        lambda: f"""{_topic_context}{_entity_lock}
 Write CHAPTER 1 — OPENING ATMOSPHERE for a documentary about {name}.
 
 YOUR EXCLUSIVE JOB in this chapter:
@@ -1794,7 +1829,7 @@ Write flowing documentary narration — no lists, no bullet points, paragraphs o
 {_section_instruction(300, 380, False)}""",
 
         # ── Chapter 2: Untold Angle ───────────────────────────────────────────
-        lambda: f"""{_topic_context}
+        lambda: f"""{_topic_context}{_entity_lock}
 Write CHAPTER 2 — THE UNTOLD ANGLE for a documentary about {name}.
 
 YOUR EXCLUSIVE JOB in this chapter:
@@ -1821,7 +1856,7 @@ PREVIOUS CHAPTER (context only — do NOT repeat anything from it):
 {sections[0]}""",
 
         # ── Chapter 3: The Real Story ─────────────────────────────────────────
-        lambda: f"""{_topic_context}{_ch3_mandatory}
+        lambda: f"""{_topic_context}{_ch3_mandatory}{_entity_lock}
 Write CHAPTER 3 — THE REAL STORY for a documentary about {name}.
 
 YOUR EXCLUSIVE JOB in this chapter:
@@ -1851,7 +1886,7 @@ PREVIOUS CHAPTERS (context only — do NOT repeat anything from them):
 {sections[1]}""",
 
         # ── Chapter 4: Show vs Reality ────────────────────────────────────────
-        lambda: f"""{_topic_context}
+        lambda: f"""{_topic_context}{_entity_lock}
 Write CHAPTER 4 — SHOW VS REALITY for a documentary about {name}.
 
 YOUR EXCLUSIVE JOB in this chapter:
@@ -1887,7 +1922,7 @@ PREVIOUS CHAPTERS (context only — do NOT repeat anything from them):
 {sections[2]}""",
 
         # ── Chapter 5: Conclusion ─────────────────────────────────────────────
-        lambda: f"""{_topic_context}
+        lambda: f"""{_topic_context}{_entity_lock}
 Write CHAPTER 5 — FINAL INSIGHT for a documentary about {name}.
 
 YOUR EXCLUSIVE JOB in this chapter:
@@ -2224,6 +2259,42 @@ RULES:
     return full_script
 
 
+def _emergency_backup_script(topic_name: str, series_label: str) -> str:
+    """
+    Generate a minimal locally-built script when all AI providers have failed.
+    Returns enough content for the pipeline to produce a video without crashing.
+    Logs clearly so the operator knows a backup was used.
+    """
+    print(f"[Fallback] Local emergency script used for: {topic_name}")
+    return (
+        f"[SECTION: Introduction]\n"
+        f"The true story behind {topic_name} is one of the most remarkable in crime history. "
+        f"{series_label} brought this story to millions of viewers. "
+        f"But the real events were far more complex than any screen adaptation could capture. "
+        f"Tonight, we explore what really happened.\n\n"
+
+        f"[SECTION: The Real Story]\n"
+        f"The story of {topic_name} begins long before {series_label} first aired. "
+        f"Real events unfolded over years, shaping the narrative that would later captivate audiences worldwide. "
+        f"The documented history reveals details that went far beyond what viewers saw on screen. "
+        f"Key figures involved left lasting marks on history that are still felt today.\n\n"
+
+        f"[SECTION: Show vs Reality]\n"
+        f"Here is what {series_label} got RIGHT: "
+        f"The core story of {topic_name} was faithfully represented in broad strokes. "
+        f"The emotional truth of the events was captured with considerable accuracy. "
+        f"The major turning points were portrayed in ways that matched the historical record.\n\n"
+        f"Here is what they completely changed or left out: "
+        f"Many supporting figures were omitted or combined into composite characters. "
+        f"The timeline was compressed significantly to fit the screen format. "
+        f"Certain documented details were altered for dramatic effect.\n\n"
+
+        f"[SECTION: Conclusion]\n"
+        f"The real story of {topic_name} remains one of the most significant in its field. "
+        f"Follow Dark Crime Decoded for more real stories behind your favourite crime series and films."
+    )
+
+
 def _write_darkcrimed_script(topic: dict) -> dict:
     """Investigative documentary script for Dark Crime Decoded."""
     research = topic.get("research", {})
@@ -2376,10 +2447,13 @@ The host found something most viewers don't know — celebrate that discovery.
             f"Include what the show got right vs what really happened.\n"
         )
 
+    _dc_active_entity = build_active_entity(topic["topic"]) if is_single_subject(topic["topic"]) else {}
+    _dc_entity_lock   = entity_lock_instruction(_dc_active_entity)
+
     part1_prompt = f"""You are a top true crime documentary writer for YouTube.
 Write a 1800-2500 word 12-16 minute documentary script about: {topic['topic']}
 The related series/movie is: {series_label}
-
+{_dc_entity_lock}
 NARRATION STYLE: Write like Morgan Freeman narrating a documentary. Flowing paragraphs, no lists, no bullet points. Minimum 3 sentences per paragraph. Use transition phrases like "But what happened next shocked everyone...", "What nobody knew at the time was...", "Years later, the truth finally emerged..."
 
 COVER ALL CHARACTERS: Dedicate at least one full paragraph to EACH major character. Never focus on just one person.
@@ -2536,21 +2610,39 @@ Do not summarize — give full detailed information."""
                 break
             print(f"[Script] WARNING: Too short ({words} real words) — retrying...")
 
+    # ── Emergency backup: generate minimal local script if all AI calls failed ─
+    if not script_text or clean_word_count(script_text) < 200:
+        print(f"[Fallback] All AI providers returned empty — generating emergency backup script")
+        script_text = _emergency_backup_script(topic["topic"], series_label)
+
     # Final hard cap for YouTube-safe runtime in draft/publish workflows.
     script_text = _cap_script_max_words(script_text, LONG_SCRIPT_MAX_WORDS)
 
+    # ── Entity contamination guard ────────────────────────────────────────────
+    if _dc_active_entity:
+        _eg_passed, _eg_offending = validate_entity_consistency(script_text, _dc_active_entity)
+        if not _eg_passed:
+            print(f"[EntityGuard] Long script contaminated — sanitising {len(_eg_offending)} paragraph(s)")
+            script_text = sanitize_script(script_text, _dc_active_entity)
+
     # ── Topic anchor validation: must mention real person + show ─────────────
     if not _validate_on_topic(script_text, topic["topic"], series_label):
-        print(f"[Script] Long script missing topic anchors — regenerating once")
-        _anchor_p = part1_prompt + (
-            f"\n\nCRITICAL: You MUST explicitly name '{topic['topic']}' (real person) "
-            f"and '{series_label}' (the show/movie) and explain the connection. "
-            "Do NOT write generic crime content."
-        )
-        _anch = validate_script(_ai_script_call(_anchor_p, max_tokens=6000, temperature=0.85).strip())
-        if _anch and clean_word_count(_anch) >= LONG_SCRIPT_MIN_WORDS:
-            script_text = _cap_script_max_words(_anch, LONG_SCRIPT_MAX_WORDS)
-            print(f"[Script] Topic-anchored script: {clean_word_count(script_text)} words")
+        print(f"[Script] Long script missing topic anchors — attempting one regeneration")
+        try:
+            _anchor_p = part1_prompt + (
+                f"\n\nCRITICAL: You MUST explicitly name '{topic['topic']}' (real person) "
+                f"and '{series_label}' (the show/movie) and explain the connection. "
+                "Do NOT write generic crime content."
+            )
+            _anch_raw = _ai_script_call(_anchor_p, max_tokens=6000, temperature=0.85)
+            _anch = validate_script(_anch_raw.strip()) if _anch_raw else ""
+            if _anch and clean_word_count(_anch) >= LONG_SCRIPT_MIN_WORDS:
+                script_text = _cap_script_max_words(_anch, LONG_SCRIPT_MAX_WORDS)
+                print(f"[Script] Topic-anchored script: {clean_word_count(script_text)} words")
+            else:
+                print(f"[Fallback] Topic-anchor regen failed or too short — keeping original script")
+        except Exception as _ae:
+            print(f"[Fallback] Topic-anchor regen raised exception ({_ae}) — keeping original script")
 
     # ── PART 2: Generate metadata only (title, hook, captions, etc.) ────────
     _series_info    = get_series_for_person(topic["topic"])
@@ -2586,7 +2678,10 @@ Return ONLY this JSON with no extra text:
   "thumbnail_text": "4-word thumbnail text"
 }}"""
 
-    meta = json.loads(_ai_script_call(part2_prompt, max_tokens=1000, temperature=0.3, json_mode=True).strip())
+    meta = safe_json_parse(
+        _ai_script_call(part2_prompt, max_tokens=1000, temperature=0.3, json_mode=True),
+        fallback={},
+    )
     _series_name = _series_info[0] if _series_info else _related_series
     _fallback_title = (
         f"The Real Story Behind {_series_name}: {topic['topic']}'s True Life | Dark Crime Decoded"
@@ -3440,10 +3535,13 @@ def write_short_script(en_long_script: dict) -> dict:
         "Open with the most shocking fact or unanswered question from the story. No setup. Drop straight in.\n"
     )
 
+    _short_active_entity = build_active_entity(topic) if is_single_subject(topic) else {}
+    _short_entity_lock   = entity_lock_instruction(_short_active_entity)
+
     prompt = f"""You are writing a spoken voiceover for a 60-90 second crime documentary short video.
 
 TASK: Read the SOURCE SCRIPT below. Find the single most gripping moment — a shocking reveal, confession, twist, or hidden truth. Rewrite it as a standalone viral voiceover. Do NOT summarize the whole story. Tell one moment, fast and hard.
-
+{_short_entity_lock}
 TOPIC LOCK — this short is specifically about:
 Topic: {topic}
 {_series_line}{_niche_line}{_chars_line}{f"Angle: {_angle_title}" if _angle_title else ""}
@@ -3508,6 +3606,13 @@ Write ONLY the spoken words. No headings. No labels. No explanations."""
     if clean_word_count(script_text) < 100 and best_text:
         script_text = best_text
         print(f"[Script] Using best result: {clean_word_count(script_text)} words")
+
+    # ── Entity contamination guard ────────────────────────────────────────────
+    if _short_active_entity:
+        _seg_passed, _seg_offending = validate_entity_consistency(script_text, _short_active_entity)
+        if not _seg_passed:
+            print(f"[EntityGuard] Short script contaminated — sanitising")
+            script_text = sanitize_script(script_text, _short_active_entity)
 
     # ── Topic lock validation: must mention show name + real person ───────────
     _tl_series = series_name or niche

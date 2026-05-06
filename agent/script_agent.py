@@ -8,6 +8,13 @@ import re
 import groq as groq_lib
 from groq import Groq
 from config import GROQ_API_KEY, LONG_VIDEO_DURATION
+from agents.entity_guard import (
+    build_active_entity,
+    entity_lock_instruction,
+    is_single_subject,
+    sanitize_script,
+    validate_entity_consistency,
+)
 
 _groq = Groq(api_key=GROQ_API_KEY)
 
