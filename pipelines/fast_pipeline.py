@@ -280,9 +280,9 @@ def run_pipeline() -> None:
 
     _check_cancel("after script generation")
 
-    _ctrl.update_stage("Scripts", "translating to Arabic")
+    _ctrl.update_stage("Scripts", "writing Arabic script from research")
     try:
-        ar_long = translate_script(en_long)
+        ar_long = translate_script(en_long, research=topic.get("research", {}))
         ar_wc   = len(ar_long.get("script", "").split())
         if ar_wc > 0:
             ar_long["chapters"] = generate_chapters(

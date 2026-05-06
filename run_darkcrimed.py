@@ -449,7 +449,7 @@ def run_pipeline():
     _stage("Scripts EN done")
 
     try:
-        ar_long = translate_script(en_long)
+        ar_long = translate_script(en_long, research=topic.get("research", {}))
         # Replace English chapter labels with Arabic equivalents, preserving angle_title
         ar_word_count = len(ar_long.get("script", "").split())
         if ar_word_count > 0:

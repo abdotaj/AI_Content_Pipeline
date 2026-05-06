@@ -3871,8 +3871,272 @@ def expand_arabic_runtime(ar_script: str, target_min: float, topic: str = "") ->
     return joined
 
 
-def translate_script(en_script: dict) -> dict:
-    """Translate an English script_data dict into Arabic with stable section markers."""
+# ── Arabic documentary system prompt ─────────────────────────────────────────
+# Mirror of _SCRIPT_SYSTEM_PROMPT — same cinematic weight, native Arabic voice.
+# Used when writing Arabic script directly from Arabic research (not translation).
+
+_AR_SCRIPT_SYSTEM_PROMPT = """أنت كاتب نصوص وثائقية جريمة حقيقية محترف. اكتب بأسلوب راوٍ وثائقي من BBC العربية والجزيرة الوثائقية — هادئ، سينمائي، محقق.
+
+صوت الوثائقي — ليس مقالاً:
+- هذا نص مُنطوق. كل جملة يجب أن تبدو طبيعية حين تُقرأ بصوت عالٍ.
+- لا تبدأ بجمل مستهلكة: "في عالم الجريمة..."، "عبر التاريخ..."، "هذه قصة..."
+- لا تكتب كمقال أو تقرير صحفي. لا مقدمات نظرية. لا توصيف للموضوع.
+- اكتب المشهد، لا الملخص. أظهر اللحظة، ثم استخلص منها المعنى.
+- كل فقرة يجب أن تكسب مكانها — لا حشو، لا تكرار لما قيل.
+
+بناء الجملة للنطق:
+- تنوّع بين الجمل القصيرة (5–10 كلمات) والجمل السردية (15–22 كلمة). غيّر الإيقاع.
+- الحد الأقصى 25 كلمة للجملة الواحدة.
+- لا شرطات معترضة في منتصف الجملة. لا أقواس. لا نقاط حذف داخل الجملة.
+- الأرقام دون المئة تُكتب بالكلمات.
+
+تدفق السرد:
+- ثلاث جمل حداً أدنى للفقرة، خمس جمل حداً أقصى. لا فقرات من جملة واحدة.
+- لا نقاط. لا قوائم. لا حقائق منفردة. نثر متواصل فقط.
+- أظهر السبب والنتيجة: القرارات تُفضي إلى عواقب، الأفعال تكشف الشخصية.
+- اكتب دائماً جملاً كاملة.
+
+العبارات المحظورة — لا تكتبها أبداً:
+- "كان الواقع أكثر قتامة مما تخيّل أحد"
+- "الحقيقة كانت أشد إزعاجاً"
+- "لم يتوقع أحد ما سيحدث"
+- "في منعطف صادم"
+- "ما لم يعلمه أحد"
+- "عبر التاريخ"، "هذه قصة عن"، "كل شيء بدأ عندما"
+- "والباقي تاريخ"، "غيّر العالم إلى الأبد"
+بدلاً من ذلك، سمِّ الحقيقة أو الشخص أو التاريخ بالضبط. دع الحقيقة تقوم بعملها.
+
+قواعد عدم التكرار — مطلقة:
+- لا تكرر حقيقة أو اسماً أو تاريخاً ذُكر في فصل سابق.
+- لا تُعد صياغة افتتاحية الفصل في فصل لاحق.
+- إذا وجدت نفسك تكتب ما قيل سابقاً — توقف واكتب شيئاً جديداً.
+
+تغطية الشخصيات:
+- غطِّ جميع الشخصيات الرئيسية — لا تركّز على شخص واحد فقط.
+- كل شخص مهم يحصل على فقرة: الاسم الكامل، الدور الحقيقي، ما فعله، مصيره.
+- النساء والشخصيات المساندة تحصل على تغطية متساوية.
+
+نبرة الصوت:
+- هادئة. تحقيقية. مثيرة للقلق بشكل خفيف.
+- الراوي يعرف أكثر مما يقول — والمشاهد يحس بذلك.
+- لا أكاديمية. لا عامية. لا حماس مبالغ. لا إثارة رخيصة.
+- 85% تحكم ظلامي. 15% تعليق جاف ساخر عند أخطاء المجرمين. سطر واحد فقط في الفصل.
+
+التوتر السردي — مستمر في كل فصل:
+- كل فصل يُدخل سؤالاً معلقاً أو صراعاً خفياً أو حقيقة مكبوتة.
+- لا تُنهِ التوتر كلياً داخل الفصل — اترك شيئاً يسحب للفصل التالي.
+- المشاهد يجب أن يشعر دائماً: هناك ما لا أعلمه بعد.
+
+افتتاحية كل فصل:
+- يجب أن تحتوي أحد: تناقض، حقيقة خفية، إغفال صادم، أو سؤال مفتوح.
+- لا تفتح بخلفية أو تواريخ أو وصف مكان. ابدأ بالتوتر، ليس بالسياق.
+
+قوة الختام — آخر 1-2 جملة في كل فصل:
+- يجب أن تُخلّف أثراً، تُثير سؤالاً مقلقاً، أو تكشف دلالة أعمق.
+- لا تختم بملخص: "وهكذا كانت القصة..."
+- آخر جملة في الفصل يجب أن تجعل المشاهد بحاجة للمتابعة.
+
+هيكل المقارنة (للمواضيع المبنية على أعمال درامية):
+- الفصل الرابع يجب أن يحتوي:
+  الجزء الأول يبدأ بالضبط بـ: "إليك ما أصابت فيه [اسم العمل]:"
+  الجزء الثاني يبدأ بالضبط بـ: "وإليك ما غيّرته أو أغفلته تماماً:"
+- كل جزء يغطي على الأقل ثلاث مقارنات محددة بأسماء وتواريخ ومشاهد حقيقية.
+- هذا الهيكل إلزامي لأي موضوع مبني على أحداث حقيقية."""
+
+
+def translate_research_to_arabic(research: dict) -> dict:
+    """
+    Translate only the factual research lists to Arabic.
+    Batches each list into a single numbered call for efficiency.
+    Returns a new dict augmented with ar_* keys.
+    """
+    topic_name = research.get("real_person") or research.get("series_name") or ""
+
+    def _batch_translate(items: list[str]) -> list[str]:
+        if not items:
+            return []
+        combined = "\n".join(f"{i + 1}. {it}" for i, it in enumerate(items[:15]))
+        ar = try_translate_arabic(combined, topic=topic_name)
+        lines = [
+            re.sub(r'^\d+[\.\)]\s*', '', ln).strip()
+            for ln in ar.splitlines()
+            if ln.strip()
+        ]
+        return [ln for ln in lines if len(ln) > 5]
+
+    ar = dict(research)
+    ar["ar_research_facts"] = _batch_translate(
+        research.get("research_facts") or research.get("what_show_got_right", [])
+    )
+    ar["ar_research_inaccuracies"] = _batch_translate(
+        research.get("research_inaccuracies") or research.get("what_show_got_wrong", [])
+    )
+    ar["ar_research_shocking"] = _batch_translate(
+        research.get("research_shocking") or research.get("shocking_real_facts", [])
+    )
+    if research.get("user_discovery"):
+        ar["ar_user_discovery"] = try_translate_arabic(research["user_discovery"], topic=topic_name)
+    else:
+        ar["ar_user_discovery"] = ""
+
+    print(
+        f"[AR Research] facts={len(ar['ar_research_facts'])} | "
+        f"inaccuracies={len(ar['ar_research_inaccuracies'])} | "
+        f"shocking={len(ar['ar_research_shocking'])}"
+    )
+    return ar
+
+
+def _write_arabic_from_research(en_script: dict, ar_research: dict) -> str:
+    """
+    Write a full Arabic documentary script directly from Arabic research facts.
+    Uses 3 LLM calls (section pairs) to stay within token limits.
+
+    Produces native Arabic narration — NOT a translation of the English script.
+    Section markers use Arabic labels: [SECTION: المقدمة] etc.
+    """
+    topic_str    = en_script.get("topic", "")
+    series_name  = en_script.get("series_name", "") or ""
+    angle        = en_script.get("series_type", "")
+    en_wc        = clean_word_count(en_script.get("script", ""))
+
+    # ── Arabic research blocks ─────────────────────────────────────────────────
+    ar_facts    = ar_research.get("ar_research_facts", [])
+    ar_inaccs   = ar_research.get("ar_research_inaccuracies", [])
+    ar_shocking = ar_research.get("ar_research_shocking", [])
+    ar_disc     = ar_research.get("ar_user_discovery", "")
+
+    facts_block    = "\n".join(f"- {f}" for f in ar_facts[:10])    or "- (ابحث في القصة الحقيقية)"
+    inaccs_block   = "\n".join(f"- {i}" for i in ar_inaccs[:6])    or "- (ابحث في التحريفات الدرامية)"
+    shocking_block = "\n".join(f"- {s}" for s in ar_shocking[:8])  or "- (أضف تفاصيل حقيقية غير متوقعة)"
+
+    # Per-section word target proportional to English
+    sec_wc = max(300, en_wc // 5)
+
+    entity_lock = (
+        f"[قفل الموضوع] اكتب فقط عن: {topic_str}. "
+        f"لا تذكر جرائم أو مجرمين غير ذوي صلة مباشرة بهذا الموضوع.\n\n"
+    )
+
+    is_doc = (angle or "").lower() not in ("movie", "series", "mini-series")
+
+    # ── Call 1: Hook + Background ─────────────────────────────────────────────
+    series_line = f"السلسلة أو الفيلم: {series_name}\n" if series_name and not is_doc else ""
+    disc_line   = f"ملاحظة خاصة من البحث: {ar_disc}\n" if ar_disc else ""
+
+    prompt_1 = (
+        f"{entity_lock}"
+        f"اكتب بالعربية فصلين من وثائقي جريمة حقيقية عن: {topic_str}\n"
+        f"{series_line}"
+        f"\nالحقائق البحثية الحقيقية:\n{facts_block}\n"
+        f"{disc_line}\n"
+        f"اكتب الفصلين التاليين بالعربية الفصحى بأسلوب وثائقي سينمائي:\n\n"
+        f"[SECTION: المقدمة]\n"
+        f"(خطاف قوي + تأسيس التوتر — حوالي {sec_wc} كلمة. "
+        f"الجملة الأولى يجب أن تكون صادمة. لا خلفية في البداية. ابدأ بالتوتر.)\n\n"
+        f"[SECTION: الخلفية]\n"
+        f"(السياق التاريخي والشخصيات — حوالي {sec_wc} كلمة. "
+        f"كل شخص مهم يأخذ فقرة كاملة. أسماء حقيقية وتواريخ فعلية.)\n\n"
+        f"اكتب الفصلين كاملين. لا تكتب عناوين أو ملاحظات. النص الوثائقي فقط."
+    )
+
+    # ── Call 2: Main Story + (Show vs Reality / Shocking Details) ─────────────
+    if is_doc:
+        prompt_2 = (
+            f"{entity_lock}"
+            f"استمر في كتابة وثائقي: {topic_str}\n"
+            f"\nالحقائق البحثية:\n{facts_block}\n"
+            f"\nالحقائق المفاجئة:\n{shocking_block}\n"
+            f"{disc_line}\n"
+            f"اكتب:\n\n"
+            f"[SECTION: القصة الحقيقية]\n"
+            f"(قلب الوثائقي — حوالي {sec_wc * 2} كلمة. "
+            f"أعمق تفاصيل الجريمة أو الحدث. كل قرار، كل عاقبة، كل شخص مهم.)\n\n"
+            f"[SECTION: حقائق صادمة]\n"
+            f"(حوالي {sec_wc} كلمة. الحقائق الأقل معرفة، الأشد إثارة، التي لن يتوقعها المشاهد.)\n\n"
+            f"النص الوثائقي الكامل فقط."
+        )
+    else:
+        chars_block = "\n".join(
+            f"- {c.get('character','?')}: مبني على {c.get('based_on','?')}"
+            for c in (ar_research.get("show_characters") or [])[:6]
+            if c.get("character")
+        ) or "(لا توجد شخصيات خيالية محددة)"
+
+        prompt_2 = (
+            f"{entity_lock}"
+            f"استمر في كتابة وثائقي: {topic_str} — السلسلة: {series_name}\n"
+            f"\nالحقائق البحثية:\n{facts_block}\n"
+            f"\nما أصابت فيه السلسلة/الفيلم:\n{facts_block}\n"
+            f"\nما غيّرته أو حذفته:\n{inaccs_block}\n"
+            f"\nالشخصيات الخيالية ومقابلهم الحقيقيون:\n{chars_block}\n\n"
+            f"اكتب:\n\n"
+            f"[SECTION: القصة الحقيقية]\n"
+            f"(حوالي {sec_wc * 2} كلمة. القصة الحقيقية بعمق. تفاصيل الشخصية الحقيقية والأحداث.)\n\n"
+            f"[SECTION: الرواية مقابل الواقع]\n"
+            f"(حوالي {sec_wc} كلمة. "
+            f"الجزء الأول يبدأ بالضبط بـ \"إليك ما أصابت فيه {series_name}:\". "
+            f"الجزء الثاني يبدأ بالضبط بـ \"وإليك ما غيّرته أو أغفلته تماماً:\". "
+            f"الشخصيات الخيالية تُذكر فقط في هذا الفصل.)\n\n"
+            f"النص الوثائقي الكامل فقط."
+        )
+
+    # ── Call 3: Conclusion ─────────────────────────────────────────────────────
+    prompt_3 = (
+        f"{entity_lock}"
+        f"أكمل وثائقي: {topic_str}\n"
+        f"\nالحقائق المفاجئة:\n{shocking_block}\n\n"
+        f"اكتب الفصل الأخير:\n\n"
+        f"[SECTION: الخاتمة]\n"
+        f"(حوالي {sec_wc} كلمة. "
+        f"لا تلخّص ما قيل. اختم بسؤال مفتوح، أو حقيقة إنسانية، أو دلالة أعمق. "
+        f"آخر جملتين يجب أن تتركا أثراً عميقاً في المشاهد. "
+        f"لا تكتب: \"وهكذا...\" أو \"تلك هي قصة...\")\n\n"
+        f"النص الوثائقي الكامل فقط."
+    )
+
+    # ── Execute 3 section calls ───────────────────────────────────────────────
+    calls = [
+        ("AR-Hook+Background",    prompt_1, 2200),
+        ("AR-MainStory+Ch4",      prompt_2, 2600),
+        ("AR-Conclusion",         prompt_3, 1400),
+    ]
+    parts: list[str] = []
+    for label, ptext, max_tok in calls:
+        print(f"[AR Script] Writing {label}...")
+        import time as _t
+        _t.sleep(2)
+        section = _ai_script_call(
+            ptext,
+            max_tokens=max_tok,
+            temperature=0.65,
+            system_prompt=_AR_SCRIPT_SYSTEM_PROMPT,
+            premium=True,
+        )
+        if section and clean_word_count(section) >= 60:
+            parts.append(section.strip())
+            print(f"[AR Script] {label}: {clean_word_count(section)}w ✅")
+        else:
+            print(f"[AR Script] {label}: empty or too short — skipped")
+
+    if not parts:
+        return ""
+
+    return "\n\n".join(parts)
+
+
+def translate_script(en_script: dict, research: dict | None = None) -> dict:
+    """
+    Generate the Arabic script for a given English script.
+
+    When `research` is provided (recommended):
+      1. Translate research facts to Arabic
+      2. Write Arabic script directly from Arabic research
+      → Native Arabic pacing, cadence, suspense — not a compressed translation.
+
+    When `research` is None (legacy fallback):
+      Translate the finished English script section by section.
+    """
     _topic_lower = safe_lower(en_script.get("topic"))
     _is_hemedti  = any(k in _topic_lower for k in ["hemedti", "حميدتي", "dagalo"])
 
@@ -3885,38 +4149,74 @@ def translate_script(en_script: dict) -> dict:
             en_script.get("series_type"),
         )
 
+    # ── Choose script generation path ─────────────────────────────────────────
+    # Path A (preferred): write Arabic directly from Arabic research
+    # Path B (fallback):  translate the finished English script
+    _ar_script_body = ""
+    _used_research_path = False
+
+    if research:
+        print("[AR] Writing Arabic script from research (native path)...")
+        try:
+            ar_research = translate_research_to_arabic(research)
+            # Pass series_type from en_script so the prompt knows the angle
+            _ar_en_script_augmented = dict(en_script)
+            _ar_en_script_augmented.setdefault("series_type", research.get("series_type", ""))
+            _ar_script_body = _write_arabic_from_research(_ar_en_script_augmented, ar_research)
+            if _ar_script_body and clean_word_count(_ar_script_body) >= 300:
+                _ar_script_body = fix_first_mention(_ar_script_body, is_arabic=True)
+                _used_research_path = True
+                print(f"[AR] Research path: {clean_word_count(_ar_script_body)}w written ✅")
+            else:
+                print("[AR] Research path produced empty/short script — falling back to translation")
+                _ar_script_body = ""
+        except Exception as _ar_e:
+            print(f"[AR] Research path failed ({_ar_e}) — falling back to translation")
+            _ar_script_body = ""
+
+    if not _ar_script_body:
+        print("[AR] Translation path (legacy)...")
+        _ar_script_body = fix_first_mention(
+            _translate_script_preserve_sections(en_script["script"]), is_arabic=True
+        )
+
     ar_data = {
-        "title":          ar_title,
-        "hook":           translate_to_arabic(en_script.get("hook", "")),
-        "script":         fix_first_mention(_translate_script_preserve_sections(en_script["script"]), is_arabic=True),
+        "title":           ar_title,
+        "hook":            translate_to_arabic(en_script.get("hook", "")),
+        "script":          _ar_script_body,
         "on_screen_texts": [translate_to_arabic(t) for t in en_script["on_screen_texts"]],
-        "caption":        translate_to_arabic(en_script["caption"]),
-        "hashtags":       translate_to_arabic(en_script["hashtags"]),
-        "thumbnail_text": translate_to_arabic(en_script["thumbnail_text"]),
-        "chapters":       en_script.get("chapters", ""),  # keep English timestamps
+        "caption":         translate_to_arabic(en_script["caption"]),
+        "hashtags":        translate_to_arabic(en_script["hashtags"]),
+        "thumbnail_text":  translate_to_arabic(en_script["thumbnail_text"]),
+        "chapters":        en_script.get("chapters", ""),  # keep English timestamps
     }
-    ar_data["topic"]        = en_script["topic"]
-    ar_data["niche"]        = en_script["niche"]
-    ar_data["search_query"] = en_script["search_query"]
-    ar_data["keywords"]     = en_script["keywords"]
-    ar_data["language"]     = "arabic"
-    ar_data["series_name"]  = en_script.get("series_name", "")
-    ar_data["series_type"]  = en_script.get("series_type", "")
+    ar_data["topic"]           = en_script["topic"]
+    ar_data["niche"]           = en_script["niche"]
+    ar_data["search_query"]    = en_script["search_query"]
+    ar_data["keywords"]        = en_script["keywords"]
+    ar_data["language"]        = "arabic"
+    ar_data["series_name"]     = en_script.get("series_name", "")
+    ar_data["series_type"]     = en_script.get("series_type", "")
+    ar_data["arabic_path"]     = "research" if _used_research_path else "translation"
+
     _ar_wc = clean_word_count(ar_data.get("script", ""))
-    print(f"[Script] Arabic word count after translation: {_ar_wc}")
+    print(f"[Script] Arabic word count ({ar_data['arabic_path']} path): {_ar_wc}")
+
     if _ar_wc < 1800:
         ar_data["script"] = _expand_arabic_script_to_min(ar_data["script"], target_min=1800)
 
     # ── Runtime parity check ──────────────────────────────────────────────────
-    # Arabic scripts often compress to 65-75% of English runtime even when
-    # word counts match, because Arabic TTS speaks fewer syllables per minute.
-    # Target: Arabic runtime must be ≥ 90% of English runtime.
-    _en_wc      = clean_word_count(en_script.get("script", ""))
-    _en_min     = _en_wc / 145.0          # English TTS ~145 WPM
-    _ar_min     = estimate_arabic_duration(ar_data.get("script", ""))
-    _ar_target  = _en_min * 0.90
-    print(f"[AR] EN runtime: ~{_en_min:.1f}min | AR runtime: ~{_ar_min:.1f}min "
-          f"| target ≥ {_ar_target:.1f}min")
+    # For the research path, we target ≥ 95% of English runtime (vs 90% for translation).
+    # Arabic TTS speaks ~130 WPM; English ~145 WPM.
+    _en_wc     = clean_word_count(en_script.get("script", ""))
+    _en_min    = _en_wc / 145.0
+    _ar_min    = estimate_arabic_duration(ar_data.get("script", ""))
+    _parity    = 0.95 if _used_research_path else 0.90
+    _ar_target = _en_min * _parity
+    print(
+        f"[AR] EN runtime: ~{_en_min:.1f}min | AR runtime: ~{_ar_min:.1f}min "
+        f"| target ≥ {_ar_target:.1f}min (parity={int(_parity*100)}%)"
+    )
     if _ar_min < _ar_target:
         _topic = en_script.get("topic", "")
         ar_data["script"] = expand_arabic_runtime(
@@ -3928,7 +4228,13 @@ def translate_script(en_script: dict) -> dict:
         ar_data["script"] = evaluate_and_fix_script(ar_data["script"])
         from agents.script_quality import normalize_arabic_documentary_text
         ar_data["script"] = normalize_arabic_documentary_text(ar_data["script"])
-    print(f"[Script] Translated (arabic): '{ar_data['title']}'")
+
+    _final_wc  = clean_word_count(ar_data.get("script", ""))
+    _final_min = estimate_arabic_duration(ar_data.get("script", ""))
+    print(
+        f"[Script] Arabic done ({ar_data['arabic_path']} path): "
+        f"'{ar_data['title']}' | {_final_wc}w | ~{_final_min:.1f}min"
+    )
     return ar_data
 
 
