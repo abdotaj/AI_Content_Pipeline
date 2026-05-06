@@ -57,7 +57,7 @@ from config_darkcrimed import (
 )
 
 from agent.research_agent import research_topics, research_series, mark_covered, is_fictional
-from agent.script_agent   import write_script, translate_script, generate_chapters, write_short_script, clean_word_count
+from agent.script_agent   import write_script, translate_script, generate_chapters, write_short_script, clean_word_count, expand_script_runtime
 from agent.video_agent    import create_video, ensure_music_assets, cut_best_short, load_all_content
 from agent.notify_agent   import (
     send_message, send_video_to_telegram, send_daily_report,
@@ -161,17 +161,50 @@ def run_pipeline() -> None:
         _log("Scripts", str(e), "ERROR")
         return
 
-    # Enforce minimum duration. Abort if under hard 10-min floor; warn if below preferred 11.5 min.
-    _en_wc = clean_word_count(en_long.get("script", ""))
+    # Enforce minimum duration.
+    # Instead of aborting immediately on a short script, retry lightweight
+    # section-level expansion up to 3 times to close small word-count gaps.
+    # Only abort after retries are exhausted and the script is still too short.
+    _en_wc   = clean_word_count(en_long.get("script", ""))
     _est_min = round(_en_wc / WORDS_PER_MINUTE, 1)
+    _max_ret = 3
+    _retry   = 0
+
+    while _en_wc < SCRIPT_WORD_FLOOR and _retry < _max_ret:
+        _missing = SCRIPT_WORD_FLOOR - _en_wc
+        print(f"[FAST] Script short by {_missing} words ({_en_wc} words ~{_est_min} min)")
+        _log("Scripts",
+             f"Short by {_missing} words — expansion attempt {_retry + 1}/{_max_ret}",
+             "WARN")
+        print(f"[FAST] Expansion attempt {_retry + 1}...")
+        _expanded = expand_script_runtime(
+            en_long["script"], _missing, topic=en_long.get("topic", "")
+        )
+        _new_wc = clean_word_count(_expanded)
+        if _new_wc > _en_wc:
+            en_long["script"] = _expanded
+            _en_wc   = _new_wc
+            _est_min = round(_en_wc / WORDS_PER_MINUTE, 1)
+            print(f"[FAST] New count: {_en_wc} words (~{_est_min} min)")
+        else:
+            print(f"[FAST] Expansion attempt {_retry + 1} produced no gain")
+        _retry += 1
+
     if _en_wc < SCRIPT_WORD_FLOOR:
         _msg = (
-            f"[FAST] Script critically short: {_en_wc} words (~{_est_min} min) — "
-            f"hard minimum is {SCRIPT_WORD_FLOOR} words (10 min). Aborting."
+            f"[FAST] Script still short after {_retry} expansion attempt(s): "
+            f"{_en_wc} words (~{_est_min} min) — hard minimum is {SCRIPT_WORD_FLOOR}. Aborting."
         )
         _log("Scripts", _msg, "ERROR")
         send_message(_msg)
         return
+
+    if _retry > 0:
+        print(f"[FAST] Runtime target reached: {_en_wc} words (~{_est_min} min)")
+        _log("Scripts",
+             f"Runtime target reached after {_retry} expansion(s): {_en_wc} words (~{_est_min} min)",
+             "OK")
+
     if _en_wc < SCRIPT_WORD_MIN:
         _log("Scripts", f"Script below preferred minimum: {_en_wc} words (~{_est_min} min) — target {SCRIPT_WORD_MIN}+", "WARN")
         send_message(f"[FAST] Script short ({_en_wc} words ~{_est_min} min) — proceeding but check quality")

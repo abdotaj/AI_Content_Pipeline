@@ -463,6 +463,74 @@ def expand_section(existing_text: str, missing_words: int,
         return existing_text
 
 
+def expand_script_runtime(script_text: str, missing_words: int,
+                          topic: str = "") -> str:
+    """
+    Lightweight expansion for scripts that are slightly under the word-count floor.
+
+    Strategy:
+    1. Parse [SECTION: ...] markers; fall back to paragraph chunks if absent.
+    2. Sort sections by word count ascending — expand the shortest first.
+    3. Distribute missing_words across the bottom 2 sections using expand_section().
+    4. Skip sections already at or above average length.
+    5. Reconstruct and return the full script with expanded sections.
+
+    Never regenerates the full script. Never redoes research, hooks, or images.
+    Returns original unchanged if expansion produces no net gain.
+    """
+    if missing_words <= 0:
+        return script_text
+
+    # Use the same section parser as translate_script
+    sections = _split_english_sectioned_script(script_text)
+
+    if not sections:
+        # No markers — expand the whole text as a single block
+        print(f"[FAST] No section markers — single-block expansion (+{missing_words} words needed)")
+        expanded = expand_section(script_text, missing_words)
+        added = clean_word_count(expanded) - clean_word_count(script_text)
+        if added > 0:
+            print(f"[FAST] Single-block expansion: +{added} words")
+        return expanded
+
+    # Word count per section
+    section_wcs = [(name, body, clean_word_count(body)) for name, body in sections]
+    total_wc    = sum(wc for _, _, wc in section_wcs)
+    avg_wc      = total_wc / max(len(section_wcs), 1)
+
+    # Expand at most 2 shortest sections (enough to close a small gap cheaply)
+    sorted_by_len   = sorted(section_wcs, key=lambda x: x[2])
+    n_to_expand     = min(2, len(sorted_by_len))
+    per_section     = max(80, missing_words // n_to_expand + 30)
+
+    topic_hint    = f"This is about: {topic}. " if topic else ""
+    doc_sys_prompt = (
+        f"You are a documentary scriptwriter. {topic_hint}"
+        "Add new specific atmospheric narrative details to the section. "
+        "Use cinematic, investigative language. "
+        "Do NOT repeat or restate anything already in the text."
+    )
+
+    expanded_map: dict[str, str] = {}
+    for name, body, wc in sorted_by_len[:n_to_expand]:
+        if wc >= avg_wc * 1.2:
+            # Section already well above average — no need to touch it
+            continue
+        expanded = expand_section(body, per_section, system_prompt=doc_sys_prompt)
+        if clean_word_count(expanded) > wc:
+            expanded_map[name] = expanded
+
+    if not expanded_map:
+        return script_text
+
+    # Reconstruct script preserving section order and markers
+    result_parts: list[str] = []
+    for name, body in sections:
+        new_body = expanded_map.get(name, body)
+        result_parts.append(f"[SECTION: {name}]\n{new_body.strip()}")
+    return "\n\n".join(result_parts)
+
+
 # ============================================================
 # SCRIPT SCORING SYSTEM
 # ============================================================
