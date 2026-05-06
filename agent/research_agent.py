@@ -18,6 +18,7 @@ import groq as groq_lib
 from groq import Groq
 import os
 from config import GROQ_API_KEY, NICHES, NICHE_WEIGHTS
+from agents.json_utils import safe_json_parse, is_valid_json_response, strip_markdown_fences, normalize_ai_json_response
 
 _groq = Groq(api_key=GROQ_API_KEY)
 
@@ -26,9 +27,24 @@ _FALLBACK_MODELS = [
     "llama-3.1-8b-instant",      # fallback
 ]
 
+# Session-level Groq disable flag — set when rate-limited to skip all Groq calls this run
+_GROQ_DISABLED       = False
+_GROQ_DISABLED_UNTIL = 0.0   # epoch seconds
+
+# Session-level OpenAI disable flag
+_OPENAI_RESEARCH_FAILED = False
+
 
 def _groq_call(**kwargs):
-    """Try each model with one 40-second retry on rate limit before moving to fallback."""
+    """Try each model with one retry on rate limit. Sets session disable flag on persistent 429."""
+    global _GROQ_DISABLED, _GROQ_DISABLED_UNTIL
+
+    if _GROQ_DISABLED and time.time() < _GROQ_DISABLED_UNTIL:
+        raise groq_lib.RateLimitError(
+            "Groq disabled for this session (rate-limited earlier)",
+            response=None, body=None,
+        )
+
     last_err = None
     for model in _FALLBACK_MODELS:
         for attempt in range(2):
@@ -47,27 +63,92 @@ def _groq_call(**kwargs):
                 print(f"[Groq] BadRequestError on {model}, trying next model...")
                 last_err = e
                 break
-    raise last_err
+            except Exception as e:
+                print(f"[Groq] Unexpected error on {model}: {e}")
+                last_err = e
+                break
+
+    # Disable Groq for 30 minutes if we exhausted all retries on rate limit
+    if last_err and "rate" in str(last_err).lower():
+        _GROQ_DISABLED       = True
+        _GROQ_DISABLED_UNTIL = time.time() + 1800
+        print(f"[Groq] Session disabled for 30 min due to persistent rate limit")
+
+    if last_err:
+        raise last_err
+    raise RuntimeError("[Groq] All models exhausted with no error recorded")
+
+
+def _ai_call_openai(prompt: str, temperature: float, max_tokens: int,
+                    json_mode: bool) -> str:
+    """OpenAI fallback for research calls (gpt-4o-mini)."""
+    global _OPENAI_RESEARCH_FAILED
+    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    if not api_key or _OPENAI_RESEARCH_FAILED:
+        return ""
+    try:
+        body: dict = {
+            "model": "gpt-4o-mini",
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        }
+        if json_mode:
+            body["response_format"] = {"type": "json_object"}
+        r = requests.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}",
+                     "Content-Type": "application/json"},
+            json=body,
+            timeout=90,
+        )
+        if r.status_code == 200:
+            print("[Research] OpenAI fallback used for research call")
+            return r.json()["choices"][0]["message"]["content"]
+        if r.status_code == 429:
+            _OPENAI_RESEARCH_FAILED = True
+            print("[Research] OpenAI quota exceeded — disabling for this session")
+        else:
+            print(f"[Research] OpenAI returned HTTP {r.status_code}")
+    except Exception as e:
+        print(f"[Research] OpenAI fallback failed: {e}")
+    return ""
 
 
 def _ai_call(prompt: str, temperature: float = 0.3,
              max_tokens: int = 1000, json_mode: bool = True) -> str:
-    """Use Groq for all research AI calls."""
+    """Research AI call: Groq primary -> OpenAI fallback -> empty string on failure."""
     max_chars = 3000
     if len(prompt) > max_chars:
         half    = max_chars // 2
         _prompt = prompt[:half] + "\n...\n" + prompt[-half:]
-        print(f"[Research] Prompt truncated to {max_chars} chars for Groq")
+        print(f"[Research] Prompt truncated to {max_chars} chars")
     else:
         _prompt = prompt
-    kwargs = dict(
-        messages=[{"role": "user", "content": _prompt}],
-        temperature=temperature,
-        max_tokens=max_tokens,
-    )
-    if json_mode:
-        kwargs["response_format"] = {"type": "json_object"}
-    return _groq_call(**kwargs).choices[0].message.content
+
+    # ── Groq primary ─────────────────────────────────────────────────────────
+    if not (_GROQ_DISABLED and time.time() < _GROQ_DISABLED_UNTIL):
+        try:
+            kwargs: dict = dict(
+                messages=[{"role": "user", "content": _prompt}],
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+            if json_mode:
+                kwargs["response_format"] = {"type": "json_object"}
+            result = _groq_call(**kwargs).choices[0].message.content
+            if result:
+                return result
+        except Exception as e:
+            print(f"[Research] Groq call failed: {e} — trying OpenAI fallback")
+
+    # ── OpenAI fallback ───────────────────────────────────────────────────────
+    result = _ai_call_openai(_prompt, temperature, max_tokens, json_mode)
+    if result:
+        return result
+
+    print("[Fallback] All AI providers failed for research call — returning empty")
+    return ""
 
 
 COVERED_TOPICS_PATH = Path("output/covered_topics.json")
@@ -270,12 +351,9 @@ Wikipedia content:
 Respond with valid JSON only, no markdown."""
 
     try:
-        raw = _ai_call(prompt, temperature=0.1, max_tokens=1000, json_mode=False)
-        import re as _re
-        raw = _re.sub(r'^```(?:json)?\s*', '', raw.strip())
-        raw = _re.sub(r'\s*```$', '', raw)
-        data = json.loads(raw)
-        chars = data.get("characters", [])
+        raw  = _ai_call(prompt, temperature=0.1, max_tokens=1000, json_mode=False)
+        data = normalize_ai_json_response(raw, required_keys=["characters"], list_keys=["characters"])
+        chars = data.get("characters") or []
         print(f"[Research] Extracted {len(chars)} characters from '{show_name}' Wikipedia")
         return chars
     except Exception as e:
@@ -444,9 +522,8 @@ def web_search(query: str, max_results: int = 5) -> str:
 def _load_covered() -> list[dict]:
     if COVERED_TOPICS_PATH.exists():
         try:
-            return json.loads(
-                COVERED_TOPICS_PATH.read_text(encoding="utf-8")
-            ).get("covered", [])
+            raw = COVERED_TOPICS_PATH.read_text(encoding="utf-8")
+            return safe_json_parse(raw, fallback={}).get("covered", [])
         except Exception:
             pass
     return []
@@ -511,8 +588,12 @@ Return ONLY this JSON:
 }}"""
 
     try:
-        data = json.loads(_ai_call(prompt, temperature=0.3, max_tokens=1000))
-        all_series = data.get("series", [])
+        data = normalize_ai_json_response(
+            _ai_call(prompt, temperature=0.3, max_tokens=1000),
+            required_keys=["series"],
+            list_keys=["series"],
+        )
+        all_series = data.get("series") or []
         fresh = [s for s in all_series if s.lower() not in already_done]
         print(f"[Research] Discovered {len(fresh)} fresh series ({len(all_series) - len(fresh)} already covered)")
         # Also inject uncovered global niches directly
@@ -551,8 +632,26 @@ Return ONLY this JSON:
   "search_query": "crime dark night investigation"
 }}"""
 
-    result = json.loads(_ai_call(prompt, temperature=0.9, max_tokens=500))
-    result["niche"] = niche
+    _fallback_topic = {
+        "topic":        f"The Real Story Behind {series}",
+        "angle":        f"What really happened behind {series}",
+        "keywords":     [series, "crime", "real story"],
+        "search_query": f"{series} real true story",
+    }
+    try:
+        raw    = _ai_call(prompt, temperature=0.9, max_tokens=500)
+        result = normalize_ai_json_response(
+            raw,
+            required_keys=["topic", "angle", "keywords", "search_query"],
+            list_keys=["keywords"],
+        )
+        if not result.get("topic"):
+            print(f"[Fallback] Topic generation returned empty — using default topic for {series}")
+            result = _fallback_topic
+    except Exception as e:
+        print(f"[Research] get_trending_topic failed: {e} — using fallback topic")
+        result = _fallback_topic
+    result["niche"]  = niche
     result["series"] = series
     return result
 
@@ -657,7 +756,19 @@ Extract and return JSON:
 Return ONLY valid JSON. If info is not in Wikipedia, use null for strings or [] for arrays."""
 
     try:
-        return json.loads(_ai_call(prompt, temperature=0.1, max_tokens=2000))
+        raw  = _ai_call(prompt, temperature=0.1, max_tokens=2000)
+        data = normalize_ai_json_response(
+            raw,
+            required_keys=["real_person", "birth_date", "death_date", "nationality",
+                           "crimes", "real_facts", "series_name", "network",
+                           "premiere_year", "what_show_changed", "shocking_real_facts",
+                           "real_people_in_show", "sources"],
+            list_keys=["crimes", "real_facts", "what_show_changed", "shocking_real_facts", "sources"],
+        )
+        if not any(data.get(k) for k in ["real_facts", "series_name", "real_person"]):
+            print("[Research] Wikipedia extraction: empty/invalid JSON response")
+            return None
+        return data
     except Exception as e:
         print(f"[Research] Wikipedia extraction failed: {e}")
         return None
@@ -708,7 +819,11 @@ Return ONLY this JSON:
 }}"""
 
     try:
-        data = json.loads(_ai_call(prompt, temperature=0.2, max_tokens=800))
+        data         = normalize_ai_json_response(
+            _ai_call(prompt, temperature=0.2, max_tokens=800),
+            required_keys=["research_facts", "research_inaccuracies", "research_shocking"],
+            list_keys=["research_facts", "research_inaccuracies", "research_shocking"],
+        )
         facts_out    = data.get("research_facts", [])
         wrong_out    = data.get("research_inaccuracies", [])
         shocking_out = data.get("research_shocking", [])
@@ -775,27 +890,31 @@ Return exactly this JSON structure:
 Respond with valid JSON only, no markdown, no explanation."""
 
     try:
-        raw = _ai_call(prompt, temperature=0.1, max_tokens=1500, json_mode=False)
-        # Strip markdown fences if model adds them despite instruction
-        import re as _re
-        raw = _re.sub(r'^```(?:json)?\s*', '', raw.strip())
-        raw = _re.sub(r'\s*```$', '', raw)
-        data = json.loads(raw)
+        raw  = _ai_call(prompt, temperature=0.1, max_tokens=1500, json_mode=False)
+        data = normalize_ai_json_response(
+            raw,
+            required_keys=["is_based_on_true_story", "real_people", "fictional_characters",
+                           "real_vs_show", "time_period", "real_locations"],
+            list_keys=["real_people", "fictional_characters", "real_vs_show", "real_locations"],
+        )
         rp  = data.get("real_people", [])
         fc  = data.get("fictional_characters", [])
         rvs = data.get("real_vs_show", [])
         print(f"[Research] real_vs_fiction: {len(rp)} real people, {len(fc)} characters, {len(rvs)} comparisons")
-        return data
+        if rp or fc or rvs:
+            return data
+        print("[Research] extract_real_vs_fiction: empty data — using default structure")
     except Exception as e:
         print(f"[Research] extract_real_vs_fiction failed: {e}")
-        return {
-            "is_based_on_true_story": True,
-            "real_people": [],
-            "fictional_characters": [],
-            "real_vs_show": [],
-            "time_period": "",
-            "real_locations": [],
-        }
+
+    return {
+        "is_based_on_true_story": True,
+        "real_people": [],
+        "fictional_characters": [],
+        "real_vs_show": [],
+        "time_period": "",
+        "real_locations": [],
+    }
 
 
 # ── Deep research on a specific series ─────────────────────
@@ -1002,7 +1121,19 @@ Extract and return JSON:
 Return ONLY valid JSON."""
 
     try:
-        info = json.loads(_ai_call(prompt, temperature=0.1, max_tokens=2000))
+        raw  = _ai_call(prompt, temperature=0.1, max_tokens=2000)
+        info = normalize_ai_json_response(
+            raw,
+            required_keys=["real_person", "birth_date", "death_date", "nationality",
+                           "network", "premiere_year", "series_name", "series_type",
+                           "real_facts", "how_show_inspired", "shocking_real_facts",
+                           "what_happened_after", "real_people_in_show", "historical_context"],
+            list_keys=["real_facts", "how_show_inspired", "shocking_real_facts",
+                       "user_discovery_expanded"],
+        )
+        if not any(info.get(k) for k in ["real_facts", "series_name", "real_person"]):
+            print("[Fallback] Combined extraction returned empty — using DuckDuckGo fallback")
+            return research_series_duckduckgo(topic)
         print(f"[Research] Combined research complete: {topic}")
         print(f"[Research] Network: {info.get('network', 'unknown')}")
     except Exception as e:

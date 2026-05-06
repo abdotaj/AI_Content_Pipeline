@@ -15,7 +15,7 @@ from agents.entity_guard import (
     sanitize_script,
     validate_entity_consistency,
 )
-from agents.json_utils import safe_json_parse, is_valid_json_response
+from agents.json_utils import safe_json_parse, is_valid_json_response, normalize_ai_json_response
 
 _groq = Groq(api_key=GROQ_API_KEY)
 
@@ -388,6 +388,46 @@ def _ai_script_call(prompt: str, max_tokens: int = 1000,
             print(f'[Script] OpenAI {oai_model} failed: {e}')
 
     return ""
+
+
+def expand_section(existing_text: str, missing_words: int,
+                   system_prompt: str | None = None) -> str:
+    """
+    Append targeted new content to an under-length section.
+
+    Cheaper than a full section regeneration: sends only the existing text +
+    a short instruction, requests ~missing_words of new prose, and appends it.
+    Replaces the three-attempt retry + continuation loop for undersized sections.
+
+    Returns the original text unchanged if the expansion produces nothing useful.
+    """
+    target = max(missing_words, 80)
+    prompt = (
+        f"Expand the following documentary section by approximately {target} words. "
+        f"Add new specific details, real names, dates, or narrative depth. "
+        f"Do NOT repeat, summarise, or restate anything already written. "
+        f"Write ONLY the new continuation text — do not include the original section.\n\n"
+        f"EXISTING SECTION:\n{existing_text}"
+    )
+    try:
+        continuation = _ai_script_call(
+            prompt,
+            max_tokens=min(target * 2 + 100, 900),
+            temperature=0.75,
+            system_prompt=system_prompt or _SCRIPT_SYSTEM_PROMPT,
+            premium=True,
+        )
+        if not continuation or clean_word_count(continuation) < 30:
+            print("[Script] expand_section: expansion too short — keeping original")
+            return existing_text
+        result  = existing_text.rstrip() + "\n\n" + continuation.strip()
+        added   = clean_word_count(continuation)
+        total   = clean_word_count(result)
+        print(f"[Script] expand_section: +{added} words added (total {total})")
+        return result
+    except Exception as e:
+        print(f"[Script] expand_section failed: {e} — keeping original")
+        return existing_text
 
 
 # ============================================================
@@ -1113,12 +1153,13 @@ Return ONLY this JSON with no extra text:
   "thumbnail_text": "4-word thumbnail text"
 }}"""
 
-    meta = safe_json_parse(
+    meta = normalize_ai_json_response(
         _ai_script_call(part2_prompt, max_tokens=600, temperature=0.3, json_mode=True),
-        fallback={},
+        required_keys=["title", "hook", "on_screen_texts", "caption", "hashtags", "thumbnail_text"],
+        list_keys=["on_screen_texts"],
     )
     script_data = {
-        "title":           meta.get("title", f"Shopmart: {topic['topic']}"),
+        "title":           meta.get("title") or f"Shopmart: {topic['topic']}",
         "hook":            meta.get("hook", ""),
         "script":          script_text,
         "on_screen_texts": meta.get("on_screen_texts", []),
@@ -1494,8 +1535,11 @@ angle_content: 2-3 sentences of specific detail to build the chapter around"""
 
     try:
         result = _ai_script_call(prompt, max_tokens=350, temperature=0.85, json_mode=True)
-        data   = safe_json_parse(result, fallback={})
-        if all(k in data for k in ('angle_title', 'angle_hook', 'angle_content')):
+        data   = normalize_ai_json_response(
+            result,
+            required_keys=["angle_title", "angle_hook", "angle_content"],
+        )
+        if all(data.get(k) for k in ('angle_title', 'angle_hook', 'angle_content')):
             print(f"[Script] Untold angle: {data['angle_title']}")
             return data
         print("[Fallback] Angle generation returned incomplete data — using default angle")
@@ -1643,62 +1687,21 @@ Key facts: {(research.get('research_facts') or research.get('what_show_got_right
         print(f"[Script] Section {call_num} ({label}): {real} real words {emoji} "
               f"(target {min_w}–{max_w}, raw {raw})")
 
-        # Track best across all attempts
-        best_result, best_real = result, real
-
-        # First retry if below minimum
-        if best_real < min_w:
-            print(f"[Script] Section {call_num}: below minimum — retrying once")
-            time.sleep(4)
-            retry = _ai_script_call(prompt, max_tokens=_max_tok,
-                                     system_prompt=_SCRIPT_SYSTEM_PROMPT, premium=True)
-            if retry:
-                r_real = clean_word_count(retry)
-                r_raw  = len(retry.split())
-                emoji2 = "✅" if r_real >= min_w else "⚠️"
-                print(f"[Script] Section {call_num} retry: {r_real} real words {emoji2} "
-                      f"(raw {r_raw})")
-                if r_real > best_real:
-                    best_result, best_real = retry, r_real
-
-        # Third attempt with explicit detail instruction if still below minimum
-        if best_real < min_w:
-            print(f"[Script] Section {call_num}: still below {min_w}w — 3rd attempt with detail instruction")
-            time.sleep(4)
-            _expand_prompt = (
-                prompt
-                + f"\n\nCRITICAL: Previous attempts produced only {best_real} words — you need at least {min_w}."
-                + " Add more specific examples, names, dates, and narrative detail to every point."
-                + " Do not summarize or skip anything — expand each sentence into a full paragraph."
-            )
-            third = _ai_script_call(_expand_prompt, max_tokens=_max_tok + 500,
-                                     system_prompt=_SCRIPT_SYSTEM_PROMPT, premium=True)
-            if third:
-                t_real = clean_word_count(third)
-                emoji3 = "✅" if t_real >= min_w else "⚠️"
-                print(f"[Script] Section {call_num} 3rd attempt: {t_real} real words {emoji3}")
-                if t_real > best_real:
-                    best_result, best_real = third, t_real
-
-        result, real = best_result, best_real
-
-        # Fix 2: hard enforcement — if still below min after 3 attempts, append continuation
+        # If below minimum: targeted expansion instead of full section regeneration.
+        # expand_section() sends only the existing text + a short gap-fill instruction,
+        # replacing the old 3-attempt retry + continuation loop (3-4x cheaper).
         if real < min_w:
-            print(f"[Script] Section {call_num}: STILL below {min_w}w after 3 attempts — appending continuation")
-            _cont_prompt = (
-                f"Continue this section with 2 more detailed paragraphs expanding on the same topic, "
-                f"adding specific names, dates, and events. Do not repeat what was already said.\n\n"
-                f"CURRENT TEXT:\n{result}"
-            )
-            try:
-                continuation = _ai_script_call(_cont_prompt, max_tokens=800,
-                                                system_prompt=_SCRIPT_SYSTEM_PROMPT, premium=True)
-                if continuation:
-                    result = result.rstrip() + "\n\n" + continuation.strip()
-                    real = clean_word_count(result)
-                    print(f"[Script] Section {call_num} after continuation: {real} real words")
-            except Exception as _ce:
-                print(f"[Script] Section {call_num} continuation failed: {_ce}")
+            missing = min_w - real
+            print(f"[Script] Section {call_num}: {real}w < {min_w}w — "
+                  f"expanding by ~{missing} words via expand_section")
+            expanded = expand_section(result, missing)
+            exp_real = clean_word_count(expanded)
+            if exp_real > real:
+                result, real = expanded, exp_real
+                emoji = "✅" if real >= min_w else "⚠️"
+                print(f"[Script] Section {call_num} after expansion: {real} real words {emoji}")
+            else:
+                print(f"[Script] Section {call_num}: expansion unchanged — keeping {real}w")
 
         # Hard cap per section to stop runaway outputs from pushing total runtime.
         if real > max_w:
@@ -1772,15 +1775,16 @@ Return ONLY valid JSON, no explanation:
 
         try:
             raw  = _ai_script_call(_outline_prompt, max_tokens=900, json_mode=True, temperature=0.4)
-            data = safe_json_parse(raw, fallback={})
-            if all(k in data for k in ("ch1", "ch2", "ch3", "ch4", "ch5")):
-                total = sum(len(v) for v in data.values())
+            data = normalize_ai_json_response(
+                raw,
+                required_keys=["ch1", "ch2", "ch3", "ch4", "ch5"],
+                list_keys=["ch1", "ch2", "ch3", "ch4", "ch5"],
+            )
+            if any(data.get(k) for k in ("ch1", "ch2", "ch3", "ch4", "ch5")):
+                total = sum(len(data.get(k) or []) for k in ("ch1","ch2","ch3","ch4","ch5"))
                 print(f"[Script] Master outline: {total} unique facts pre-assigned across 5 chapters")
                 return data
-            if data:
-                print("[Script] Master outline: incomplete keys — proceeding without outline")
-            else:
-                print("[Fallback] Master outline returned empty — proceeding without pre-assignment")
+            print("[Fallback] Master outline returned empty — proceeding without pre-assignment")
         except Exception as e:
             print(f"[Fallback] Master outline failed ({e}) — proceeding without outline")
         return {}
@@ -2678,9 +2682,10 @@ Return ONLY this JSON with no extra text:
   "thumbnail_text": "4-word thumbnail text"
 }}"""
 
-    meta = safe_json_parse(
+    meta = normalize_ai_json_response(
         _ai_script_call(part2_prompt, max_tokens=1000, temperature=0.3, json_mode=True),
-        fallback={},
+        required_keys=["title", "hook", "on_screen_texts", "caption", "hashtags", "thumbnail_text"],
+        list_keys=["on_screen_texts"],
     )
     _series_name = _series_info[0] if _series_info else _related_series
     _fallback_title = (

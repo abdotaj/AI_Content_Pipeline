@@ -18,7 +18,7 @@ import groq as groq_lib
 from groq import Groq
 import os
 from config import GROQ_API_KEY, NICHES, NICHE_WEIGHTS
-from agents.json_utils import safe_json_parse, is_valid_json_response, strip_markdown_fences
+from agents.json_utils import safe_json_parse, is_valid_json_response, strip_markdown_fences, normalize_ai_json_response
 
 _groq = Groq(api_key=GROQ_API_KEY)
 
@@ -352,8 +352,8 @@ Respond with valid JSON only, no markdown."""
 
     try:
         raw  = _ai_call(prompt, temperature=0.1, max_tokens=1000, json_mode=False)
-        data = safe_json_parse(raw, fallback={})
-        chars = data.get("characters", [])
+        data = normalize_ai_json_response(raw, required_keys=["characters"], list_keys=["characters"])
+        chars = data.get("characters") or []
         print(f"[Research] Extracted {len(chars)} characters from '{show_name}' Wikipedia")
         return chars
     except Exception as e:
@@ -588,9 +588,12 @@ Return ONLY this JSON:
 }}"""
 
     try:
-        data = safe_json_parse(_ai_call(prompt, temperature=0.3, max_tokens=1000),
-                               fallback={"series": []})
-        all_series = data.get("series", [])
+        data = normalize_ai_json_response(
+            _ai_call(prompt, temperature=0.3, max_tokens=1000),
+            required_keys=["series"],
+            list_keys=["series"],
+        )
+        all_series = data.get("series") or []
         fresh = [s for s in all_series if s.lower() not in already_done]
         print(f"[Research] Discovered {len(fresh)} fresh series ({len(all_series) - len(fresh)} already covered)")
         # Also inject uncovered global niches directly
@@ -637,7 +640,11 @@ Return ONLY this JSON:
     }
     try:
         raw    = _ai_call(prompt, temperature=0.9, max_tokens=500)
-        result = safe_json_parse(raw, fallback=_fallback_topic)
+        result = normalize_ai_json_response(
+            raw,
+            required_keys=["topic", "angle", "keywords", "search_query"],
+            list_keys=["keywords"],
+        )
         if not result.get("topic"):
             print(f"[Fallback] Topic generation returned empty — using default topic for {series}")
             result = _fallback_topic
@@ -750,9 +757,17 @@ Return ONLY valid JSON. If info is not in Wikipedia, use null for strings or [] 
 
     try:
         raw  = _ai_call(prompt, temperature=0.1, max_tokens=2000)
-        data = safe_json_parse(raw, fallback=None)
-        if not data:
+        data = normalize_ai_json_response(
+            raw,
+            required_keys=["real_person", "birth_date", "death_date", "nationality",
+                           "crimes", "real_facts", "series_name", "network",
+                           "premiere_year", "what_show_changed", "shocking_real_facts",
+                           "real_people_in_show", "sources"],
+            list_keys=["crimes", "real_facts", "what_show_changed", "shocking_real_facts", "sources"],
+        )
+        if not any(data.get(k) for k in ["real_facts", "series_name", "real_person"]):
             print("[Research] Wikipedia extraction: empty/invalid JSON response")
+            return None
         return data
     except Exception as e:
         print(f"[Research] Wikipedia extraction failed: {e}")
@@ -804,8 +819,11 @@ Return ONLY this JSON:
 }}"""
 
     try:
-        data         = safe_json_parse(_ai_call(prompt, temperature=0.2, max_tokens=800),
-                                       fallback={})
+        data         = normalize_ai_json_response(
+            _ai_call(prompt, temperature=0.2, max_tokens=800),
+            required_keys=["research_facts", "research_inaccuracies", "research_shocking"],
+            list_keys=["research_facts", "research_inaccuracies", "research_shocking"],
+        )
         facts_out    = data.get("research_facts", [])
         wrong_out    = data.get("research_inaccuracies", [])
         shocking_out = data.get("research_shocking", [])
@@ -873,7 +891,12 @@ Respond with valid JSON only, no markdown, no explanation."""
 
     try:
         raw  = _ai_call(prompt, temperature=0.1, max_tokens=1500, json_mode=False)
-        data = safe_json_parse(raw, fallback={})
+        data = normalize_ai_json_response(
+            raw,
+            required_keys=["is_based_on_true_story", "real_people", "fictional_characters",
+                           "real_vs_show", "time_period", "real_locations"],
+            list_keys=["real_people", "fictional_characters", "real_vs_show", "real_locations"],
+        )
         rp  = data.get("real_people", [])
         fc  = data.get("fictional_characters", [])
         rvs = data.get("real_vs_show", [])
@@ -883,14 +906,15 @@ Respond with valid JSON only, no markdown, no explanation."""
         print("[Research] extract_real_vs_fiction: empty data — using default structure")
     except Exception as e:
         print(f"[Research] extract_real_vs_fiction failed: {e}")
-        return {
-            "is_based_on_true_story": True,
-            "real_people": [],
-            "fictional_characters": [],
-            "real_vs_show": [],
-            "time_period": "",
-            "real_locations": [],
-        }
+
+    return {
+        "is_based_on_true_story": True,
+        "real_people": [],
+        "fictional_characters": [],
+        "real_vs_show": [],
+        "time_period": "",
+        "real_locations": [],
+    }
 
 
 # ── Deep research on a specific series ─────────────────────
@@ -1098,8 +1122,16 @@ Return ONLY valid JSON."""
 
     try:
         raw  = _ai_call(prompt, temperature=0.1, max_tokens=2000)
-        info = safe_json_parse(raw, fallback=None)
-        if not info:
+        info = normalize_ai_json_response(
+            raw,
+            required_keys=["real_person", "birth_date", "death_date", "nationality",
+                           "network", "premiere_year", "series_name", "series_type",
+                           "real_facts", "how_show_inspired", "shocking_real_facts",
+                           "what_happened_after", "real_people_in_show", "historical_context"],
+            list_keys=["real_facts", "how_show_inspired", "shocking_real_facts",
+                       "user_discovery_expanded"],
+        )
+        if not any(info.get(k) for k in ["real_facts", "series_name", "real_person"]):
             print("[Fallback] Combined extraction returned empty — using DuckDuckGo fallback")
             return research_series_duckduckgo(topic)
         print(f"[Research] Combined research complete: {topic}")

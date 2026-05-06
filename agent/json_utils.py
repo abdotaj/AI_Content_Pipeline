@@ -5,9 +5,10 @@
 # handling so individual callers never crash on a bad response.
 #
 # Public API:
-#   safe_json_parse(text, fallback=None) -> dict | list | any
-#   is_valid_json_response(text)         -> bool
-#   strip_markdown_fences(text)          -> str
+#   safe_json_parse(text, fallback=None)                         -> dict | list | any
+#   normalize_ai_json_response(text, required_keys, list_keys)   -> dict
+#   is_valid_json_response(text)                                 -> bool
+#   strip_markdown_fences(text)                                  -> str
 
 import json
 import re
@@ -84,3 +85,49 @@ def safe_json_parse(text, fallback=None):
         print(f"[JSON] Parse failed ({e}) — using fallback")
         print(f"[JSON] Raw (first 200 chars): {text[:200]!r}")
         return fallback
+
+
+def normalize_ai_json_response(text, required_keys=None, list_keys=None):
+    """
+    Full normalization layer for structured AI responses.
+
+    1. Parse safely via safe_json_parse (handles None, HTML, fences, bad JSON).
+    2. Ensure result is a dict — if AI returned a list or primitive, reset to {}.
+    3. Guarantee every key in required_keys exists (sets missing ones to None).
+    4. Coerce any field in list_keys from string/None to list:
+       - string  -> [string]   (OpenAI sometimes collapses arrays during fallback)
+       - None    -> []
+       - already a list -> unchanged
+
+    Args:
+        text:          Raw AI response string.
+        required_keys: Iterable of key names that must exist in the result.
+        list_keys:     Iterable of key names whose values must be lists.
+
+    Returns:
+        A dict, always. Never raises.
+    """
+    data = safe_json_parse(text, fallback={})
+
+    if not isinstance(data, dict):
+        print(f"[JSON] normalize: top-level value is {type(data).__name__}, not dict — resetting")
+        data = {}
+
+    if required_keys:
+        for key in required_keys:
+            data.setdefault(key, None)
+
+    if list_keys:
+        for key in list_keys:
+            val = data.get(key)
+            if val is None:
+                data[key] = []
+            elif isinstance(val, str):
+                # OpenAI collapses single-element arrays to strings in some fallback modes
+                print(f"[JSON] normalize: '{key}' was a string — wrapping in list")
+                data[key] = [val]
+            elif not isinstance(val, list):
+                # Any other scalar (int, bool, etc.) — wrap it
+                data[key] = [val]
+
+    return data

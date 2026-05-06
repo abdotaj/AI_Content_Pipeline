@@ -15,6 +15,7 @@ from agents.entity_guard import (
     sanitize_script,
     validate_entity_consistency,
 )
+from agents.json_utils import safe_json_parse, is_valid_json_response, normalize_ai_json_response
 
 _groq = Groq(api_key=GROQ_API_KEY)
 
@@ -309,11 +310,10 @@ def _ai_script_call(prompt: str, max_tokens: int = 1000,
     """Route script calls by quality tier.
 
     premium=True  → OpenAI gpt-4o (primary) → Groq fallback  — long-form sections
-    premium=False → Groq (primary) → OpenAI fallback — cheap helpers
-                    On Groq rate limit, fallback upgrades to gpt-4o automatically.
+    premium=False → Groq (primary) → OpenAI gpt-4o-mini fallback — cheap helpers
     """
     import requests as _req
-    global _OPENAI_QUOTA_EXCEEDED, _GROQ_RATE_LIMITED
+    global _OPENAI_QUOTA_EXCEEDED
 
     if premium:
         # ── Premium path: OpenAI gpt-4o → Groq fallback ─────────────────────
@@ -388,6 +388,46 @@ def _ai_script_call(prompt: str, max_tokens: int = 1000,
             print(f'[Script] OpenAI {oai_model} failed: {e}')
 
     return ""
+
+
+def expand_section(existing_text: str, missing_words: int,
+                   system_prompt: str | None = None) -> str:
+    """
+    Append targeted new content to an under-length section.
+
+    Cheaper than a full section regeneration: sends only the existing text +
+    a short instruction, requests ~missing_words of new prose, and appends it.
+    Replaces the three-attempt retry + continuation loop for undersized sections.
+
+    Returns the original text unchanged if the expansion produces nothing useful.
+    """
+    target = max(missing_words, 80)
+    prompt = (
+        f"Expand the following documentary section by approximately {target} words. "
+        f"Add new specific details, real names, dates, or narrative depth. "
+        f"Do NOT repeat, summarise, or restate anything already written. "
+        f"Write ONLY the new continuation text — do not include the original section.\n\n"
+        f"EXISTING SECTION:\n{existing_text}"
+    )
+    try:
+        continuation = _ai_script_call(
+            prompt,
+            max_tokens=min(target * 2 + 100, 900),
+            temperature=0.75,
+            system_prompt=system_prompt or _SCRIPT_SYSTEM_PROMPT,
+            premium=True,
+        )
+        if not continuation or clean_word_count(continuation) < 30:
+            print("[Script] expand_section: expansion too short — keeping original")
+            return existing_text
+        result  = existing_text.rstrip() + "\n\n" + continuation.strip()
+        added   = clean_word_count(continuation)
+        total   = clean_word_count(result)
+        print(f"[Script] expand_section: +{added} words added (total {total})")
+        return result
+    except Exception as e:
+        print(f"[Script] expand_section failed: {e} — keeping original")
+        return existing_text
 
 
 # ============================================================
@@ -553,7 +593,7 @@ def pick_best_hook(script: str) -> str:
                 _feedback_prompt = (
                     base_prompt
                     + f"\n\nPREVIOUS BEST HOOK scored {best_score}/10:\n{best_hook}\n\n"
-                    + "Write 3 completely different hooks that score higher. "
+                    + f"Write 3 completely different hooks that score higher. "
                     + "Each must include a real name (person or place) or a concrete crime detail. "
                     + "Make them more disturbing and more specific. "
                     + "Do NOT use: 'what drove', 'someone', 'a killer', 'one man', 'a person'."
@@ -1113,9 +1153,13 @@ Return ONLY this JSON with no extra text:
   "thumbnail_text": "4-word thumbnail text"
 }}"""
 
-    meta = json.loads(_ai_script_call(part2_prompt, max_tokens=600, temperature=0.3, json_mode=True).strip())
+    meta = normalize_ai_json_response(
+        _ai_script_call(part2_prompt, max_tokens=600, temperature=0.3, json_mode=True),
+        required_keys=["title", "hook", "on_screen_texts", "caption", "hashtags", "thumbnail_text"],
+        list_keys=["on_screen_texts"],
+    )
     script_data = {
-        "title":           meta.get("title", f"Shopmart: {topic['topic']}"),
+        "title":           meta.get("title") or f"Shopmart: {topic['topic']}",
         "hook":            meta.get("hook", ""),
         "script":          script_text,
         "on_screen_texts": meta.get("on_screen_texts", []),
@@ -1196,7 +1240,10 @@ def load_queued_part2() -> dict | None:
     if not queue_path.exists():
         return None
     try:
-        entry = json.loads(queue_path.read_text(encoding="utf-8"))
+        entry = safe_json_parse(queue_path.read_text(encoding="utf-8"), fallback=None)
+        if not entry:
+            print("[Script] Part 2 queue file is empty or invalid — skipping")
+            return None
         queue_path.unlink()
         print(f"[Script] Loaded queued Part 2: {entry.get('topic', '')}")
         return entry
@@ -1397,11 +1444,14 @@ def _write_documentary_script(topic: dict, research: dict, part_number: int | No
         f'\nEnd with: "Follow Dark Crime Decoded for stories Hollywood has not told yet."'
     )
 
+    _doc_active_entity = build_active_entity(name) if is_single_subject(name) else {}
+    _doc_entity_lock   = entity_lock_instruction(_doc_active_entity)
+
     prompt = f"""You are a documentary scriptwriter covering under-reported world events.
 Write a 1800-2000 word documentary script about: {name}{part_label}
 
 This is a DOCUMENTARY style — no movie or series exists for this topic.
-
+{_doc_entity_lock}
 VERIFIED FACTS:
 {facts}
 
@@ -1485,12 +1535,16 @@ angle_content: 2-3 sentences of specific detail to build the chapter around"""
 
     try:
         result = _ai_script_call(prompt, max_tokens=350, temperature=0.85, json_mode=True)
-        data = json.loads(result.strip())
-        if all(k in data for k in ('angle_title', 'angle_hook', 'angle_content')):
+        data   = normalize_ai_json_response(
+            result,
+            required_keys=["angle_title", "angle_hook", "angle_content"],
+        )
+        if all(data.get(k) for k in ('angle_title', 'angle_hook', 'angle_content')):
             print(f"[Script] Untold angle: {data['angle_title']}")
             return data
+        print("[Fallback] Angle generation returned incomplete data — using default angle")
     except Exception as e:
-        print(f"[Script] Angle generation failed: {e}")
+        print(f"[Fallback] Angle generation failed: {e} — using default angle")
 
     return {
         "angle_title": f"The Hidden Truth Behind {topic}",
@@ -1556,6 +1610,10 @@ Series/Movie: {series} ({stype})
 Real person: {research.get('real_person', name)}
 Key facts: {(research.get('research_facts') or research.get('what_show_got_right', []))[:3]}
 {_show_chars_block}{_real_people_block}{_chars_block}{_rvs_block}{_time_loc}"""
+
+    # ── Entity guard setup ────────────────────────────────────────────────────
+    _active_entity  = build_active_entity(name) if is_single_subject(name) else {}
+    _entity_lock    = entity_lock_instruction(_active_entity)
 
     # Full character-coverage instruction — belongs ONLY in Chapter 3
     _ch3_mandatory = _mandatory_instruction
@@ -1629,67 +1687,36 @@ Key facts: {(research.get('research_facts') or research.get('what_show_got_right
         print(f"[Script] Section {call_num} ({label}): {real} real words {emoji} "
               f"(target {min_w}–{max_w}, raw {raw})")
 
-        # Track best across all attempts
-        best_result, best_real = result, real
-
-        # First retry if below minimum
-        if best_real < min_w:
-            print(f"[Script] Section {call_num}: below minimum — retrying once")
-            time.sleep(4)
-            retry = _ai_script_call(prompt, max_tokens=_max_tok,
-                                     system_prompt=_SCRIPT_SYSTEM_PROMPT, premium=True)
-            if retry:
-                r_real = clean_word_count(retry)
-                r_raw  = len(retry.split())
-                emoji2 = "✅" if r_real >= min_w else "⚠️"
-                print(f"[Script] Section {call_num} retry: {r_real} real words {emoji2} "
-                      f"(raw {r_raw})")
-                if r_real > best_real:
-                    best_result, best_real = retry, r_real
-
-        # Third attempt with explicit detail instruction if still below minimum
-        if best_real < min_w:
-            print(f"[Script] Section {call_num}: still below {min_w}w — 3rd attempt with detail instruction")
-            time.sleep(4)
-            _expand_prompt = (
-                prompt
-                + f"\n\nCRITICAL: Previous attempts produced only {best_real} words — you need at least {min_w}."
-                + " Add more specific examples, names, dates, and narrative detail to every point."
-                + " Do not summarize or skip anything — expand each sentence into a full paragraph."
-            )
-            third = _ai_script_call(_expand_prompt, max_tokens=_max_tok + 500,
-                                     system_prompt=_SCRIPT_SYSTEM_PROMPT, premium=True)
-            if third:
-                t_real = clean_word_count(third)
-                emoji3 = "✅" if t_real >= min_w else "⚠️"
-                print(f"[Script] Section {call_num} 3rd attempt: {t_real} real words {emoji3}")
-                if t_real > best_real:
-                    best_result, best_real = third, t_real
-
-        result, real = best_result, best_real
-
-        # Fix 2: hard enforcement — if still below min after 3 attempts, append continuation
+        # If below minimum: targeted expansion instead of full section regeneration.
+        # expand_section() sends only the existing text + a short gap-fill instruction,
+        # replacing the old 3-attempt retry + continuation loop (3-4x cheaper).
         if real < min_w:
-            print(f"[Script] Section {call_num}: STILL below {min_w}w after 3 attempts — appending continuation")
-            _cont_prompt = (
-                f"Continue this section with 2 more detailed paragraphs expanding on the same topic, "
-                f"adding specific names, dates, and events. Do not repeat what was already said.\n\n"
-                f"CURRENT TEXT:\n{result}"
-            )
-            try:
-                continuation = _ai_script_call(_cont_prompt, max_tokens=800,
-                                                system_prompt=_SCRIPT_SYSTEM_PROMPT, premium=True)
-                if continuation:
-                    result = result.rstrip() + "\n\n" + continuation.strip()
-                    real = clean_word_count(result)
-                    print(f"[Script] Section {call_num} after continuation: {real} real words")
-            except Exception as _ce:
-                print(f"[Script] Section {call_num} continuation failed: {_ce}")
+            missing = min_w - real
+            print(f"[Script] Section {call_num}: {real}w < {min_w}w — "
+                  f"expanding by ~{missing} words via expand_section")
+            expanded = expand_section(result, missing)
+            exp_real = clean_word_count(expanded)
+            if exp_real > real:
+                result, real = expanded, exp_real
+                emoji = "✅" if real >= min_w else "⚠️"
+                print(f"[Script] Section {call_num} after expansion: {real} real words {emoji}")
+            else:
+                print(f"[Script] Section {call_num}: expansion unchanged — keeping {real}w")
 
         # Hard cap per section to stop runaway outputs from pushing total runtime.
         if real > max_w:
             result = _trim_plain_text_to_words(result, max_w)
             print(f"[Script] Section {call_num} trimmed to max {max_w} words")
+
+        # Entity contamination guard — sanitise & warn; do not block on single mentions
+        if _active_entity:
+            passed, offending = validate_entity_consistency(result, _active_entity)
+            if not passed:
+                result = sanitize_script(result, _active_entity)
+                if offending:
+                    print(f"[EntityGuard] Section {call_num} sanitised — "
+                          f"{len(offending)} offending line(s) removed")
+
         return result
 
     sections: list[str] = []
@@ -1747,15 +1774,19 @@ Return ONLY valid JSON, no explanation:
 {{"ch1": ["...", "..."], "ch2": ["...", "...", "..."], "ch3": ["...", "...", "...", "..."], "ch4": ["...", "...", "..."], "ch5": ["...", "..."]}}"""
 
         try:
-            raw = _ai_script_call(_outline_prompt, max_tokens=900, json_mode=True, temperature=0.4)
-            data = json.loads(raw.strip())
-            if all(k in data for k in ("ch1", "ch2", "ch3", "ch4", "ch5")):
-                total = sum(len(v) for v in data.values())
+            raw  = _ai_script_call(_outline_prompt, max_tokens=900, json_mode=True, temperature=0.4)
+            data = normalize_ai_json_response(
+                raw,
+                required_keys=["ch1", "ch2", "ch3", "ch4", "ch5"],
+                list_keys=["ch1", "ch2", "ch3", "ch4", "ch5"],
+            )
+            if any(data.get(k) for k in ("ch1", "ch2", "ch3", "ch4", "ch5")):
+                total = sum(len(data.get(k) or []) for k in ("ch1","ch2","ch3","ch4","ch5"))
                 print(f"[Script] Master outline: {total} unique facts pre-assigned across 5 chapters")
                 return data
-            print("[Script] Master outline: incomplete keys — proceeding without outline")
+            print("[Fallback] Master outline returned empty — proceeding without pre-assignment")
         except Exception as e:
-            print(f"[Script] Master outline failed ({e}) — proceeding without outline")
+            print(f"[Fallback] Master outline failed ({e}) — proceeding without outline")
         return {}
 
     _outline = _generate_master_outline()
@@ -1776,7 +1807,7 @@ Return ONLY valid JSON, no explanation:
 
     section_prompts = [
         # ── Chapter 1: Hook Intro ─────────────────────────────────────────────
-        lambda: f"""{_topic_context}
+        lambda: f"""{_topic_context}{_entity_lock}
 Write CHAPTER 1 — OPENING ATMOSPHERE for a documentary about {name}.
 
 YOUR EXCLUSIVE JOB in this chapter:
@@ -1802,7 +1833,7 @@ Write flowing documentary narration — no lists, no bullet points, paragraphs o
 {_section_instruction(300, 380, False)}""",
 
         # ── Chapter 2: Untold Angle ───────────────────────────────────────────
-        lambda: f"""{_topic_context}
+        lambda: f"""{_topic_context}{_entity_lock}
 Write CHAPTER 2 — THE UNTOLD ANGLE for a documentary about {name}.
 
 YOUR EXCLUSIVE JOB in this chapter:
@@ -1829,7 +1860,7 @@ PREVIOUS CHAPTER (context only — do NOT repeat anything from it):
 {sections[0]}""",
 
         # ── Chapter 3: The Real Story ─────────────────────────────────────────
-        lambda: f"""{_topic_context}{_ch3_mandatory}
+        lambda: f"""{_topic_context}{_ch3_mandatory}{_entity_lock}
 Write CHAPTER 3 — THE REAL STORY for a documentary about {name}.
 
 YOUR EXCLUSIVE JOB in this chapter:
@@ -1859,7 +1890,7 @@ PREVIOUS CHAPTERS (context only — do NOT repeat anything from them):
 {sections[1]}""",
 
         # ── Chapter 4: Show vs Reality ────────────────────────────────────────
-        lambda: f"""{_topic_context}
+        lambda: f"""{_topic_context}{_entity_lock}
 Write CHAPTER 4 — SHOW VS REALITY for a documentary about {name}.
 
 YOUR EXCLUSIVE JOB in this chapter:
@@ -1895,7 +1926,7 @@ PREVIOUS CHAPTERS (context only — do NOT repeat anything from them):
 {sections[2]}""",
 
         # ── Chapter 5: Conclusion ─────────────────────────────────────────────
-        lambda: f"""{_topic_context}
+        lambda: f"""{_topic_context}{_entity_lock}
 Write CHAPTER 5 — FINAL INSIGHT for a documentary about {name}.
 
 YOUR EXCLUSIVE JOB in this chapter:
@@ -2232,6 +2263,42 @@ RULES:
     return full_script
 
 
+def _emergency_backup_script(topic_name: str, series_label: str) -> str:
+    """
+    Generate a minimal locally-built script when all AI providers have failed.
+    Returns enough content for the pipeline to produce a video without crashing.
+    Logs clearly so the operator knows a backup was used.
+    """
+    print(f"[Fallback] Local emergency script used for: {topic_name}")
+    return (
+        f"[SECTION: Introduction]\n"
+        f"The true story behind {topic_name} is one of the most remarkable in crime history. "
+        f"{series_label} brought this story to millions of viewers. "
+        f"But the real events were far more complex than any screen adaptation could capture. "
+        f"Tonight, we explore what really happened.\n\n"
+
+        f"[SECTION: The Real Story]\n"
+        f"The story of {topic_name} begins long before {series_label} first aired. "
+        f"Real events unfolded over years, shaping the narrative that would later captivate audiences worldwide. "
+        f"The documented history reveals details that went far beyond what viewers saw on screen. "
+        f"Key figures involved left lasting marks on history that are still felt today.\n\n"
+
+        f"[SECTION: Show vs Reality]\n"
+        f"Here is what {series_label} got RIGHT: "
+        f"The core story of {topic_name} was faithfully represented in broad strokes. "
+        f"The emotional truth of the events was captured with considerable accuracy. "
+        f"The major turning points were portrayed in ways that matched the historical record.\n\n"
+        f"Here is what they completely changed or left out: "
+        f"Many supporting figures were omitted or combined into composite characters. "
+        f"The timeline was compressed significantly to fit the screen format. "
+        f"Certain documented details were altered for dramatic effect.\n\n"
+
+        f"[SECTION: Conclusion]\n"
+        f"The real story of {topic_name} remains one of the most significant in its field. "
+        f"Follow Dark Crime Decoded for more real stories behind your favourite crime series and films."
+    )
+
+
 def _write_darkcrimed_script(topic: dict) -> dict:
     """Investigative documentary script for Dark Crime Decoded."""
     research = topic.get("research", {})
@@ -2384,10 +2451,13 @@ The host found something most viewers don't know — celebrate that discovery.
             f"Include what the show got right vs what really happened.\n"
         )
 
+    _dc_active_entity = build_active_entity(topic["topic"]) if is_single_subject(topic["topic"]) else {}
+    _dc_entity_lock   = entity_lock_instruction(_dc_active_entity)
+
     part1_prompt = f"""You are a top true crime documentary writer for YouTube.
 Write a 1800-2500 word 12-16 minute documentary script about: {topic['topic']}
 The related series/movie is: {series_label}
-
+{_dc_entity_lock}
 NARRATION STYLE: Write like Morgan Freeman narrating a documentary. Flowing paragraphs, no lists, no bullet points. Minimum 3 sentences per paragraph. Use transition phrases like "But what happened next shocked everyone...", "What nobody knew at the time was...", "Years later, the truth finally emerged..."
 
 COVER ALL CHARACTERS: Dedicate at least one full paragraph to EACH major character. Never focus on just one person.
@@ -2544,21 +2614,39 @@ Do not summarize — give full detailed information."""
                 break
             print(f"[Script] WARNING: Too short ({words} real words) — retrying...")
 
+    # ── Emergency backup: generate minimal local script if all AI calls failed ─
+    if not script_text or clean_word_count(script_text) < 200:
+        print(f"[Fallback] All AI providers returned empty — generating emergency backup script")
+        script_text = _emergency_backup_script(topic["topic"], series_label)
+
     # Final hard cap for YouTube-safe runtime in draft/publish workflows.
     script_text = _cap_script_max_words(script_text, LONG_SCRIPT_MAX_WORDS)
 
+    # ── Entity contamination guard ────────────────────────────────────────────
+    if _dc_active_entity:
+        _eg_passed, _eg_offending = validate_entity_consistency(script_text, _dc_active_entity)
+        if not _eg_passed:
+            print(f"[EntityGuard] Long script contaminated — sanitising {len(_eg_offending)} paragraph(s)")
+            script_text = sanitize_script(script_text, _dc_active_entity)
+
     # ── Topic anchor validation: must mention real person + show ─────────────
     if not _validate_on_topic(script_text, topic["topic"], series_label):
-        print(f"[Script] Long script missing topic anchors — regenerating once")
-        _anchor_p = part1_prompt + (
-            f"\n\nCRITICAL: You MUST explicitly name '{topic['topic']}' (real person) "
-            f"and '{series_label}' (the show/movie) and explain the connection. "
-            "Do NOT write generic crime content."
-        )
-        _anch = validate_script(_ai_script_call(_anchor_p, max_tokens=6000, temperature=0.85).strip())
-        if _anch and clean_word_count(_anch) >= LONG_SCRIPT_MIN_WORDS:
-            script_text = _cap_script_max_words(_anch, LONG_SCRIPT_MAX_WORDS)
-            print(f"[Script] Topic-anchored script: {clean_word_count(script_text)} words")
+        print(f"[Script] Long script missing topic anchors — attempting one regeneration")
+        try:
+            _anchor_p = part1_prompt + (
+                f"\n\nCRITICAL: You MUST explicitly name '{topic['topic']}' (real person) "
+                f"and '{series_label}' (the show/movie) and explain the connection. "
+                "Do NOT write generic crime content."
+            )
+            _anch_raw = _ai_script_call(_anchor_p, max_tokens=6000, temperature=0.85)
+            _anch = validate_script(_anch_raw.strip()) if _anch_raw else ""
+            if _anch and clean_word_count(_anch) >= LONG_SCRIPT_MIN_WORDS:
+                script_text = _cap_script_max_words(_anch, LONG_SCRIPT_MAX_WORDS)
+                print(f"[Script] Topic-anchored script: {clean_word_count(script_text)} words")
+            else:
+                print(f"[Fallback] Topic-anchor regen failed or too short — keeping original script")
+        except Exception as _ae:
+            print(f"[Fallback] Topic-anchor regen raised exception ({_ae}) — keeping original script")
 
     # ── PART 2: Generate metadata only (title, hook, captions, etc.) ────────
     _series_info    = get_series_for_person(topic["topic"])
@@ -2594,7 +2682,11 @@ Return ONLY this JSON with no extra text:
   "thumbnail_text": "4-word thumbnail text"
 }}"""
 
-    meta = json.loads(_ai_script_call(part2_prompt, max_tokens=1000, temperature=0.3, json_mode=True).strip())
+    meta = normalize_ai_json_response(
+        _ai_script_call(part2_prompt, max_tokens=1000, temperature=0.3, json_mode=True),
+        required_keys=["title", "hook", "on_screen_texts", "caption", "hashtags", "thumbnail_text"],
+        list_keys=["on_screen_texts"],
+    )
     _series_name = _series_info[0] if _series_info else _related_series
     _fallback_title = (
         f"The Real Story Behind {_series_name}: {topic['topic']}'s True Life | Dark Crime Decoded"
@@ -3240,112 +3332,6 @@ def translate_long_script_arabic(english_text: str, topic: str = "") -> str:
     return result
 
 
-def rewrite_arabic_expanded(text: str, topic: str = "") -> str:
-    """
-    Rewrite English script as expanded Arabic storytelling (NOT literal translation).
-    Adds narrative depth, dramatic pauses, and cinematic flow.
-    Enforces minimum 0.9× English word count — calls _expand_arabic_script_to_min if needed.
-    Falls back to try_translate_arabic if OpenAI is unavailable.
-    """
-    import os as _os
-    import requests as _req
-
-    en_words = len(text.split())
-    min_ar_words = max(int(en_words * 1.0), 100)
-
-    def _build_rewrite_prompt(strong: bool = False) -> str:
-        extra = (
-            "\n\nتحذير: المحاولة السابقة كانت قصيرة جداً. "
-            "يجب توسيع كل فقرة وإضافة مزيد من التفاصيل والعمق السردي."
-        ) if strong else ""
-        return f"""أعد كتابة النص التالي بالعربية بأسلوب قصصي سينمائي.
-
-هذا ليس ترجمةً حرفية — بل إعادة كتابة وتوسيع.
-
-القواعد الحاسمة:
-1. لا تختصر أي شيء — وسّع كل فقرة بتفاصيل وعمق سردي
-2. أضف توقفات طبيعية باستخدام "..." في المواضع المناسبة
-3. استخدم أسلوباً دراماتيكياً ومشوّقاً وسينمائياً
-4. احتفظ بجميع الأحداث والتواريخ والأسماء والأرقام
-5. جمل قصيرة وواضحة مناسبة للإلقاء الصوتي
-6. النص العربي يجب أن يكون {min_ar_words} كلمة على الأقل
-7. RSF = قوات الدعم السريع (لا تستخدم مراسلون بلا حدود)
-8. احتفظ بـ "Dark Crime Decoded" بالإنجليزية
-9. الذكر الأول لـ RSF: "قوات الدعم السريع (RSF)"
-10. احتفظ بأسماء المسلسلات والأفلام بالإنجليزية
-11. هذا توثيق جرائم حقيقي — الأسلوب جاد ومحترف{extra}
-
-عدد كلمات الإنجليزية: {en_words}
-يجب أن يكون نصك العربي {min_ar_words} كلمة على الأقل.
-
-النص الإنجليزي:
-{text}
-
-أعد النص العربي الكامل فقط. بدون شرح أو ملاحظات."""
-
-    api_key = _os.getenv("OPENAI_API_KEY", "").strip()
-    result = None
-
-    if api_key:
-        for attempt, strong in enumerate([False, True]):
-            try:
-                r = _req.post(
-                    "https://api.openai.com/v1/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {api_key}",
-                        "Content-Type": "application/json",
-                    },
-                    json={
-                        "model": "gpt-4o-mini",
-                        "messages": [
-                            {
-                                "role": "system",
-                                "content": (
-                                    "أنت كاتب قصصي عربي محترف متخصص في الجريمة الحقيقية. "
-                                    "تُعيد كتابة النصوص بأسلوب سردي سينمائي عربي أصيل. "
-                                    "لا تترجم حرفياً — بل أعد الصياغة بعمق وتشويق. "
-                                    "جملك قصيرة وواضحة مناسبة للإلقاء الصوتي."
-                                ),
-                            },
-                            {"role": "user", "content": _build_rewrite_prompt(strong=strong)},
-                        ],
-                        "max_tokens": 6000,
-                        "temperature": 0.55,
-                    },
-                    timeout=90,
-                )
-                if r.status_code == 200:
-                    candidate = _fix_arabic(r.json()["choices"][0]["message"]["content"].strip())
-                    ar_words = len(candidate.split())
-                    ratio = ar_words / max(en_words, 1)
-                    print(f"[Script] Rewrite attempt {attempt + 1}: EN={en_words}w | AR={ar_words}w | ratio={ratio:.2f}")
-                    if en_words < 80 or ratio >= 0.9:
-                        result = candidate
-                        break
-                    if attempt == 0:
-                        print("[Script] Arabic rewrite too short — retrying with stronger instruction")
-                        continue
-                    result = candidate
-                    break
-            except Exception as e:
-                print(f"[Script] OpenAI rewrite attempt {attempt + 1} failed: {e}")
-                break
-
-    if not result:
-        print("[Script] OpenAI rewrite unavailable — falling back to translation chain")
-        result = try_translate_arabic(text, topic=topic)
-
-    if result:
-        result = _fix_arabic(result)
-        ar_words = len(result.split())
-        ratio = ar_words / max(en_words, 1)
-        if en_words >= 80 and ratio < 0.9:
-            print(f"[Script] Arabic ratio {ratio:.2f} < 0.9 — expanding to match English length")
-            result = _expand_arabic_script_to_min(result, target_min=min_ar_words)
-
-    return result or text
-
-
 def translate_to_arabic(text: str) -> str:
     """Public entry point — chunked for long scripts, otherwise single call with fallback chain."""
     if clean_word_count(text) > 1000:
@@ -3395,8 +3381,7 @@ def _to_arabic_section_name(name: str) -> str:
 
 def _translate_script_preserve_sections(english_script_text: str) -> str:
     """
-    Rewrite sectioned script into Arabic while preserving normalized markers.
-    Uses rewrite_arabic_expanded (not literal translation) for each section body.
+    Translate sectioned script while preserving normalized markers.
     Output marker format is always: [SECTION: <Arabic Label>]
     """
     sections = _split_english_sectioned_script(english_script_text)
@@ -3405,7 +3390,7 @@ def _translate_script_preserve_sections(english_script_text: str) -> str:
     translated_parts: list[str] = []
     for name, content in sections:
         ar_name = _to_arabic_section_name(name)
-        ar_body = rewrite_arabic_expanded(content)
+        ar_body = translate_to_arabic(content)
         translated_parts.append(f"[SECTION: {ar_name}]\n{ar_body.strip()}")
     return "\n\n".join(translated_parts).strip()
 
@@ -3555,10 +3540,13 @@ def write_short_script(en_long_script: dict) -> dict:
         "Open with the most shocking fact or unanswered question from the story. No setup. Drop straight in.\n"
     )
 
+    _short_active_entity = build_active_entity(topic) if is_single_subject(topic) else {}
+    _short_entity_lock   = entity_lock_instruction(_short_active_entity)
+
     prompt = f"""You are writing a spoken voiceover for a 60-90 second crime documentary short video.
 
 TASK: Read the SOURCE SCRIPT below. Find the single most gripping moment — a shocking reveal, confession, twist, or hidden truth. Rewrite it as a standalone viral voiceover. Do NOT summarize the whole story. Tell one moment, fast and hard.
-
+{_short_entity_lock}
 TOPIC LOCK — this short is specifically about:
 Topic: {topic}
 {_series_line}{_niche_line}{_chars_line}{f"Angle: {_angle_title}" if _angle_title else ""}
@@ -3623,6 +3611,13 @@ Write ONLY the spoken words. No headings. No labels. No explanations."""
     if clean_word_count(script_text) < 100 and best_text:
         script_text = best_text
         print(f"[Script] Using best result: {clean_word_count(script_text)} words")
+
+    # ── Entity contamination guard ────────────────────────────────────────────
+    if _short_active_entity:
+        _seg_passed, _seg_offending = validate_entity_consistency(script_text, _short_active_entity)
+        if not _seg_passed:
+            print(f"[EntityGuard] Short script contaminated — sanitising")
+            script_text = sanitize_script(script_text, _short_active_entity)
 
     # ── Topic lock validation: must mention show name + real person ───────────
     _tl_series = series_name or niche
