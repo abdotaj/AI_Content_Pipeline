@@ -61,17 +61,44 @@ from agent.script_agent   import write_script, translate_script, generate_chapte
 from agent.video_agent    import create_video, ensure_music_assets, cut_best_short, load_all_content
 from agent.notify_agent   import (
     send_message, send_video_to_telegram, send_daily_report,
+    send_english_script_preview, send_arabic_script_preview, send_document,
 )
 from agent.publish_agent  import upload_to_youtube
 from pipelines.pipeline_config import SCRIPT_WORD_FLOOR, SCRIPT_WORD_MIN, WORDS_PER_MINUTE
+from pipelines.telegram_control import TelegramController, CANCEL_FLAG
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
+_ctrl: TelegramController | None = None
+
+
 def _log(stage: str, msg: str, level: str = "INFO") -> None:
-    ts  = datetime.datetime.now().strftime("%H:%M:%S")
-    tag = {"WARN": "WARN", "ERROR": "ERR ", "OK": "OK  "}.get(level, "INFO")
-    print(f"[{ts}][{tag}][{stage}] {msg}", flush=True)
+    ts   = datetime.datetime.now().strftime("%H:%M:%S")
+    tag  = {"WARN": "WARN", "ERROR": "ERR ", "OK": "OK  "}.get(level, "INFO")
+    line = f"[{ts}][{tag}][{stage}] {msg}"
+    print(line, flush=True)
+    if _ctrl is not None:
+        _ctrl.add_log(line)
+
+
+def _check_cancel(stage: str = "") -> None:
+    """Exit cleanly if /cancel was received via Telegram."""
+    if _ctrl is None or not _ctrl.is_cancelled():
+        return
+    note = f" during {stage}" if stage else ""
+    send_message(f"[FAST] Pipeline cancelled safely{note}.")
+    print(f"[FAST] Cancelled{note} — exiting.")
+    try:
+        from agent.video_agent import _kill_orphan_ffmpeg
+        _kill_orphan_ffmpeg()
+    except Exception:
+        pass
+    if _ctrl:
+        _ctrl.stop()
+    import gc as _gc
+    _gc.collect()
+    sys.exit(0)
 
 
 def _make_video(script_data: dict, video_id: str, stats: dict,
@@ -108,9 +135,13 @@ def get_duration(video_path: str) -> str:
 # ── Main entry point ─────────────────────────────────────────────────────────
 
 def run_pipeline() -> None:
+    global _ctrl
     t0    = time.time()
     today = datetime.date.today().isoformat()
     stats = {"generated": 0, "posted": 0, "skipped": 0, "errors": 0}
+
+    # Initialise Telegram controller (listener starts after topic is known)
+    _ctrl = TelegramController(mode="fast")
 
     print(f"\n{'='*60}")
     print(f"  [FAST PIPELINE] Dark Crime Decoded — {today}")
@@ -120,6 +151,7 @@ def run_pipeline() -> None:
     ensure_music_assets()
 
     # ── STEP 1: Auto-research one topic ──────────────────────────────────────
+    _ctrl.update_stage("Research", "auto-selecting topic")
     _log("Research", "Auto-selecting topic (no Telegram wait)")
     try:
         topics = research_topics(count=1)
@@ -139,21 +171,28 @@ def run_pipeline() -> None:
         send_message(f"[FAST] Fictional topic blocked: '{topic_text}'")
         return
 
+    # Topic confirmed — set in controller and start listener
+    _ctrl.set_topic(topic_text)
+    _ctrl.start()
+
     _log("Research", f"Topic: '{topic_text}'", "OK")
     send_message(f"[FAST PIPELINE] Topic: {topic_text}\n\nStarting fast generation...")
 
     series = topic_niche.split("behind")[-1].strip() if "behind" in topic_niche else topic_text
+    _ctrl.update_stage("Research", f"deep research: {series}")
     try:
         research = research_series(series, user_note=topic.get("user_note"))
         if research is None:
             research = {}
         research["real_person"] = topic_text
         topic["research"]       = research
+        _log("Research", "Deep research done", "OK")
     except Exception as e:
         _log("Research", f"research_series failed (non-fatal): {e}", "WARN")
         topic["research"] = {}
 
     # ── STEP 2: Scripts (EN + AR) ─────────────────────────────────────────────
+    _ctrl.update_stage("Scripts", "writing English script")
     _log("Scripts", "Writing English script")
     try:
         en_long = write_script(topic, language="english")
@@ -213,6 +252,35 @@ def run_pipeline() -> None:
     else:
         _log("Scripts", f"Length OK: {_en_wc} words (~{_est_min} min)", "OK")
 
+    # ── Send English script preview to Telegram ───────────────────────────────
+    _ctrl.set_latest_script(en_long)
+    _ctrl.update_stage("Scripts", "sending script preview")
+    try:
+        send_english_script_preview(en_long, label=f"[FAST] SCRIPT READY — {en_long.get('title','')}")
+        _log("Scripts", "English script sent to Telegram", "OK")
+    except Exception as _e:
+        _log("Scripts", f"Script preview (non-fatal): {_e}", "WARN")
+
+    # Upload full script as .txt document
+    _script_txt_path = f"output/fast_script_{today}.txt"
+    try:
+        os.makedirs("output", exist_ok=True)
+        with open(_script_txt_path, "w", encoding="utf-8") as _sf:
+            _sf.write(
+                f"TITLE: {en_long.get('title','')}\n"
+                f"TOPIC: {en_long.get('topic','')}\n"
+                f"WORDS: {_en_wc}  EST: ~{_est_min} min\n"
+                f"{'='*60}\n\n"
+                f"{en_long.get('script','')}"
+            )
+        send_document(_script_txt_path, caption=f"[FAST] Full script — {en_long.get('title','')[:80]}")
+        _log("Scripts", "Script .txt uploaded to Telegram", "OK")
+    except Exception as _e:
+        _log("Scripts", f"Script .txt upload (non-fatal): {_e}", "WARN")
+
+    _check_cancel("after script generation")
+
+    _ctrl.update_stage("Scripts", "translating to Arabic")
     try:
         ar_long = translate_script(en_long)
         ar_wc   = len(ar_long.get("script", "").split())
@@ -223,21 +291,31 @@ def run_pipeline() -> None:
         ar_long["angle_title"] = en_long.get("angle_title", "")
         ar_long["angle_hook"]  = en_long.get("angle_hook", "")
         _log("Scripts", "Arabic script done", "OK")
+        # Send Arabic preview
+        try:
+            send_arabic_script_preview(ar_long)
+        except Exception as _ae:
+            _log("Scripts", f"Arabic preview (non-fatal): {_ae}", "WARN")
     except Exception as e:
         traceback.print_exc()
         _log("Scripts", f"Arabic translation failed (non-fatal): {type(e).__name__}: {e}", "WARN")
         ar_long = dict(en_long)
         ar_long["language"] = "arabic"
 
+    _ctrl.update_stage("Scripts", "writing short scripts")
     try:
         _short_data = write_short_script(en_long)
         en_long["short_script_en"] = _short_data.get("short_script_en", "")
         ar_long["short_script_ar"] = _short_data.get("short_script_ar", "")
+        _log("Scripts", "Short scripts done", "OK")
     except Exception as e:
         traceback.print_exc()
         _log("Scripts", f"Short script failed (non-fatal): {type(e).__name__}: {e}", "WARN")
 
+    _check_cancel("after all scripts")
+
     # ── STEP 3: Content library (single attempt) ──────────────────────────────
+    _ctrl.update_stage("Media", "loading content library")
     _topic_for_media             = en_long.get("topic", "")
     gh_images, gh_videos, _, _  = load_all_content(_topic_for_media)
     user_images: list[dict]      = [{"path": p, "tags": [], "caption": os.path.basename(p)} for p in gh_images]
@@ -246,14 +324,22 @@ def run_pipeline() -> None:
         _log("Media", f"{len(gh_images)} images + {len(gh_videos)} videos loaded", "OK")
 
     # ── STEP 4: Generate 4 videos ─────────────────────────────────────────────
-    _log("VideoGen", "Generating EN + AR long + short videos")
-
+    _ctrl.update_stage("VideoGen", "rendering EN long video")
+    _log("VideoGen", "Rendering EN long video")
     en_long_id   = f"{today}_{uuid.uuid4().hex[:8]}_english_long"
-    ar_long_id   = f"{today}_{uuid.uuid4().hex[:8]}_arabic_long"
     en_long_path = _make_video(en_long, en_long_id, stats, user_images=user_images, user_videos=user_videos)
+
+    _check_cancel("after EN long render")
+
+    _ctrl.update_stage("VideoGen", "rendering AR long video")
+    _log("VideoGen", "Rendering AR long video")
+    ar_long_id   = f"{today}_{uuid.uuid4().hex[:8]}_arabic_long"
     ar_long_path = _make_video(ar_long, ar_long_id, stats, user_images=user_images, user_videos=user_videos)
 
+    _check_cancel("after AR long render")
+
     # Short clips: script-based if available, otherwise cut from long video
+    _ctrl.update_stage("VideoGen", "rendering EN short clip")
     en_short_path = ""
     ar_short_path = ""
 
@@ -267,6 +353,9 @@ def run_pipeline() -> None:
         shorts = cut_best_short(en_long_path, en_long)
         en_short_path = shorts[0]["path"] if shorts else ""
 
+    _check_cancel("after long video renders")
+
+    _ctrl.update_stage("VideoGen", "rendering short clips")
     _ar_short_script = ar_long.get("short_script_ar", "")
     if _ar_short_script:
         _ar_sid = f"{today}_{uuid.uuid4().hex[:8]}_arabic_short"
@@ -278,6 +367,7 @@ def run_pipeline() -> None:
         ar_short_path = shorts[0]["path"] if shorts else ""
 
     # ── STEP 5: Publish ───────────────────────────────────────────────────────
+    _ctrl.update_stage("Publish", "uploading to YouTube")
     _run_id       = os.getenv("GITHUB_RUN_ID", "")
     _repo         = os.getenv("GITHUB_REPOSITORY", "abdotaj/AI_Content_Pipeline")
     _artifact_url = f"https://github.com/{_repo}/actions/runs/{_run_id}" if _run_id else ""
@@ -351,6 +441,9 @@ def run_pipeline() -> None:
             mark_covered(series_name, en_long_id)
         except Exception:
             pass
+
+    _ctrl.update_stage("Done")
+    _ctrl.stop()
 
     send_daily_report(stats)
     _result = "SUCCESS" if stats["errors"] == 0 else f"PARTIAL ({stats['errors']} error(s))"

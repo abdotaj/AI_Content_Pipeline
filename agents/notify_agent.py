@@ -1037,3 +1037,26 @@ def send_daily_report(stats: dict) -> None:
         f"Errors: {stats.get('errors', 0)}"
     )
     send_message(msg)
+
+
+def send_document(file_path: str, caption: str = "") -> bool:
+    """Upload a local file to Telegram as a document attachment. Silent on failure."""
+    try:
+        with open(file_path, "rb") as fh:
+            r = requests.post(
+                f"{BASE_URL}/sendDocument",
+                data={
+                    "chat_id": TELEGRAM_CHAT_ID,
+                    "caption": caption[:1024] if caption else "",
+                },
+                files={"document": fh},
+                timeout=60,
+            )
+        if r.ok and r.json().get("ok"):
+            print(f"[Notify] Document sent: {os.path.basename(file_path)}")
+            return True
+        print(f"[Notify] Document send failed: {r.text[:200]}")
+        return False
+    except Exception as e:
+        print(f"[Notify] send_document failed: {e}")
+        return False
