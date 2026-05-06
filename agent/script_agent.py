@@ -317,7 +317,7 @@ def _groq_fallback(prompt: str, max_tokens: int, json_mode: bool,
                 temperature=0.7,
             )
             print(f"[Script] Groq {model} success")
-            return resp.choices[0].message.content
+            return resp.choices[0].message.content or ""
         except Exception as e:
             err = str(e).lower()
             is_rate_limit = (
@@ -682,6 +682,8 @@ _HOOK_GENERIC_PHRASES = [
 
 def _hook_is_generic(hook: str) -> bool:
     """Return True if hook contains banned generic phrases or lacks specifics."""
+    if not hook:
+        return True
     h = hook.lower()
     return any(phrase in h for phrase in _HOOK_GENERIC_PHRASES)
 
@@ -692,6 +694,8 @@ def _validate_hook_on_topic(hook: str, topic: str) -> bool:
     Rejects hooks that mention known criminals who are NOT the active topic,
     or hooks with no keyword overlap with the topic at all.
     """
+    if not hook:
+        return False
     if not topic:
         return True
     h_lower = hook.lower()
@@ -3140,7 +3144,7 @@ def _groq_clean_arabic(section_text: str) -> str:
         max_tokens=2000,
         temperature=0.4,
     )
-    return resp.choices[0].message.content.strip()
+    return (resp.choices[0].message.content or "").strip()
 
 
 def format_for_tts_arabic(text: str) -> str:
@@ -3271,7 +3275,7 @@ Return ONLY the Arabic translation. No explanations, no notes."""
         max_tokens=6000,
         temperature=0.3,
     )
-    return _fix_arabic(resp.choices[0].message.content.strip())
+    return _fix_arabic((resp.choices[0].message.content or "").strip())
 
 
 def try_translate_arabic(text: str, topic: str = "") -> str:
