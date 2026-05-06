@@ -2610,7 +2610,7 @@ The host found something most viewers don't know — celebrate that discovery.
         ]
         _rvf_fb_block += "SHOW CAST — cover EVERY character:\n" + "\n".join(sc_lines_fb) + "\n"
         char_names_fb = ", ".join(c['character'] for c in _sc_fb)
-        real_names_fb = ", ".join(c.get('based_on','?') for c in _sc_fb if c.get('based_on','').lower() not in ('null','none','various',''))
+        real_names_fb = ", ".join(c.get('based_on','?') for c in _sc_fb if safe_lower(c.get('based_on')) not in ('null','none','various',''))
         _mandatory_fb = (
             f"\nMANDATORY — THIS VIDEO IS ABOUT A TV SHOW BASED ON TRUE EVENTS:\n"
             f"You MUST cover ALL {len(_sc_fb)} main characters: {char_names_fb}\n"
@@ -3726,7 +3726,7 @@ def expand_arabic_runtime(ar_script: str, target_min: float, topic: str = "") ->
 
 def translate_script(en_script: dict) -> dict:
     """Translate an English script_data dict into Arabic with stable section markers."""
-    _topic_lower = en_script.get("topic", "").lower()
+    _topic_lower = safe_lower(en_script.get("topic"))
     _is_hemedti  = any(k in _topic_lower for k in ["hemedti", "حميدتي", "dagalo"])
 
     if _is_hemedti:

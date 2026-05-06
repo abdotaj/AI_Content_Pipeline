@@ -207,7 +207,7 @@ def _load_existing_outputs(today: str, topic: str) -> tuple:
     try:
         with open(manifest_path, encoding="utf-8") as _f:
             _d = json.load(_f)
-        if _d.get("topic", "").lower().strip() != topic.lower().strip():
+        if (_d.get("topic") or "").lower().strip() != (topic or "").lower().strip():
             return "", ""
         en = _d.get("videos", {}).get("en_long", "")
         ar = _d.get("videos", {}).get("ar_long", "")

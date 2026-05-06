@@ -1309,7 +1309,7 @@ def load_part2_images(topic: str) -> list[str]:
     try:
         with open(manifest_path, encoding="utf-8") as f:
             data = json.load(f)
-        if topic.lower() in data.get("topic", "").lower():
+        if topic.lower() in (data.get("topic") or "").lower():
             existing = [p for p in data.get("images", []) if os.path.exists(p)]
             print(f"[Image] Loaded {len(existing)} Part 2 images for {topic}")
             os.remove(manifest_path)

@@ -64,7 +64,7 @@ def upload_to_youtube(video_path: str, script_data: dict, token_file: str = None
 
     # Choose token file by language if not explicitly provided
     if token_file is None:
-        lang = script_data.get("language", "english").lower()
+        lang = (script_data.get("language") or "english").lower()
         token_file = _TOKEN_AR if lang == "arabic" else _TOKEN_EN
 
     print(f"[Publish] Starting YouTube upload: {video_path}")
@@ -321,7 +321,7 @@ def publish_video(video_path: str, script_data: dict,
     short_video_path can also be supplied via script_data['short_video_path'].
     """
     results = {}
-    lang = script_data.get("language", "english").lower()
+    lang = (script_data.get("language") or "english").lower()
 
     # ── Auto-upload long video to YouTube ────────────────────
     print(f"[Publish] Publishing {lang} long video to YouTube...")
