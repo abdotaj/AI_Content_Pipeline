@@ -300,15 +300,27 @@ def run_pipeline() -> None:
         ar_long = dict(en_long)
         ar_long["language"] = "arabic"
 
-    _ctrl.update_stage("Scripts", "writing short scripts")
+    # ── Promo short scripts (mandatory — these are the discovery funnel) ──────
+    # Shorts are promotional trailers that drive viewers to the full documentary.
+    # They are NOT optional extras.  If AI generation fails, the pipeline will
+    # still cut a short directly from the rendered long video.
+    _ctrl.update_stage("Scripts", "generating promo short scripts")
     try:
         _short_data = write_short_script(en_long)
-        en_long["short_script_en"] = _short_data.get("short_script_en", "")
-        ar_long["short_script_ar"] = _short_data.get("short_script_ar", "")
-        _log("Scripts", "Short scripts done", "OK")
+        _en_short_script_text = _short_data.get("short_script_en", "")
+        _ar_short_script_text = _short_data.get("short_script_ar", "")
+        en_long["short_script_en"] = _en_short_script_text
+        ar_long["short_script_ar"] = _ar_short_script_text
+        if _en_short_script_text:
+            _sw = len(_en_short_script_text.split())
+            _log("Scripts", f"Promo short scripts ready ({_sw}w EN)", "OK")
+        else:
+            _log("Scripts", "Short scripts empty — will cut from long video", "WARN")
     except Exception as e:
         traceback.print_exc()
-        _log("Scripts", f"Short script failed (non-fatal): {type(e).__name__}: {e}", "WARN")
+        _log("Scripts", f"Short script generation failed — will cut from rendered video: {type(e).__name__}: {e}", "WARN")
+        en_long.setdefault("short_script_en", "")
+        ar_long.setdefault("short_script_ar", "")
 
     _check_cancel("after all scripts")
 
@@ -336,33 +348,56 @@ def run_pipeline() -> None:
 
     _check_cancel("after AR long render")
 
-    # Short clips: script-based if available, otherwise cut from long video
-    _ctrl.update_stage("VideoGen", "rendering EN short clip")
+    # ── STEP 4c: Promo shorts (mandatory — EN + AR) ───────────────────────────
+    # Path A: render from promo script (best quality, full vertical format)
+    # Path B: fallback — cut strongest moment from the rendered long video
+    # Path B fires if Path A produces no file (script empty OR render failed)
     en_short_path = ""
     ar_short_path = ""
 
+    _ctrl.update_stage("VideoGen", "rendering EN promo short")
     _en_short_script = en_long.get("short_script_en", "")
     if _en_short_script:
+        _log("VideoGen", "Rendering EN promo short from script")
         _en_sid = f"{today}_{uuid.uuid4().hex[:8]}_english_short"
-        en_short_path = _make_video({**en_long, "script": _en_short_script},
-                                    _en_sid, stats,
-                                    user_images=user_images, user_videos=user_videos)
-    elif en_long_path and os.path.exists(en_long_path):
-        shorts = cut_best_short(en_long_path, en_long)
-        en_short_path = shorts[0]["path"] if shorts else ""
+        en_short_path = _make_video(
+            {**en_long, "script": _en_short_script},
+            _en_sid, stats, user_images=user_images, user_videos=user_videos,
+        )
+    if not en_short_path and en_long_path and os.path.exists(en_long_path):
+        _log("VideoGen", "EN short: falling back to cut from long video", "WARN")
+        try:
+            _cuts = cut_best_short(en_long_path, en_long)
+            en_short_path = _cuts[0]["path"] if _cuts else ""
+        except Exception as _ce:
+            _log("VideoGen", f"EN short cut failed: {_ce}", "ERROR")
+    if en_short_path:
+        _log("VideoGen", f"EN promo short ready: {os.path.basename(en_short_path)}", "OK")
+    else:
+        _log("VideoGen", "EN promo short unavailable — check long video render", "ERROR")
 
     _check_cancel("after long video renders")
 
-    _ctrl.update_stage("VideoGen", "rendering short clips")
+    _ctrl.update_stage("VideoGen", "rendering AR promo short")
     _ar_short_script = ar_long.get("short_script_ar", "")
     if _ar_short_script:
+        _log("VideoGen", "Rendering AR promo short from script")
         _ar_sid = f"{today}_{uuid.uuid4().hex[:8]}_arabic_short"
-        ar_short_path = _make_video({**ar_long, "script": _ar_short_script},
-                                    _ar_sid, stats,
-                                    user_images=user_images, user_videos=user_videos)
-    elif ar_long_path and os.path.exists(ar_long_path):
-        shorts = cut_best_short(ar_long_path, ar_long)
-        ar_short_path = shorts[0]["path"] if shorts else ""
+        ar_short_path = _make_video(
+            {**ar_long, "script": _ar_short_script},
+            _ar_sid, stats, user_images=user_images, user_videos=user_videos,
+        )
+    if not ar_short_path and ar_long_path and os.path.exists(ar_long_path):
+        _log("VideoGen", "AR short: falling back to cut from long video", "WARN")
+        try:
+            _cuts = cut_best_short(ar_long_path, ar_long)
+            ar_short_path = _cuts[0]["path"] if _cuts else ""
+        except Exception as _ce:
+            _log("VideoGen", f"AR short cut failed: {_ce}", "ERROR")
+    if ar_short_path:
+        _log("VideoGen", f"AR promo short ready: {os.path.basename(ar_short_path)}", "OK")
+    else:
+        _log("VideoGen", "AR promo short unavailable — check long video render", "ERROR")
 
     # ── STEP 5: Publish ───────────────────────────────────────────────────────
     _ctrl.update_stage("Publish", "uploading to YouTube")
@@ -402,35 +437,47 @@ def run_pipeline() -> None:
             send_message(f"[FAST] AR upload error: {e}")
             stats["errors"] += 1
 
-    # Send shorts to Telegram
-    for short_path, lang_label, script in [
-        (en_short_path, "EN", en_long),
-        (ar_short_path, "AR", ar_long),
+    # ── Send promo shorts to Telegram for manual posting ──────────────────────
+    _ctrl.update_stage("Publish", "sending promo shorts to Telegram")
+    _shorts_sent = 0
+    for short_path, lang_label, script, yt_url in [
+        (en_short_path, "EN", en_long, yt_en_url),
+        (ar_short_path, "AR", ar_long, yt_ar_url),
     ]:
-        if short_path and os.path.exists(short_path):
-            try:
-                caption = (
-                    f"[FAST] MANUAL POST NEEDED\n\n"
-                    f"{script.get('title','')}\n"
-                    f"Post to: TikTok + Instagram + YouTube Shorts\n\n"
-                    f"{script.get('hashtags','')}"
-                )
-                send_video_to_telegram(short_path, caption, f"{lang_label} Short")
-                _log("Telegram", f"{lang_label} short sent", "OK")
-            except Exception as e:
-                _log("Telegram", f"{lang_label} short send failed: {e}", "WARN")
+        if not (short_path and os.path.exists(short_path)):
+            send_message(f"[FAST] {lang_label} promo short missing — not uploaded")
+            continue
+        try:
+            _doc_link = f"\n\nFull documentary: {yt_url}" if yt_url else ""
+            caption = (
+                f"PROMO SHORT — POST NOW\n\n"
+                f"{script.get('title','')}\n"
+                f"Platforms: TikTok + Instagram Reels + YouTube Shorts\n"
+                f"{script.get('hashtags','')}"
+                f"{_doc_link}"
+            )
+            send_video_to_telegram(short_path, caption, f"{lang_label} Promo Short")
+            _log("Telegram", f"{lang_label} promo short sent", "OK")
+            _shorts_sent += 1
+        except Exception as e:
+            _log("Telegram", f"{lang_label} promo short send failed: {e}", "WARN")
 
     # ── Summary ───────────────────────────────────────────────────────────────
     elapsed = (time.time() - t0) / 60
     _status_en = f"✅ {yt_en_url}" if yt_en_url else "❌ Failed"
     _status_ar = f"✅ {yt_ar_url}" if yt_ar_url else "❌ Failed"
+    _short_en_src = "script" if en_long.get("short_script_en") else "cut"
+    _short_ar_src = "script" if ar_long.get("short_script_ar") else "cut"
     send_message(
-        f"📊 [FAST PIPELINE] Done — {today}\n\n"
-        f"⏱ Time: {elapsed:.0f} min\n"
-        f"🎬 EN → {_status_en}\n"
-        f"🎬 AR → {_status_ar}\n"
-        f"📱 EN short: {'✅' if en_short_path else '❌'}\n"
-        f"📱 AR short: {'✅' if ar_short_path else '❌'}"
+        f"[FAST PIPELINE] Done — {today}\n\n"
+        f"Time: {elapsed:.0f} min\n\n"
+        f"DOCUMENTARIES\n"
+        f"  EN: {_status_en}\n"
+        f"  AR: {_status_ar}\n\n"
+        f"PROMO SHORTS (sent to Telegram)\n"
+        f"  EN: {'OK (' + _short_en_src + ')' if en_short_path else 'MISSING'}\n"
+        f"  AR: {'OK (' + _short_ar_src + ')' if ar_short_path else 'MISSING'}\n"
+        f"  Sent: {_shorts_sent}/2"
     )
 
     series_name = en_long.get("series") or en_long.get("niche", "").split("behind")[-1].strip()
