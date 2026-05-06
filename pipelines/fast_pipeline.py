@@ -1,27 +1,34 @@
 # pipelines/fast_pipeline.py
 #
-# FAST PIPELINE — speed-optimised, CI-safe, independent of full_pipeline.py.
+# FAST PIPELINE — optimized workflow, production-quality output.
 #
-# What is cut vs FULL:
-#   ✗  No 60-second Telegram topic-wait
-#   ✗  No 3-minute photo-wait
-#   ✗  No Part-2 image loading
-#   ✗  No content-library retry loop (single attempt only)
-#   ✗  No failed-upload recovery
-#   ✗  No image enhancement pass
-#   ✗  No Whisper subtitle burn
-#   ✗  No quality post-processing (video_quality.py)
+# PHILOSOPHY: FAST means an efficient execution path — NOT lower quality.
+# Both FAST and FULL produce upload-ready professional Arabic documentary videos.
+# The difference is processing depth, not storytelling or script standards.
 #
-# What is kept:
-#   ✓  Auto-research (DuckDuckGo, 1 topic)
-#   ✓  English + Arabic script generation
-#   ✓  ElevenLabs TTS
-#   ✓  Fast clip selection (select_best_clips_fast, max 6 clips, no scoring)
-#   ✓  Pollinations AI image generation
-#   ✓  Standard video assembly (assemble_video_with_hook / assemble_short_video)
-#   ✓  YouTube upload (EN + AR long)
+# What FAST skips (redundant overhead, not quality):
+#   ✗  60-second Telegram topic-wait (auto-selects instead)
+#   ✗  3-minute photo-wait (images ready immediately)
+#   ✗  Part-2 image loading (single pass)
+#   ✗  Content-library retry loop (single attempt only)
+#   ✗  Failed-upload recovery (notify and move on)
+#   ✗  Image enhancement pass (Pollinations quality is sufficient)
+#   ✗  Whisper subtitle burn (narration is clear without captions)
+#   ✗  Quality post-processing (video_quality.py)
+#   ✗  Exhaustive clip scoring (uses lighter select_best_clips_fast)
+#
+# What FAST keeps (everything that matters for quality):
+#   ✓  Deep research (DuckDuckGo + research_series)
+#   ✓  Full-length English script (1,800–2,500 words = 11–16 min)
+#   ✓  Strong Arabic translation (Google Translate + proper chapters)
+#   ✓  ElevenLabs cloned voices (same quality as FULL)
+#   ✓  Pollinations AI image generation (10 images per long video)
+#   ✓  Library clip selection (select_best_clips_fast)
+#   ✓  Standard cinematic assembly (hook + chapters + outro)
+#   ✓  YouTube upload (EN + AR long videos)
 #   ✓  Telegram short delivery (EN + AR)
 #
+# Both modes enforce a hard 10-minute minimum (1,560 words @ 156 WPM).
 # PIPELINE_MODE=fast is guaranteed by run_fast.py before this module loads.
 
 import os
@@ -56,7 +63,7 @@ from agent.notify_agent   import (
     send_message, send_video_to_telegram, send_daily_report,
 )
 from agent.publish_agent  import upload_to_youtube
-from pipelines.pipeline_config import SCRIPT_WORD_MIN, WORDS_PER_MINUTE
+from pipelines.pipeline_config import SCRIPT_WORD_FLOOR, SCRIPT_WORD_MIN, WORDS_PER_MINUTE
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -154,18 +161,22 @@ def run_pipeline() -> None:
         _log("Scripts", str(e), "ERROR")
         return
 
-    # Enforce minimum duration floor: reject scripts that would produce < 10 min video.
+    # Enforce minimum duration. Abort if under hard 10-min floor; warn if below preferred 11.5 min.
     _en_wc = clean_word_count(en_long.get("script", ""))
     _est_min = round(_en_wc / WORDS_PER_MINUTE, 1)
-    if _en_wc < SCRIPT_WORD_MIN:
+    if _en_wc < SCRIPT_WORD_FLOOR:
         _msg = (
-            f"[FAST] Script too short: {_en_wc} words (~{_est_min} min) — "
-            f"minimum is {SCRIPT_WORD_MIN} words (~{SCRIPT_WORD_MIN // WORDS_PER_MINUTE} min). Aborting."
+            f"[FAST] Script critically short: {_en_wc} words (~{_est_min} min) — "
+            f"hard minimum is {SCRIPT_WORD_FLOOR} words (10 min). Aborting."
         )
         _log("Scripts", _msg, "ERROR")
         send_message(_msg)
         return
-    _log("Scripts", f"Length OK: {_en_wc} words (~{_est_min} min)", "OK")
+    if _en_wc < SCRIPT_WORD_MIN:
+        _log("Scripts", f"Script below preferred minimum: {_en_wc} words (~{_est_min} min) — target {SCRIPT_WORD_MIN}+", "WARN")
+        send_message(f"[FAST] Script short ({_en_wc} words ~{_est_min} min) — proceeding but check quality")
+    else:
+        _log("Scripts", f"Length OK: {_en_wc} words (~{_est_min} min)", "OK")
 
     try:
         ar_long = translate_script(en_long)
