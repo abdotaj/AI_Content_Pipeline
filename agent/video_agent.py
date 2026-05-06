@@ -1,4 +1,4 @@
-﻿# ============================================================
+# ============================================================
 #  agents/video_agent.py  —  AI-generated images + voiceover
 # ============================================================
 import os
@@ -5838,20 +5838,23 @@ def generate_tts_sections(script_text: str, video_id: str, language: str) -> tup
 
 # â"€â"€ Clip system â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
-# Set False to skip the entire clip system (instant image-only fallback).
-USE_CLIPS = True
+# ── Pipeline mode ────────────────────────────────────────────────────────────
+# FAST (default): CI-safe, <20 min total, minimal clip work, SAFE MODE fallback
+# FULL          : cinematic pipeline, full scoring + diversity, higher quality
+PIPELINE_MODE: str = os.getenv("PIPELINE_MODE", "fast").lower().strip()
+
+# # SHARED LOGIC
+# FULL mode enables the heavy clip system; FAST uses select_best_clips_fast()
+USE_CLIPS: bool = PIPELINE_MODE == "full"
 
 # Global start time for timeout tracking — reset at the top of create_video().
 _PIPELINE_START: float = 0.0
-_MAX_CLIP_RUNTIME: float = 12 * 60  # 12 minutes max for all clip work combined
+# FAST MODE: 5-min clip budget  |  FULL MODE: 20-min clip budget
+_MAX_CLIP_RUNTIME: float = 5 * 60 if PIPELINE_MODE == "fast" else 20 * 60
 
 
 def _check_clip_timeout() -> bool:
-    """Return True if the clip system has been running too long.
-
-    Compares wall-clock time against _PIPELINE_START + _MAX_CLIP_RUNTIME.
-    Always returns False if _PIPELINE_START is 0 (not yet set).
-    """
+    """Return True if the clip system has exceeded its mode-dependent time budget."""
     if _PIPELINE_START <= 0:
         return False
     return (time.time() - _PIPELINE_START) > _MAX_CLIP_RUNTIME
@@ -6072,8 +6075,58 @@ def select_best_clips(video_folder: str, max_clips: int = 10) -> list[str]:
     best = [p for _, p in interleaved[:max_clips]]
     elapsed = time.time() - _t0
     total_considered = sum(len(p) for p in source_pools)
-    print(f"[Clip] Selected {len(best)}/{total_considered} best clip(s) from {video_folder} in {elapsed:.1f}s")
+    print(f"[Clip] FULL: Selected {len(best)}/{total_considered} best clip(s) from {video_folder} in {elapsed:.1f}s")
     return best
+
+
+# FAST MODE
+def select_best_clips_fast(video_folder: str, max_clips: int = 8) -> list[str]:
+    """Fast clip selection for FAST pipeline mode — no scoring, no deep loops.
+
+    Samples at most 2 source videos and returns up to max_clips clips.
+    Hard 9-second wall-clock budget — always safe for CI runners.
+    """
+    _t0 = time.time()
+    if _check_clip_timeout():
+        print("[Clip] FAST: Skipped — global timeout reached")
+        return []
+
+    vid_dir = os.path.join(video_folder, "videos")
+    if not os.path.isdir(vid_dir):
+        return []
+
+    _MAX_SOURCES   = 2
+    _MAX_FILE_SIZE = 100 * 1024 * 1024  # 100 MB
+    _MAX_PER_SRC   = max_clips // _MAX_SOURCES + 1
+
+    source_videos = [
+        os.path.join(vid_dir, f)
+        for f in sorted(os.listdir(vid_dir))
+        if f.lower().endswith((".mp4", ".mov", ".avi"))
+        and not f.endswith(("_processed.mp4", "_short.mp4"))
+        and 10_000 < os.path.getsize(os.path.join(vid_dir, f)) <= _MAX_FILE_SIZE
+    ][:_MAX_SOURCES]
+
+    if not source_videos:
+        return []
+
+    out_dir = os.path.abspath("temp_clips")
+    os.makedirs(out_dir, exist_ok=True)
+    all_clips: list[str] = []
+
+    for src in source_videos:
+        if _check_clip_timeout() or (time.time() - _t0) > 9:
+            print("[Clip] FAST: 9-second budget reached — stopping early")
+            break
+        chunks = extract_clips(src, out_dir, chunk_len=8.0, max_clips=_MAX_PER_SRC)
+        all_clips.extend(chunks)
+        if len(all_clips) >= max_clips:
+            break
+
+    result = all_clips[:max_clips]
+    elapsed = time.time() - _t0
+    print(f"[Clip] FAST: {len(result)} clip(s) ready in {elapsed:.1f}s (no scoring)")
+    return result
 
 
 # ── Intensity keyword sets for script-aware clip matching ────────────────────
@@ -6231,75 +6284,197 @@ def assign_clips_to_script(
 
 # â"€â"€ Main entry point â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
-def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", user_images: list | None = None, user_videos: list | None = None) -> str:
-    import traceback
-    global _PIPELINE_START
-    _PIPELINE_START = time.time()   # reset timeout clock for this run
 
+
+# ── Pipeline runners ─────────────────────────────────────────────────────────
+
+# FAST PIPELINE
+def run_fast_pipeline(
+    script_data: dict,
+    video_id: str,
+    custom_audio_path: str = "",
+    user_images: list | None = None,
+    user_videos: list | None = None,
+) -> str:
+    """Linear, minimal pipeline. No scoring, no deep extraction. Target: <20 min."""
+    import traceback
+    title    = script_data.get("title", "")
+    language = script_data.get("language", "english")
+    is_short = "short" in video_id
+    print(f"[Pipeline] FAST MODE — {title} ({language})")
+
+    # ── Audio ──────────────────────────────────────────────────────────────
+    try:
+        if custom_audio_path and Path(custom_audio_path).exists():
+            audio_path = clean_voice(
+                custom_audio_path,
+                os.path.join(AUDIO_DIR, f"{video_id}_enhanced.mp3"),
+            )
+        elif is_short:
+            audio_path = generate_voiceover(script_data["script"], video_id, language)
+            if audio_path and os.path.exists(audio_path):
+                audio_path = mix_background_music(audio_path, is_short=True)
+        else:
+            audio_path, dynamic_chapters = generate_tts_sections(
+                script_data["script"], video_id, language
+            )
+            if dynamic_chapters:
+                script_data["chapters"] = dynamic_chapters
+        print(f"[FAST] Audio ready: {audio_path}")
+    except Exception as e:
+        print(f"[FAST] Audio failed: {e}")
+        traceback.print_exc()
+        return ""
+
+    # ── Clips (fast, no scoring) ───────────────────────────────────────────
+    _library_clips: list[str] = []
+    try:
+        _topic_key      = script_data.get("topic", script_data.get("niche", "default"))
+        _content_folder = find_content_folder(_topic_key)
+        if _content_folder and not _check_clip_timeout():
+            _library_clips = select_best_clips_fast(_content_folder, max_clips=6)
+            print(f"[FAST] {len(_library_clips)} clip(s) loaded")
+    except Exception as _ce:
+        print(f"[FAST] Clip load skipped (non-fatal): {_ce}")
+        _library_clips = []
+
+    # ── Visuals ────────────────────────────────────────────────────────────
+    n_images  = calculate_unique_images(is_short=is_short)
+    topic_str = script_data.get("topic", "")
+    image_paths: list[str] = list(_library_clips)
+    for uv in (user_videos or []):
+        p = uv.get("path", "")
+        if p and os.path.exists(p):
+            image_paths.append(p)
+    for ui in (user_images or []):
+        p = ui.get("path", "")
+        if p and os.path.exists(p):
+            image_paths.append(p)
+    if len(image_paths) < n_images:
+        try:
+            needed = n_images - len(image_paths)
+            image_paths.extend(
+                fetch_real_images(script_data["script"], needed, video_id, topic=topic_str)
+            )
+        except Exception as _ve:
+            print(f"[FAST] Visual fetch failed (non-fatal): {_ve}")
+    image_paths = [p for p in image_paths if p and os.path.exists(p)]
+    if not image_paths:
+        print("[FAST] No visuals — aborting")
+        return ""
+
+    # ── Assembly ───────────────────────────────────────────────────────────
+    output_path = os.path.join(FINAL_DIR, f"{video_id}.mp4")
+    try:
+        if is_short:
+            video_path = assemble_short_video(
+                audio_path=audio_path, image_paths=image_paths, output_path=output_path
+            )
+        else:
+            video_path = assemble_video_with_hook(
+                audio_path=audio_path, image_paths=image_paths,
+                output_path=output_path, video_id=video_id,
+            )
+    except Exception as e:
+        print(f"[FAST] Assembly failed: {e}")
+        traceback.print_exc()
+        return ""
+
+    if video_path:
+        video_path = _apply_intro_outro_overlay(
+            video_path,
+            title=script_data.get("title", ""),
+            language=language,
+            video_id=video_id,
+            is_short=is_short,
+            chapters_str=script_data.get("chapters", ""),
+            hook_text=script_data.get("angle_title", "") or topic_str,
+        )
+        if not is_short:
+            short_out = os.path.join(SHORTS_DIR, f"{video_id}_short.mp4")
+            script_data["short_clip_path"] = cut_short_clip(
+                video_path, short_out, script_data=script_data
+            )
+        _thumb = extract_first_frame(
+            video_path, os.path.join(FINAL_DIR, f"{video_id}_thumb.jpg")
+        )
+        if _thumb:
+            script_data["thumbnail_path"] = _thumb
+    try:
+        _tc = os.path.abspath("temp_clips")
+        if os.path.isdir(_tc):
+            shutil.rmtree(_tc, ignore_errors=True)
+    except Exception:
+        pass
+    return video_path or ""
+
+
+# FULL PIPELINE
+def run_full_pipeline(
+    script_data: dict,
+    video_id: str,
+    custom_audio_path: str = "",
+    user_images: list | None = None,
+    user_videos: list | None = None,
+) -> str:
+    """Rich cinematic pipeline. Composes all shared helpers freely."""
+    import traceback
     title    = script_data.get("title", "")
     niche    = script_data.get("niche", "")
     language = script_data.get("language", "english")
-    print(f"[Video] Starting: {title} ({language})")
+    is_short = "short" in video_id
+    print(f"[Pipeline] FULL MODE — {title} ({language})")
 
-    # ── Content folder lookup (read-only — no folder creation) ─────────────────
+    # ── Content folder ─────────────────────────────────────────────────────
+    _content_folder = None
     try:
-        _topic_key     = script_data.get("topic", niche or "default")
+        _topic_key      = script_data.get("topic", niche or "default")
         _content_folder = find_content_folder(_topic_key)
         if _content_folder:
             _img_dir = os.path.join(_content_folder, "images")
             _vid_dir = os.path.join(_content_folder, "videos")
             _imgs = len([f for f in os.listdir(_img_dir) if f.lower().endswith((".jpg", ".png"))]) if os.path.isdir(_img_dir) else 0
             _vids = len([f for f in os.listdir(_vid_dir) if f.lower().endswith(".mp4")]) if os.path.isdir(_vid_dir) else 0
-            print(f"[Content] Matched folder: {_content_folder} → {_imgs} images, {_vids} videos")
+            print(f"[Content] Matched folder: {_content_folder} — {_imgs} images, {_vids} videos")
         else:
-            print(f"[Content] No content folder found for: {_topic_key}")
+            print(f"[Content] No content folder for: {_topic_key}")
     except Exception as _ce:
         print(f"[Content] Folder check skipped (non-fatal): {_ce}")
 
-    # ── Library clip extraction ───────────────────────────────────────────────
+    # ── Full clip extraction + scoring ─────────────────────────────────────
     _library_clips: list[str] = []
-    if USE_CLIPS:
-        try:
-            _ct0 = time.time()
-            if _content_folder and os.path.isdir(_content_folder) and not _check_clip_timeout():
-                _library_clips = select_best_clips(_content_folder, max_clips=10)
-                if _library_clips:
-                    print(f"[Clip] {len(_library_clips)} library clip(s) ready in {time.time()-_ct0:.1f}s")
-                else:
-                    print(f"[Clip] No clips found — image-only mode")
-            elif _check_clip_timeout():
-                print("[Clip] Skipped — global timeout reached before extraction")
-        except Exception as _ce2:
-            print(f"[Clip] SAFE MODE: clip selection failed ({_ce2}) — using images only")
-            _library_clips = []
-    else:
-        print("[Clip] USE_CLIPS=False — image-only mode")
+    try:
+        if _content_folder and os.path.isdir(_content_folder) and not _check_clip_timeout():
+            _library_clips = select_best_clips(_content_folder, max_clips=10)
+            print(f"[FULL] {len(_library_clips)} clip(s) ready")
+        elif _check_clip_timeout():
+            print("[FULL] Clip extraction skipped — timeout reached")
+    except Exception as _ce2:
+        print(f"[FULL] Clip SAFE MODE: {_ce2} — images only")
+        _library_clips = []
 
-    # â"€â"€ Voiceover â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
-    is_short = "short" in video_id
+    # ── Audio ──────────────────────────────────────────────────────────────
     try:
         if custom_audio_path and Path(custom_audio_path).exists():
-            enhanced_path = os.path.join(AUDIO_DIR, f"{video_id}_enhanced.mp3")
-            audio_path = clean_voice(custom_audio_path, enhanced_path)
-            print(f"[Video] Using custom audio: {audio_path}")
+            audio_path = clean_voice(
+                custom_audio_path,
+                os.path.join(AUDIO_DIR, f"{video_id}_enhanced.mp3"),
+            )
+            print(f"[FULL] Using custom audio: {audio_path}")
         elif not is_short:
-            # Long video: section-by-section TTS for accurate chapter timestamps
             audio_path, dynamic_chapters = generate_tts_sections(
                 script_data["script"], video_id, language
             )
             if dynamic_chapters:
                 script_data["chapters"] = dynamic_chapters
-                print("[Video] Dynamic chapters saved to script_data")
-            # Netflix-quality audio post-processing (long videos only)
+                print("[FULL] Dynamic chapters saved")
             if audio_path and os.path.exists(audio_path):
                 audio_path = process_audio_netflix(audio_path)
         else:
             audio_path = generate_voiceover(script_data["script"], video_id, language)
-            # Mix background music for shorts
             if audio_path and os.path.exists(audio_path):
                 audio_path = mix_background_music(audio_path, is_short=True)
-        print(f"[Video] Audio ready: {audio_path}")
-        # Duration check
+        print(f"[FULL] Audio ready: {audio_path}")
         try:
             try:
                 from moviepy.editor import AudioFileClip as _AC
@@ -6307,30 +6482,22 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
                 from moviepy import AudioFileClip as _AC
             _dur = _AC(audio_path).duration
             _min = _dur / 60
-            _is_short_check = "short" in video_id
-            if _is_short_check:
-                if _dur < 60:
-                    print(f"[Video] WARNING: Short audio too short: {_dur:.1f}s (need 60-90s)")
-                elif _dur > 90:
-                    print(f"[Video] WARNING: Short audio too long: {_dur:.1f}s (need 60-90s)")
-                else:
-                    print(f"[Video] Short duration OK: {_dur:.1f}s")
+            if is_short:
+                if _dur < 60:   print(f"[FULL] WARNING: Short audio too short: {_dur:.1f}s (need 60-90s)")
+                elif _dur > 90: print(f"[FULL] WARNING: Short audio too long: {_dur:.1f}s (need 60-90s)")
+                else:           print(f"[FULL] Short duration OK: {_dur:.1f}s")
             else:
-                if _dur < 600:
-                    print(f"[Video] WARNING: Long audio too short: {_min:.1f} min (need 10-14 min)")
-                elif _dur > 840:
-                    print(f"[Video] WARNING: Long audio too long: {_min:.1f} min (need 10-14 min)")
-                else:
-                    print(f"[Video] Long duration OK: {_min:.1f} min")
+                if _dur < 600:   print(f"[FULL] WARNING: Long audio too short: {_min:.1f} min (need 10-14 min)")
+                elif _dur > 840: print(f"[FULL] WARNING: Long audio too long: {_min:.1f} min (need 10-14 min)")
+                else:            print(f"[FULL] Long duration OK: {_min:.1f} min")
         except Exception:
             pass
     except Exception as e:
-        print(f"[Video] CRASH at voiceover: {e}")
+        print(f"[FULL] CRASH at voiceover: {e}")
         traceback.print_exc()
         return ""
 
-    # â"€â"€ Image / clip counts â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
-    # Whisper subtitles (word-level, for burning + timestamp sync)
+    # ── Whisper subtitles ──────────────────────────────────────────────────
     whisper_segments: list[dict] = []
     if ENABLE_SUBTITLES:
         try:
@@ -6338,21 +6505,17 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
         except Exception as _ws_e:
             print(f"[Subtitle] Skipping Whisper (non-fatal): {_ws_e}")
 
-    n_images = calculate_unique_images(is_short=is_short)
+    # ── Image / clip counts ────────────────────────────────────────────────
+    n_images    = calculate_unique_images(is_short=is_short)
     calculate_total_images(user_images)
-    print(f"[Video] Building {n_images} visuals ({'short' if is_short else 'long'})")
-
+    print(f"[FULL] Building {n_images} visuals ({'short' if is_short else 'long'})")
     script_text = script_data.get("script", "")
     topic_str   = script_data.get("topic", "")
-
-    # Minimal wait for late-arriving Telegram downloads before scanning
     import time as _t; _t.sleep(1)
 
-    # Auto-load user content from disk (Telegram images → output/user_images, videos → output/user_videos)
+    # ── User content loading + dedup ───────────────────────────────────────
     folder_videos = _load_user_videos_from_folder()
-    folder_images = _load_user_images_from_folders(topic_str)  # includes output/user_images
-
-    # Deduplicate: merge passed-in lists with folder-loaded lists by path
+    folder_images = _load_user_images_from_folders(topic_str)
     _seen_paths: set[str] = set()
     all_user_videos: list[dict] = []
     for _uv in list(user_videos or []) + folder_videos:
@@ -6360,7 +6523,6 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
         if _p and _p not in _seen_paths:
             _seen_paths.add(_p)
             all_user_videos.append(_uv)
-
     _seen_paths = set()
     all_user_images: list[dict] = []
     for _ui in list(user_images or []) + folder_images:
@@ -6368,48 +6530,42 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
         _p_abs = os.path.abspath(_p) if _p else ""
         if _p_abs and _p_abs not in _seen_paths and os.path.exists(_p_abs):
             _seen_paths.add(_p_abs)
-            # Normalise path to absolute in the dict so all downstream code gets abs paths
             _ui_norm = dict(_ui); _ui_norm["path"] = _p_abs
             all_user_images.append(_ui_norm)
-
-    print(f"[Video] User images available on disk at assembly start: {len(all_user_images)}")
-    if not all_user_images and not all_user_videos:
-        print("[Video] INFO: No user images provided — will use stock/AI visuals only")
-    print(f"[DEBUG] User content: {len(all_user_images)} unique images, {len(all_user_videos)} unique videos")
+    print(f"[FULL] User images: {len(all_user_images)}, videos: {len(all_user_videos)}")
     if all_user_images:
         print(f"[DEBUG] User image paths: {[img['path'] for img in all_user_images]}")
-
-    # Extract visual style from user images for consistent AI prompt generation
     _style_profile = extract_style_from_user_images(all_user_images) if all_user_images else ""
 
-    # ── Script → clip timeline ────────────────────────────────────────────────
+    # ── Cinematic clip timeline ────────────────────────────────────────────
     _clip_timeline: list[dict] = []
     try:
         if _library_clips:
-            _sections = _parse_script_sections(script_text)
+            _sections      = _parse_script_sections(script_text)
             _clip_timeline = assign_clips_to_script(_sections, _library_clips)
-            _with_clips = sum(1 for s in _clip_timeline if s.get("clip"))
+            _with_clips    = sum(1 for s in _clip_timeline if s.get("clip"))
             print(f"[Clip] Timeline: {len(_clip_timeline)} sections, {_with_clips} with clips, "
                   f"{len(_clip_timeline) - _with_clips} image-fallback")
     except Exception as _te:
         print(f"[Clip] Timeline assignment skipped (non-fatal): {_te}")
 
-    # Detect assembly mode
+    # ── Visual assembly pool ───────────────────────────────────────────────
     mode = _detect_assembly_mode(all_user_images, all_user_videos)
-
     try:
+        if _clip_timeline:
+            _tl_clips = [
+                c for seg in _clip_timeline
+                if not seg.get("is_breathing")
+                for c in (seg.get("clips") or [])
+            ]
+            image_paths: list[str] = _tl_clips if _tl_clips else list(_library_clips)
+        else:
+            image_paths = list(_library_clips)
+        if _library_clips:
+            print(f"[Clip] MODE {'1' if mode == 'user_content' else '2'}: "
+                  f"{len(image_paths)} library clip(s) (timeline-ordered)")
+
         if mode == "user_content":
-            # MODE 1: User-provided content
-            # Step A: inject library clips first, ordered by cinematic timeline
-            if _clip_timeline:
-                _tl_clips = [c for seg in _clip_timeline
-                             if not seg.get("is_breathing")
-                             for c in (seg.get("clips") or [])]
-                image_paths: list[str] = _tl_clips if _tl_clips else list(_library_clips)
-            else:
-                image_paths = list(_library_clips)
-            if _library_clips:
-                print(f"[Clip] MODE 1: {len(image_paths)} library clip(s) (timeline-ordered)")
             for uv in all_user_videos:
                 path = uv.get("path", "")
                 if path and os.path.exists(path):
@@ -6419,49 +6575,43 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
                         _shutil.copy2(path, dest)
                         if os.path.exists(dest):
                             image_paths.append(dest)
-                            print(f"[Video] User video added: {uv.get('caption','')[:60]}")
+                            print(f"[FULL] User video added: {uv.get('caption','')[:60]}")
                         else:
-                            print(f"[Video] WARNING: Copy appeared to succeed but {dest} not found")
+                            print(f"[FULL] WARNING: Copy ok but {dest} not found")
                     except Exception as _e:
-                        print(f"[Video] Could not copy user video {path}: {_e}")
-
-            # Step A2: no user videos — auto-search archive and YouTube CC
+                        print(f"[FULL] Could not copy user video {path}: {_e}")
             if not all_user_videos:
-                print("[Video] No user videos — searching archive and YouTube CC automatically")
+                print("[FULL] No user videos — auto-searching archive/YouTube CC")
                 auto_vids = fetch_stock_videos(
                     script_text, min(4, max(2, n_images // 3)), video_id, topic=topic_str
                 )
                 for vpath in auto_vids:
                     if vpath not in image_paths:
                         image_paths.append(vpath)
-
-            # Step B: copy user images directly into clip pool (BEFORE stock)
             for i, ui in enumerate(all_user_images):
                 path = ui.get("path", "")
                 if path and os.path.exists(path):
-                    ext = os.path.splitext(path)[1] or ".jpg"
+                    ext  = os.path.splitext(path)[1] or ".jpg"
                     dest = os.path.abspath(os.path.join(IMAGES_DIR, f"{video_id}_ui_{i}{ext}"))
                     try:
                         import shutil as _shutil
                         _shutil.copy2(path, dest)
                         if os.path.exists(dest):
                             image_paths.append(dest)
-                            print(f"[Video] User image added: {ui.get('caption','')[:60]} → {dest}")
+                            print(f"[FULL] User image added: {ui.get('caption','')[:60]}")
                         else:
-                            print(f"[Video] WARNING: Copy appeared to succeed but {dest} not found")
+                            print(f"[FULL] WARNING: Copy ok but {dest} not found")
                     except Exception as _e:
-                        print(f"[Video] Could not copy user image {path}: {_e}")
-
-            # Step C: smart gap-fill based on content sufficiency
+                        print(f"[FULL] Could not copy user image {path}: {_e}")
             audio_duration = _ffprobe_duration(audio_path) or (n_images * 8)
             is_sufficient, coverage_ratio = check_content_sufficiency(
                 all_user_images, all_user_videos, audio_duration
             )
             if is_sufficient:
-                print(f"[Video] ✅ User content sufficient — skipping all AI/stock generation")
+                print("[FULL] User content sufficient — skipping AI/stock generation")
             elif len(image_paths) < n_images:
                 missing = n_images - len(image_paths)
-                print(f"[Video] ⚠️ Gap: {missing} visuals needed (coverage {coverage_ratio*100:.0f}%)")
+                print(f"[FULL] Gap: {missing} visuals needed (coverage {coverage_ratio*100:.0f}%)")
                 gap_imgs = _fetch_gap_images(
                     script_text, missing, video_id, topic_str, coverage_ratio,
                     style_profile=_style_profile,
@@ -6470,73 +6620,55 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
                     gap_imgs = _rank_visual_pool(gap_imgs, topic=topic_str)
                 image_paths.extend(gap_imgs)
         else:
-            # MODE 2: Auto (no user content)
-            if _clip_timeline:
-                _tl_clips = [c for seg in _clip_timeline
-                             if not seg.get("is_breathing")
-                             for c in (seg.get("clips") or [])]
-                image_paths = _tl_clips if _tl_clips else list(_library_clips)
-            else:
-                image_paths = list(_library_clips)
-            if _library_clips:
-                print(f"[Clip] MODE 2: {len(image_paths)} library clip(s) (timeline-ordered)")
             stock = fetch_stock_videos(script_text, n_images, video_id, topic=topic_str)
             image_paths.extend(stock)
             if len(image_paths) < max(6, n_images // 2):
                 missing = max(0, n_images - len(image_paths))
                 if missing:
                     print(f"[Stock] Fallback: generating {missing} image visuals")
-                    image_paths.extend(fetch_real_images(script_text, missing, video_id, topic=topic_str, style_profile=_style_profile))
+                    image_paths.extend(
+                        fetch_real_images(script_text, missing, video_id,
+                                          topic=topic_str, style_profile=_style_profile)
+                    )
             if image_paths:
                 image_paths = _rank_visual_pool(image_paths, topic=topic_str)
     except Exception as e:
-        print(f"[Video] CRASH at visual generation: {e}")
+        print(f"[FULL] CRASH at visual generation: {e}")
         traceback.print_exc()
         return ""
 
     if not image_paths:
-        print("[Video] No visuals generated, aborting")
+        print("[FULL] No visuals generated — aborting")
         return ""
 
-    # Wikipedia real photo + processed user images (for moment matching)
-    person_name = _extract_person_name_from_topic(title, topic_str)
+    # ── Person images + moment matching ───────────────────────────────────
+    person_name     = _extract_person_name_from_topic(title, topic_str)
     priority_images = get_person_images(
         person_name, video_id,
-        # In MODE 1 user images are already in image_paths; only pass to get_person_images
-        # for Wikipedia portrait + AI-transform expansion
         all_user_images if all_user_images else None,
         script_text=script_text,
     )
-
-    # Sort priority images by keyword timestamp from Whisper segments
     if whisper_segments and priority_images:
         def _img_ts(img):
             tags = img.get("tags", []) or img.get("caption", "").split()
-            ts = find_keyword_timestamp(whisper_segments, tags)
+            ts   = find_keyword_timestamp(whisper_segments, tags)
             return ts if ts is not None else float("inf")
         priority_images.sort(key=_img_ts)
         print("[Visual] User images sorted by audio keyword timestamp")
 
-    # BUG 2 fix: In MODE 1, image_paths already has user images first.
-    # build_image_list puts priority_images before stock; match_images_to_moments
-    # now exhausts user images before stock (fixed above).
-    # For MODE 1, skip moment matching — user images are already ordered correctly.
     if mode == "user_content":
-        # User images are first in image_paths; just append any extra priority images
-        # (Wikipedia photo, AI-transformed versions) that aren't already present.
-        # extra_paths may only add NEW content: AI-transformed versions and Wikipedia photos.
-        # Original user image paths must be excluded — they are already represented by their
-        # _ui_ copies and would duplicate the same image in the final pool.
         _ui_originals = {ui["path"] for ui in all_user_images}
-        extra_paths = [img["path"] for img in priority_images
-                       if isinstance(img, dict) and img.get("path")
-                       and img["path"] not in image_paths
-                       and img["path"] not in _ui_originals
-                       and os.path.exists(img["path"])]
+        extra_paths   = [
+            img["path"] for img in priority_images
+            if isinstance(img, dict) and img.get("path")
+            and img["path"] not in image_paths
+            and img["path"] not in _ui_originals
+            and os.path.exists(img["path"])
+        ]
         all_image_paths = image_paths + extra_paths
-        print(f"[DEBUG] MODE 1 final pool: {len(image_paths)} direct + {len(extra_paths)} extra priority = {len(all_image_paths)} total")
+        print(f"[FULL] MODE 1 pool: {len(image_paths)} direct + {len(extra_paths)} extra = "
+              f"{len(all_image_paths)} total")
     else:
-        # MODE 2: use moment matching (user images exhausted first per fix above)
         try:
             moments = parse_script_moments(script_text, topic=topic_str)
             if moments and (priority_images or image_paths):
@@ -6545,24 +6677,40 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
             else:
                 all_image_paths = build_image_list(priority_images, image_paths)
         except Exception as e:
-            print(f"[Visual] Moment matching failed ({e}), using default image order")
+            print(f"[Visual] Moment matching failed ({e}) — using default order")
             all_image_paths = build_image_list(priority_images, image_paths)
 
-    print(f"[DEBUG] First 5 images selected for video: {[os.path.basename(p) for p in all_image_paths[:5]]}")
+    print(f"[FULL] First 5 images: {[os.path.basename(p) for p in all_image_paths[:5]]}")
 
-    # ── Pre-assembly validation ───────────────────────────────────────────────
-    # Filter any None or missing paths that could crash MoviePy
+    # ── Image enhancement ──────────────────────────────────────────────────
+    try:
+        from agents.enhancer import enhance_image as _enhance_image
+        _img_exts   = {".jpg", ".jpeg", ".png", ".webp", ".jfif", ".bmp"}
+        _to_enhance = [
+            p for p in all_image_paths
+            if p and Path(p).suffix.lower() in _img_exts and os.path.exists(p)
+        ]
+        if _to_enhance:
+            print(f"[FULL] Enhancing {len(_to_enhance)} image(s)...")
+            from concurrent.futures import ThreadPoolExecutor as _TPE
+            with _TPE(max_workers=min(4, len(_to_enhance))) as _pool:
+                _enh_results = list(_pool.map(_enhance_image, _to_enhance))
+            _enh_map        = dict(zip(_to_enhance, _enh_results))
+            all_image_paths = [_enh_map.get(p) or p for p in all_image_paths]
+            print("[FULL] Enhancement complete")
+    except Exception as _enh_err:
+        print(f"[FULL] Enhancement skipped (non-fatal): {_enh_err}")
+
+    # ── Pre-assembly validation ────────────────────────────────────────────
     _missing = [p for p in all_image_paths if not p or not os.path.exists(p)]
     if _missing:
-        print(f"[Video] WARNING: {len(_missing)} image path(s) missing before assembly — filtering out")
+        print(f"[FULL] WARNING: {len(_missing)} path(s) missing — filtering out")
         all_image_paths = [p for p in all_image_paths if p and os.path.exists(p)]
-    print(f"[DEBUG] Final image list count: {len(all_image_paths)}")
-    print(f"[DEBUG] First 3 image paths: {all_image_paths[:3]}")
+    print(f"[FULL] Final image count: {len(all_image_paths)}")
+    print(f"[DEBUG] First 3 paths: {all_image_paths[:3]}")
 
-    # ── Assembly ──────────────────────────────────────────────────────────────
-    output_path = os.path.join(FINAL_DIR, f"{video_id}.mp4")
-
-    # Build clip→duration map from timeline for renderer trim control
+    # ── Assembly ───────────────────────────────────────────────────────────
+    output_path    = os.path.join(FINAL_DIR, f"{video_id}.mp4")
     _clip_durations: dict[str, float] = {}
     for _seg in (_clip_timeline or []):
         _cd = _seg.get("clip_duration")
@@ -6572,25 +6720,19 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
                     _clip_durations[_cp] = float(_cd)
     if _clip_durations:
         print(f"[Clip] Passing {len(_clip_durations)} clip duration(s) to renderer")
-
     if is_short:
         video_path = assemble_short_video(
-            audio_path=audio_path,
-            image_paths=all_image_paths,
-            output_path=output_path,
-            clip_durations=_clip_durations or None,
+            audio_path=audio_path, image_paths=all_image_paths,
+            output_path=output_path, clip_durations=_clip_durations or None,
         )
     else:
         video_path = assemble_video_with_hook(
-            audio_path=audio_path,
-            image_paths=all_image_paths,
-            output_path=output_path,
-            video_id=video_id,
+            audio_path=audio_path, image_paths=all_image_paths,
+            output_path=output_path, video_id=video_id,
             clip_durations=_clip_durations or None,
         )
 
     if video_path:
-        # Burn subtitles onto final video
         if whisper_segments:
             try:
                 subbed_path = video_path.replace(".mp4", "_subbed.mp4")
@@ -6600,31 +6742,21 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
                     print("[Subtitle] Subtitles burned into final video")
             except Exception as _sub_e:
                 print(f"[Subtitle] Burn failed (non-fatal): {_sub_e}")
-
-        # Mix original audio from pure/clean/scene user videos at 25%
         pure_paths = [
             uv["path"] for uv in all_user_videos
             if _is_pure_video(uv) and os.path.exists(uv.get("path", ""))
         ]
         if pure_paths:
             video_path = _mix_pure_video_audio(video_path, pure_paths)
-
-        # Apply cold open + overlays
-        _overlay_title    = script_data.get("title", "")
-        _overlay_chapters = script_data.get("chapters", "")
-        _overlay_hook     = script_data.get("angle_title", "") or script_data.get("topic", "")
         video_path = _apply_intro_outro_overlay(
             video_path,
-            title=_overlay_title,
+            title=script_data.get("title", ""),
             language=language,
             video_id=video_id,
             is_short=is_short,
-            chapters_str=_overlay_chapters,
-            hook_text=_overlay_hook,
+            chapters_str=script_data.get("chapters", ""),
+            hook_text=script_data.get("angle_title", "") or topic_str,
         )
-
-        # Intro disabled — black screen confirmed in production benchmarks
-        # To re-enable: change "FORCE_ENABLE" back to ("1", "true", "yes") after fixing
         if not is_short and os.getenv("ENABLE_PREMIUM_INTRO", "").strip() == "FORCE_ENABLE":
             try:
                 from agents.premium_intro import create_intro, prepend_intro
@@ -6634,12 +6766,11 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
                     video_path = prepend_intro(_intro, video_path)
             except Exception as _intro_err:
                 print(f"[Intro] Non-fatal: {_intro_err}")
-
         short_out = os.path.join(SHORTS_DIR, f"{video_id}_short.mp4")
-        script_data["short_clip_path"] = cut_short_clip(video_path, short_out, script_data=script_data)
-
-        # Generate styled thumbnail; fall back to raw frame extraction on failure
-        thumb_path = os.path.join(FINAL_DIR, f"{video_id}_thumb.jpg")
+        script_data["short_clip_path"] = cut_short_clip(
+            video_path, short_out, script_data=script_data
+        )
+        thumb_path        = os.path.join(FINAL_DIR, f"{video_id}_thumb.jpg")
         _thumb_candidates = [p for p in all_image_paths[:5] if p and os.path.exists(p)]
         _thumb = None
         if _thumb_candidates:
@@ -6647,10 +6778,10 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
                 from agents.thumbnail_generator import create_thumbnail as _mk_thumb, select_best_image as _sbi
                 _thumb_src = _sbi(_thumb_candidates)
                 _thumb = _mk_thumb(
-                    image_path  = _thumb_src,
-                    title       = script_data.get("title", ""),
-                    output_path = thumb_path,
-                    language    = language,
+                    image_path=_thumb_src,
+                    title=script_data.get("title", ""),
+                    output_path=thumb_path,
+                    language=language,
                 )
             except Exception as _te:
                 print(f"[Thumb] Non-fatal: {_te}")
@@ -6659,7 +6790,7 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
         if _thumb:
             script_data["thumbnail_path"] = _thumb
 
-    # ── Quality processing (long videos only) ─────────────────────────────────
+    # ── Quality processing ─────────────────────────────────────────────────
     if not is_short and video_path and os.path.exists(video_path):
         try:
             import sys as _sys
@@ -6667,11 +6798,11 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
             if _proj_root not in _sys.path:
                 _sys.path.insert(0, _proj_root)
             from video_quality import process_video as _process_video
-            _base = os.path.splitext(os.path.basename(video_path))[0]
+            _base      = os.path.splitext(os.path.basename(video_path))[0]
             long_path  = os.path.abspath(os.path.join("output_videos", f"{_base}_long.mp4"))
             short_path = os.path.abspath(os.path.join("output_videos", f"{_base}_short.mp4"))
             if os.path.exists(long_path) and os.path.exists(short_path):
-                print(f"[Quality] Already processed, skipping — Long: {long_path} | Short: {short_path}")
+                print(f"[Quality] Already processed — Long: {long_path} | Short: {short_path}")
                 video_path = long_path
                 script_data["short_clip_path"] = short_path
             else:
@@ -6686,22 +6817,19 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
                         video_path = long_path
                     else:
                         print(f"[Quality] Long output missing — keeping original: {video_path}")
-                    print(f"[Quality] Short path: {short_path}")
-                    print(f"[Quality] Short exists: {os.path.exists(short_path)}")
                     if short_ok and os.path.exists(short_path):
                         print(f"[Quality] Using short: {short_path}")
                         script_data["short_clip_path"] = short_path
                     else:
-                        print(f"[Quality] Short output missing — keeping existing short clip")
-            # Fallback safety: verify the assigned short still exists on disk
+                        print("[Quality] Short output missing — keeping existing short clip")
             _assigned = script_data.get("short_clip_path", "")
             if _assigned and not os.path.exists(_assigned):
-                print(f"[Quality] WARNING: assigned short_clip_path does not exist: {_assigned} — clearing")
+                print(f"[Quality] WARNING: short_clip_path missing: {_assigned} — clearing")
                 script_data.pop("short_clip_path", None)
         except Exception as _qe:
             print(f"[Quality] Processing skipped (non-fatal): {_qe}")
 
-    # ── Cleanup temp_clips ────────────────────────────────────────────────────
+    # ── Cleanup ────────────────────────────────────────────────────────────
     try:
         _tc = os.path.abspath("temp_clips")
         if os.path.isdir(_tc):
@@ -6709,5 +6837,22 @@ def create_video(script_data: dict, video_id: str, custom_audio_path: str = "", 
             print("[Clip] temp_clips cleaned up")
     except Exception as _cleanup_err:
         print(f"[Clip] temp_clips cleanup skipped (non-fatal): {_cleanup_err}")
+    return video_path or ""
 
-    return video_path
+
+# ── Main entry point (dispatcher) ────────────────────────────────────────────
+
+def create_video(
+    script_data: dict,
+    video_id: str,
+    custom_audio_path: str = "",
+    user_images: list | None = None,
+    user_videos: list | None = None,
+) -> str:
+    """Dispatcher: routes to run_fast_pipeline() or run_full_pipeline()."""
+    global _PIPELINE_START
+    _PIPELINE_START = time.time()
+    if PIPELINE_MODE == "fast":
+        return run_fast_pipeline(script_data, video_id, custom_audio_path, user_images, user_videos)
+    else:
+        return run_full_pipeline(script_data, video_id, custom_audio_path, user_images, user_videos)
