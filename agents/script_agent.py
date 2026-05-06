@@ -25,6 +25,11 @@ _FALLBACK_MODELS = [
 ]
 
 
+def safe_lower(v) -> str:
+    """Return v.lower() or '' — never raises AttributeError on None."""
+    return (v or "").lower() if isinstance(v, str) else "" if v is None else str(v).lower()
+
+
 def _groq_call(**kwargs):
     """Try each model with one 40-second retry on rate limit before moving to fallback."""
     import time
@@ -1243,9 +1248,9 @@ def _is_shopmart() -> bool:
 
 def _validate_on_topic(script: str, topic_name: str, series_label: str) -> bool:
     """Return True if script mentions both the real person and the show/movie."""
-    t = script.lower()
-    t_words = [w for w in topic_name.lower().split() if len(w) > 3]
-    s_words = [w for w in series_label.lower().split() if len(w) > 3]
+    t = safe_lower(script)
+    t_words = [w for w in safe_lower(topic_name).split() if len(w) > 3]
+    s_words = [w for w in safe_lower(series_label).split() if len(w) > 3]
     topic_ok  = any(w in t for w in t_words)  if t_words  else True
     series_ok = any(w in t for w in s_words)  if s_words  else True
     return topic_ok and series_ok
@@ -1339,7 +1344,7 @@ DOCUMENTARY_ONLY_TOPICS = [
 
 def get_script_angle(topic_text: str, series_info: tuple | None) -> str:
     """Return 'documentary' for topics with no movie/series, else 'series'."""
-    topic_lower = topic_text.lower()
+    topic_lower = safe_lower(topic_text)
     for doc_topic in DOCUMENTARY_ONLY_TOPICS:
         if doc_topic in topic_lower:
             return "documentary"
@@ -1403,7 +1408,7 @@ def load_queued_part2() -> dict | None:
 
 def _is_hemedti_topic(topic_text: str) -> bool:
     """Return True if the topic is about Hemedti / RSF Sudan."""
-    t = topic_text.lower()
+    t = safe_lower(topic_text)
     return any(k in t for k in ["hemedti", "حميدتي", "dagalo", "محمد حمدان", "rsf sudan"])
 
 
@@ -2468,24 +2473,25 @@ def _write_darkcrimed_script(topic: dict) -> dict:
     wiki_real_person  = research.get("real_person") or topic.get("topic", "")
 
     # ── PART 1: Script body ───────────────────────────────────────────────────
-    _si_long = get_series_for_person(topic["topic"])
-    _angle   = get_script_angle(topic["topic"], _si_long)
+    _topic_str = topic.get("topic") or ""
+    _si_long = get_series_for_person(_topic_str)
+    _angle   = get_script_angle(_topic_str, _si_long)
 
     # Documentary-only topics: use investigative prompt, skip series comparison, early return
     if _angle == "documentary":
         user_note    = research.get("user_discovery", "") or topic.get("user_note", "")
         part_number  = detect_part_number(user_note)
-        print(f"[Script] Documentary angle detected for: {topic['topic']} (part={part_number})")
+        print(f"[Script] Documentary angle detected for: {_topic_str} (part={part_number})")
 
         _raw_doc         = _write_documentary_script(topic, research, part_number)
         _raw_doc         = check_hallucination(_raw_doc)
         _raw_doc         = fix_first_mention(_raw_doc, is_arabic=False)
         script_text      = validate_script(_raw_doc)
-        _series_name_raw = _si_long[0] if _si_long else topic.get("niche", topic["topic"])
+        _series_name_raw = _si_long[0] if _si_long else topic.get("niche", _topic_str)
         _series_type_raw = "Documentary"
 
         # Hemedti-specific title overrides
-        _topic_lower = topic["topic"].lower()
+        _topic_lower = safe_lower(_topic_str)
         if "hemedti" in _topic_lower or "حميدتي" in _topic_lower or "dagalo" in _topic_lower:
             if part_number == 1:
                 doc_title = (

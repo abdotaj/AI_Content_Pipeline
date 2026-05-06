@@ -87,8 +87,9 @@ def _make_video(script_data: dict, video_id: str, stats: dict,
             return path
         raise RuntimeError("create_video returned no file")
     except Exception as e:
-        _log("VideoGen", f"{video_id}: {e}", "ERROR")
-        send_message(f"[FAST] Video failed for {video_id}: {e}")
+        traceback.print_exc()
+        _log("VideoGen", f"{video_id}: {type(e).__name__}: {e}", "ERROR")
+        send_message(f"[FAST] Video failed for {video_id}: {type(e).__name__}: {e}")
         stats["errors"] += 1
         return ""
 
@@ -157,8 +158,9 @@ def run_pipeline() -> None:
     try:
         en_long = write_script(topic, language="english")
     except Exception as e:
-        send_message(f"[FAST] Script failed: {e}")
-        _log("Scripts", str(e), "ERROR")
+        traceback.print_exc()
+        send_message(f"[FAST] Script failed: {type(e).__name__}: {e}")
+        _log("Scripts", f"{type(e).__name__}: {e}", "ERROR")
         return
 
     # Enforce minimum duration.
@@ -222,7 +224,8 @@ def run_pipeline() -> None:
         ar_long["angle_hook"]  = en_long.get("angle_hook", "")
         _log("Scripts", "Arabic script done", "OK")
     except Exception as e:
-        _log("Scripts", f"Arabic translation failed (non-fatal): {e}", "WARN")
+        traceback.print_exc()
+        _log("Scripts", f"Arabic translation failed (non-fatal): {type(e).__name__}: {e}", "WARN")
         ar_long = dict(en_long)
         ar_long["language"] = "arabic"
 
@@ -231,7 +234,8 @@ def run_pipeline() -> None:
         en_long["short_script_en"] = _short_data.get("short_script_en", "")
         ar_long["short_script_ar"] = _short_data.get("short_script_ar", "")
     except Exception as e:
-        _log("Scripts", f"Short script failed (non-fatal): {e}", "WARN")
+        traceback.print_exc()
+        _log("Scripts", f"Short script failed (non-fatal): {type(e).__name__}: {e}", "WARN")
 
     # ── STEP 3: Content library (single attempt) ──────────────────────────────
     _topic_for_media             = en_long.get("topic", "")
