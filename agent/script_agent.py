@@ -4431,11 +4431,11 @@ Write ONLY the spoken words. No headings. No labels. No explanations."""
 
 
 def write_scripts(topics: list[dict]) -> list[dict]:
-    """Write English script then translate to Arabic for each topic."""
+    """Write English script then generate Arabic for each topic."""
     scripts = []
     for topic in topics:
-        en_script = write_script(topic, language="english")   # YouTube
-        ar_script = translate_script(en_script)                # TikTok + X
+        en_script = write_script(topic, language="english")
+        ar_script = translate_script(en_script, research=topic.get("research"))
         scripts.append(ar_script)
         scripts.append(en_script)
     return scripts
