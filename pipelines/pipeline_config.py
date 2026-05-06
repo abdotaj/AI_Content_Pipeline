@@ -15,6 +15,12 @@
 # Both modes must produce professional Arabic documentary videos.
 # Neither mode generates outputs under 10 minutes.
 #
+# RUNTIME POLICY:
+#   There is NO hard upper limit. The pipeline generates the best documentary
+#   possible for the topic — even if that means 20, 40, or 60 minutes.
+#   Only the minimum quality floor is enforced.
+#   Soft preferred ranges exist as guidance only, never as hard caps.
+#
 # PIPELINE_MODE must already be set via os.environ before this module loads.
 
 import os
@@ -25,22 +31,21 @@ PIPELINE_MODE: str = os.getenv("PIPELINE_MODE", "fast").lower().strip()
 WORDS_PER_MINUTE: int = 156      # Arabic narration pace (ElevenLabs)
 WORDS_PER_MINUTE_EN: int = 163   # English TTS is slightly faster
 
-# ── Target video durations ────────────────────────────────────────────────────
-# Both modes: 10-15 min default long-form.
-# FULL mode can be scaled to 30/60 min by raising SCRIPT_WORD_MAX.
-TARGET_VIDEO_MINUTES_MIN: int = 10
-TARGET_VIDEO_MINUTES_MAX: int = 15
+# ── Preferred video duration range (guidance only, not enforced) ──────────────
+# Topics with deeper investigation naturally run longer — that is correct.
+# FAST soft range:  10–20 min     FULL soft range: 15–40 min
+TARGET_VIDEO_MINUTES_MIN: int = 10    # used only as quality floor reference
+TARGET_VIDEO_MINUTES_MAX: int = 40    # soft advisory — no trimming applied
 
 # ── Script word targets ───────────────────────────────────────────────────────
 # SAME for both modes — quality must not differ between FAST and FULL.
 #
 #   10 min × 156 WPM = 1,560 words  ← hard abort floor (never go below)
 #   11.5 min × 156 WPM = 1,800 words ← preferred production minimum
-#   16 min × 156 WPM = 2,500 words  ← ceiling
+#   NO upper ceiling — the story determines the length.
 #
 SCRIPT_WORD_FLOOR: int = 1_560    # hard abort threshold — below this = aborted
-SCRIPT_WORD_MIN:   int = 1_800    # preferred minimum; warning if below
-SCRIPT_WORD_MAX:   int = 2_500    # hard ceiling
+SCRIPT_WORD_MIN:   int = 1_800    # preferred minimum; log note if below (not an error)
 
 # ── GitHub Actions job timeouts ───────────────────────────────────────────────
 # FAST target: 10-30 min actual processing → 90 min timeout (safety margin)

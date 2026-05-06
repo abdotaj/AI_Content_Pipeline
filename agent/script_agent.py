@@ -160,9 +160,11 @@ def clean_word_count(text: str) -> int:
 
 # Both FAST and FULL modes enforce the same script quality standards.
 # 11.5 min × 156 WPM = 1,800 words (preferred minimum)
-# 16 min × 156 WPM = 2,500 words (ceiling)
+# NO upper ceiling — topic depth determines length.
+# LONG_SCRIPT_MAX_WORDS is set high enough to never trigger in practice;
+# it only exists to catch runaway generation bugs (> ~60 min).
 LONG_SCRIPT_MIN_WORDS: int = 1_800
-LONG_SCRIPT_MAX_WORDS: int = 2_500
+LONG_SCRIPT_MAX_WORDS: int = 9_750   # ~60 min safety valve — not a target
 
 
 def _cap_script_max_words(script_text: str, max_words: int = LONG_SCRIPT_MAX_WORDS) -> str:
@@ -220,10 +222,20 @@ def _cap_script_max_words(script_text: str, max_words: int = LONG_SCRIPT_MAX_WOR
 
 _TTS_WPM = {"english": 145, "arabic": 130}
 
-# Hard runtime caps (minutes) by mode
+# Runtime floors (minutes) by mode — NO upper caps enforced.
+# Topic depth determines length. These are quality minimums only.
+_RUNTIME_FLOORS = {
+    "full":  10,   # abort if EN script < 10 min
+    "fast":  10,   # abort if EN script < 10 min
+    "short": 0,    # shorts have no minimum (governed by word targets)
+}
+
+# Legacy alias — kept for any callers that still reference _RUNTIME_CAPS.
+# Max values are set to 999 (never triggered) to preserve the dict shape
+# without silently breaking anything that reads .get("max").
 _RUNTIME_CAPS = {
-    "full":  {"min": 10, "max": 14},
-    "fast":  {"min": 8,  "max": 10},
+    "full":  {"min": 10, "max": 999},
+    "fast":  {"min": 10, "max": 999},
     "short": {"min": 0,  "max": 1.5},
 }
 
@@ -237,8 +249,9 @@ def estimate_runtime_minutes(word_count: int, language: str = "english") -> floa
 def trim_to_runtime_budget(script_text: str, max_minutes: float,
                            language: str = "english") -> str:
     """
-    Hard-trim script so estimated spoken duration stays under max_minutes.
-    Applies BEFORE TTS — avoids expensive re-generation after the fact.
+    Safety-valve trim — only use when script would genuinely exceed an
+    extreme threshold (e.g. > 60 min).  Do NOT call this to enforce a
+    "preferred" target; quality and storytelling take priority over runtime.
     Preserves [SECTION:] markers; removes excess content from the end.
     """
     wpm = _TTS_WPM.get(language.lower(), 145)
@@ -2133,18 +2146,18 @@ PREVIOUS CHAPTERS (context only — do NOT repeat anything from them):
     )
 
     total_real = clean_word_count(full_script)
-    if total_real > LONG_SCRIPT_MAX_WORDS:
-        full_script = _cap_script_max_words(full_script, LONG_SCRIPT_MAX_WORDS)
-        total_real = clean_word_count(full_script)
     total_raw  = len(full_script.split())
     minutes    = total_real / 163  # ~163 wpm for documentary English narration
     print(f"[Script] Total English: {total_real} real words (raw {total_raw}) "
           f"→ Est. runtime: ~{minutes:.0f} min")
 
     if total_real < LONG_SCRIPT_MIN_WORDS:
-        print(f"[Script] WARNING: English total {total_real} real words — below {LONG_SCRIPT_MIN_WORDS:,} target, may be short")
+        print(f"[Script] NOTE: {total_real} words (~{minutes:.0f} min) — below preferred minimum "
+              f"{LONG_SCRIPT_MIN_WORDS:,}w. Proceeding — quality check recommended.")
     elif total_real > LONG_SCRIPT_MAX_WORDS:
-        print(f"[Script] WARNING: English total {total_real} real words — above {LONG_SCRIPT_MAX_WORDS:,} cap, may run long")
+        # Safety valve only — extremely rare; cap at ~60 min to prevent runaway generation
+        print(f"[Script] Safety cap: {total_real}w > {LONG_SCRIPT_MAX_WORDS}w — trimming to ~60 min")
+        full_script = _cap_script_max_words(full_script, LONG_SCRIPT_MAX_WORDS)
 
     return full_script
 
@@ -2774,12 +2787,10 @@ Do not summarize — give full detailed information."""
         print(f"[Fallback] All AI providers returned empty — generating emergency backup script")
         script_text = _emergency_backup_script(topic["topic"], series_label)
 
-    # Final hard cap for YouTube-safe runtime in draft/publish workflows.
-    script_text = _cap_script_max_words(script_text, LONG_SCRIPT_MAX_WORDS)
-    # Runtime budget: trim BEFORE TTS so we never generate 15-min audio for a 10-min slot
-    _pipeline_mode = os.getenv("PIPELINE_MODE", "full").lower()
-    _mode_cap = _RUNTIME_CAPS.get(_pipeline_mode, _RUNTIME_CAPS["full"])
-    script_text = trim_to_runtime_budget(script_text, _mode_cap["max"], language="english")
+    # Safety valve: only triggers for runaway generation (> ~60 min)
+    if clean_word_count(script_text) > LONG_SCRIPT_MAX_WORDS:
+        print(f"[Script] Safety cap applied (> {LONG_SCRIPT_MAX_WORDS}w)")
+        script_text = _cap_script_max_words(script_text, LONG_SCRIPT_MAX_WORDS)
 
     # ── Entity contamination guard ────────────────────────────────────────────
     if _dc_active_entity:

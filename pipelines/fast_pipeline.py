@@ -246,11 +246,9 @@ def run_pipeline() -> None:
              f"Runtime target reached after {_retry} expansion(s): {_en_wc} words (~{_est_min} min)",
              "OK")
 
+    _log("Scripts", f"Script: {_en_wc} words — Est. runtime: ~{_est_min} min", "OK")
     if _en_wc < SCRIPT_WORD_MIN:
-        _log("Scripts", f"Script below preferred minimum: {_en_wc} words (~{_est_min} min) — target {SCRIPT_WORD_MIN}+", "WARN")
-        send_message(f"[FAST] Script short ({_en_wc} words ~{_est_min} min) — proceeding but check quality")
-    else:
-        _log("Scripts", f"Length OK: {_en_wc} words (~{_est_min} min)", "OK")
+        _log("Scripts", f"Below preferred minimum ({SCRIPT_WORD_MIN}w) — proceeding; check pacing", "WARN")
 
     # ── Send English script preview to Telegram ───────────────────────────────
     _ctrl.set_latest_script(en_long)
