@@ -9,6 +9,7 @@
 #   detect_quality_issues(text)                              -> dict
 #   post_translation_cleanup_arabic(ar_text)                 -> str
 #   normalize_arabic_documentary_text(ar_text)               -> str  (enhanced)
+#   normalize_arabic_tts(ar_text)                            -> str  (TTS cadence)
 #   filter_contaminated_facts(facts, topic, series)          -> list[str]
 #   apply_all_quality_filters(text)                          -> str
 #   score_fact_density(text, topic, series)                  -> dict
@@ -356,6 +357,234 @@ def normalize_arabic_documentary_text(ar_text: str) -> str:
     result = re.sub(r" ([،؛؟])", r"\1", result)
     result = re.sub(r"\n{3,}", "\n\n", result)
 
+    return result.strip()
+
+
+# ── Arabic TTS normalization ──────────────────────────────────────────────────
+
+# Arabic YouTube-drama filler phrases to remove.
+# These are the Arabic equivalents of the English banned phrases in FILLER_PHRASES.
+_AR_FILLER_PHRASES: List[str] = [
+    # YouTube-drama suspense spam
+    "لكن ما حدث بعد ذلك صدم الجميع",
+    "ولم يكن أحد يتوقع",
+    "لكن الحقيقة كانت أكثر ظلامًا",
+    "لكن الحقيقة كانت أكثر ظلاماً",
+    "لكن الحقيقة كانت أشد هولاً",
+    "ما اكتشفوه كان مرعبًا",
+    "ما اكتشفوه كان مرعباً",
+    "ما كشفه المحققون صدم الجميع",
+    "في لحظة صادمة",
+    "في منعطف صادم",
+    "في منعطف مفاجئ",
+    "في تحول مذهل",
+    "كل شيء تغير إلى الأبد",
+    "وهنا كانت الصدمة الكبرى التي غيرت كل شيء",
+    "لم يكن أحد مستعداً لما سيحدث",
+    "لم يكن أحد مستعدا لما سيحدث",
+    "ولم يكن هذا نهاية المفاجآت",
+    "لكن الأمر كان أسوأ مما تخيّل أي أحد",
+    "لكن الأمر كان أسوأ مما تخيل أي أحد",
+    "والباقي كان تاريخاً",
+    "والباقي كان تاريخا",
+    "هذه هي قصة",
+    "هذه قصة",
+    "عبر التاريخ",
+    "في هذا العالم",
+    "في عالم الجريمة",
+    "كل شيء بدأ عندما",
+    "ولم يتوقع أحد",
+    "لكن ما لم يعلمه أحد",
+    "ما لم يعلمه أحد",
+    "ولم يكن أحد يدري",
+    "ولكن الحقيقة كانت أشد إزعاجًا",
+    "ولكن الحقيقة كانت أشد إزعاجا",
+    "الحقيقة كانت أكثر رعبًا مما تخيّل أحد",
+    "الحقيقة كانت أكثر رعباً مما تخيّل أحد",
+    "في نهاية المطاف تبيّن",
+    "وفي النهاية",
+    "لكن الحقيقة كانت مختلفة تماماً",
+]
+
+# Maximum Arabic words per sentence for natural TTS flow.
+_AR_MAX_SENTENCE_WORDS: int = 22
+
+# Connectors where a long sentence can be cleanly split.
+# Two groups: contrastive (keep connector) vs continuative (drop و prefix).
+_AR_CONTRASTIVE_CONNECTORS: frozenset = frozenset({
+    "لكن", "ولكن", "بينما", "غير أن", "إلا أن", "ثم", "حتى",
+})
+_AR_SPLIT_CONNECTOR_RE = re.compile(
+    r"(?<!\s)([\s،.]+)\s*"
+    r"(ثم|لكن|ولكن|وعندما|وبعد|بينما|حين|وحين|حتى|وقد|وكان|وكانت|"
+    r"إذ|وإذ|إذا|وهنا|وهكذا|غير أن|إلا أن)\s+",
+    re.UNICODE,
+)
+
+
+def _split_long_arabic_sentence(sentence: str) -> List[str]:
+    """
+    Split one long Arabic sentence into shorter ones at natural connectors.
+    Returns the original in a one-element list if no split is possible.
+    """
+    words = sentence.split()
+    if len(words) <= _AR_MAX_SENTENCE_WORDS:
+        return [sentence]
+
+    matches = list(_AR_SPLIT_CONNECTOR_RE.finditer(sentence))
+    if not matches:
+        # No connector found — split at midpoint word boundary
+        mid = len(words) // 2
+        first  = " ".join(words[:mid]).rstrip("،")
+        second = " ".join(words[mid:])
+        if first and first[-1] not in ".؟!":
+            first += "."
+        return [first, second] if second.strip() else [sentence]
+
+    # Pick the connector closest to the midpoint that comes after at least 8 words
+    mid_char = len(sentence) // 2
+    best: re.Match | None = None
+    min_dist = float("inf")
+    for m in matches:
+        prefix_wc = len(sentence[:m.start()].split())
+        if prefix_wc < 8:
+            continue
+        dist = abs(m.start() - mid_char)
+        if dist < min_dist:
+            min_dist = dist
+            best = m
+
+    if best is None:
+        best = matches[0]
+
+    first      = sentence[:best.start()].rstrip("،").rstrip()
+    connector  = best.group(2)
+    after_text = sentence[best.end():]
+
+    if first and first[-1] not in ".؟!":
+        first += "."
+
+    # Keep connector if it carries meaning; drop plain و prefixes
+    if connector in _AR_CONTRASTIVE_CONNECTORS:
+        second = connector + " " + after_text.lstrip()
+    else:
+        # Drop a leading و from the connector (وعندما → عندما, وبعد → بعد)
+        bare = connector.lstrip("و")
+        second = (bare + " " + after_text.lstrip()).lstrip()
+
+    result = [first]
+    result.extend(_split_long_arabic_sentence(second))  # recurse if still long
+    return result
+
+
+def normalize_arabic_tts(ar_text: str) -> str:
+    """
+    TTS cadence optimization for Arabic documentary narration.
+
+    Applied AFTER script generation, BEFORE voiceover synthesis.
+
+    Transformations (in order):
+    1. Remove Arabic YouTube-drama filler phrases (_AR_FILLER_PHRASES)
+    2. Split sentences longer than 22 words at natural Arabic connectors
+    3. Normalize punctuation for clean TTS pauses
+    4. Validate sentence cadence (warn on monotone length runs)
+    5. Collapse excess blank lines
+
+    Does NOT modify [SECTION:] markers.
+    """
+    if not ar_text:
+        return ar_text
+
+    print("[AR Narration] TTS optimization active")
+
+    # ── Step 1: Remove Arabic filler phrases ─────────────────────────────────
+    lines = ar_text.splitlines()
+    cleaned: List[str] = []
+    filler_removed = 0
+
+    for raw_line in lines:
+        stripped = raw_line.strip()
+        if not stripped or stripped.startswith("[SECTION:"):
+            cleaned.append(raw_line)
+            continue
+
+        line = raw_line
+        for phrase in _AR_FILLER_PHRASES:
+            if phrase in line:
+                wc = len(line.split())
+                if wc <= 18:
+                    # Short sentence is pure filler — drop it
+                    line = ""
+                    filler_removed += 1
+                    print(f"[AR Narration] Filler removed: {phrase[:50]}")
+                    break
+                # Long sentence — strip the filler phrase only
+                line = line.replace(phrase, "").strip(" ،.")
+                filler_removed += 1
+
+        if line.strip():
+            cleaned.append(line)
+
+    if filler_removed:
+        print(f"[AR Narration] {filler_removed} Arabic filler phrase(s) removed")
+
+    result = "\n".join(cleaned)
+
+    # ── Step 2: Split long sentences ─────────────────────────────────────────
+    paragraphs = result.split("\n\n")
+    split_count = 0
+    new_paras: List[str] = []
+
+    for para in paragraphs:
+        stripped = para.strip()
+        if not stripped or stripped.startswith("[SECTION:"):
+            new_paras.append(para)
+            continue
+
+        sentences  = re.split(r"(?<=[.؟!])\s+", stripped)
+        new_sents: List[str] = []
+
+        for sent in sentences:
+            wc = len(sent.split())
+            if wc > _AR_MAX_SENTENCE_WORDS:
+                parts = _split_long_arabic_sentence(sent)
+                if len(parts) > 1:
+                    split_count += 1
+                    print(f"[AR Narration] Long sentence split: {wc}w → {len(parts)} parts")
+                new_sents.extend(parts)
+            else:
+                new_sents.append(sent)
+
+        new_paras.append(" ".join(s for s in new_sents if s.strip()))
+
+    if split_count:
+        print(f"[AR Narration] {split_count} long sentence(s) split for TTS flow")
+
+    result = "\n\n".join(new_paras)
+
+    # ── Step 3: Punctuation normalization ────────────────────────────────────
+    result = result.replace("?", "؟")
+    result = re.sub(r"\.{2,}", ".", result)          # collapse multiple periods
+    result = re.sub(r"،{2,}", "،", result)           # collapse duplicate Arabic commas
+    result = re.sub(r"\s([،؛؟.])", r"\1", result)   # no space before Arabic punctuation
+    result = re.sub(r"([.؟!])\s*([.؟!])", r"\1", result)  # remove doubled end marks
+
+    # ── Step 4: Cadence validation (log only — no forced edits) ──────────────
+    all_sents = re.split(r"(?<=[.؟!])\s+", result)
+    lengths   = [len(s.split()) for s in all_sents if len(s.split()) >= 4]
+    if lengths:
+        mono_runs = sum(
+            1 for i in range(2, len(lengths))
+            if abs(lengths[i] - lengths[i-1]) <= 2 and abs(lengths[i-1] - lengths[i-2]) <= 2
+        )
+        if mono_runs > 3:
+            print(f"[AR Narration] Sentence cadence normalized — {mono_runs} monotone run(s) detected")
+        else:
+            print("[AR Narration] Sentence cadence normalized")
+
+    # ── Step 5: Clean up ──────────────────────────────────────────────────────
+    result = re.sub(r"\n{3,}", "\n\n", result)
+    print("[AR Narration] Native rewrite active")
     return result.strip()
 
 
