@@ -36,6 +36,7 @@ import uuid
 import time
 import datetime
 import traceback
+import requests
 from pathlib import Path
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -131,6 +132,168 @@ def get_duration(video_path: str) -> str:
         return "unknown"
 
 
+# ── Topic selection helpers ───────────────────────────────────────────────────
+
+def _normalize_topic_title(title: str) -> str:
+    """
+    Validate and clean a topic title before display.
+    Returns "" if the title is truncated, too short, or malformed.
+    """
+    if not title:
+        return ""
+    title = title.strip()
+    if len(title) < 15:
+        return ""
+    # Reject titles that end mid-word (truncated — no terminal punctuation
+    # and last word is suspiciously short)
+    if title[-1].isalnum():
+        last_word = title.split()[-1]
+        # A final word of 1–3 chars that isn't a common short word = truncation
+        short_ok = {"a", "an", "the", "of", "in", "at", "by", "on", "to", "up",
+                    "bc", "ad", "ce", "ad"}
+        if len(last_word) <= 3 and last_word.lower() not in short_ok:
+            return ""
+    return title
+
+
+def _tg_send(base: str, chat_id: str | int, text: str) -> None:
+    """Fire-and-forget Telegram message."""
+    try:
+        requests.post(
+            f"{base}/sendMessage",
+            json={"chat_id": chat_id, "text": text},
+            timeout=15,
+        )
+    except Exception as e:
+        print(f"[TOPIC] Telegram send failed: {e}")
+
+
+def _wait_for_topic_selection(
+    candidates: list[dict],
+    timeout_sec: int = 300,
+) -> dict | str | None:
+    """
+    Send numbered topic candidates to Telegram and wait for user selection.
+
+    Returns:
+      - topic dict  if user selects a number or /auto
+      - "CANCEL"    if user sends /cancel
+      - None        if timeout expires (caller should auto-select)
+
+    Supported replies: 1 / 2 / 3 / 4 · /auto · /cancel · /refresh
+    """
+    try:
+        from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+    except ImportError:
+        print("[TOPIC] Telegram config unavailable — skipping selection wait")
+        return None
+
+    base    = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
+    chat_id = TELEGRAM_CHAT_ID
+
+    # Normalize and filter candidates
+    valid: list[dict] = []
+    for c in candidates:
+        t = _normalize_topic_title(c.get("topic", ""))
+        if t:
+            valid.append({**c, "topic": t})
+
+    if not valid:
+        print("[TOPIC] No valid candidates after normalization — skipping selection")
+        return None
+
+    # Build the numbered menu
+    lines = ["[ANIMATION PIPELINE]\nSelect a topic:\n"]
+    for i, c in enumerate(valid, 1):
+        lines.append(f"{i}. {c['topic']}")
+    lines.append(f"{len(valid) + 1}. Auto-select best topic")
+    reply_hint = " / ".join(str(i) for i in range(1, len(valid) + 2))
+    lines.append(f"\nReply with: {reply_hint}")
+    lines.append("Or: /auto · /cancel · /refresh")
+    menu_text = "\n".join(lines)
+
+    # Advance the offset so we only see replies AFTER this message
+    _offset: int | None = None
+    try:
+        r = requests.get(
+            f"{base}/getUpdates",
+            params={"timeout": 0, "limit": 1},
+            timeout=10,
+        )
+        updates = r.json().get("result", [])
+        if updates:
+            _offset = updates[-1]["update_id"] + 1
+    except Exception:
+        pass
+
+    _tg_send(base, chat_id, menu_text)
+    print(f"[TOPIC] Candidate list generated — {len(valid)} topics sent to Telegram")
+    print(f"[TOPIC] Waiting for Telegram selection (timeout: {timeout_sec}s)")
+
+    deadline = time.time() + timeout_sec
+    while time.time() < deadline:
+        time.sleep(8)
+        remaining = int(deadline - time.time())
+
+        try:
+            params: dict = {
+                "timeout": 0,
+                "limit":   10,
+                "allowed_updates": ["message"],
+            }
+            if _offset is not None:
+                params["offset"] = _offset
+            r = requests.get(f"{base}/getUpdates", params=params, timeout=15)
+            if not r.ok:
+                continue
+            updates = r.json().get("result", [])
+        except Exception:
+            continue
+
+        for upd in updates:
+            _offset = upd["update_id"] + 1
+            msg_obj = upd.get("message", {})
+            if str(msg_obj.get("chat", {}).get("id", "")) != str(chat_id):
+                continue
+            text = (msg_obj.get("text") or "").strip()
+            cmd  = text.lower()
+
+            # Cancel
+            if cmd in ("/cancel", "cancel"):
+                print("[TOPIC] User cancelled via Telegram")
+                _tg_send(base, chat_id, "[ANIMATION PIPELINE] Cancelled.")
+                return "CANCEL"
+
+            # Auto-select
+            if cmd in ("/auto", "auto", str(len(valid) + 1)):
+                selected = valid[0]
+                print(f"[TOPIC] User requested auto-select → {selected['topic'][:60]}")
+                _tg_send(base, chat_id,
+                    f"[ANIMATION PIPELINE] Auto-selecting:\n{selected['topic']}\n\nStarting...")
+                return selected
+
+            # Re-send menu
+            if cmd == "/refresh":
+                _tg_send(base, chat_id, menu_text)
+                continue
+
+            # Number selection
+            try:
+                n = int(text)
+                if 1 <= n <= len(valid):
+                    selected = valid[n - 1]
+                    print(f"[TOPIC] User selected topic {n}: {selected['topic'][:60]}")
+                    _tg_send(base, chat_id,
+                        f"[ANIMATION PIPELINE] Selected:\n{selected['topic']}\n\nStarting generation...")
+                    return selected
+            except ValueError:
+                pass
+
+    # Timeout — let caller decide
+    print(f"[TOPIC] No Telegram reply in {timeout_sec}s — timeout")
+    return None
+
+
 # ── Main entry point ─────────────────────────────────────────────────────────
 
 def run_pipeline() -> None:
@@ -149,19 +312,56 @@ def run_pipeline() -> None:
 
     ensure_music_assets()
 
-    # ── STEP 1: Research ──────────────────────────────────────────────────────
-    print(f"\n{'='*50}\n  RESEARCH\n{'='*50}\n", flush=True)
-    _ctrl.update_stage("Research", "auto-selecting topic")
-    _log("Research", "Auto-selecting topic")
-    try:
-        topics = research_topics(count=1)
-        if not topics:
-            raise RuntimeError("research_topics returned empty list")
-        topic = topics[0]
-    except Exception as e:
-        send_message(f"[ANIM] Research failed: {e}")
-        _log("Research", str(e), "ERROR")
-        return
+    # ── STEP 1: Topic selection (Telegram-first) ──────────────────────────────
+    print(f"\n{'='*50}\n  TOPIC SELECTION\n{'='*50}\n", flush=True)
+
+    # Allow manual topic override via environment variable
+    _manual_topic = os.getenv("ANIM_TOPIC", "").strip()
+    _topic_wait_sec = int(os.getenv("ANIM_TOPIC_WAIT_SEC", "300"))
+
+    topic: dict = {}
+
+    if _manual_topic:
+        # User pre-supplied the topic — use immediately, no Telegram wait
+        _log("Research", f"Manual topic override: '{_manual_topic}'", "OK")
+        topic = {"topic": _manual_topic, "niche": _manual_topic}
+        _ctrl.set_topic(_manual_topic)
+        _ctrl.start()
+    else:
+        # Auto-discover candidates, let user choose via Telegram
+        _ctrl.update_stage("Research", "discovering topic candidates")
+        _log("Research", "Discovering topic candidates for Telegram selection")
+        try:
+            _candidates = research_topics(count=4)
+            if not _candidates:
+                raise RuntimeError("research_topics returned empty list")
+        except Exception as e:
+            send_message(f"[ANIM] Topic discovery failed: {e}")
+            _log("Research", str(e), "ERROR")
+            return
+
+        # Wait for user selection (blocking — up to _topic_wait_sec seconds)
+        _selection = _wait_for_topic_selection(_candidates, timeout_sec=_topic_wait_sec)
+
+        if _selection == "CANCEL":
+            _log("Research", "Pipeline cancelled via Telegram topic selection", "WARN")
+            return
+
+        if _selection is None:
+            # Timeout — auto-select best candidate and notify
+            topic = _candidates[0]
+            _auto_title = topic.get("topic", "")
+            print(f"[TOPIC] Auto-selected after timeout: {_auto_title[:60]}")
+            send_message(
+                f"[ANIMATION PIPELINE]\nNo selection received.\n"
+                f"Auto-selecting topic:\n{_auto_title}"
+            )
+            _log("Research", f"Auto-selected after timeout: '{_auto_title}'", "OK")
+        else:
+            topic = _selection
+
+        _ctrl.set_topic(topic.get("topic", ""))
+        _ctrl.start()
 
     topic_text  = topic.get("topic", "")
     topic_niche = topic.get("niche", "")
@@ -171,15 +371,16 @@ def run_pipeline() -> None:
         send_message(f"[ANIM] Fictional topic blocked: '{topic_text}'")
         return
 
-    _ctrl.set_topic(topic_text)
-    _ctrl.start()
-
     _log("Research", f"Topic: '{topic_text}'", "OK")
 
     # Hard reset: clear all identity/character/clip state from any previous run
     init_topic_lock(topic_text)
 
-    send_message(f"[ANIMATION PIPELINE] Topic: {topic_text}\n\nStarting animation generation...")
+    if _manual_topic:
+        send_message(f"[ANIMATION PIPELINE] Topic (manual): {topic_text}\n\nStarting animation generation...")
+
+    # ── STEP 1b: Deep research ────────────────────────────────────────────────
+    print(f"\n{'='*50}\n  RESEARCH\n{'='*50}\n", flush=True)
 
     series = topic_niche.split("behind")[-1].strip() if "behind" in topic_niche else topic_text
     _ctrl.update_stage("Research", f"deep research: {series}")

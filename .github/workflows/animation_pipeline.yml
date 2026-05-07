@@ -2,6 +2,15 @@ name: ANIMATION PIPELINE
 
 on:
   workflow_dispatch:
+    inputs:
+      topic:
+        description: 'Topic to use (leave blank to select via Telegram)'
+        required: false
+        default: ''
+      topic_wait_sec:
+        description: 'Seconds to wait for Telegram topic selection (default 300)'
+        required: false
+        default: '300'
 
 jobs:
   animation-pipeline:
@@ -71,6 +80,8 @@ jobs:
         env:
           PIPELINE_MODE:                     animation
           PYTHONUNBUFFERED:                  "1"
+          ANIM_TOPIC:                        ${{ github.event.inputs.topic }}
+          ANIM_TOPIC_WAIT_SEC:               ${{ github.event.inputs.topic_wait_sec || '300' }}
           VIDEOS_PER_DAY:                    "1"
           ENABLE_PREMIUM_INTRO:              "0"
           ANTHROPIC_API_KEY:                 ${{ secrets.ANTHROPIC_API_KEY }}
