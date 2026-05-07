@@ -55,7 +55,11 @@ from config_darkcrimed import (
     FINAL_DIR, CONTENT_DIR, YOUTUBE_TOKEN_FILE_EN, YOUTUBE_TOKEN_FILE_AR,
 )
 
-from agent.research_agent    import research_topics, research_series, mark_covered, is_fictional
+from agent.research_agent    import (
+    research_topics, research_series, mark_covered, is_fictional,
+    normalize_topic_title, extract_canonical_entities,
+    classify_topic_domain_with_context, semantic_confidence_score,
+)
 from agent.script_agent      import write_script, translate_script, generate_chapters, write_short_script, clean_word_count, expand_script_runtime
 from agent.animation_agent   import create_animation_video, init_topic_lock
 from agent.video_agent       import ensure_music_assets, cut_best_short
@@ -151,7 +155,7 @@ def _normalize_topic_title(title: str) -> str:
         # A final word of 1–3 chars that isn't a common short word = truncation
         short_ok = {"a", "an", "the", "of", "in", "at", "by", "on", "to", "up",
                     "bc", "ad", "ce", "ad"}
-        if len(last_word) <= 3 and last_word.lower() not in short_ok:
+        if len(last_word) <= 4 and last_word.lower() not in short_ok:
             return ""
     return title
 
@@ -375,6 +379,25 @@ def run_pipeline() -> None:
 
     # Hard reset: clear all identity/character/clip state from any previous run
     init_topic_lock(topic_text)
+
+    # ── Pre-research semantic gate ────────────────────────────────────────────
+    _entities   = extract_canonical_entities(topic_text)
+    _ctx_domain = classify_topic_domain_with_context(topic_text, _entities)
+    _conf       = semantic_confidence_score(topic_text, _entities)
+
+    _log("Research",
+         f"Domain: {_ctx_domain} | Confidence: {_conf:.2f} "
+         f"({'HIGH' if _conf >= 0.7 else 'MEDIUM' if _conf >= 0.4 else 'LOW'})")
+
+    if _conf < 0.4:
+        _msg = (
+            f"[ANIM] Topic rejected — confidence too low ({_conf:.2f}):\n"
+            f"'{topic_text[:80]}'\n\n"
+            f"Pipeline halted before research. Send a clearer topic."
+        )
+        _log("Research", f"LOW confidence ({_conf:.2f}) — aborting", "ERROR")
+        send_message(_msg)
+        return
 
     if _manual_topic:
         send_message(f"[ANIMATION PIPELINE] Topic (manual): {topic_text}\n\nStarting animation generation...")

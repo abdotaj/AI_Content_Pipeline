@@ -6,6 +6,7 @@ import random
 import json
 import time
 import datetime
+import re
 import requests
 from pathlib import Path
 
@@ -357,6 +358,299 @@ def classify_topic_domain(topic: str) -> str:
 
     print("[DOMAIN] default")
     return "default"
+
+
+# ── Topic integrity: normalization, entity extraction, confidence ──────────────
+
+_VALID_SHORT_TERMINALS: frozenset = frozenset({
+    "a", "an", "the", "of", "in", "at", "by", "on", "to", "up",
+    "bc", "ad", "ce", "i", "ii", "iii", "iv", "vi", "jr", "sr", "dr",
+})
+
+_ERA_PATTERNS_RE: list = [
+    re.compile(r"\b\d{1,4}\s*bce?\b", re.I),
+    re.compile(r"\b\d{1,4}\s*ad\b", re.I),
+    re.compile(r"\b\d{2,4}s\b"),
+    re.compile(r"\b\d{1,2}th\s+century\b", re.I),
+    re.compile(r"\b(19|20)\d{2}\b"),
+]
+
+_EVENT_TYPE_KEYWORDS: dict[str, list] = {
+    "murder":         ["murder", "killing", "homicide", "slaying"],
+    "fraud":          ["fraud", "scam", "ponzi", "embezzl", "swindle"],
+    "archaeological": ["archaeolog", "excavat", "unearthed", "ancient city"],
+    "assassination":  ["assassination", "assassin"],
+    "war":            ["world war", "civil war", "battle of"],
+    "heist":          ["heist", "robbery", "bank rob"],
+    "cartel":         ["cartel", "drug lord", "narco"],
+    "mafia":          ["mafia", "mob ", "yakuza", "camorra"],
+    "serial_killing": ["serial killer", "serial murder"],
+}
+
+
+def normalize_topic_title(topic: str) -> str:
+    """
+    Clean and repair a topic title.
+
+    Strips trailing truncation fragments — a last word of ≤4 chars that is not
+    a known valid terminal indicates the title was cut mid-word.
+
+    Example:
+        "The 1978 Murders that Inspired the Creation of Trust Me: The Fals"
+        → "The 1978 Murders that Inspired the Creation of Trust Me"
+
+    Returns "" if the title is unrecoverable (too short or fully malformed).
+    """
+    if not topic:
+        return ""
+    title = re.sub(r"[\s:—\-–,]+$", "", topic.strip()).strip()
+    if len(title) < 15:
+        return ""
+
+    words = title.split()
+    last_word = words[-1]
+
+    if len(last_word) <= 4 and last_word.lower() not in _VALID_SHORT_TERMINALS:
+        # Split on subtitle separators (: — –) and check whether the final
+        # subtitle part is entirely short words (likely a truncated subtitle)
+        parts = re.split(r"\s*[:\—–\-]\s*", title)
+        if len(parts) >= 2:
+            last_part_words = parts[-1].split()
+            if all(len(w) <= 4 for w in last_part_words):
+                repaired = re.sub(r"[\s:—–\-,]+$",
+                                  "", " — ".join(parts[:-1])).strip()
+                if len(repaired) >= 15:
+                    print(f"[TOPIC NORM] Repaired truncated subtitle: "
+                          f"'{topic[:70]}' → '{repaired}'")
+                    return repaired
+        # Fallback: strip the last word only
+        repaired = re.sub(r"[\s:—–\-,]+$", "",
+                          " ".join(words[:-1])).strip()
+        if len(repaired) >= 15:
+            print(f"[TOPIC NORM] Stripped truncated last word: "
+                  f"'{topic[:70]}' → '{repaired}'")
+            return repaired
+        return ""
+
+    return title
+
+
+def extract_canonical_entities(topic: str) -> dict:
+    """
+    Extract structured entities from a topic title (no external calls).
+
+    Returns:
+        adaptation_title — show/movie title referenced in the topic, or None
+        era              — year / period string found, or None
+        named_persons    — Title Case proper-noun sequences (≥2 words)
+        event_type       — "murder", "fraud", "archaeological", "general", etc.
+        domain           — from classify_topic_domain()
+    """
+    t = topic.strip()
+    t_lower = t.lower()
+
+    # Adaptation title
+    adaptation_title: str | None = None
+    _adapt_markers = (
+        "inspired by", "real story behind", "based on",
+        "inspired the creation of", "the real story of",
+        "true story behind", "real history behind", "creation of",
+    )
+    for marker in _adapt_markers:
+        if marker in t_lower:
+            idx = t_lower.find(marker) + len(marker)
+            tail = t[idx:].strip().lstrip(": ")
+            words_after = tail.split()[:6]
+            if words_after:
+                adaptation_title = " ".join(words_after).strip(".,: ")
+            break
+    if adaptation_title is None:
+        for show_key in _KNOWN_SHOW_CHARACTERS:
+            if show_key in t_lower:
+                adaptation_title = show_key.title()
+                break
+
+    # Era
+    era: str | None = None
+    for pat in _ERA_PATTERNS_RE:
+        m = pat.search(t)
+        if m:
+            era = m.group(0)
+            break
+
+    # Named persons: Title Case sequences of ≥2 words
+    _SKIP_TITLE_CASE: frozenset = frozenset({
+        "Real Story", "True Story", "Dark Crime", "Crime Decoded",
+    })
+    named_persons = [
+        nm for nm in re.findall(r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b", t)
+        if nm not in _SKIP_TITLE_CASE and len(nm.split()) <= 4
+    ]
+
+    # Event type
+    event_type = "general"
+    for etype, keywords in _EVENT_TYPE_KEYWORDS.items():
+        if any(kw in t_lower for kw in keywords):
+            event_type = etype
+            break
+
+    return {
+        "adaptation_title": adaptation_title,
+        "era":              era,
+        "named_persons":    named_persons,
+        "event_type":       event_type,
+        "domain":           classify_topic_domain(t),
+    }
+
+
+def classify_topic_domain_with_context(topic: str, entities: dict) -> str:
+    """
+    Refine domain classification using extracted entity context.
+
+    Upgrades the base domain when entity signals provide extra certainty:
+    - BCE era in era field → archaeology
+    - "inspired the creation of" phrase → tv_adaptation
+    - Specific event types in default domain → more specific domain
+    """
+    base = entities.get("domain") or classify_topic_domain(topic)
+    t_lower = topic.lower()
+    era = (entities.get("era") or "").lower()
+    event_type = entities.get("event_type") or ""
+
+    if re.search(r"\d+\s*bce?\b", era):
+        print(f"[DOMAIN CTX] BCE era '{era}' → archaeology")
+        return "archaeology"
+
+    if "inspired the creation" in t_lower or "inspired the making" in t_lower:
+        print("[DOMAIN CTX] adaptation-creation pattern → tv_adaptation")
+        return "tv_adaptation"
+
+    if event_type == "archaeological":
+        return "archaeology"
+    if event_type in ("cartel", "mafia") and base == "default":
+        return "organized_crime"
+    if event_type == "serial_killing" and base == "default":
+        return "serial_killer"
+
+    return base
+
+
+def semantic_confidence_score(
+    topic: str,
+    entities: dict,
+    wiki_text: str | None = None,
+) -> float:
+    """
+    Score topic integrity 0.0–1.0 before committing to full research.
+
+    HIGH   ≥ 0.7  — proceed normally
+    MEDIUM ≥ 0.4  — proceed with caution
+    LOW    < 0.4  — block pipeline (topic too ambiguous or malformed)
+    """
+    score = 0.0
+    t = topic.strip()
+
+    # Title length / completeness (up to 0.30)
+    if len(t) >= 40:
+        score += 0.20
+    elif len(t) >= 20:
+        score += 0.10
+
+    last_word = t.split()[-1] if t.split() else ""
+    if len(last_word) > 4 or last_word.lower() in _VALID_SHORT_TERMINALS:
+        score += 0.10  # not obviously truncated
+
+    # Named persons or era present (up to 0.25)
+    if entities.get("named_persons"):
+        score += 0.15
+    if entities.get("era"):
+        score += 0.10
+
+    # Domain specificity (up to 0.20)
+    score += 0.20 if entities.get("domain", "default") != "default" else 0.10
+
+    # Event type specificity (up to 0.15)
+    if entities.get("event_type", "general") != "general":
+        score += 0.15
+
+    # Wikipedia keyword overlap bonus (up to 0.10)
+    if wiki_text:
+        _stop = frozenset({
+            "with", "from", "that", "this", "have", "were", "been",
+            "their", "they", "what", "also", "more", "when",
+        })
+        t_words = {w for w in re.findall(r"[a-z]{4,}", t.lower())
+                   if w not in _stop}
+        if t_words:
+            w_lower = wiki_text.lower()
+            hits = sum(1 for w in t_words if w in w_lower)
+            overlap = hits / len(t_words)
+            score += 0.10 if overlap >= 0.5 else (0.05 if overlap >= 0.25 else 0.0)
+
+    score = min(score, 1.0)
+    label = "HIGH" if score >= 0.7 else ("MEDIUM" if score >= 0.4 else "LOW")
+    print(f"[CONFIDENCE] '{t[:60]}' → {score:.2f} ({label})")
+    return score
+
+
+def _validate_wikipedia_relevance(
+    wiki_text: str,
+    topic: str,
+    entities: dict,
+) -> bool:
+    """
+    Return True if the fetched Wikipedia page is semantically relevant.
+
+    Rejects:
+    - Disambiguation pages
+    - "List of …" pages
+    - Pages with <25% keyword overlap with the topic
+    - Archaeology topics where wiki has no archaeology vocabulary
+    """
+    if not wiki_text:
+        return False
+
+    header = wiki_text[:300].lower()
+
+    if "disambiguation" in header:
+        print("[WIKI VALID] Rejected: disambiguation page")
+        return False
+    if re.match(r"\s*list of", header):
+        print("[WIKI VALID] Rejected: 'List of …' page")
+        return False
+
+    _stop = frozenset({
+        "with", "from", "that", "this", "have", "were", "been",
+        "their", "they", "what", "also", "more", "when", "real",
+        "show", "film", "story", "series", "crime",
+    })
+    t_words = {w for w in re.findall(r"[a-z]{4,}", topic.lower())
+               if w not in _stop}
+
+    if not t_words:
+        return True  # can't validate — let through
+
+    wiki_full = wiki_text.lower()
+    hits = sum(1 for w in t_words if w in wiki_full)
+    overlap = hits / len(t_words)
+
+    if overlap < 0.25:
+        print(f"[WIKI VALID] Rejected: {overlap:.0%} overlap "
+              f"({hits}/{len(t_words)} topic words found)")
+        return False
+
+    # Archaeology domain check
+    if entities.get("domain") == "archaeology":
+        arch_kws = ["archaeolog", "excavat", "ancient", "biblical",
+                    "ruins", "tomb", "site", "bronze age"]
+        if not any(kw in wiki_full for kw in arch_kws):
+            print("[WIKI VALID] Rejected: archaeology topic but no "
+                  "archaeology vocabulary in wiki page")
+            return False
+
+    print(f"[WIKI VALID] Accepted: {overlap:.0%} overlap "
+          f"({hits}/{len(t_words)} topic words found)")
+    return True
 
 
 def _detect_show_topic(topic: str) -> tuple[bool, str | None]:
@@ -1231,6 +1525,18 @@ def research_series(topic: str, series_name: str | None = None, user_note: str |
     if not series_wiki and _is_show and _effective_show:
         series_wiki = fetch_wikipedia(_effective_show)
     print(f"[Research] Wikipedia: {'found' if person_wiki else 'not found'}")
+
+    # ── STEP 1b: Validate Wikipedia relevance ─────────────────
+    _wiki_entities = extract_canonical_entities(topic)
+    if person_wiki and not _validate_wikipedia_relevance(person_wiki, topic, _wiki_entities):
+        print(f"[Research] Wikipedia page irrelevant — trying alternative query")
+        _alt = fetch_wikipedia(f"{topic} historical true story")
+        if _alt and _validate_wikipedia_relevance(_alt, topic, _wiki_entities):
+            person_wiki = _alt
+            print("[Research] Alternative Wikipedia page accepted")
+        else:
+            person_wiki = None
+            print("[Research] Wikipedia discarded — proceeding with DuckDuckGo only")
 
     # ── STEP 2: DuckDuckGo (additional details) ────────────
     try:
