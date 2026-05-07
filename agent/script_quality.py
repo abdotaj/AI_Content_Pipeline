@@ -10,6 +10,8 @@
 #   post_translation_cleanup_arabic(ar_text)                 -> str
 #   normalize_arabic_documentary_text(ar_text)               -> str  (enhanced)
 #   normalize_arabic_tts(ar_text)                            -> str  (TTS cadence)
+#   validate_arabic_purity(ar_text)                          -> tuple[bool, list[str]]
+#   enforce_arabic_purity(ar_text)                           -> str
 #   filter_contaminated_facts(facts, topic, series)          -> list[str]
 #   apply_all_quality_filters(text)                          -> str
 #   score_fact_density(text, topic, series)                  -> dict
@@ -586,6 +588,145 @@ def normalize_arabic_tts(ar_text: str) -> str:
     result = re.sub(r"\n{3,}", "\n\n", result)
     print("[AR Narration] Native rewrite active")
     return result.strip()
+
+
+# ── Arabic purity validation ──────────────────────────────────────────────────
+
+# Max ratio of Latin-word tokens allowed in Arabic documentary text.
+_AR_LATIN_RATIO_THRESHOLD: float = 0.08  # >8% → impure
+
+# English words that commonly leak into Arabic LLM output untranslated.
+_AR_COMMON_LEAKAGE_WORDS: frozenset = frozenset({
+    "archaeological", "archaeologist", "archaeology", "excavation", "artifact",
+    "civilization", "dissent", "technology", "unwavering", "determination",
+    "unprecedented", "sustainability", "innovation", "transformation",
+    "implementation", "documentation", "investigation", "organization",
+    "administration", "communication", "integration", "foundation",
+    "operation", "resolution", "declaration", "constitution", "infrastructure",
+    "rehabilitation", "reconstruction", "interpretation", "collaboration",
+    "participation", "motivation", "assassination", "appreciation",
+    "nevertheless", "furthermore", "consequently", "simultaneously",
+    "additionally", "unfortunately", "predominantly", "significantly",
+})
+
+
+def validate_arabic_purity(text: str) -> tuple[bool, List[str]]:
+    """
+    Detect Latin/English leakage in Arabic documentary narration.
+
+    Checks:
+    - Latin word ratio (>8% of words → impure)
+    - Known English leakage words (untranslated terms)
+    - Hybrid Arabic-Latin tokens (e.g. "تتblur", "wordsكلام")
+
+    Returns (is_pure, issues_list).
+    """
+    if not text:
+        return True, []
+
+    issues: List[str] = []
+    lines = [ln for ln in text.splitlines() if ln.strip() and not ln.strip().startswith("[SECTION:")]
+    if not lines:
+        return True, []
+
+    total_words = 0
+    total_latin  = 0
+
+    for line in lines:
+        for word in line.split():
+            clean = re.sub(r'[^\w]', '', word, flags=re.UNICODE)
+            if not clean:
+                continue
+            total_words += 1
+            latin_chars  = len(re.findall(r'[a-zA-Z]', clean))
+            arabic_chars = len(re.findall(r'[؀-ۿ]', clean))
+            if latin_chars >= 3 and latin_chars > arabic_chars:
+                total_latin += 1
+                clow = clean.lower()
+                if clow in _AR_COMMON_LEAKAGE_WORDS:
+                    issues.append(f"Known leakage word: '{clean}'")
+
+    if total_words > 0:
+        ratio = total_latin / total_words
+        if ratio > _AR_LATIN_RATIO_THRESHOLD:
+            issues.insert(0, f"Latin word ratio {ratio:.1%} > {_AR_LATIN_RATIO_THRESHOLD:.0%} ({total_latin}/{total_words} words)")
+
+    # Hybrid token check (Arabic chars merged with Latin chars in one token)
+    hybrids = re.findall(r'[؀-ۿ]+[a-zA-Z]{2,}|[a-zA-Z]{2,}[؀-ۿ]+', text)
+    for h in hybrids[:5]:
+        issues.append(f"Hybrid Arabic-Latin token: '{h}'")
+
+    return len(issues) == 0, issues
+
+
+def enforce_arabic_purity(ar_text: str) -> str:
+    """
+    Remove Latin/English leakage from Arabic documentary narration.
+
+    Cleans:
+    - Standalone Latin words (≥3 alphabetic chars, >50% Latin)
+    - Hybrid Arabic-Latin tokens (e.g. "تتblur")
+    - Known English leakage words
+
+    Preserves: [SECTION:] markers, numbers, Arabic text, punctuation.
+    Applied AFTER normalize_arabic_tts().
+    """
+    if not ar_text:
+        return ar_text
+
+    is_pure, issues = validate_arabic_purity(ar_text)
+    if is_pure:
+        return ar_text
+
+    print(f"[AR Purity] {len(issues)} issue(s) detected — enforcing Arabic purity")
+    for issue in issues[:6]:
+        print(f"[AR Purity]   {issue}")
+
+    lines = ar_text.splitlines()
+    cleaned: List[str] = []
+
+    for line in lines:
+        if not line.strip() or line.strip().startswith("[SECTION:"):
+            cleaned.append(line)
+            continue
+
+        # Remove hybrid tokens: strip trailing Latin from Arabic, leading Latin before Arabic
+        line = re.sub(
+            r'([؀-ۿ]+)[a-zA-Z]{2,}',
+            r'\1',
+            line,
+        )
+        line = re.sub(
+            r'[a-zA-Z]{2,}([؀-ۿ]+)',
+            r'\1',
+            line,
+        )
+
+        # Remove standalone Latin words (≥3 alpha chars, predominantly Latin)
+        def _drop_latin(m: re.Match) -> str:
+            w = m.group()
+            core = re.sub(r'[^\w]', '', w, flags=re.UNICODE)
+            if not core:
+                return w
+            lat = len(re.findall(r'[a-zA-Z]', core))
+            arb = len(re.findall(r'[؀-ۿ]', core))
+            if lat >= 3 and lat > arb:
+                return ""
+            return w
+
+        line = re.sub(r'\S+', _drop_latin, line)
+        line = re.sub(r'[ \t]{2,}', ' ', line).strip()
+        if line:
+            cleaned.append(line)
+
+    result = "\n".join(cleaned)
+    result = re.sub(r'\n{3,}', '\n\n', result).strip()
+
+    removed = len(ar_text.split()) - len(result.split())
+    if removed > 0:
+        print(f"[AR Purity] Removed {removed} Latin/hybrid token(s)")
+    print("[AR Purity] Arabic purity enforced")
+    return result
 
 
 # ── Timeline & entity consistency validation ─────────────────────────────────

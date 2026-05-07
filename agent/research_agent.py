@@ -287,25 +287,108 @@ _KNOWN_SHOW_CHARACTERS: dict[str, list[dict]] = {
 
 _SHOW_TRIGGER_KEYWORDS = {"netflix", "hbo", "amazon", "show", "series", "season", "episode", "tv show", "streaming"}
 
+# ── Explicit adaptation markers — REQUIRED to activate show-cast logic ────────
+# A topic must contain one of these to be treated as a TV/film adaptation.
+# Keyword-only overlap (e.g. a show title appearing inside a different phrase)
+# is not sufficient.  This prevents "Ancient City of Gomorrah" from triggering
+# Gomorrah-series cast extraction.
+_ADAPTATION_EXPLICIT_MARKERS: frozenset = frozenset({
+    "series", "movie", "film", "netflix", "hbo", "amazon", "showtime",
+    "real story behind", "true story behind", "inspired by", "based on",
+    "tv show", "season ", "episode", "streaming", "adaptation",
+    "القصة الحقيقية وراء", "الفيلم الحقيقي", "المسلسل الحقيقي",
+})
+
+# ── Semantic domain keyword sets ──────────────────────────────────────────────
+_DOMAIN_KEYWORDS: dict[str, frozenset] = {
+    "archaeology": frozenset({
+        "archaeolog", "excavat", "ancient city", "ancient civili", "biblical",
+        "bronze age", "iron age", "prehistoric", "dig site", "dead sea",
+        "jordan valley", "holy land", "mesopotamia", "sodom", "gomorrah",
+        "jericho", "pompeii", "tomb", "unearthed", "radiocarbon", "ruins",
+        "ancient discovery", "archaeological discovery",
+    }),
+    "serial_killer": frozenset({
+        "serial killer", "serial murder", "dahmer", "bundy", "gacy", "btk",
+        "zodiac", "ripper", "strangler", "cannibal",
+    }),
+    "organized_crime": frozenset({
+        "mafia", "cartel", "mob", "camorra", "yakuza", "triads", "triad",
+        "drug lord", "crime boss", "gang lord", "narco",
+    }),
+    "fraud": frozenset({
+        "fraud", "ponzi", "embezzl", "insider trading", "wall street broker",
+        "securities fraud", "stockbroker",
+    }),
+    "war_historical": frozenset({
+        "world war", "civil war", "genocide", "holocaust", "revolution",
+        "assassination", "empire", "dynasty",
+    }),
+}
+
+
+def classify_topic_domain(topic: str) -> str:
+    """
+    Classify a topic into its primary semantic domain BEFORE any research.
+
+    Returns one of:
+      tv_adaptation   — explicit show/movie/series reference present
+      archaeology     — ancient sites, biblical, excavation
+      serial_killer   — serial murder, specific killers
+      organized_crime — mafia, cartel, gang
+      fraud           — financial crime, scam
+      war_historical  — war, genocide, historical event
+      default         — general true crime / biography
+
+    ONLY tv_adaptation activates show-cast extraction logic.
+    """
+    t = topic.lower()
+
+    # TV adaptation: ONLY if topic explicitly contains adaptation markers
+    if any(marker in t for marker in _ADAPTATION_EXPLICIT_MARKERS):
+        print(f"[DOMAIN] tv_adaptation (explicit adaptation marker in topic)")
+        return "tv_adaptation"
+
+    # Domain-specific classification (priority order)
+    for domain, keywords in _DOMAIN_KEYWORDS.items():
+        if any(kw in t for kw in keywords):
+            print(f"[DOMAIN] {domain}")
+            return domain
+
+    print("[DOMAIN] default")
+    return "default"
+
 
 def _detect_show_topic(topic: str) -> tuple[bool, str | None]:
     """
     Return (is_show_topic, canonical_show_name).
-    True when topic is a known show name or contains streaming/TV keywords.
+
+    ONLY returns True when the topic contains EXPLICIT adaptation markers
+    (e.g. "series", "movie", "real story behind", "netflix", etc.).
+    Keyword-overlap alone — e.g. a show title appearing as part of a different
+    phrase — is NOT sufficient.  This prevents topics like
+    "The Archaeological Discovery of the Ancient City of Gomorrah" from
+    activating the Gomorrah TV-series cast extraction.
     """
     t = topic.lower().strip()
-    # Exact match against known shows
+
+    # Guard: explicit adaptation marker required
+    if not any(marker in t for marker in _ADAPTATION_EXPLICIT_MARKERS):
+        print(f"[SHOW MODE] disabled — no explicit adaptation reference in topic")
+        return False, None
+
+    print(f"[SHOW MODE] explicit adaptation detected")
+
+    # Match against known shows
     for show_key in _KNOWN_SHOW_CHARACTERS:
         if show_key in t:
             return True, show_key
-    # Check REAL_STORY_SHOWS list
     for show in REAL_STORY_SHOWS:
         if show in t:
             return True, show
-    # Keyword triggers
     if any(kw in t for kw in _SHOW_TRIGGER_KEYWORDS):
         return True, None
-    return False, None
+    return True, None
 
 
 def _fetch_show_cast_from_wikipedia(show_name: str) -> list[dict]:
@@ -1113,7 +1196,14 @@ def research_series(topic: str, series_name: str | None = None, user_note: str |
     if user_note:
         print(f"[Research] User note: {user_note[:100]}")
 
+    # ── Domain lock: classify semantic domain BEFORE any show detection ────────
+    _topic_domain = classify_topic_domain(topic)
+    print(f"[DOMAIN LOCK] active — domain: {_topic_domain}")
+
     # ── STEP 0: Detect if topic is a TV show and extract cast ─
+    # _detect_show_topic now requires explicit adaptation markers, so
+    # non-adaptation domains (archaeology, war_historical, etc.) return False
+    # here and skip cast extraction entirely.
     _is_show, _show_key = _detect_show_topic(topic)
     _effective_show = series_name or (_show_key and _show_key.title()) or None
     show_characters: list[dict] = []

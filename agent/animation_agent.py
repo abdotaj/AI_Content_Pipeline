@@ -44,7 +44,35 @@ _STYLE_PRESETS: dict[str, str] = {
     "gang":           "urban crime documentary, street realism, investigative atmosphere",
     "fraud":          "financial crime documentary, corporate atmosphere, investigative tension",
     "historical":     "period accurate documentary, archival quality, historical drama realism",
+    "archaeology":    "ancient ruins documentary, archaeological excavation, warm golden hour light, BBC documentary style, sand and stone textures",
     "default":        "realistic documentary, dark cinematic, investigative atmosphere, BBC documentary style",
+}
+
+# Domain → style preset mapping (from classify_topic_domain() output)
+_DOMAIN_TO_STYLE: dict[str, str] = {
+    "archaeology":      "archaeology",
+    "serial_killer":    "serial_killer",
+    "organized_crime":  "mafia",
+    "fraud":            "fraud",
+    "war_historical":   "historical",
+    "tv_adaptation":    "default",
+    "default":          "default",
+}
+
+# Domain keyword sets — duplicated here to avoid importing research_agent
+# (prevents circular import; keep in sync with research_agent._DOMAIN_KEYWORDS)
+_ANIM_DOMAIN_KEYWORDS: dict[str, list] = {
+    "archaeology": [
+        "archaeolog", "excavat", "ancient city", "ancient civili", "biblical",
+        "bronze age", "iron age", "prehistoric", "dig site", "dead sea",
+        "jordan valley", "holy land", "mesopotamia", "sodom", "gomorrah",
+        "jericho", "pompeii", "tomb", "unearthed", "radiocarbon", "ruins",
+        "ancient discovery",
+    ],
+    "serial_killer": ["serial killer", "serial murder"],
+    "organized_crime": ["mafia", "cartel", "mob", "camorra", "yakuza", "drug lord", "narco"],
+    "fraud": ["fraud", "ponzi", "embezzl", "wall street broker", "securities fraud"],
+    "war_historical": ["world war", "civil war", "genocide", "holocaust", "revolution"],
 }
 
 # Section name → scene type mapping
@@ -270,13 +298,25 @@ def build_character_identity(
     locs = (research.get("verified_facts") or {}).get("real_locations", [])
     loc  = locs[0] if locs else ""
 
-    # Detect style preset
-    topic_lower = topic.lower()
+    # Domain-aware style preset selection
+    topic_lower  = topic.lower()
+    niche_lower  = (research.get("niche", "") or "").lower()
     style_preset = "default"
-    for key in _STYLE_PRESETS:
-        if key in topic_lower or key in (research.get("niche", "")).lower():
-            style_preset = key
+
+    # Check domain keywords (priority — prevents mafia/crime style for archaeology topics)
+    for domain, kws in _ANIM_DOMAIN_KEYWORDS.items():
+        if any(kw in topic_lower or kw in niche_lower for kw in kws):
+            style_preset = _DOMAIN_TO_STYLE.get(domain, "default")
             break
+
+    # If still default, fall back to direct style-key matching
+    if style_preset == "default":
+        for key in _STYLE_PRESETS:
+            if key in topic_lower or key in niche_lower:
+                style_preset = key
+                break
+
+    print(f"[VISUAL] Domain-locked style preset: {style_preset}")
 
     # ── Retrieve reference photo ──────────────────────────────────────────────
     ref_image_path = _fetch_character_photo(name, output_dir)

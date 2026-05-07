@@ -4464,9 +4464,10 @@ def translate_script(en_script: dict, research: dict | None = None) -> dict:
     if ar_data.get("script"):
         ar_data["script"] = upgrade_arabic_script(ar_data["script"])
         ar_data["script"] = evaluate_and_fix_script(ar_data["script"])
-        from agents.script_quality import normalize_arabic_documentary_text, normalize_arabic_tts
+        from agents.script_quality import normalize_arabic_documentary_text, normalize_arabic_tts, enforce_arabic_purity
         ar_data["script"] = normalize_arabic_documentary_text(ar_data["script"])
         ar_data["script"] = normalize_arabic_tts(ar_data["script"])
+        ar_data["script"] = enforce_arabic_purity(ar_data["script"])
         print("[AR Narration] Documentary pacing validated")
 
     _final_wc  = clean_word_count(ar_data.get("script", ""))
