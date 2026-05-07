@@ -94,7 +94,7 @@ _SECTION_SCENE_TYPE: dict[str, str] = {
     "conclusion":  "memorial_scene",
 }
 
-# Motion prompt templates per scene type
+# Motion prompt templates — crime/biography domain (default)
 _MOTION_TEMPLATES: dict[str, str] = {
     "talking_portrait":   "{descriptor}, documentary portrait, subtle talking motion, slight head movement, "
                           "cinematic dark lighting, {era}, investigative documentary atmosphere, 9:16 vertical",
@@ -110,24 +110,67 @@ _MOTION_TEMPLATES: dict[str, str] = {
                           "slow cinematic motion, {style}, 9:16 vertical",
 }
 
-# ── Known event-type keywords ─────────────────────────────────────────────────
-_EVENT_KEYWORDS: dict[str, str] = {
-    "arrest":      "police arrest scene",
-    "murder":      "crime investigation scene",
-    "trial":       "courtroom legal proceedings",
-    "escape":      "pursuit escape scene",
-    "childhood":   "childhood growing up scene",
-    "prison":      "prison cell corridor",
-    "investigation":"detective investigation scene",
-    "evidence":    "forensic evidence examination",
-    "confession":  "interrogation room scene",
-    "verdict":     "courtroom verdict moment",
-    "kidnap":      "abduction investigation scene",
-    "drug":        "drug operation scene",
-    "money":       "financial crime scene",
+# Motion prompt templates — archaeology / biblical-history / ancient-world domain
+_MOTION_TEMPLATES_ARCHAEOLOGY: dict[str, str] = {
+    "talking_portrait":   "Documentary narrator {era}, warm natural light, subtle speaking motion, "
+                          "slight head movement, historical documentary atmosphere, {style}, 9:16 vertical",
+    "era_reenactment":    "Ancient {location}, {era}, {event}, historical documentary reconstruction, "
+                          "cinematic wide establishing shot, warm golden hour, {style}, 9:16 vertical",
+    "investigation_scene":"Archaeological excavation at {location}, {era}, {event}, "
+                          "documentary close-up discovery reveal, warm dusty light, {style}, 9:16 vertical",
+    "comparison_scene":   "Ancient ruins and historical evidence {location}, {era}, {event}, "
+                          "documentary comparison style, cinematic, {style}, 9:16 vertical",
+    "evidence_scene":     "Ancient artifact examination {location}, {era}, {event}, "
+                          "documentary close-up archaeology table, warm golden light, {style}, 9:16 vertical",
+    "memorial_scene":     "Ancient ruins {location}, {era}, historical documentary ending atmosphere, "
+                          "slow cinematic motion, warm dust haze, {style}, 9:16 vertical",
 }
 
-# Location keywords to canonical label
+# Domain → template set
+_TEMPLATES_BY_DOMAIN: dict[str, dict] = {
+    "archaeology":     _MOTION_TEMPLATES_ARCHAEOLOGY,
+    "war_historical":  _MOTION_TEMPLATES,   # reuse default; era will differentiate
+    "default":         _MOTION_TEMPLATES,
+}
+
+# ── Event keywords — crime/biography domain (default) ────────────────────────
+_EVENT_KEYWORDS: dict[str, str] = {
+    "arrest":       "police arrest scene",
+    "murder":       "crime investigation scene",
+    "trial":        "courtroom legal proceedings",
+    "escape":       "pursuit escape scene",
+    "childhood":    "childhood growing up scene",
+    "prison":       "prison cell corridor",
+    "investigation":"detective investigation scene",
+    "evidence":     "forensic evidence examination",
+    "confession":   "interrogation room scene",
+    "verdict":      "courtroom verdict moment",
+    "kidnap":       "abduction investigation scene",
+    "drug":         "drug operation scene",
+    "money":        "financial crime scene",
+}
+
+# ── Event keywords — archaeology / ancient-world domain ──────────────────────
+_EVENT_KEYWORDS_ARCHAEOLOGY: dict[str, str] = {
+    "discover":   "archaeological discovery scene",
+    "excavat":    "excavation dig site scene",
+    "unearthed":  "artifact unearthing scene",
+    "ancient":    "ancient historical reconstruction",
+    "ruins":      "ancient ruins documentary scene",
+    "temple":     "ancient temple exploration",
+    "burial":     "ancient burial site examination",
+    "artifact":   "artifact analysis scene",
+    "archaeolog": "archaeological dig site scene",
+    "biblical":   "biblical historical landscape",
+    "dead sea":   "Dead Sea Jordan Valley landscape",
+    "bronze age": "Bronze Age historical reconstruction",
+    "sodom":      "ancient city destruction landscape",
+    "gomorrah":   "ancient Jordan Valley plain",
+    "city wall":  "ancient city wall reconstruction",
+    "settlement": "ancient settlement reconstruction",
+}
+
+# ── Location labels — crime/biography domain (default) ───────────────────────
 _LOCATION_LABELS: dict[str, str] = {
     "milwaukee":    "Milwaukee Wisconsin 1980s",
     "new york":     "New York City urban street",
@@ -141,6 +184,40 @@ _LOCATION_LABELS: dict[str, str] = {
     "apartment":    "apartment interior",
     "courtroom":    "courtroom legal setting",
     "fbi":          "FBI office interior",
+}
+
+# ── Location labels — archaeology / ancient-world domain ─────────────────────
+_LOCATION_LABELS_ARCHAEOLOGY: dict[str, str] = {
+    "jordan":       "Jordan Valley Dead Sea region",
+    "israel":       "Ancient Levant landscape",
+    "sinai":        "Sinai Peninsula desert",
+    "egypt":        "Ancient Egypt Nile Valley",
+    "mesopotamia":  "Ancient Mesopotamia Iraq",
+    "dead sea":     "Dead Sea Jordan Valley plain",
+    "jericho":      "Ancient Jericho Tell es-Sultan",
+    "sodom":        "ancient Dead Sea plain",
+    "gomorrah":     "ancient Jordan Valley ruins",
+    "petra":        "Petra Jordan ancient city",
+    "babylon":      "Ancient Babylon Mesopotamia",
+    "jerusalem":    "Ancient Jerusalem holy city",
+    "negev":        "Negev desert archaeological site",
+    "excavat":      "active archaeological dig site",
+}
+
+# Domain → location label table
+_LOCATION_LABELS_BY_DOMAIN: dict[str, dict] = {
+    "archaeology": _LOCATION_LABELS_ARCHAEOLOGY,
+    "default":     _LOCATION_LABELS,
+}
+
+# ── Role keywords for descriptor building — by domain ────────────────────────
+_DESCRIPTOR_ROLE_KEYWORDS: dict[str, list] = {
+    "default":     ["police", "detective", "agent", "cartel", "boss", "leader",
+                    "criminal", "killer", "gangster", "lawyer", "journalist"],
+    "archaeology": ["archaeologist", "researcher", "historian", "excavator",
+                    "professor", "scholar", "explorer", "biblical"],
+    "war_historical": ["general", "commander", "soldier", "leader", "president",
+                       "king", "emperor", "rebel", "revolutionary"],
 }
 
 
@@ -172,22 +249,35 @@ _health = _AnimProviderHealth()
 
 # ── Topic lock — reset per run, prevents cross-topic contamination ────────────
 
-_TOPIC_LOCK: dict = {"topic": "", "topic_hash": ""}
+_TOPIC_LOCK: dict = {"topic": "", "topic_hash": "", "domain": "default"}
 
 
 def init_topic_lock(topic: str) -> None:
     """
     Hard reset of all run-scoped state. MUST be called at pipeline start
     before any identity/scene/clip work. Clears provider health, stale
-    character photos, and sets the topic namespace for cache isolation.
+    character photos, and sets the topic namespace + semantic domain for
+    cache isolation and domain-aware template selection.
     """
     global _TOPIC_LOCK
     _h = hashlib.sha256(topic.encode()).hexdigest()[:16]
-    _TOPIC_LOCK = {"topic": topic, "topic_hash": _h}
+
+    # Classify semantic domain so all downstream template selectors can use it
+    t_lower = topic.lower()
+    _domain = "default"
+    for _dom, _kws in _ANIM_DOMAIN_KEYWORDS.items():
+        if any(kw in t_lower for kw in _kws):
+            _domain = _dom
+            break
+
+    _TOPIC_LOCK = {"topic": topic, "topic_hash": _h, "domain": _domain}
     _health._failures.clear()
     _purge_stale_char_photos(topic)
     print(f"[TOPIC LOCK] Active — {topic}")
+    print(f"[DOMAIN] {_domain}")
     print(f"[IDENTITY] Cache cleared (topic hash: {_h})")
+    if _domain != "default":
+        print(f"[SHOW MODE] disabled — domain is {_domain}, not tv_adaptation")
 
 
 def _purge_stale_char_photos(topic: str) -> None:
@@ -325,7 +415,7 @@ def build_character_identity(
     else:
         print(f"[CHARACTER] No real image found for: {name} — identity built from descriptor")
 
-    descriptor = _build_descriptor(name, era, loc, research)
+    descriptor = _build_descriptor(name, era, loc, research, style_preset)
     print(f"[CHARACTER] Descriptor: {descriptor[:80]}")
 
     identity = {
@@ -398,19 +488,24 @@ def _download_identity_image(url: str, name: str, output_dir: str) -> str | None
         return None
 
 
-def _build_descriptor(name: str, era: str, location: str, research: dict) -> str:
-    """Build a compact visual descriptor string for prompt injection."""
+def _build_descriptor(name: str, era: str, location: str, research: dict,
+                      style_preset: str = "default") -> str:
+    """Build a compact visual descriptor string for prompt injection.
+    Role keywords are domain-aware — archaeology topics never get crime roles.
+    """
     parts = [name]
     if era:
         parts.append(era)
     if location:
         parts.append(location)
-    # Pull any physical/role descriptors from research facts
+
+    # Select role keywords appropriate to the domain
+    domain     = _TOPIC_LOCK.get("domain", "default")
+    role_kws   = _DESCRIPTOR_ROLE_KEYWORDS.get(domain) or _DESCRIPTOR_ROLE_KEYWORDS["default"]
     facts = (research.get("research_facts") or [])[:3]
     for f in facts:
         fl = f.lower()
-        for kw in ["police", "detective", "agent", "cartel", "boss", "leader",
-                   "criminal", "killer", "gangster", "lawyer", "journalist"]:
+        for kw in role_kws:
             if kw in fl:
                 parts.append(kw)
                 break
@@ -466,9 +561,10 @@ def parse_script_into_scenes(
 
 
 def _extract_scene_context(chunk: str, section_label: str, topic: str, research: dict) -> dict:
-    """Extract visual context from a script chunk."""
+    """Extract visual context from a script chunk. All lookups are domain-aware."""
     chunk_lower = chunk.lower()
     label_lower = section_label.lower()
+    domain = _TOPIC_LOCK.get("domain", "default")
 
     # Determine scene type from section label
     scene_type = "investigation_scene"
@@ -477,9 +573,10 @@ def _extract_scene_context(chunk: str, section_label: str, topic: str, research:
             scene_type = stype
             break
 
-    # Extract location
+    # Extract location — use domain-appropriate label table
+    loc_table = _LOCATION_LABELS_BY_DOMAIN.get(domain, _LOCATION_LABELS)
     where = ""
-    for loc_key, loc_label in _LOCATION_LABELS.items():
+    for loc_key, loc_label in loc_table.items():
         if loc_key in chunk_lower:
             where = loc_label
             break
@@ -487,13 +584,22 @@ def _extract_scene_context(chunk: str, section_label: str, topic: str, research:
         locs = (research.get("verified_facts") or {}).get("real_locations", [])
         where = locs[0] if locs else ""
 
-    # Extract year / era
+    # Extract year / era — archaeology allows BCE dates
     years = re.findall(r'\b(19[4-9]\d|20[0-2]\d)\b', chunk)
-    era   = f"{years[0]}s" if years else (research.get("verified_facts") or {}).get("time_period", "")
+    bce   = re.findall(r'\b(\d{3,4})\s*(?:BCE|BC|B\.C\.)', chunk)
+    if years:
+        era = f"{years[0]}s"
+    elif bce:
+        era = f"{bce[0]} BCE"
+    else:
+        era = (research.get("verified_facts") or {}).get("time_period", "")
 
-    # Detect event
+    # Detect event — use domain-appropriate event table
+    evt_table = (_EVENT_KEYWORDS_ARCHAEOLOGY
+                 if domain == "archaeology"
+                 else _EVENT_KEYWORDS)
     event = ""
-    for kw, ev in _EVENT_KEYWORDS.items():
+    for kw, ev in evt_table.items():
         if kw in chunk_lower:
             event = ev
             break
@@ -508,19 +614,28 @@ def _extract_scene_context(chunk: str, section_label: str, topic: str, research:
         print(f"[IDENTITY] Rejected unrelated entity: {who!r}")
         who = topic
 
-    # Mood from keywords
-    mood_map = {
-        "dark": "dark", "brutal": "brutal", "shock": "shocking",
-        "fear": "fearful", "escape": "tense", "prison": "somber",
-        "trial": "serious", "confession": "confessional",
-    }
-    mood = "dark investigative"
+    # Mood from keywords (domain-aware)
+    if domain == "archaeology":
+        mood_map = {
+            "ancient": "ancient wonder", "ruin": "solemn", "discover": "revelatory",
+            "mystery": "mysterious", "biblical": "reverent", "excavat": "investigative",
+            "destroy": "dramatic", "dead sea": "reflective",
+        }
+        mood = "historical wonder"
+    else:
+        mood_map = {
+            "dark": "dark", "brutal": "brutal", "shock": "shocking",
+            "fear": "fearful", "escape": "tense", "prison": "somber",
+            "trial": "serious", "confession": "confessional",
+        }
+        mood = "dark investigative"
+
     for kw, m in mood_map.items():
         if kw in chunk_lower:
             mood = m
             break
 
-    return {
+    scene = {
         "section":    section_label,
         "scene_type": scene_type,
         "text":       chunk,
@@ -529,15 +644,26 @@ def _extract_scene_context(chunk: str, section_label: str, topic: str, research:
         "era":        era,
         "mood":       mood,
         "event":      event,
+        "domain":     domain,
     }
+    print(f"[SCENE] Semantic validation passed: domain={domain} era={era or 'n/a'} event={event or 'n/a'}")
+    return scene
 
 
 def build_scene_motion_prompt(scene: dict, identity: dict) -> str:
     """
     Build a visually specific motion prompt for this scene.
-    Character descriptor is injected into every prompt for identity consistency.
+    Template set is domain-aware — archaeology scenes NEVER get crime templates.
     """
-    template = _MOTION_TEMPLATES.get(scene["scene_type"], _MOTION_TEMPLATES["investigation_scene"])
+    # Select template set from topic lock domain (set once at pipeline start)
+    domain    = _TOPIC_LOCK.get("domain") or scene.get("domain", "default")
+    templates = _TEMPLATES_BY_DOMAIN.get(domain, _MOTION_TEMPLATES)
+
+    scene_type = scene["scene_type"]
+    # Safety: fall back to era_reenactment (neutral) rather than investigation_scene
+    # when no template exists for the scene type in the selected set
+    template = templates.get(scene_type) or templates.get("era_reenactment") or _MOTION_TEMPLATES["era_reenactment"]
+
     prompt = template.format(
         descriptor = identity.get("descriptor", identity.get("name", "")),
         location   = scene.get("where") or identity.get("location", ""),
@@ -567,12 +693,22 @@ def generate_scene_clip(
     Tier 4: Kling AI
     Tier 5: Enhanced still (Ken Burns — always works)
     """
+    # ── Semantic scene validation before any generation ──────────────────────
+    locked_topic = _TOPIC_LOCK.get("topic") or identity.get("name", "")
+    locked_domain = _TOPIC_LOCK.get("domain", "default")
+
+    # Validate scene entity against topic lock
+    scene_who = scene.get("who", "")
+    if scene_who and scene_who != locked_topic:
+        if not _validate_entity(scene_who, locked_topic, {}):
+            print(f"[ERROR] Cross-topic contamination detected: scene entity {scene_who!r} does not belong to {locked_topic!r}")
+            print(f"[SCENE] Fallback blocked — scene entity rejected, substituting topic identity")
+            scene = dict(scene)  # copy to avoid mutating caller's dict
+            scene["who"] = locked_topic
+
     prompt = build_scene_motion_prompt(scene, identity)
 
-    # Topic validation guard
-    locked_topic = _TOPIC_LOCK.get("topic") or identity.get("name", "")
-    if locked_topic:
-        print(f"[SCENE] Topic validation passed: {locked_topic[:60]}")
+    print(f"[SCENE] Semantic validation passed: domain={locked_domain} entity={scene.get('who','')[:40]}")
 
     # Cache check (topic-scoped — previous-topic clips cannot match)
     cached = _clip_cache_get(prompt, duration)
