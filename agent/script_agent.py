@@ -4189,29 +4189,163 @@ def _write_arabic_from_research(en_script: dict, ar_research: dict) -> str:
         f"النص الوثائقي الكامل فقط."
     )
 
-    # ── Execute 3 section calls ───────────────────────────────────────────────
+    # ── Section minimum word counts ──────────────────────────────────────────
+    # Failing to meet these is a HARD failure — must retry, not skip.
+    _SECTION_MIN_WC: dict[str, int] = {
+        "AR-Hook+Background": 200,
+        "AR-MainStory+Ch4":   300,   # CORE — missing this = 9-second video
+        "AR-Conclusion":      120,
+    }
+    # Core sections: missing any of these = pipeline must not continue
+    _CORE_SECTIONS: frozenset = frozenset({"AR-MainStory+Ch4"})
+
+    # ── Simplified prompt (retry attempt 2) ──────────────────────────────────
+    def _simplified_section_prompt(label: str) -> str:
+        """Stripped-down prompt for retry 2: fewer style rules, same content."""
+        if "MainStory" in label:
+            if is_doc:
+                return (
+                    f"{entity_lock}"
+                    f"اكتب بالعربية الفصحى عن: {topic_str}\n\n"
+                    f"الحقائق:\n{facts_block}\n\n"
+                    f"الحقائق المفاجئة:\n{shocking_block}\n\n"
+                    f"[SECTION: القصة الحقيقية]\n"
+                    f"اكتب حوالي {sec_wc * 2} كلمة. روِ القصة الحقيقية بتفاصيل دقيقة — "
+                    f"الأسماء والتواريخ والقرارات والعواقب.\n\n"
+                    f"[SECTION: حقائق صادمة]\n"
+                    f"اكتب حوالي {sec_wc} كلمة. الحقائق الأقل شهرة والأشد إثارة.\n\n"
+                    f"النص الوثائقي فقط."
+                )
+            else:
+                return (
+                    f"{entity_lock}"
+                    f"اكتب بالعربية الفصحى عن: {topic_str}\n"
+                    f"السلسلة: {series_name}\n\n"
+                    f"الحقائق:\n{facts_block}\n\n"
+                    f"[SECTION: القصة الحقيقية]\n"
+                    f"اكتب حوالي {sec_wc * 2} كلمة. القصة الحقيقية بعمق.\n\n"
+                    f"[SECTION: الرواية مقابل الواقع]\n"
+                    f"ابدأ بـ \"إليك ما أصابت فيه {series_name}:\""
+                    f" ثم \"وإليك ما غيّرته أو أغفلته تماماً:\"\n\n"
+                    f"النص الوثائقي فقط."
+                )
+        # For other sections, just return original prompt
+        return ""
+
+    # ── Emergency prompt (retry attempt 3) ───────────────────────────────────
+    def _emergency_section_prompt(label: str) -> str:
+        """Bare-minimum prompt — no style rules, facts only. Last resort."""
+        if "MainStory" in label:
+            target_wc = sec_wc * 2
+            section_a = "القصة الحقيقية" if is_doc else "القصة الحقيقية"
+            section_b = "حقائق صادمة" if is_doc else "الرواية مقابل الواقع"
+            detail_b  = (
+                "اكتب حقائق مفاجئة وأقل شهرة عن الموضوع."
+                if is_doc else
+                f"ابدأ بـ \"إليك ما أصابت فيه {series_name}:\" ثم \"وإليك ما غيّرته:\""
+            )
+            return (
+                f"اكتب نصاً عربياً وثائقياً بسيطاً عن: {topic_str}\n\n"
+                f"استخدم هذه الحقائق:\n{facts_block}\n\n"
+                f"[SECTION: {section_a}]\n"
+                f"اكتب حوالي {target_wc} كلمة. نص عربي مباشر يروي القصة بتفاصيل واضحة.\n\n"
+                f"[SECTION: {section_b}]\n"
+                f"اكتب حوالي {sec_wc} كلمة. {detail_b}\n\n"
+                f"اكتب النص فقط. لا شرح."
+            )
+        return ""
+
+    # ── Execute calls with retry chain ────────────────────────────────────────
     calls = [
         ("AR-Hook+Background",    prompt_1, 2200),
         ("AR-MainStory+Ch4",      prompt_2, 2600),
         ("AR-Conclusion",         prompt_3, 1400),
     ]
     parts: list[str] = []
+    _missing_core = False
+    import time as _t
+
     for label, ptext, max_tok in calls:
-        print(f"[AR Script] Writing {label}...")
-        import time as _t
-        _t.sleep(2)
-        section = _ai_script_call(
-            ptext,
-            max_tokens=max_tok,
-            temperature=0.65,
-            system_prompt=_AR_SCRIPT_SYSTEM_PROMPT,
+        min_wc = _SECTION_MIN_WC.get(label, 150)
+        section = ""
+
+        for attempt in range(1, 4):
+            if attempt > 1:
+                _t.sleep(3)
+
+            if attempt == 1:
+                prompt_used = ptext
+                temp        = 0.65
+            elif attempt == 2:
+                print(f"[AR RETRY] Attempt 2 for {label} — simplified prompt")
+                fallback_p = _simplified_section_prompt(label)
+                prompt_used = fallback_p if fallback_p else ptext
+                temp        = 0.70
+            else:
+                print(f"[AR RETRY] Attempt 3 for {label} — emergency reconstruction")
+                print("[AR FALLBACK] Research reconstruction active")
+                emergency_p = _emergency_section_prompt(label)
+                prompt_used = emergency_p if emergency_p else ptext
+                temp        = 0.75
+
+            print(f"[AR Script] Writing {label} (attempt {attempt}/3)...")
+            raw = _ai_script_call(
+                prompt_used,
+                max_tokens=max_tok,
+                temperature=temp,
+                system_prompt=_AR_SCRIPT_SYSTEM_PROMPT if attempt < 3 else None,
+                premium=True,
+            )
+            raw_wc = clean_word_count(raw) if raw else 0
+
+            if raw and raw_wc >= min_wc:
+                section = raw.strip()
+                print(f"[AR Script] {label}: {raw_wc}w ✅ (attempt {attempt})")
+                break
+            else:
+                print(
+                    f"[AR VALIDATION] {label} failed minimum threshold: "
+                    f"{raw_wc}w < {min_wc}w"
+                )
+                if attempt < 3:
+                    print(f"[AR RETRY] Attempt {attempt + 1} scheduled")
+
+        if section:
+            parts.append(section)
+        else:
+            print(
+                f"[AR VALIDATION] Missing mandatory section: {label} — "
+                f"all 3 attempts failed"
+            )
+            if label in _CORE_SECTIONS:
+                _missing_core = True
+                print(f"[AR PIPELINE] Core section missing — {label}")
+
+    # ── Section completeness check ────────────────────────────────────────────
+    if _missing_core:
+        print("[AR PIPELINE] Regeneration triggered — emergency reconstruction of main story")
+        emergency_final = _ai_script_call(
+            _emergency_section_prompt("AR-MainStory+Ch4"),
+            max_tokens=2600,
+            temperature=0.75,
             premium=True,
         )
-        if section and clean_word_count(section) >= 60:
-            parts.append(section.strip())
-            print(f"[AR Script] {label}: {clean_word_count(section)}w ✅")
+        if emergency_final and clean_word_count(emergency_final) >= 200:
+            # Insert before conclusion (last part) to maintain story order
+            if len(parts) > 1:
+                parts.insert(-1, emergency_final.strip())
+            else:
+                parts.append(emergency_final.strip())
+            print(
+                f"[AR FALLBACK] Emergency reconstruction added: "
+                f"{clean_word_count(emergency_final)}w"
+            )
         else:
-            print(f"[AR Script] {label}: empty or too short — skipped")
+            print(
+                "[AR EMERGENCY] English-to-Arabic recovery path — "
+                "returning empty to force translation fallback"
+            )
+            return ""
 
     if not parts:
         return ""
@@ -4258,9 +4392,19 @@ def translate_script(en_script: dict, research: dict | None = None) -> dict:
             _ar_en_script_augmented.setdefault("series_type", research.get("series_type", ""))
             _ar_script_body = _write_arabic_from_research(_ar_en_script_augmented, ar_research)
             if _ar_script_body and clean_word_count(_ar_script_body) >= 300:
-                _ar_script_body = fix_first_mention(_ar_script_body, is_arabic=True)
-                _used_research_path = True
-                print(f"[AR] Research path: {clean_word_count(_ar_script_body)}w written ✅")
+                # Validate core section is present before accepting
+                _core_present = any(
+                    m in _ar_script_body
+                    for m in ["القصة الحقيقية", "الرواية مقابل الواقع", "حقائق صادمة"]
+                )
+                if not _core_present:
+                    print("[AR VALIDATION] Missing mandatory section: القصة الحقيقية")
+                    print("[AR PIPELINE] Core story section absent — forcing translation fallback")
+                    _ar_script_body = ""
+                else:
+                    _ar_script_body = fix_first_mention(_ar_script_body, is_arabic=True)
+                    _used_research_path = True
+                    print(f"[AR] Research path: {clean_word_count(_ar_script_body)}w written ✅")
             else:
                 print("[AR] Research path produced empty/short script — falling back to translation")
                 _ar_script_body = ""
@@ -4327,6 +4471,22 @@ def translate_script(en_script: dict, research: dict | None = None) -> dict:
 
     _final_wc  = clean_word_count(ar_data.get("script", ""))
     _final_min = estimate_arabic_duration(ar_data.get("script", ""))
+
+    # ── Runtime floor — hard block before any render ──────────────────────────
+    # A script < 3 minutes will produce a broken video. Flag it now so the
+    # pipeline can block the render rather than upload a 9-second documentary.
+    _AR_RUNTIME_FLOOR_MIN = 3.0
+    if _final_min < _AR_RUNTIME_FLOOR_MIN:
+        print(
+            f"[AR BLOCKED] Runtime {_final_min:.1f}min below "
+            f"{_AR_RUNTIME_FLOOR_MIN}min minimum ({_final_wc}w) — "
+            f"marking script as too short to render"
+        )
+        ar_data["script_too_short"] = True
+    else:
+        ar_data.pop("script_too_short", None)
+    ar_data["estimated_runtime_min"] = round(_final_min, 1)
+
     print(
         f"[Script] Arabic done ({ar_data['arabic_path']} path): "
         f"'{ar_data['title']}' | {_final_wc}w | ~{_final_min:.1f}min"

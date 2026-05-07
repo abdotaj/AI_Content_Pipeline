@@ -390,8 +390,22 @@ def run_pipeline() -> None:
 
     _ctrl.update_stage("VideoGen", "rendering AR long video")
     _log("VideoGen", "Rendering AR long video")
-    ar_long_id   = f"{today}_{uuid.uuid4().hex[:8]}_arabic_long"
-    ar_long_path = _make_video(ar_long, ar_long_id, stats, user_images=user_images, user_videos=user_videos)
+    _ar_wc_check  = len(ar_long.get("script", "").split())
+    _ar_min_check = _ar_wc_check / 130.0
+    _AR_LONG_MIN  = 5.0
+    if ar_long.get("script_too_short") or _ar_min_check < _AR_LONG_MIN:
+        _block_msg = (
+            f"[AR BLOCKED] Runtime below minimum: {_ar_min_check:.1f}min "
+            f"({_ar_wc_check}w) < {_AR_LONG_MIN}min — "
+            f"blocking Arabic render to prevent invalid upload"
+        )
+        _log("VideoGen", _block_msg, "ERROR")
+        send_message(_block_msg)
+        ar_long_path = ""
+        stats["errors"] += 1
+    else:
+        ar_long_id   = f"{today}_{uuid.uuid4().hex[:8]}_arabic_long"
+        ar_long_path = _make_video(ar_long, ar_long_id, stats, user_images=user_images, user_videos=user_videos)
 
     _check_cancel("after AR long render")
 

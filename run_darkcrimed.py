@@ -583,8 +583,25 @@ def run_pipeline():
         en_long_path = _make_video(en_long, en_long_id, stats, user_images=user_images, user_videos=user_videos)
 
         # OUTPUT 2 — Arabic long-form
-        ar_long_id   = f"{today}_{uuid.uuid4().hex[:8]}_arabic_long"
-        ar_long_path = _make_video(ar_long, ar_long_id, stats, user_images=user_images, user_videos=user_videos)
+        # Pre-render runtime floor: block renders that would produce broken output.
+        # The 9-second video incident was caused by a collapsed 882-word script
+        # silently passing through to video assembly.
+        _ar_wc_check  = len(ar_long.get("script", "").split())
+        _ar_min_check = _ar_wc_check / 130.0
+        _AR_LONG_MIN  = 5.0  # minutes — less than this = broken video
+        if ar_long.get("script_too_short") or _ar_min_check < _AR_LONG_MIN:
+            _block_msg = (
+                f"[AR BLOCKED] Runtime below minimum: {_ar_min_check:.1f}min "
+                f"({_ar_wc_check}w) < {_AR_LONG_MIN}min — "
+                f"blocking Arabic render to prevent invalid upload"
+            )
+            _log("VideoGen", _block_msg, "ERROR")
+            send_message(_block_msg)
+            ar_long_path = ""
+            stats["errors"] += 1
+        else:
+            ar_long_id   = f"{today}_{uuid.uuid4().hex[:8]}_arabic_long"
+            ar_long_path = _make_video(ar_long, ar_long_id, stats, user_images=user_images, user_videos=user_videos)
 
     # Output 3: English short  ── script path or cut fallback
     en_chapter_shorts: list[dict] = []
