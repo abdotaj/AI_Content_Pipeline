@@ -617,8 +617,8 @@ def run_pipeline():
         # The 9-second video incident was caused by a collapsed 882-word script
         # silently passing through to video assembly.
         _ar_wc_check  = len(ar_long.get("script", "").split())
-        _ar_min_check = _ar_wc_check / 130.0
-        _AR_LONG_MIN  = 5.0  # minutes — less than this = broken video
+        _ar_min_check = _ar_wc_check / 250.0
+        _AR_LONG_MIN  = 10.0  # minutes — less than this = auto-rebuild, then block if still failing
         if ar_long.get("script_too_short") or _ar_min_check < _AR_LONG_MIN:
             _block_msg = (
                 f"[AR BLOCKED] Runtime below minimum: {_ar_min_check:.1f}min "
@@ -632,6 +632,30 @@ def run_pipeline():
         else:
             ar_long_id   = f"{today}_{uuid.uuid4().hex[:8]}_arabic_long"
             ar_long_path = _make_video(ar_long, ar_long_id, stats, user_images=user_images, user_videos=user_videos)
+
+    # ── Arabic runtime auto-rebuild ───────────────────────────────────────────
+    # Measure ACTUAL rendered video length. If < 10 min, expand script + re-render.
+    _AR_MIN_SECS  = 600
+    _ar_rebuild   = 0
+    _ar_max_rb    = 3
+    while ar_long_path and os.path.exists(ar_long_path):
+        _ar_secs = _video_secs(ar_long_path)
+        _log("VideoGen", f"[AR RUNTIME] Final render duration: {_ar_secs/60:.1f}min ({_ar_secs:.0f}s)")
+        if _ar_secs >= _AR_MIN_SECS:
+            _log("VideoGen", f"[AR PASSED] Runtime valid: {_ar_secs/60:.1f}min >= 10min", "OK")
+            break
+        _ar_rebuild += 1
+        if _ar_rebuild > _ar_max_rb:
+            _log("VideoGen", f"[AR EXPANSION] Rebuild limit reached — continuing with {_ar_secs/60:.1f}min video", "WARN")
+            send_message(f"[Pipeline] Arabic runtime {_ar_secs/60:.1f}min after {_ar_max_rb} rebuilds — proceeding")
+            break
+        _log("VideoGen", f"[AR EXPANSION] Runtime {_ar_secs/60:.1f}min < 10min — auto-rebuilding (attempt {_ar_rebuild}/{_ar_max_rb})", "WARN")
+        send_message(f"[Pipeline] Arabic runtime {_ar_secs/60:.1f}min < 10min — auto-rebuilding (attempt {_ar_rebuild}/{_ar_max_rb})...")
+        from agent.script_agent import expand_arabic_runtime as _ear
+        _topic_text_ar = topic.get("topic", "") if topic else en_long.get("topic", "")
+        ar_long["script"] = _ear(ar_long["script"], target_min=11.0, topic=_topic_text_ar)
+        ar_long_id   = f"{today}_{uuid.uuid4().hex[:8]}_arabic_long"
+        ar_long_path = _make_video(ar_long, ar_long_id, stats, user_images=user_images, user_videos=user_videos)
 
     # Output 3: English short  ── script path or cut fallback
     en_chapter_shorts: list[dict] = []
@@ -708,7 +732,7 @@ def run_pipeline():
             en_long_id   = f"{today}_{uuid.uuid4().hex[:8]}_english_long"
             en_long_path = _make_video(en_long, en_long_id, stats, user_images=user_images, user_videos=user_videos)
             _ar_wc_recheck = len(ar_long.get("script", "").split())
-            if not (ar_long.get("script_too_short") or (_ar_wc_recheck / 130.0) < 5.0):
+            if not (ar_long.get("script_too_short") or (_ar_wc_recheck / 250.0) < 10.0):
                 ar_long_id   = f"{today}_{uuid.uuid4().hex[:8]}_arabic_long"
                 ar_long_path = _make_video(ar_long, ar_long_id, stats, user_images=user_images, user_videos=user_videos)
             else:
@@ -942,6 +966,18 @@ def get_duration(video_path: str) -> str:
         return f"{mins}:{secs:02d}"
     except Exception:
         return "unknown"
+
+
+def _video_secs(path: str) -> float:
+    """Return actual video duration in seconds (0 on error)."""
+    try:
+        from moviepy import VideoFileClip
+        c = VideoFileClip(path)
+        d = c.duration
+        c.close()
+        return d
+    except Exception:
+        return 0.0
 
 
 def _make_video(script_data: dict, video_id: str, stats: dict, user_images: list | None = None, user_videos: list | None = None) -> str:

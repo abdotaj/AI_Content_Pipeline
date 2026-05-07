@@ -238,7 +238,7 @@ def _cap_script_max_words(script_text: str, max_words: int = LONG_SCRIPT_MAX_WOR
     return result
 
 
-_TTS_WPM = {"english": 145, "arabic": 130}
+_TTS_WPM = {"english": 145, "arabic": 250}   # OpenAI Arabic TTS (nova/0.9) runs ~250 WPM — 2× faster than old estimate
 
 # Runtime floors (minutes) by mode — NO upper caps enforced.
 # Topic depth determines length. These are quality minimums only.
@@ -3712,7 +3712,7 @@ def _translate_script_preserve_sections(english_script_text: str) -> str:
     return "\n\n".join(translated_parts).strip()
 
 
-def _expand_arabic_script_to_min(ar_script: str, target_min: int = 1800) -> str:
+def _expand_arabic_script_to_min(ar_script: str, target_min: int = 3500) -> str:
     """Append additional Arabic content until the script meets target_min words."""
     current = clean_word_count(ar_script)
     if current >= target_min:
@@ -3720,24 +3720,33 @@ def _expand_arabic_script_to_min(ar_script: str, target_min: int = 1800) -> str:
 
     result = ar_script
 
-    for _attempt in range(1, 3):
+    _tok_budgets = [1800, 2400, 2000, 1600]
+    for _attempt in range(1, 5):
         cur_wc = clean_word_count(result)
         if cur_wc >= target_min:
             break
         needed = target_min - cur_wc
+        max_tok = _tok_budgets[_attempt - 1]
         if _attempt == 1:
             instruction = (
-                f"واصل وطوّل النص العربي التالي بإضافة {needed + 50} كلمة على الأقل. "
-                f"أضف تفاصيل جديدة وأمثلة وعمقاً سردياً. "
-                f"لا تلخص أو تكرر ما تم ذكره. استمر بشكل طبيعي من الجملة الأخيرة."
+                f"واصل وطوّل النص العربي التالي بإضافة {needed + 100} كلمة على الأقل. "
+                f"أضف تفاصيل سردية جديدة، أوصاف مشاهد، ووقفات تأملية سينمائية. "
+                f"لا تلخص أو تكرر ما تم ذكره. استمر بشكل طبيعي من الجملة الأخيرة. "
+                f"الأسلوب: راوٍ وثائقي بإيقاع هادئ ومحكوم."
             )
-            max_tok = 1200
-        else:
+        elif _attempt == 2:
             instruction = (
-                f"أضف 300 كلمة جديدة على الأقل مع أحداث تفصيلية وأسماء وشروحات. "
+                f"أضف {needed + 80} كلمة جديدة على الأقل بأسلوب سردي سينمائي. "
+                f"أضف أحداثاً تفصيلية وأسماء وشروحات وانعكاسات إنسانية. "
                 f"لا تكرر ما قيل. استمر مباشرة بعد النص الموجود."
             )
-            max_tok = 1600
+        else:
+            instruction = (
+                f"أكمل النص بإضافة {needed + 50} كلمة جديدة. "
+                f"عمّق السرد وأضف تفاصيل إضافية عن الأحداث والشخصيات. "
+                f"لا تعيد ما قيل. استمر بعد آخر جملة مباشرة."
+            )
+        max_tok = _tok_budgets[_attempt - 1]
 
         print(f"[Script] Arabic expansion attempt {_attempt}: {cur_wc}w, need +{needed}w")
         prompt = (
@@ -3768,8 +3777,8 @@ def _expand_arabic_script_to_min(ar_script: str, target_min: int = 1800) -> str:
 
 
 def estimate_arabic_duration(text: str) -> float:
-    """Estimate Arabic TTS duration in minutes (130 WPM speaking rate)."""
-    return clean_word_count(text) / 130.0
+    """Estimate Arabic TTS duration in minutes (OpenAI Arabic TTS ~250 WPM)."""
+    return clean_word_count(text) / _TTS_WPM["arabic"]
 
 
 def expand_arabic_narration_style(section_text: str, topic: str = "") -> str:
@@ -3844,7 +3853,7 @@ def expand_arabic_runtime(ar_script: str, target_min: float, topic: str = "") ->
         sections = [("", p) for p in paras]
 
     total_wc  = max(clean_word_count(ar_script), 1)
-    need_wc   = int(target_min * 130)
+    need_wc   = int(target_min * _TTS_WPM["arabic"])
     gap_wc    = need_wc - total_wc
     n_sec     = len(sections)
 
@@ -4090,8 +4099,8 @@ def _write_arabic_from_research(en_script: dict, ar_research: dict) -> str:
     inaccs_block   = "\n".join(f"- {i}" for i in ar_inaccs[:6])    or "- (ابحث في التحريفات الدرامية)"
     shocking_block = "\n".join(f"- {s}" for s in ar_shocking[:8])  or "- (أضف تفاصيل حقيقية غير متوقعة)"
 
-    # Per-section word target proportional to English
-    sec_wc = max(300, en_wc // 5)
+    # Per-section word target: Arabic needs more words than English due to faster TTS pace
+    sec_wc = max(600, en_wc // 4)
 
     entity_lock = (
         f"[قفل الموضوع] اكتب فقط عن: {topic_str}. "
@@ -4191,10 +4200,11 @@ def _write_arabic_from_research(en_script: dict, ar_research: dict) -> str:
 
     # ── Section minimum word counts ──────────────────────────────────────────
     # Failing to meet these is a HARD failure — must retry, not skip.
+    # Targets raised: at 250 WPM, 3500+ Arabic words needed for 10+ min video.
     _SECTION_MIN_WC: dict[str, int] = {
-        "AR-Hook+Background": 200,
-        "AR-MainStory+Ch4":   300,   # CORE — missing this = 9-second video
-        "AR-Conclusion":      120,
+        "AR-Hook+Background": 500,
+        "AR-MainStory+Ch4":   900,   # CORE — missing this = 9-second video
+        "AR-Conclusion":      400,
     }
     # Core sections: missing any of these = pipeline must not continue
     _CORE_SECTIONS: frozenset = frozenset({"AR-MainStory+Ch4"})
@@ -4257,9 +4267,9 @@ def _write_arabic_from_research(en_script: dict, ar_research: dict) -> str:
 
     # ── Execute calls with retry chain ────────────────────────────────────────
     calls = [
-        ("AR-Hook+Background",    prompt_1, 2200),
-        ("AR-MainStory+Ch4",      prompt_2, 2600),
-        ("AR-Conclusion",         prompt_3, 1400),
+        ("AR-Hook+Background",    prompt_1, 3200),
+        ("AR-MainStory+Ch4",      prompt_2, 5000),
+        ("AR-Conclusion",         prompt_3, 2400),
     ]
     parts: list[str] = []
     _missing_core = False
@@ -4440,22 +4450,26 @@ def translate_script(en_script: dict, research: dict | None = None) -> dict:
     _ar_wc = clean_word_count(ar_data.get("script", ""))
     print(f"[Script] Arabic word count ({ar_data['arabic_path']} path): {_ar_wc}")
 
-    if _ar_wc < 1800:
-        ar_data["script"] = _expand_arabic_script_to_min(ar_data["script"], target_min=1800)
+    if _ar_wc < 3500:
+        print(f"[AR RUNTIME] Script words: {_ar_wc} — below target 3500, expanding...")
+        ar_data["script"] = _expand_arabic_script_to_min(ar_data["script"], target_min=3500)
 
-    # ── Runtime parity check ──────────────────────────────────────────────────
-    # For the research path, we target ≥ 95% of English runtime (vs 90% for translation).
-    # Arabic TTS speaks ~130 WPM; English ~145 WPM.
+    # ── Runtime target check ──────────────────────────────────────────────────
+    # Arabic TTS (OpenAI nova/0.9) runs ~250 WPM — 2× faster than old 130 WPM estimate.
+    # Target: absolute minimum 10.5 min, or 80% of English runtime (whichever is higher).
+    # This ensures Arabic always hits 10+ min regardless of English script length.
     _en_wc     = clean_word_count(en_script.get("script", ""))
     _en_min    = _en_wc / 145.0
     _ar_min    = estimate_arabic_duration(ar_data.get("script", ""))
-    _parity    = 0.95 if _used_research_path else 0.90
-    _ar_target = _en_min * _parity
+    _ar_wc_now = clean_word_count(ar_data.get("script", ""))
+    _ar_target = max(10.5, _en_min * 0.8)
     print(
-        f"[AR] EN runtime: ~{_en_min:.1f}min | AR runtime: ~{_ar_min:.1f}min "
-        f"| target ≥ {_ar_target:.1f}min (parity={int(_parity*100)}%)"
+        f"[AR RUNTIME] Script words: {_ar_wc_now}\n"
+        f"[AR RUNTIME] OpenAI TTS estimated duration: ~{_ar_min:.1f}min "
+        f"(EN: ~{_en_min:.1f}min | target ≥ {_ar_target:.1f}min)"
     )
     if _ar_min < _ar_target:
+        print(f"[AR EXPANSION] Runtime {_ar_min:.1f}min below target {_ar_target:.1f}min — regenerating narration")
         _topic = en_script.get("topic", "")
         ar_data["script"] = expand_arabic_runtime(
             ar_data["script"], target_min=_ar_target, topic=_topic
@@ -4474,9 +4488,10 @@ def translate_script(en_script: dict, research: dict | None = None) -> dict:
     _final_min = estimate_arabic_duration(ar_data.get("script", ""))
 
     # ── Runtime floor — hard block before any render ──────────────────────────
-    # A script < 3 minutes will produce a broken video. Flag it now so the
-    # pipeline can block the render rather than upload a 9-second documentary.
-    _AR_RUNTIME_FLOOR_MIN = 3.0
+    # 10 min is the hard minimum for Arabic long-form documentaries.
+    # Below this = script_too_short flag → pipeline blocks render.
+    # Pipeline will auto-rebuild (expand + re-render) until runtime is valid.
+    _AR_RUNTIME_FLOOR_MIN = 10.0
     if _final_min < _AR_RUNTIME_FLOOR_MIN:
         print(
             f"[AR BLOCKED] Runtime {_final_min:.1f}min below "
@@ -4488,6 +4503,10 @@ def translate_script(en_script: dict, research: dict | None = None) -> dict:
         ar_data.pop("script_too_short", None)
     ar_data["estimated_runtime_min"] = round(_final_min, 1)
 
+    if _final_min < _AR_RUNTIME_FLOOR_MIN:
+        print(f"[AR RUNTIME] Final render duration estimate: ~{_final_min:.1f}min — BELOW MINIMUM 10min")
+    else:
+        print(f"[AR PASSED] Runtime valid for upload: ~{_final_min:.1f}min >= {_AR_RUNTIME_FLOOR_MIN}min")
     print(
         f"[Script] Arabic done ({ar_data['arabic_path']} path): "
         f"'{ar_data['title']}' | {_final_wc}w | ~{_final_min:.1f}min"
