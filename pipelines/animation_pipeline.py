@@ -180,11 +180,16 @@ def _wait_for_topic_selection(
     Send numbered topic candidates to Telegram and wait for user selection.
 
     Returns:
-      - topic dict  if user selects a number or /auto
+      - topic dict  if user selects a number, /auto, or sends free-text topic
       - "CANCEL"    if user sends /cancel
       - None        if timeout expires (caller should auto-select)
 
-    Supported replies: 1 / 2 / 3 / 4 · /auto · /cancel · /refresh
+    Supported replies:
+      1 / 2 / 3 / 4  — pick from candidate menu
+      /auto          — let pipeline choose best candidate
+      /cancel        — abort pipeline
+      /refresh       — re-send candidate menu
+      <free text>    — manual topic override (validated before accepting)
     """
     try:
         from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
@@ -214,6 +219,7 @@ def _wait_for_topic_selection(
     reply_hint = " / ".join(str(i) for i in range(1, len(valid) + 2))
     lines.append(f"\nReply with: {reply_hint}")
     lines.append("Or: /auto · /cancel · /refresh")
+    lines.append("Or type any topic directly to override.")
     menu_text = "\n".join(lines)
 
     # Advance the offset so we only see replies AFTER this message
@@ -290,8 +296,62 @@ def _wait_for_topic_selection(
                     _tg_send(base, chat_id,
                         f"[ANIMATION PIPELINE] Selected:\n{selected['topic']}\n\nStarting generation...")
                     return selected
+                # Out-of-range number — ignore silently, keep waiting
+                continue
             except ValueError:
                 pass
+
+            # ── Free-text manual topic override ──────────────────────────────
+            # Any non-command, non-numeric text of ≥5 chars is treated as a
+            # direct topic supplied by the user.  It is normalized and scored
+            # before being accepted; invalid/ambiguous input gets a helpful
+            # error reply and the poll continues.
+            if len(text) >= 5:
+                print(f"[TOPIC] Manual Telegram override received: '{text[:80]}'")
+
+                _norm = normalize_topic_title(text)
+                if not _norm:
+                    _tg_send(base, chat_id,
+                        f"[ANIMATION PIPELINE]\n"
+                        f"Cannot validate topic:\n\"{text[:60]}\"\n\n"
+                        f"Title appears truncated or too short.\n"
+                        f"Please try again or select from the numbered menu.")
+                    continue
+                print(f"[TOPIC] Normalized manual topic: '{_norm[:80]}'")
+
+                _ents   = extract_canonical_entities(_norm)
+                _domain = classify_topic_domain_with_context(_norm, _ents)
+                _conf   = semantic_confidence_score(_norm, _ents)
+
+                if _conf < 0.4:
+                    _tg_send(base, chat_id,
+                        f"[ANIMATION PIPELINE]\n"
+                        f"Topic rejected (too ambiguous):\n\"{_norm[:60]}\"\n\n"
+                        f"Confidence: {_conf:.2f} (minimum 0.40)\n\n"
+                        f"Please send a more specific topic, or select from the numbered menu.")
+                    continue
+
+                _DOMAIN_LABELS = {
+                    "tv_adaptation":   "TV / film adaptation",
+                    "archaeology":     "archaeology / ancient history",
+                    "serial_killer":   "serial killer / true crime",
+                    "organized_crime": "organized crime / mafia",
+                    "fraud":           "financial crime / fraud",
+                    "war_historical":  "war / historical event",
+                    "default":         "true crime / biography",
+                }
+                _dlabel = _DOMAIN_LABELS.get(_domain, _domain)
+
+                print(f"[TOPIC] Semantic validation passed: "
+                      f"domain={_domain}, confidence={_conf:.2f}")
+                _tg_send(base, chat_id,
+                    f"[ANIMATION PIPELINE]\n"
+                    f"Manual topic received:\n\"{_norm}\"\n\n"
+                    f"Domain: {_dlabel}\n"
+                    f"Topic validated successfully.\n\n"
+                    f"Starting animation generation...")
+                print(f"[TOPIC] Starting generation from manual topic: '{_norm[:60]}'")
+                return {"topic": _norm, "niche": _norm}
 
     # Timeout — let caller decide
     print(f"[TOPIC] No Telegram reply in {timeout_sec}s — timeout")
