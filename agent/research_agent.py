@@ -356,6 +356,20 @@ def classify_topic_domain(topic: str) -> str:
             print(f"[DOMAIN] {domain}")
             return domain
 
+    # Biography: pure named entity (2–4 words, first AND last start uppercase,
+    # not led by an article) — no domain keyword matched, so this is almost
+    # certainly a real person's name or a named historical entity.
+    # Connectors ≤3 chars (bin, de, la, van, al…) are allowed in the middle.
+    _w = topic.strip().split()
+    _NON_ARTICLE = frozenset({"the", "a", "an"})
+    if (2 <= len(_w) <= 4 and
+            _w[0][0].isupper() and
+            _w[-1][0].isupper() and
+            _w[0].lower() not in _NON_ARTICLE and
+            all(w[0].isupper() or len(w) <= 3 for w in _w)):
+        print("[DOMAIN] biography (named entity topic)")
+        return "biography"
+
     print("[DOMAIN] default")
     return "default"
 
@@ -365,6 +379,8 @@ def classify_topic_domain(topic: str) -> str:
 _VALID_SHORT_TERMINALS: frozenset = frozenset({
     "a", "an", "the", "of", "in", "at", "by", "on", "to", "up",
     "bc", "ad", "ce", "i", "ii", "iii", "iv", "vi", "jr", "sr", "dr",
+    # Common valid name/phrase endings that are short
+    "me", "us", "he", "she", "we", "it", "as", "is", "was",
 })
 
 _ERA_PATTERNS_RE: list = [
@@ -545,35 +561,67 @@ def semantic_confidence_score(
 
     HIGH   ≥ 0.7  — proceed normally
     MEDIUM ≥ 0.4  — proceed with caution
-    LOW    < 0.4  — block pipeline (topic too ambiguous or malformed)
+    LOW    < 0.4  — weak/uncertain, but pipeline may still continue if
+                     entity_confidence_score() is high enough
+
+    Scoring is entity-first: a clean named entity always beats a long
+    but structurally weak title.
     """
     score = 0.0
     t = topic.strip()
+    words = t.split()
+    named_persons = entities.get("named_persons", [])
 
-    # Title length / completeness (up to 0.30)
-    if len(t) >= 40:
+    # ── 1. Entity quality (primary signal, up to 0.45) ───────────────────────
+    # Pure named entity: 2–4 words, first+last are Title Case, first is not
+    # an article, connectors ≤3 chars allowed (e.g. "bin", "de", "van").
+    _NON_ART = frozenset({"the", "a", "an"})
+    _pure_entity = (
+        2 <= len(words) <= 4 and
+        words[0][0].isupper() and
+        words[-1][0].isupper() and
+        words[0].lower() not in _NON_ART and
+        (named_persons or all(w[0].isupper() or len(w) <= 3 for w in words))
+    )
+
+    if _pure_entity:
+        score += 0.45
+        print(f"[ENTITY] Strong named-person match: '{t[:60]}'")
+    elif named_persons:
+        score += 0.25  # named persons in a longer/mixed title
+    # else: no entity detected — score stays at 0
+
+    # ── 2. Domain specificity (up to 0.20) ───────────────────────────────────
+    domain = entities.get("domain", "default")
+    if domain in ("biography",):
+        score += 0.20  # named-entity domain — same weight as other specifics
+        print(f"[DOMAIN] Person-topic classification: biography")
+    elif domain != "default":
         score += 0.20
-    elif len(t) >= 20:
-        score += 0.10
+    else:
+        score += 0.05
 
-    last_word = t.split()[-1] if t.split() else ""
-    if len(last_word) > 4 or last_word.lower() in _VALID_SHORT_TERMINALS:
-        score += 0.10  # not obviously truncated
-
-    # Named persons or era present (up to 0.25)
-    if entities.get("named_persons"):
-        score += 0.15
+    # ── 3. Era / temporal context (up to 0.10) ───────────────────────────────
     if entities.get("era"):
         score += 0.10
 
-    # Domain specificity (up to 0.20)
-    score += 0.20 if entities.get("domain", "default") != "default" else 0.10
-
-    # Event type specificity (up to 0.15)
+    # ── 4. Event type specificity (up to 0.10) ───────────────────────────────
     if entities.get("event_type", "general") != "general":
-        score += 0.15
+        score += 0.10
 
-    # Wikipedia keyword overlap bonus (up to 0.10)
+    # ── 5. Title completeness bonus (up to 0.10) — NOT a penalty for short ───
+    if _pure_entity:
+        score += 0.05  # entity already validated — not at risk of truncation
+    else:
+        last_word = words[-1] if words else ""
+        if len(last_word) > 4 or last_word.lower() in _VALID_SHORT_TERMINALS:
+            score += 0.05
+
+    # Descriptive title (30+ chars) gets a small bonus
+    if len(t) >= 30:
+        score += 0.05
+
+    # ── 6. Wikipedia alignment bonus (up to 0.10) ────────────────────────────
     if wiki_text:
         _stop = frozenset({
             "with", "from", "that", "this", "have", "were", "been",
@@ -585,12 +633,65 @@ def semantic_confidence_score(
             w_lower = wiki_text.lower()
             hits = sum(1 for w in t_words if w in w_lower)
             overlap = hits / len(t_words)
-            score += 0.10 if overlap >= 0.5 else (0.05 if overlap >= 0.25 else 0.0)
+            if overlap >= 0.5:
+                score += 0.10
+                print(f"[ENTITY] Wikipedia biography match ({overlap:.0%} overlap)")
+            elif overlap >= 0.25:
+                score += 0.05
 
     score = min(score, 1.0)
     label = "HIGH" if score >= 0.7 else ("MEDIUM" if score >= 0.4 else "LOW")
     print(f"[CONFIDENCE] '{t[:60]}' → {score:.2f} ({label})")
     return score
+
+
+def entity_confidence_score(topic: str, entities: dict) -> float:
+    """
+    Score whether the topic resolves to a real, identifiable documentary
+    subject — independent of domain certainty.
+
+    Pipeline uses this as a HARD-ABORT gate (threshold: < 0.20):
+    - < 0.20 → garbage / malformed / single meaningless word → hard abort
+    - ≥ 0.20 → has structure; proceed (may still trigger soft-fallback warning)
+    - ≥ 0.55 → strong entity detected
+
+    This is separate from semantic_confidence_score() which also measures
+    domain certainty.  A topic can have HIGH entity confidence but LOW
+    domain confidence — that is a SAFE CONTINUE, not an abort.
+    """
+    t = topic.strip()
+    words = t.split()
+    named_persons = entities.get("named_persons", [])
+
+    _NON_ART = frozenset({"the", "a", "an"})
+
+    # Pure named entity: 2–4 words, first+last uppercase, connectors allowed
+    _pure_entity = (
+        2 <= len(words) <= 4 and
+        bool(words) and
+        words[0][0].isupper() and
+        words[-1][0].isupper() and
+        words[0].lower() not in _NON_ART and
+        (named_persons or all(w[0].isupper() or len(w) <= 3 for w in words))
+    )
+
+    if _pure_entity:
+        score = 0.75
+        print(f"[ENTITY] Valid documentary subject detected: '{t[:60]}'")
+    elif named_persons:
+        score = 0.60
+        print(f"[ENTITY] Named persons found: {named_persons[:2]}")
+    elif len(words) >= 5:
+        score = 0.40  # long descriptive title — probably meaningful
+    elif len(words) >= 3:
+        score = 0.25  # short but has some structure
+    else:
+        score = 0.10  # single word or too short
+
+    if entities.get("era"):
+        score = min(score + 0.15, 1.0)
+
+    return min(score, 1.0)
 
 
 def _validate_wikipedia_relevance(

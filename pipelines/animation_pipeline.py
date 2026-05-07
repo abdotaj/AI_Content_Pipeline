@@ -59,6 +59,7 @@ from agent.research_agent    import (
     research_topics, research_series, mark_covered, is_fictional,
     normalize_topic_title, extract_canonical_entities,
     classify_topic_domain_with_context, semantic_confidence_score,
+    entity_confidence_score,
 )
 from agent.script_agent      import write_script, translate_script, generate_chapters, write_short_script, clean_word_count, expand_script_runtime
 from agent.animation_agent   import create_animation_video, init_topic_lock
@@ -338,7 +339,8 @@ def _wait_for_topic_selection(
                     "organized_crime": "organized crime / mafia",
                     "fraud":           "financial crime / fraud",
                     "war_historical":  "war / historical event",
-                    "default":         "true crime / biography",
+                    "biography":       "biography / true crime",
+                    "default":         "true crime / documentary",
                 }
                 _dlabel = _DOMAIN_LABELS.get(_domain, _domain)
 
@@ -441,23 +443,48 @@ def run_pipeline() -> None:
     init_topic_lock(topic_text)
 
     # ── Pre-research semantic gate ────────────────────────────────────────────
+    # Two independent scores are computed:
+    #   entity_conf  — is this a real identifiable subject? (structural check)
+    #   semantic_conf — how certain are we about domain / completeness?
+    #
+    # Routing:
+    #   entity_conf < 0.20              → hard abort  (garbage/malformed input)
+    #   entity_conf ≥ 0.20, conf < 0.40 → soft continue (entity valid, domain uncertain)
+    #   conf ≥ 0.40                     → normal continue
     _entities   = extract_canonical_entities(topic_text)
     _ctx_domain = classify_topic_domain_with_context(topic_text, _entities)
     _conf       = semantic_confidence_score(topic_text, _entities)
+    _ent_conf   = entity_confidence_score(topic_text, _entities)
 
+    _conf_label = "HIGH" if _conf >= 0.7 else ("MEDIUM" if _conf >= 0.4 else "LOW")
     _log("Research",
-         f"Domain: {_ctx_domain} | Confidence: {_conf:.2f} "
-         f"({'HIGH' if _conf >= 0.7 else 'MEDIUM' if _conf >= 0.4 else 'LOW'})")
+         f"Domain: {_ctx_domain} | Confidence: {_conf:.2f} ({_conf_label}) | "
+         f"Entity: {_ent_conf:.2f}")
 
-    if _conf < 0.4:
+    if _ent_conf < 0.20:
+        # No identifiable entity — hard abort
         _msg = (
-            f"[ANIM] Topic rejected — confidence too low ({_conf:.2f}):\n"
+            f"[ANIM] Topic rejected — no valid entity detected:\n"
             f"'{topic_text[:80]}'\n\n"
-            f"Pipeline halted before research. Send a clearer topic."
+            f"Entity score: {_ent_conf:.2f} (minimum 0.20)\n"
+            f"Please send a real person, event, or documentary topic."
         )
-        _log("Research", f"LOW confidence ({_conf:.2f}) — aborting", "ERROR")
+        _log("Research", f"No valid entity (ent={_ent_conf:.2f}) — aborting", "ERROR")
         send_message(_msg)
         return
+
+    if _conf < 0.4:
+        # Valid entity but uncertain domain — continue safely with warning
+        _log("Research",
+             f"Low domain confidence ({_conf:.2f}) but entity valid "
+             f"(ent={_ent_conf:.2f}) — continuing safely", "WARN")
+        send_message(
+            f"[ANIM] Low domain confidence ({_conf:.2f}) for:\n"
+            f"'{topic_text[:80]}'\n\n"
+            f"Entity detected ({_ent_conf:.2f}). Proceeding — domain will "
+            f"be refined during research."
+        )
+        print("[PIPELINE] Soft-fallback mode active — domain refinement deferred to research")
 
     if _manual_topic:
         send_message(f"[ANIMATION PIPELINE] Topic (manual): {topic_text}\n\nStarting animation generation...")
