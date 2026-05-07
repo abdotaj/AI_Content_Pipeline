@@ -51,6 +51,7 @@ from agent.notify_agent   import (
 )
 from agent.publish_agent  import upload_to_youtube
 from agents.content_agent import ingest_content_files
+from pipelines.approval import wait_for_approval
 
 # SHORT_MODE controls how the daily short videos are generated.
 # "script" (default) — TTS + full video assembly from the optimized short script.
@@ -505,8 +506,37 @@ def run_pipeline():
         except Exception as e:
             print(f"  [WARN] AR short script preview failed: {e}")
 
-    _log("Telegram", "Scripts sent — continuing pipeline immediately.", "OK")
+    _log("Telegram", "Scripts sent to Telegram — waiting for approval", "OK")
     _stage("Scripts sent to Telegram")
+
+    # ── Approval gate 1: Scripts ─────────────────────────────────────────────
+    while True:
+        _approval_1 = wait_for_approval(
+            stage_name=f"Scripts Ready — {en_long.get('title', '')[:60]}\nReview the scripts above.",
+            available_commands=["approve", "rewrite", "cancel"],
+            mode="PIPELINE",
+        )
+        if _approval_1 == "cancel":
+            send_message("[Pipeline] Cancelled at scripts gate.")
+            return
+        elif _approval_1 == "approve":
+            break
+        elif _approval_1 == "rewrite":
+            if topic is None:
+                send_message("[Pipeline] Rewrite unavailable for content-file ingested scripts.")
+                continue
+            _log("Scripts", "Rewrite requested — regenerating", "WARN")
+            send_message("[Pipeline] Rewriting scripts...")
+            try:
+                en_long = write_script(topic, language="english")
+                ar_long = translate_script(en_long, research=topic.get("research", {}))
+                _short_rw = write_short_script(en_long)
+                en_long["short_script_en"] = _short_rw.get("short_script_en", "")
+                ar_long["short_script_ar"] = _short_rw.get("short_script_ar", "")
+                send_arabic_script_preview(ar_long, label="Arabic LONG script (rewrite)")
+                send_english_script_preview(en_long, label="English LONG script (rewrite)")
+            except Exception as _re:
+                send_message(f"[Pipeline] Rewrite failed: {_re}")
 
     # ── Load saved Part 2 images if this is a Part 2 run ──────
     _part_num_final = en_long.get("part_number")
@@ -659,6 +689,34 @@ def run_pipeline():
         except Exception as _ce:
             _log("Cleanup", f"Could not reset {_clear_dir}: {_ce}", "WARN")
     _log("Cleanup", "User media dirs reset for next run", "OK")
+
+    # ── Approval gate 2: Render complete ─────────────────────────────────────
+    while True:
+        _approval_2 = wait_for_approval(
+            stage_name="Render Complete — Ready to Upload",
+            available_commands=["approve", "publish", "rerender", "cancel"],
+            mode="PIPELINE",
+        )
+        if _approval_2 in ("approve", "publish"):
+            break
+        elif _approval_2 == "cancel":
+            send_message("[Pipeline] Cancelled at render gate.")
+            return
+        elif _approval_2 == "rerender":
+            _log("VideoGen", "Re-render requested — regenerating all videos", "WARN")
+            send_message("[Pipeline] Re-rendering all videos...")
+            en_long_id   = f"{today}_{uuid.uuid4().hex[:8]}_english_long"
+            en_long_path = _make_video(en_long, en_long_id, stats, user_images=user_images, user_videos=user_videos)
+            _ar_wc_recheck = len(ar_long.get("script", "").split())
+            if not (ar_long.get("script_too_short") or (_ar_wc_recheck / 130.0) < 5.0):
+                ar_long_id   = f"{today}_{uuid.uuid4().hex[:8]}_arabic_long"
+                ar_long_path = _make_video(ar_long, ar_long_id, stats, user_images=user_images, user_videos=user_videos)
+            else:
+                ar_long_path = ""
+            if en_long_path and os.path.exists(en_long_path):
+                en_chapter_shorts = cut_best_short(en_long_path, en_long)
+            if ar_long_path and os.path.exists(ar_long_path):
+                ar_chapter_shorts = cut_best_short(ar_long_path, ar_long)
 
     # ── STEP 5: Upload long videos to YouTube, then send shorts to Telegram ──
     _log("Publish", "Starting publishing step")

@@ -15,7 +15,7 @@ on:
 jobs:
   animation-pipeline:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 360
     concurrency:
       group: animation-pipeline
       cancel-in-progress: true

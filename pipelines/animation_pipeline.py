@@ -71,6 +71,7 @@ from agent.notify_agent      import (
 from agent.publish_agent     import upload_to_youtube
 from pipelines.pipeline_config import SCRIPT_WORD_FLOOR, SCRIPT_WORD_MIN, WORDS_PER_MINUTE
 from pipelines.telegram_control import TelegramController, CANCEL_FLAG
+from pipelines.approval import wait_for_approval
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -594,6 +595,36 @@ def run_pipeline() -> None:
 
     _check_cancel("after all scripts")
 
+    # ── Approval gate 1: Scripts ─────────────────────────────────────────────
+    while True:
+        _approval_1 = wait_for_approval(
+            stage_name=(
+                f"Scripts Ready — {en_long.get('title', topic_text)[:60]}\n"
+                f"EN: {_en_wc} words (~{_est_min} min)"
+            ),
+            available_commands=["approve", "rewrite", "cancel"],
+            mode="ANIMATION",
+        )
+        if _approval_1 == "cancel":
+            send_message("[ANIM] Pipeline cancelled at scripts gate.")
+            _ctrl.stop()
+            return
+        elif _approval_1 == "approve":
+            break
+        elif _approval_1 == "rewrite":
+            _log("Scripts", "Rewrite requested — regenerating all scripts", "WARN")
+            send_message("[ANIM] Rewriting scripts...")
+            try:
+                en_long  = write_script(topic, language="english")
+                _en_wc   = clean_word_count(en_long.get("script", ""))
+                _est_min = round(_en_wc / WORDS_PER_MINUTE, 1)
+                _ctrl.set_latest_script(en_long)
+                send_english_script_preview(en_long, label=f"[ANIM] REWRITTEN — {en_long.get('title','')}")
+                ar_long  = translate_script(en_long, research=topic.get("research", {}))
+                send_arabic_script_preview(ar_long)
+            except Exception as _re:
+                send_message(f"[ANIM] Rewrite failed: {_re}")
+
     # ── STEP 3: Generate animation videos (EN + AR) ───────────────────────────
     print(f"\n{'='*50}\n  ANIMATION VIDEO GENERATION\n{'='*50}\n", flush=True)
     _log("AnimGen", "Starting character-centric motion documentary generation")
@@ -666,6 +697,47 @@ def run_pipeline() -> None:
             _log("Shorts", f"AR short cut failed: {_ce}", "ERROR")
     else:
         _log("Shorts", "AR long video missing — cannot cut short", "WARN")
+
+    # ── Approval gate 2: Render complete ─────────────────────────────────────
+    while True:
+        _approval_2 = wait_for_approval(
+            stage_name="Render Complete — Ready to Upload",
+            available_commands=["approve", "publish", "rerender", "cancel"],
+            mode="ANIMATION",
+        )
+        if _approval_2 in ("approve", "publish"):
+            break
+        elif _approval_2 == "cancel":
+            send_message("[ANIM] Pipeline cancelled at render gate.")
+            _ctrl.stop()
+            return
+        elif _approval_2 == "rerender":
+            _log("AnimGen", "Re-render requested — regenerating animation videos", "WARN")
+            send_message("[ANIM] Re-rendering animation videos...")
+            en_long_path = _make_animation_video(
+                en_long, topic.get("research", {}), FINAL_DIR, stats, "EN long"
+            )
+            _ar_wc_recheck = len(ar_long.get("script", "").split())
+            if not (ar_long.get("script_too_short") or (_ar_wc_recheck / 130.0) < 5.0):
+                ar_long_path = _make_animation_video(
+                    ar_long, topic.get("research", {}), FINAL_DIR, stats, "AR long"
+                )
+            else:
+                ar_long_path = ""
+            en_short_path = ""
+            ar_short_path = ""
+            if en_long_path and os.path.exists(en_long_path):
+                try:
+                    _cuts = cut_best_short(en_long_path, en_long)
+                    en_short_path = _cuts[0]["path"] if _cuts else ""
+                except Exception:
+                    pass
+            if ar_long_path and os.path.exists(ar_long_path):
+                try:
+                    _cuts = cut_best_short(ar_long_path, ar_long)
+                    ar_short_path = _cuts[0]["path"] if _cuts else ""
+                except Exception:
+                    pass
 
     # ── STEP 5: Publish ───────────────────────────────────────────────────────
     print(f"\n{'='*50}\n  UPLOAD\n{'='*50}\n", flush=True)
