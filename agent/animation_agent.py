@@ -11,6 +11,7 @@
 #    Tier 5: Enhanced still      MoviePy Ken Burns — always works, no API
 #
 #  Public API:
+#    init_topic_lock(topic)                                -> None  (CALL FIRST)
 #    build_character_identity(research, topic, output_dir) -> dict
 #    parse_script_into_scenes(script_text, topic, research) -> list[dict]
 #    generate_scene_clip(scene, identity, output_path)     -> str | None
@@ -141,10 +142,70 @@ class _AnimProviderHealth:
 _health = _AnimProviderHealth()
 
 
-# ── SHA256 clip cache ─────────────────────────────────────────────────────────
+# ── Topic lock — reset per run, prevents cross-topic contamination ────────────
+
+_TOPIC_LOCK: dict = {"topic": "", "topic_hash": ""}
+
+
+def init_topic_lock(topic: str) -> None:
+    """
+    Hard reset of all run-scoped state. MUST be called at pipeline start
+    before any identity/scene/clip work. Clears provider health, stale
+    character photos, and sets the topic namespace for cache isolation.
+    """
+    global _TOPIC_LOCK
+    _h = hashlib.sha256(topic.encode()).hexdigest()[:16]
+    _TOPIC_LOCK = {"topic": topic, "topic_hash": _h}
+    _health._failures.clear()
+    _purge_stale_char_photos(topic)
+    print(f"[TOPIC LOCK] Active — {topic}")
+    print(f"[IDENTITY] Cache cleared (topic hash: {_h})")
+
+
+def _purge_stale_char_photos(topic: str) -> None:
+    """Delete character images saved by previous (different) topic runs."""
+    safe_slug = re.sub(r'[^a-z0-9_]', '_', topic.lower())[:30]
+    try:
+        for fname in os.listdir(_CHARS_DIR):
+            if fname.startswith("char_") and not fname.startswith(f"char_{safe_slug}"):
+                try:
+                    os.remove(os.path.join(_CHARS_DIR, fname))
+                    print(f"[IDENTITY] Purged stale character photo: {fname}")
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+
+def _validate_entity(entity_name: str, topic: str, research: dict) -> bool:
+    """
+    Return True if entity_name plausibly belongs to the current topic.
+    Checks against topic text and research facts. Rejects unrelated entities.
+    """
+    if not entity_name or entity_name in ("unknown", ""):
+        return True
+    e_words = [w for w in entity_name.lower().split() if len(w) > 3]
+    if not e_words:
+        return True
+    t_lower = topic.lower()
+    if any(w in t_lower for w in e_words):
+        return True
+    facts_text = " ".join(
+        (research.get("research_facts") or [])
+        + (research.get("real_facts") or [])
+        + [research.get("series_name") or ""]
+        + [str((research.get("verified_facts") or {}).get("story", ""))]
+    ).lower()
+    if any(w in facts_text for w in e_words if len(w) > 4):
+        return True
+    return False
+
+
+# ── SHA256 clip cache (topic-scoped) ─────────────────────────────────────────
 
 def _clip_cache_key(prompt: str, duration: int) -> str:
-    raw = f"{duration}|{prompt}"
+    topic_hash = _TOPIC_LOCK.get("topic_hash", "")
+    raw = f"{topic_hash}|{duration}|{prompt}"
     return hashlib.sha256(raw.encode()).hexdigest()[:20]
 
 
@@ -195,6 +256,15 @@ def build_character_identity(
         or topic
         or "unknown"
     ).strip()
+
+    # Reject any entity that doesn't belong to the current topic
+    _locked_topic = _TOPIC_LOCK.get("topic") or topic
+    if name not in ("unknown", topic, _locked_topic):
+        if not _validate_entity(name, _locked_topic, research):
+            print(f"[ERROR] Cross-topic contamination detected: {name!r} does not belong to topic: {_locked_topic!r}")
+            print(f"[IDENTITY] Rejected unrelated entity: {name!r} — using topic as identity")
+            name = topic
+    print(f"[IDENTITY] Current topic entities loaded: {name}")
 
     era  = (research.get("verified_facts") or {}).get("time_period", "") or ""
     locs = (research.get("verified_facts") or {}).get("real_locations", [])
@@ -392,6 +462,12 @@ def _extract_scene_context(chunk: str, section_label: str, topic: str, research:
     named = re.findall(r'\b([A-Z][a-z]{2,}(?:\s+[A-Z][a-z]{2,})+)\b', chunk)
     who   = named[0] if named else topic
 
+    # Validate named person belongs to current topic; reject contamination
+    _locked_topic = _TOPIC_LOCK.get("topic") or topic
+    if who != topic and not _validate_entity(who, _locked_topic, research):
+        print(f"[IDENTITY] Rejected unrelated entity: {who!r}")
+        who = topic
+
     # Mood from keywords
     mood_map = {
         "dark": "dark", "brutal": "brutal", "shock": "shocking",
@@ -453,7 +529,12 @@ def generate_scene_clip(
     """
     prompt = build_scene_motion_prompt(scene, identity)
 
-    # Cache check
+    # Topic validation guard
+    locked_topic = _TOPIC_LOCK.get("topic") or identity.get("name", "")
+    if locked_topic:
+        print(f"[SCENE] Topic validation passed: {locked_topic[:60]}")
+
+    # Cache check (topic-scoped — previous-topic clips cannot match)
     cached = _clip_cache_get(prompt, duration)
     if cached:
         return cached
@@ -834,9 +915,17 @@ def _generate_fallback_image(scene: dict, identity: dict, output_path: str) -> s
     fallback background for the enhanced still clip.
     """
     from agents.video_agent import build_visual_search_query, _wikimedia_image_results, _download_first_valid
+
+    # Ensure fallback image query is locked to current topic — reject leaked identity
+    locked_topic = _TOPIC_LOCK.get("topic") or identity.get("name", "")
+    topic_name   = identity.get("name", "") or locked_topic
+    if locked_topic and topic_name != locked_topic and not _validate_entity(topic_name, locked_topic, {}):
+        print(f"[SCENE] Topic validation — identity {topic_name!r} rejected for fallback image, constrained to locked topic")
+        topic_name = locked_topic
+
     query = build_visual_search_query(
         scene.get("text", ""),
-        topic=identity.get("name", ""),
+        topic=topic_name,
     )
     urls = _wikimedia_image_results(query, max_results=3)
     if urls:

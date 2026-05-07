@@ -56,7 +56,7 @@ from config_darkcrimed import (
 
 from agent.research_agent    import research_topics, research_series, mark_covered, is_fictional
 from agent.script_agent      import write_script, translate_script, generate_chapters, write_short_script, clean_word_count, expand_script_runtime
-from agent.animation_agent   import create_animation_video
+from agent.animation_agent   import create_animation_video, init_topic_lock
 from agent.video_agent       import ensure_music_assets, cut_best_short
 from agent.notify_agent      import (
     send_message, send_video_to_telegram, send_daily_report,
@@ -175,6 +175,10 @@ def run_pipeline() -> None:
     _ctrl.start()
 
     _log("Research", f"Topic: '{topic_text}'", "OK")
+
+    # Hard reset: clear all identity/character/clip state from any previous run
+    init_topic_lock(topic_text)
+
     send_message(f"[ANIMATION PIPELINE] Topic: {topic_text}\n\nStarting animation generation...")
 
     series = topic_niche.split("behind")[-1].strip() if "behind" in topic_niche else topic_text
@@ -294,7 +298,22 @@ def run_pipeline() -> None:
 
     _ctrl.update_stage("AnimGen", "generating AR animation video")
     _log("AnimGen", "Generating AR animation video")
-    ar_long_path = _make_animation_video(ar_long, topic.get("research", {}), FINAL_DIR, stats, "AR long")
+
+    _ar_wc_check  = len(ar_long.get("script", "").split())
+    _ar_min_check = _ar_wc_check / 130.0
+    _AR_LONG_MIN  = 5.0
+    if ar_long.get("script_too_short") or _ar_min_check < _AR_LONG_MIN:
+        _block_msg = (
+            f"[AR BLOCKED] Runtime below minimum: {_ar_min_check:.1f}min "
+            f"({_ar_wc_check}w) < {_AR_LONG_MIN}min — "
+            f"blocking Arabic animation render to prevent invalid upload"
+        )
+        _log("AnimGen", _block_msg, "ERROR")
+        send_message(_block_msg)
+        ar_long_path = ""
+        stats["errors"] += 1
+    else:
+        ar_long_path = _make_animation_video(ar_long, topic.get("research", {}), FINAL_DIR, stats, "AR long")
 
     _check_cancel("after AR animation render")
 
