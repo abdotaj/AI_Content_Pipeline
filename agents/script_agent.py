@@ -4532,11 +4532,64 @@ SENTENCE RULES:
 - Mix 5-word punches with 12-word builds. Vary the rhythm.
 - No descriptive filler. Every sentence must move the story forward.
 
-LENGTH: Target 170-190 words. Acceptable range 150-200. Hard maximum 210.
+LENGTH: Target 190-215 words. Acceptable range 170-230. Hard minimum 170.
 
 BANNED OPENERS: "This video explains...", "In this story...", "In an era...", "Throughout history...", "This is the story of...", "He was...", "This is about..."
 BANNED FORMAT: Any headings, labels, or section markers in the output.
 BANNED STYLE: Summaries, educational tone, documentary narration, generic phrases."""
+
+
+def estimate_short_duration_secs(text: str, language: str = "english") -> float:
+    """Estimate spoken duration of a short video script in seconds."""
+    wpm = _TTS_WPM.get(language.lower(), 145)
+    return (clean_word_count(text) / wpm) * 60.0
+
+
+def expand_short_script(script_text: str, language: str, topic: str, target_words: int) -> str:
+    """Expand a short video script to reach target word count while preserving structure."""
+    current_wc = clean_word_count(script_text)
+    need_extra = target_words - current_wc
+    if need_extra <= 0:
+        return script_text
+
+    lang_note = (
+        "Arabic script — expand by deepening each beat with specific sensory details. "
+        "Add 2-3 extra sentences to Beat 3 (Main Reveal). Keep RTL Arabic."
+        if language == "arabic" else
+        "Expand Beat 3 (Main Reveal) and Beat 2 (Fast Setup) with more specific facts. "
+        "Keep all sentences under 14 words."
+    )
+
+    prompt = f"""You wrote this {language} short video voiceover. It is {current_wc} words.
+It needs at least {target_words} words to fill the minimum 60-second runtime.
+
+Add approximately {need_extra} more words by:
+- Deepening the Main Reveal section with 2-3 extra specific sentences
+- Adding one more detail to the Fast Setup
+- Do NOT add a new section or change the ending CTA
+- Keep every sentence under 14 words
+- {lang_note}
+
+Topic: {topic}
+
+CURRENT SCRIPT:
+{script_text}
+
+Return ONLY the expanded spoken script. No headings. No labels."""
+
+    system = (
+        "You are expanding a short crime documentary voiceover. "
+        "Preserve tone, structure, and all existing content. Only add, never remove. "
+        "Output only the final spoken words."
+    )
+
+    result = _ai_script_call(prompt, max_tokens=700, temperature=0.7, system_prompt=system, premium=True).strip()
+    result_wc = clean_word_count(result)
+    if result_wc >= current_wc:
+        print(f"[SHORT EXPANSION] {language}: {current_wc} → {result_wc} words")
+        return result
+    print(f"[SHORT EXPANSION] Expansion shrunk script ({current_wc} → {result_wc}) — keeping original")
+    return script_text
 
 
 def write_short_script(en_long_script: dict) -> dict:
@@ -4589,7 +4642,7 @@ STYLE:
 - Every 2 sentences must increase tension — never flat.
 - NO summaries. NO "He was..." openers. NO educational tone.
 
-LENGTH: Target 170-190 words. Acceptable 150-200. Hard maximum 210. Count every word.
+LENGTH: Target 190-215 words. Acceptable 170-230. Hard minimum 170. Count every word.
 
 SOURCE SCRIPT (extract the best moment from inside):
 {long_script[:2000]}
@@ -4603,8 +4656,8 @@ Write ONLY the spoken words. No headings. No labels. No explanations."""
         _p = prompt
         if attempt > 0 and script_text:
             wc = clean_word_count(script_text)
-            _p += (f"\n\nPREVIOUS ATTEMPT: {wc} words — target 170-190, minimum 150. "
-                   f"{'Expand beats 2 and 3 with more specific facts to reach 170 words.' if wc < 150 else 'Trim to 170-190 words.'}")
+            _p += (f"\n\nPREVIOUS ATTEMPT: {wc} words — target 190-215, minimum 170. "
+                   f"{'Expand beats 2 and 3 with more specific facts to reach 190 words.' if wc < 170 else 'Trim to 190-215 words.'}")
         result = _ai_script_call(_p, max_tokens=600, temperature=0.85,
                                   system_prompt=_SHORT_SCRIPT_SYSTEM, premium=True).strip()
         words   = clean_word_count(result)
@@ -4613,21 +4666,22 @@ Write ONLY the spoken words. No headings. No labels. No explanations."""
         if words > clean_word_count(best_text):
             best_text = result
         script_text = result
-        if words >= 150:
+        print(f"[SHORT RUNTIME] EN attempt {attempt + 1}: {words} words → ~{round(words / _TTS_WPM['english'] * 60)}s")
+        if words >= 170:
             break
-        print(f"[Script] Short under 150w ({words} words) — retrying with gpt-4o...")
+        print(f"[Script] Short under 170w ({words} words) — retrying with gpt-4o...")
 
-    # ── Phase 2: Groq fallback — only if all gpt-4o attempts < 150w ──────────
-    if clean_word_count(script_text) < 150:
-        print("[Script] gpt-4o under 150w after 3 attempts — Groq fallback...")
-        _p = prompt + "\n\nIMPORTANT: Write at least 150 words. Target 170-190. Count every word."
-        result = _ai_script_call(_p, max_tokens=600, temperature=0.85,
+    # ── Phase 2: Groq fallback — only if all gpt-4o attempts < 170w ──────────
+    if clean_word_count(script_text) < 170:
+        print("[Script] gpt-4o under 170w after 3 attempts — Groq fallback...")
+        _p = prompt + "\n\nIMPORTANT: Write at least 170 words. Target 190-215. Count every word."
+        result = _ai_script_call(_p, max_tokens=700, temperature=0.85,
                                   system_prompt=_SHORT_SCRIPT_SYSTEM, premium=False).strip()
         words = clean_word_count(result)
-        print(f"[Script] Short Groq fallback: {words} words")
+        print(f"[SHORT RUNTIME] EN Groq fallback: {words} words → ~{round(words / _TTS_WPM['english'] * 60)}s")
         if words > clean_word_count(best_text):
             best_text = result
-        script_text = result if words >= 150 else (best_text or result)
+        script_text = result if words >= 170 else (best_text or result)
 
     # Keep best result if current is still too short
     if clean_word_count(script_text) < 100 and best_text:
@@ -4659,7 +4713,7 @@ Write ONLY the spoken words. No headings. No labels. No explanations."""
         )
         _lock_r = _ai_script_call(_lock_p, max_tokens=600, temperature=0.85,
                                    system_prompt=_SHORT_SCRIPT_SYSTEM, premium=True).strip()
-        if _lock_r and clean_word_count(_lock_r) >= 150:
+        if _lock_r and clean_word_count(_lock_r) >= 170:
             script_text = _lock_r
             print(f"[Script] Topic-locked short: {clean_word_count(script_text)} words")
 
@@ -4673,13 +4727,27 @@ Write ONLY the spoken words. No headings. No labels. No explanations."""
         print(f"[Script] Hook score after improvement: {_hook_score}/10")
 
     # ── Word budget gated by hook score ─────────────────────────────────────
-    _max_short = 200 if _hook_score >= 9 else 190
+    _max_short = 230 if _hook_score >= 9 else 215
     if clean_word_count(script_text) > _max_short:
         script_text = _trim_plain_text_to_words(script_text, _max_short)
         print(f"[Script] Short trimmed to {_max_short} words (hook score {_hook_score}/10)")
 
     script_text = evaluate_and_fix_script(script_text)
+
+    # ── Arabic short: translate + enforce 260-word minimum for 60s runtime ───
     ar_script_text = translate_to_arabic(script_text) if script_text else ""
+    if ar_script_text:
+        _ar_short_wc = clean_word_count(ar_script_text)
+        _ar_short_secs = estimate_short_duration_secs(ar_script_text, "arabic")
+        print(f"[SHORT RUNTIME] AR: {_ar_short_wc} words → ~{_ar_short_secs:.0f}s")
+        if _ar_short_wc < 260:
+            print(f"[SHORT EXPANSION] AR short under 260 words ({_ar_short_wc}) — expanding to 280")
+            ar_script_text = expand_short_script(ar_script_text, "arabic", topic, 280)
+            _ar_short_wc = clean_word_count(ar_script_text)
+            _ar_short_secs = estimate_short_duration_secs(ar_script_text, "arabic")
+            print(f"[SHORT RUNTIME] AR after expansion: {_ar_short_wc} words → ~{_ar_short_secs:.0f}s")
+        else:
+            print(f"[SHORT PASSED] AR: {_ar_short_wc} words → ~{_ar_short_secs:.0f}s")
 
     short_data = {
         "title":            en_long_script.get("title", ""),
@@ -4702,6 +4770,12 @@ Write ONLY the spoken words. No headings. No labels. No explanations."""
     short_data["short_title"] = _short_title
     if short_data.get("script"):
         short_data["script"] = evaluate_and_fix_script(short_data["script"])
+    _en_secs = estimate_short_duration_secs(script_text, "english")
+    _ar_secs = estimate_short_duration_secs(ar_script_text, "arabic")
+    print(
+        f"[SHORT RUNTIME] Final EN: {clean_word_count(script_text)} words → ~{_en_secs:.0f}s | "
+        f"AR: {clean_word_count(ar_script_text)} words → ~{_ar_secs:.0f}s"
+    )
     print(f"[Script] Short script done: '{short_data['title']}' ({clean_word_count(script_text)} words EN, {clean_word_count(ar_script_text)} words AR)")
     return short_data
 

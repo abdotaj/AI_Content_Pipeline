@@ -485,6 +485,7 @@ def run_pipeline() -> None:
     _ctrl.update_stage("Shorts", "rendering EN promo short")
     _log("Shorts", "Rendering EN vertical short")
     _en_short_script = en_long.get("short_script_en", "")
+    _en_short_via_script = False
     if _en_short_script:
         _log("Shorts", "Path A: rendering EN short from script")
         _en_sid = f"{today}_{uuid.uuid4().hex[:8]}_english_short"
@@ -492,6 +493,7 @@ def run_pipeline() -> None:
             {**en_long, "script": _en_short_script},
             _en_sid, stats, user_images=user_images, user_videos=user_videos,
         )
+        _en_short_via_script = bool(en_short_path)
     if not en_short_path and en_long_path and os.path.exists(en_long_path):
         _log("Shorts", "Path B: cutting EN short from long video (fallback)", "WARN")
         try:
@@ -499,6 +501,34 @@ def run_pipeline() -> None:
             en_short_path = _cuts[0]["path"] if _cuts else ""
         except Exception as _ce:
             _log("Shorts", f"EN short cut failed: {_ce}", "ERROR")
+    # Auto-expansion: only for Path A renders, up to 2 attempts
+    if en_short_path and _en_short_via_script:
+        for _en_short_rebuild in range(1, 3):
+            _en_short_secs = _video_secs(en_short_path)
+            print(f"[SHORT RUNTIME] EN short: {_en_short_secs:.1f}s")
+            if _en_short_secs >= 60:
+                _log("Shorts", f"[SHORT PASSED] EN short: {_en_short_secs:.1f}s", "OK")
+                break
+            _log("Shorts", f"[SHORT EXPANSION] EN short {_en_short_secs:.1f}s < 60s — expanding (attempt {_en_short_rebuild}/2)", "WARN")
+            from agent.script_agent import expand_short_script as _ess
+            _en_short_script = _ess(_en_short_script, "english", en_long.get("topic", ""), 200)
+            en_long["short_script_en"] = _en_short_script
+            en_short_path = _make_video(
+                {**en_long, "script": _en_short_script},
+                f"{today}_{uuid.uuid4().hex[:8]}_english_short",
+                stats, user_images=user_images, user_videos=user_videos,
+            ) or en_short_path
+        else:
+            _en_short_secs = _video_secs(en_short_path)
+            if _en_short_secs < 60:
+                _log("Shorts", f"[SHORT BLOCKED] EN short {_en_short_secs:.1f}s < 60s after 2 expansions — will not upload", "ERROR")
+                en_short_path = ""
+    elif en_short_path:
+        _en_short_secs = _video_secs(en_short_path)
+        print(f"[SHORT RUNTIME] EN short (Path B cut): {_en_short_secs:.1f}s")
+        if _en_short_secs < 60:
+            _log("Shorts", f"[SHORT BLOCKED] EN short cut {_en_short_secs:.1f}s < 60s — will not upload", "ERROR")
+            en_short_path = ""
     if en_short_path:
         _log("Shorts", f"EN promo short ready: {en_short_path}", "OK")
     else:
@@ -509,6 +539,7 @@ def run_pipeline() -> None:
     _ctrl.update_stage("Shorts", "rendering AR promo short")
     _log("Shorts", "Rendering AR vertical short")
     _ar_short_script = ar_long.get("short_script_ar", "")
+    _ar_short_via_script = False
     if _ar_short_script:
         _log("Shorts", "Path A: rendering AR short from script")
         _ar_sid = f"{today}_{uuid.uuid4().hex[:8]}_arabic_short"
@@ -516,6 +547,7 @@ def run_pipeline() -> None:
             {**ar_long, "script": _ar_short_script},
             _ar_sid, stats, user_images=user_images, user_videos=user_videos,
         )
+        _ar_short_via_script = bool(ar_short_path)
     if not ar_short_path and ar_long_path and os.path.exists(ar_long_path):
         _log("Shorts", "Path B: cutting AR short from long video (fallback)", "WARN")
         try:
@@ -523,6 +555,34 @@ def run_pipeline() -> None:
             ar_short_path = _cuts[0]["path"] if _cuts else ""
         except Exception as _ce:
             _log("Shorts", f"AR short cut failed: {_ce}", "ERROR")
+    # Auto-expansion: only for Path A renders, up to 2 attempts
+    if ar_short_path and _ar_short_via_script:
+        for _ar_short_rebuild in range(1, 3):
+            _ar_short_secs = _video_secs(ar_short_path)
+            print(f"[SHORT RUNTIME] AR short: {_ar_short_secs:.1f}s")
+            if _ar_short_secs >= 60:
+                _log("Shorts", f"[SHORT PASSED] AR short: {_ar_short_secs:.1f}s", "OK")
+                break
+            _log("Shorts", f"[SHORT EXPANSION] AR short {_ar_short_secs:.1f}s < 60s — expanding (attempt {_ar_short_rebuild}/2)", "WARN")
+            from agent.script_agent import expand_short_script as _ess
+            _ar_short_script = _ess(_ar_short_script, "arabic", ar_long.get("topic", ""), 290)
+            ar_long["short_script_ar"] = _ar_short_script
+            ar_short_path = _make_video(
+                {**ar_long, "script": _ar_short_script},
+                f"{today}_{uuid.uuid4().hex[:8]}_arabic_short",
+                stats, user_images=user_images, user_videos=user_videos,
+            ) or ar_short_path
+        else:
+            _ar_short_secs = _video_secs(ar_short_path)
+            if _ar_short_secs < 60:
+                _log("Shorts", f"[SHORT BLOCKED] AR short {_ar_short_secs:.1f}s < 60s after 2 expansions — will not upload", "ERROR")
+                ar_short_path = ""
+    elif ar_short_path:
+        _ar_short_secs = _video_secs(ar_short_path)
+        print(f"[SHORT RUNTIME] AR short (Path B cut): {_ar_short_secs:.1f}s")
+        if _ar_short_secs < 60:
+            _log("Shorts", f"[SHORT BLOCKED] AR short cut {_ar_short_secs:.1f}s < 60s — will not upload", "ERROR")
+            ar_short_path = ""
     if ar_short_path:
         _log("Shorts", f"AR promo short ready: {ar_short_path}", "OK")
     else:
@@ -561,6 +621,15 @@ def run_pipeline() -> None:
                     f"{today}_{uuid.uuid4().hex[:8]}_english_short",
                     stats, user_images=user_images, user_videos=user_videos,
                 )
+                if en_short_path and _video_secs(en_short_path) < 60:
+                    from agent.script_agent import expand_short_script as _ess
+                    _en_ss = _ess(_en_ss, "english", en_long.get("topic", ""), 200)
+                    en_long["short_script_en"] = _en_ss
+                    en_short_path = _make_video(
+                        {**en_long, "script": _en_ss},
+                        f"{today}_{uuid.uuid4().hex[:8]}_english_short",
+                        stats, user_images=user_images, user_videos=user_videos,
+                    ) or en_short_path
             _ar_ss = ar_long.get("short_script_ar", "")
             if _ar_ss and ar_long_path:
                 ar_short_path = _make_video(
@@ -568,6 +637,15 @@ def run_pipeline() -> None:
                     f"{today}_{uuid.uuid4().hex[:8]}_arabic_short",
                     stats, user_images=user_images, user_videos=user_videos,
                 )
+                if ar_short_path and _video_secs(ar_short_path) < 60:
+                    from agent.script_agent import expand_short_script as _ess
+                    _ar_ss = _ess(_ar_ss, "arabic", ar_long.get("topic", ""), 290)
+                    ar_long["short_script_ar"] = _ar_ss
+                    ar_short_path = _make_video(
+                        {**ar_long, "script": _ar_ss},
+                        f"{today}_{uuid.uuid4().hex[:8]}_arabic_short",
+                        stats, user_images=user_images, user_videos=user_videos,
+                    ) or ar_short_path
 
     # ── STEP 5: Publish ───────────────────────────────────────────────────────
     print(f"\n{'='*50}\n  UPLOAD\n{'='*50}\n", flush=True)

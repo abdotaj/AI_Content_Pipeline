@@ -660,12 +660,37 @@ def run_pipeline():
     # Output 3: English short  ── script path or cut fallback
     en_chapter_shorts: list[dict] = []
     _en_short_script = en_long.get("short_script_en", "")
+    _en_short_via_script = False
     if SHORT_MODE == "script" and _en_short_script:
         print("[Pipeline] Generating English short from short script (TTS → video)...")
         _en_short_data = {**en_long, "script": _en_short_script}
         _en_short_id   = f"{today}_{uuid.uuid4().hex[:8]}_english_short"
         _en_short_path = _make_video(_en_short_data, _en_short_id, stats,
                                      user_images=_short_user_images, user_videos=_short_user_videos)
+        _en_short_via_script = bool(_en_short_path)
+        # Auto-expansion: up to 2 attempts if rendered < 60s
+        if _en_short_via_script:
+            for _en_s_rb in range(1, 3):
+                _en_s_secs = _video_secs(_en_short_path)
+                print(f"[SHORT RUNTIME] EN short: {_en_s_secs:.1f}s")
+                if _en_s_secs >= 60:
+                    _log("Shorts", f"[SHORT PASSED] EN short: {_en_s_secs:.1f}s", "OK")
+                    break
+                _log("Shorts", f"[SHORT EXPANSION] EN short {_en_s_secs:.1f}s < 60s — expanding (attempt {_en_s_rb}/2)", "WARN")
+                from agent.script_agent import expand_short_script as _ess
+                _en_short_script = _ess(_en_short_script, "english", en_long.get("topic", ""), 200)
+                en_long["short_script_en"] = _en_short_script
+                _new_path = _make_video(
+                    {**en_long, "script": _en_short_script},
+                    f"{today}_{uuid.uuid4().hex[:8]}_english_short",
+                    stats, user_images=_short_user_images, user_videos=_short_user_videos,
+                )
+                _en_short_path = _new_path or _en_short_path
+            else:
+                _en_s_secs = _video_secs(_en_short_path)
+                if _en_s_secs < 60:
+                    _log("Shorts", f"[SHORT BLOCKED] EN short {_en_s_secs:.1f}s < 60s after 2 expansions — will not send", "ERROR")
+                    _en_short_path = ""
         if _en_short_path:
             en_chapter_shorts = [{
                 "path":        _en_short_path,
@@ -677,17 +702,49 @@ def run_pipeline():
         _reason = "SHORT_MODE=cut" if _en_short_script else "short_script_en missing"
         print(f"[Pipeline] Cutting best English short from long video ({_reason})...")
         if en_long_path and os.path.exists(en_long_path):
-            en_chapter_shorts = cut_best_short(en_long_path, en_long)
+            _raw_cuts = cut_best_short(en_long_path, en_long)
+            for _cut in _raw_cuts:
+                _cut_secs = _video_secs(_cut.get("path", ""))
+                print(f"[SHORT RUNTIME] EN short (cut): {_cut_secs:.1f}s")
+                if _cut_secs >= 60:
+                    en_chapter_shorts.append(_cut)
+                else:
+                    _log("Shorts", f"[SHORT BLOCKED] EN cut short {_cut_secs:.1f}s < 60s — skipped", "ERROR")
 
     # Output 4: Arabic short  ── script path or cut fallback
     ar_chapter_shorts: list[dict] = []
     _ar_short_script = ar_long.get("short_script_ar", "")
+    _ar_short_via_script = False
     if SHORT_MODE == "script" and _ar_short_script:
         print("[Pipeline] Generating Arabic short from short script (TTS → video)...")
         _ar_short_data = {**ar_long, "script": _ar_short_script}
         _ar_short_id   = f"{today}_{uuid.uuid4().hex[:8]}_arabic_short"
         _ar_short_path = _make_video(_ar_short_data, _ar_short_id, stats,
                                      user_images=_short_user_images, user_videos=_short_user_videos)
+        _ar_short_via_script = bool(_ar_short_path)
+        # Auto-expansion: up to 2 attempts if rendered < 60s
+        if _ar_short_via_script:
+            for _ar_s_rb in range(1, 3):
+                _ar_s_secs = _video_secs(_ar_short_path)
+                print(f"[SHORT RUNTIME] AR short: {_ar_s_secs:.1f}s")
+                if _ar_s_secs >= 60:
+                    _log("Shorts", f"[SHORT PASSED] AR short: {_ar_s_secs:.1f}s", "OK")
+                    break
+                _log("Shorts", f"[SHORT EXPANSION] AR short {_ar_s_secs:.1f}s < 60s — expanding (attempt {_ar_s_rb}/2)", "WARN")
+                from agent.script_agent import expand_short_script as _ess
+                _ar_short_script = _ess(_ar_short_script, "arabic", ar_long.get("topic", ""), 290)
+                ar_long["short_script_ar"] = _ar_short_script
+                _new_path = _make_video(
+                    {**ar_long, "script": _ar_short_script},
+                    f"{today}_{uuid.uuid4().hex[:8]}_arabic_short",
+                    stats, user_images=_short_user_images, user_videos=_short_user_videos,
+                )
+                _ar_short_path = _new_path or _ar_short_path
+            else:
+                _ar_s_secs = _video_secs(_ar_short_path)
+                if _ar_s_secs < 60:
+                    _log("Shorts", f"[SHORT BLOCKED] AR short {_ar_s_secs:.1f}s < 60s after 2 expansions — will not send", "ERROR")
+                    _ar_short_path = ""
         if _ar_short_path:
             ar_chapter_shorts = [{
                 "path":        _ar_short_path,
@@ -699,7 +756,14 @@ def run_pipeline():
         _reason = "SHORT_MODE=cut" if _ar_short_script else "short_script_ar missing"
         print(f"[Pipeline] Cutting best Arabic short from long video ({_reason})...")
         if ar_long_path and os.path.exists(ar_long_path):
-            ar_chapter_shorts = cut_best_short(ar_long_path, ar_long)
+            _raw_cuts = cut_best_short(ar_long_path, ar_long)
+            for _cut in _raw_cuts:
+                _cut_secs = _video_secs(_cut.get("path", ""))
+                print(f"[SHORT RUNTIME] AR short (cut): {_cut_secs:.1f}s")
+                if _cut_secs >= 60:
+                    ar_chapter_shorts.append(_cut)
+                else:
+                    _log("Shorts", f"[SHORT BLOCKED] AR cut short {_cut_secs:.1f}s < 60s — skipped", "ERROR")
 
     _stage("Videos + shorts done")
 
@@ -738,9 +802,31 @@ def run_pipeline():
             else:
                 ar_long_path = ""
             if en_long_path and os.path.exists(en_long_path):
-                en_chapter_shorts = cut_best_short(en_long_path, en_long)
+                _en_ss = en_long.get("short_script_en", "")
+                if _en_ss:
+                    _p = _make_video({**en_long, "script": _en_ss},
+                                     f"{today}_{uuid.uuid4().hex[:8]}_english_short",
+                                     stats, user_images=user_images, user_videos=user_videos)
+                    if _p and _video_secs(_p) >= 60:
+                        en_chapter_shorts = [{"path": _p, "title": en_long.get("title", ""), "label": "Best Short", "chapter_idx": 1}]
+                    else:
+                        en_chapter_shorts = cut_best_short(en_long_path, en_long)
+                else:
+                    en_chapter_shorts = cut_best_short(en_long_path, en_long)
+                en_chapter_shorts = [c for c in en_chapter_shorts if _video_secs(c.get("path", "")) >= 60]
             if ar_long_path and os.path.exists(ar_long_path):
-                ar_chapter_shorts = cut_best_short(ar_long_path, ar_long)
+                _ar_ss = ar_long.get("short_script_ar", "")
+                if _ar_ss:
+                    _p = _make_video({**ar_long, "script": _ar_ss},
+                                     f"{today}_{uuid.uuid4().hex[:8]}_arabic_short",
+                                     stats, user_images=user_images, user_videos=user_videos)
+                    if _p and _video_secs(_p) >= 60:
+                        ar_chapter_shorts = [{"path": _p, "title": ar_long.get("title", ""), "label": "Best Short", "chapter_idx": 1}]
+                    else:
+                        ar_chapter_shorts = cut_best_short(ar_long_path, ar_long)
+                else:
+                    ar_chapter_shorts = cut_best_short(ar_long_path, ar_long)
+                ar_chapter_shorts = [c for c in ar_chapter_shorts if _video_secs(c.get("path", "")) >= 60]
 
     # ── STEP 5: Upload long videos to YouTube, then send shorts to Telegram ──
     _log("Publish", "Starting publishing step")

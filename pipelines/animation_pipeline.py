@@ -708,7 +708,13 @@ def run_pipeline() -> None:
             _cuts = cut_best_short(en_long_path, en_long)
             en_short_path = _cuts[0]["path"] if _cuts else ""
             if en_short_path:
-                _log("Shorts", f"EN short ready: {os.path.basename(en_short_path)}", "OK")
+                _en_s_secs = _video_secs(en_short_path)
+                print(f"[SHORT RUNTIME] EN short (cut): {_en_s_secs:.1f}s")
+                if _en_s_secs < 60:
+                    _log("Shorts", f"[SHORT BLOCKED] EN cut short {_en_s_secs:.1f}s < 60s — will not upload", "ERROR")
+                    en_short_path = ""
+                else:
+                    _log("Shorts", f"[SHORT PASSED] EN short: {_en_s_secs:.1f}s — {os.path.basename(en_short_path)}", "OK")
             else:
                 _log("Shorts", "EN short cut returned no clip", "WARN")
         except Exception as _ce:
@@ -723,7 +729,13 @@ def run_pipeline() -> None:
             _cuts = cut_best_short(ar_long_path, ar_long)
             ar_short_path = _cuts[0]["path"] if _cuts else ""
             if ar_short_path:
-                _log("Shorts", f"AR short ready: {os.path.basename(ar_short_path)}", "OK")
+                _ar_s_secs = _video_secs(ar_short_path)
+                print(f"[SHORT RUNTIME] AR short (cut): {_ar_s_secs:.1f}s")
+                if _ar_s_secs < 60:
+                    _log("Shorts", f"[SHORT BLOCKED] AR cut short {_ar_s_secs:.1f}s < 60s — will not upload", "ERROR")
+                    ar_short_path = ""
+                else:
+                    _log("Shorts", f"[SHORT PASSED] AR short: {_ar_s_secs:.1f}s — {os.path.basename(ar_short_path)}", "OK")
             else:
                 _log("Shorts", "AR short cut returned no clip", "WARN")
         except Exception as _ce:
@@ -762,13 +774,21 @@ def run_pipeline() -> None:
             if en_long_path and os.path.exists(en_long_path):
                 try:
                     _cuts = cut_best_short(en_long_path, en_long)
-                    en_short_path = _cuts[0]["path"] if _cuts else ""
+                    _p = _cuts[0]["path"] if _cuts else ""
+                    if _p and _video_secs(_p) >= 60:
+                        en_short_path = _p
+                    elif _p:
+                        _log("Shorts", f"[SHORT BLOCKED] EN rerender cut {_video_secs(_p):.1f}s < 60s", "ERROR")
                 except Exception:
                     pass
             if ar_long_path and os.path.exists(ar_long_path):
                 try:
                     _cuts = cut_best_short(ar_long_path, ar_long)
-                    ar_short_path = _cuts[0]["path"] if _cuts else ""
+                    _p = _cuts[0]["path"] if _cuts else ""
+                    if _p and _video_secs(_p) >= 60:
+                        ar_short_path = _p
+                    elif _p:
+                        _log("Shorts", f"[SHORT BLOCKED] AR rerender cut {_video_secs(_p):.1f}s < 60s", "ERROR")
                 except Exception:
                     pass
 
