@@ -6,6 +6,7 @@ import random
 import json
 import time
 import datetime
+import hashlib
 import re
 import requests
 from pathlib import Path
@@ -549,6 +550,214 @@ def classify_topic_domain_with_context(topic: str, entities: dict) -> str:
         return "serial_killer"
 
     return base
+
+
+_CANONICAL_RESEARCH_KEYS: tuple[str, ...] = (
+    "topic",
+    "search_query",
+    "domain",
+    "topic_hash",
+    "entities",
+    "summary",
+    "keywords",
+)
+
+
+def _clean_search_terms(text: str) -> list[str]:
+    """Return de-duplicated, search-worthy terms in original-ish order."""
+    stop = {
+        "the", "a", "an", "of", "in", "on", "at", "by", "to", "for", "and",
+        "or", "behind", "true", "story", "real", "what", "really", "happened",
+        "movie", "film", "series", "show", "tv",
+    }
+    seen: set[str] = set()
+    terms: list[str] = []
+    for term in re.findall(r"[A-Za-z0-9][A-Za-z0-9'&.-]*", text):
+        key = term.lower().strip(".,:;!?")
+        if len(key) < 3 or key in stop or key in seen:
+            continue
+        seen.add(key)
+        terms.append(term.strip(".,:;!?"))
+    return terms
+
+
+def generate_search_query(topic: str, entities: dict | None = None) -> str:
+    """
+    Build a stable web-search query from a manual or auto topic.
+
+    Manual topics often arrive as editorial titles ("The Real Story Behind...")
+    while downstream image/research code needs concise searchable entities.
+    """
+    topic = (topic or "").strip()
+    entities = entities or extract_canonical_entities(topic)
+    t_lower = topic.lower()
+
+    people: list[str] = []
+    adaptation = entities.get("adaptation_title") or ""
+
+    for show_key, chars in _KNOWN_SHOW_CHARACTERS.items():
+        if show_key in t_lower:
+            adaptation = " ".join(
+                word if word in {"of", "the", "and"} else word.capitalize()
+                for word in show_key.split()
+            )
+            for char in chars:
+                based_on = (char.get("based_on") or "").strip()
+                if based_on and based_on.lower() in t_lower:
+                    people.append(based_on)
+
+    if not people:
+        for person in entities.get("named_persons") or []:
+            if person not in people and not person.lower().startswith(("the real", "real story", "true story")):
+                people.append(person)
+
+    parts: list[str] = []
+    for person in people[:2]:
+        parts.extend(person.split())
+    if adaptation:
+        parts.extend(adaptation.split())
+
+    if not parts:
+        stripped = re.sub(
+            r"\b(the\s+)?(real|true)\s+story\s+(behind|of)\b",
+            " ",
+            topic,
+            flags=re.I,
+        )
+        parts.extend(_clean_search_terms(stripped)[:8])
+
+    if "real story" in t_lower or "true story" in t_lower or "behind" in t_lower:
+        parts.extend(["real", "story"])
+
+    query_terms: list[str] = []
+    seen: set[str] = set()
+    for part in parts:
+        cleaned = part.strip(" |.,:;!?")
+        key = cleaned.lower()
+        if cleaned and key not in seen:
+            seen.add(key)
+            query_terms.append(cleaned)
+
+    query = " ".join(query_terms).strip()
+    if not query:
+        query = topic or "true crime documentary"
+    print(f"[RESEARCH] search_query generated: {query}")
+    return query
+
+
+def _build_summary(topic: str, payload: dict) -> str:
+    summary = (
+        payload.get("summary")
+        or payload.get("historical_context")
+        or payload.get("what_happened_after")
+        or payload.get("real_story")
+        or ""
+    )
+    if isinstance(summary, str) and summary.strip():
+        return summary.strip()[:1200]
+
+    facts = (
+        payload.get("research_facts")
+        or payload.get("real_facts")
+        or payload.get("shocking_real_facts")
+        or payload.get("research_shocking")
+        or []
+    )
+    if isinstance(facts, list) and facts:
+        return " ".join(str(f) for f in facts[:3]).strip()[:1200]
+    return f"Research context for {topic}."
+
+
+def _build_keywords(topic: str, search_query: str, payload: dict, entities: dict) -> list[str]:
+    existing = payload.get("keywords") or []
+    if isinstance(existing, str):
+        existing = [existing]
+    keywords: list[str] = []
+    for value in list(existing) + (entities.get("named_persons") or []):
+        if value and str(value).strip():
+            keywords.append(str(value).strip())
+    if entities.get("adaptation_title"):
+        keywords.append(str(entities["adaptation_title"]).strip())
+    keywords.extend(_clean_search_terms(search_query))
+    keywords.extend(_clean_search_terms(topic)[:4])
+
+    out: list[str] = []
+    seen: set[str] = set()
+    for kw in keywords:
+        key = kw.lower()
+        if key not in seen:
+            seen.add(key)
+            out.append(kw)
+        if len(out) >= 10:
+            break
+    return out or [topic or "documentary"]
+
+
+def build_canonical_research_payload(
+    topic: str | dict,
+    research: dict | None = None,
+    *,
+    manual: bool = False,
+    series_name: str | None = None,
+    user_note: str | None = None,
+) -> dict:
+    """
+    Return the one canonical research schema used by auto and manual flows.
+
+    Required keys are always present:
+    topic, search_query, domain, topic_hash, entities, summary, keywords.
+    Existing deep-research fields are preserved.
+    """
+    topic_obj = topic if isinstance(topic, dict) else {}
+    topic_text = (
+        (topic_obj.get("topic") if topic_obj else "")
+        or (research or {}).get("topic")
+        or (research or {}).get("series")
+        or str(topic or "")
+    ).strip()
+    if not topic_text:
+        topic_text = "Untitled documentary topic"
+
+    payload = dict(research or {})
+    payload["topic"] = topic_text
+    if series_name and not payload.get("series_name"):
+        payload["series_name"] = series_name
+    if user_note and not payload.get("user_discovery"):
+        payload["user_discovery"] = user_note
+
+    entities = payload.get("entities")
+    if not isinstance(entities, dict) or not entities:
+        entities = extract_canonical_entities(topic_text)
+    domain = payload.get("domain") or classify_topic_domain_with_context(topic_text, entities)
+    entities["domain"] = domain
+
+    search_query = (
+        payload.get("search_query")
+        or topic_obj.get("search_query")
+        or generate_search_query(topic_text, entities)
+    )
+
+    payload["search_query"] = str(search_query or topic_text).strip() or topic_text
+    payload["domain"] = domain
+    payload["topic_hash"] = payload.get("topic_hash") or hashlib.sha256(topic_text.encode("utf-8")).hexdigest()[:16]
+    payload["entities"] = entities
+    payload["summary"] = _build_summary(topic_text, payload)
+    payload["keywords"] = _build_keywords(topic_text, payload["search_query"], {**topic_obj, **payload}, entities)
+
+    print("[RESEARCH] Canonical payload built")
+    if manual:
+        print("[RESEARCH] Manual topic payload normalized")
+    return payload
+
+
+def repair_research_payload(topic: str | dict, research: dict | None = None, *, manual: bool = False) -> dict:
+    """Repair incomplete research payloads instead of letting downstream code crash."""
+    current = research or {}
+    missing = [key for key in _CANONICAL_RESEARCH_KEYS if not current.get(key)]
+    if missing:
+        print(f"[ERROR] Missing research field repaired: {', '.join(missing)}")
+        return build_canonical_research_payload(topic, current, manual=manual)
+    return build_canonical_research_payload(topic, current, manual=manual)
 
 
 def semantic_confidence_score(

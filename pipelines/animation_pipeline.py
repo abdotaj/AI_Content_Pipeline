@@ -59,7 +59,8 @@ from agent.research_agent    import (
     research_topics, research_series, mark_covered, is_fictional,
     normalize_topic_title, extract_canonical_entities,
     classify_topic_domain_with_context, semantic_confidence_score,
-    entity_confidence_score,
+    entity_confidence_score, build_canonical_research_payload,
+    repair_research_payload,
 )
 from agent.script_agent      import write_script, translate_script, generate_chapters, write_short_script, clean_word_count, expand_script_runtime
 from agent.animation_agent   import create_animation_video, init_topic_lock
@@ -108,6 +109,11 @@ def _make_animation_video(
     stats: dict,
     label: str,
 ) -> str:
+    research = repair_research_payload(
+        script_data.get("topic", ""),
+        research,
+        manual=bool(script_data.get("manual_topic")),
+    )
     try:
         path = create_animation_video(
             script_data,
@@ -403,7 +409,18 @@ def run_pipeline() -> None:
     if _manual_topic:
         # User pre-supplied the topic — use immediately, no Telegram wait
         _log("Research", f"Manual topic override: '{_manual_topic}'", "OK")
-        topic = {"topic": _manual_topic, "niche": _manual_topic}
+        _canonical = build_canonical_research_payload(_manual_topic, manual=True)
+        topic = {
+            "topic":        _canonical["topic"],
+            "niche":        _canonical["topic"],
+            "search_query": _canonical["search_query"],
+            "keywords":     _canonical["keywords"],
+            "domain":       _canonical["domain"],
+            "topic_hash":   _canonical["topic_hash"],
+            "entities":     _canonical["entities"],
+            "research":     _canonical,
+            "manual_topic": True,
+        }
         _ctrl.set_topic(_manual_topic)
         _ctrl.start()
     else:
@@ -439,11 +456,39 @@ def run_pipeline() -> None:
         else:
             topic = _selection
 
+        _manual_selection = not any(
+            topic is candidate or topic.get("series") == candidate.get("series")
+            for candidate in _candidates
+        )
+        _canonical = build_canonical_research_payload(
+            topic,
+            topic.get("research"),
+            manual=_manual_selection,
+        )
+        topic.update({
+            "topic":        _canonical["topic"],
+            "niche":        topic.get("niche") or _canonical["topic"],
+            "search_query": _canonical["search_query"],
+            "keywords":     _canonical["keywords"],
+            "domain":       _canonical["domain"],
+            "topic_hash":   _canonical["topic_hash"],
+            "entities":     _canonical["entities"],
+            "research":     _canonical,
+            "manual_topic": _manual_selection,
+        })
+
         _ctrl.set_topic(topic.get("topic", ""))
         _ctrl.start()
 
     topic_text  = topic.get("topic", "")
     topic_niche = topic.get("niche", "")
+    topic["research"] = repair_research_payload(
+        topic,
+        topic.get("research"),
+        manual=bool(topic.get("manual_topic") or _manual_topic),
+    )
+    topic["search_query"] = topic.get("search_query") or topic["research"].get("search_query", topic_text)
+    topic["keywords"] = topic.get("keywords") or topic["research"].get("keywords", [topic_text])
 
     if is_fictional(topic_text, topic_niche):
         _log("Research", f"Fictional topic blocked: '{topic_text}'", "WARN")
@@ -511,12 +556,28 @@ def run_pipeline() -> None:
         research = research_series(series, user_note=topic.get("user_note"))
         if research is None:
             research = {}
+        research = build_canonical_research_payload(
+            topic,
+            research,
+            manual=bool(topic.get("manual_topic") or _manual_topic),
+            series_name=topic.get("series"),
+            user_note=topic.get("user_note"),
+        )
         research["real_person"] = topic_text
         topic["research"]       = research
+        topic["search_query"]   = research.get("search_query", topic_text)
+        topic["keywords"]       = research.get("keywords", [topic_text])
+        topic["domain"]         = research.get("domain", topic.get("domain", "default"))
+        topic["topic_hash"]     = research.get("topic_hash", topic.get("topic_hash", ""))
+        topic["entities"]       = research.get("entities", topic.get("entities", {}))
         _log("Research", "Deep research done", "OK")
     except Exception as e:
         _log("Research", f"research_series failed (non-fatal): {e}", "WARN")
-        topic["research"] = {}
+        topic["research"] = repair_research_payload(
+            topic,
+            topic.get("research"),
+            manual=bool(topic.get("manual_topic") or _manual_topic),
+        )
 
     # ── STEP 2: Scripts (EN + AR) ─────────────────────────────────────────────
     print(f"\n{'='*50}\n  SCRIPTS\n{'='*50}\n", flush=True)

@@ -2990,11 +2990,13 @@ Return ONLY this JSON with no extra text:
             angle_title=_angle_data.get("angle_title", ""),
         ),
     }
-    script_data["topic"]              = topic["topic"]
-    script_data["niche"]              = topic["niche"]
-    script_data["search_query"]       = topic["search_query"]
-    script_data["keywords"]           = topic["keywords"]
+    _topic_name = topic.get("topic", "")
+    script_data["topic"]              = _topic_name
+    script_data["niche"]              = topic.get("niche", _topic_name)
+    script_data["search_query"]       = topic.get("search_query", _topic_name)
+    script_data["keywords"]           = topic.get("keywords", [_topic_name] if _topic_name else [])
     script_data["language"]           = "english"
+    script_data["manual_topic"]       = bool(topic.get("manual_topic"))
     script_data["series_name"]        = _series_name_raw
     script_data["series_type"]        = _series_type_raw
     script_data["angle_title"]        = _angle_data.get("angle_title", "")
@@ -4438,11 +4440,13 @@ def translate_script(en_script: dict, research: dict | None = None) -> dict:
         "thumbnail_text":  translate_to_arabic(en_script["thumbnail_text"]),
         "chapters":        en_script.get("chapters", ""),  # keep English timestamps
     }
-    ar_data["topic"]           = en_script["topic"]
-    ar_data["niche"]           = en_script["niche"]
-    ar_data["search_query"]    = en_script["search_query"]
-    ar_data["keywords"]        = en_script["keywords"]
+    _topic_name = en_script.get("topic", "")
+    ar_data["topic"]           = _topic_name
+    ar_data["niche"]           = en_script.get("niche", _topic_name)
+    ar_data["search_query"]    = en_script.get("search_query", _topic_name)
+    ar_data["keywords"]        = en_script.get("keywords", [_topic_name] if _topic_name else [])
     ar_data["language"]        = "arabic"
+    ar_data["manual_topic"]    = bool(en_script.get("manual_topic"))
     ar_data["series_name"]     = en_script.get("series_name", "")
     ar_data["series_type"]     = en_script.get("series_type", "")
     ar_data["arabic_path"]     = "research" if _used_research_path else "translation"
@@ -4756,14 +4760,15 @@ Write ONLY the spoken words. No headings. No labels. No explanations."""
         "short_script_en":  script_text,
         "short_script_ar":  ar_script_text,
         "on_screen_texts":  en_long_script.get("on_screen_texts", [])[:2],
-        "caption":          en_long_script["caption"],
-        "hashtags":         en_long_script["hashtags"],
-        "thumbnail_text":   en_long_script["thumbnail_text"],
-        "topic":            en_long_script["topic"],
-        "niche":            en_long_script["niche"],
-        "search_query":     en_long_script["search_query"],
-        "keywords":         en_long_script["keywords"],
+        "caption":          en_long_script.get("caption", ""),
+        "hashtags":         en_long_script.get("hashtags", ""),
+        "thumbnail_text":   en_long_script.get("thumbnail_text", ""),
+        "topic":            en_long_script.get("topic", ""),
+        "niche":            en_long_script.get("niche", en_long_script.get("topic", "")),
+        "search_query":     en_long_script.get("search_query", en_long_script.get("topic", "")),
+        "keywords":         en_long_script.get("keywords", [en_long_script.get("topic", "")] if en_long_script.get("topic") else []),
         "language":         "english",
+        "manual_topic":     bool(en_long_script.get("manual_topic")),
     }
     _short_title = add_short_title(short_data)
     short_data["title"]       = _short_title
