@@ -739,12 +739,19 @@ def generate_scene_clip(
 
     # ── Tier 4: Kling AI ──────────────────────────────────────────────────────
     if _health.is_healthy("kling"):
-        result = _kling_image_to_video(ref_img, prompt, output_path, duration)
+        result = _kling_image_to_video(
+            ref_img,
+            prompt,
+            output_path,
+            duration,
+            context={"scene_type": scene.get("scene_type", ""), "topic": locked_topic},
+        )
         if result:
             _health.reset("kling")
             _clip_cache_set(prompt, duration, result)
             print(f"[SCENE] Motion reenactment generated (Kling): {scene['scene_type']}")
             return result
+        print("[KLING] Fallback path active")
         _health.record_failure("kling")
 
     # ── Tier 5: Enhanced still (Ken Burns — always works) ────────────────────
@@ -920,10 +927,20 @@ def _kling_image_to_video(
     image_path: str | None,
     prompt: str,
     output_path: str,
+    duration: int = 5,
+    context: dict | None = None,
 ) -> str | None:
     api_key = os.getenv("KLING_API_KEY", "").strip()
     if not api_key:
         return None
+    try:
+        duration = int(duration or 5)
+    except Exception:
+        duration = 5
+    duration = max(5, min(duration, 10))
+    context = context or {}
+    print("[KLING] Rendering clip")
+    print(f"[KLING] Args validated: image={bool(image_path)} duration={duration}s context={bool(context)}")
     try:
         body: dict = {
             "model_name":    "kling-v1",
@@ -931,7 +948,7 @@ def _kling_image_to_video(
             "negative_prompt": "text, watermark, logo, blurry, static, low quality",
             "cfg_scale":     0.5,
             "mode":          "std",
-            "duration":      "5",
+            "duration":      str(duration),
         }
         if image_path and os.path.exists(image_path):
             img_b64 = _image_to_b64(image_path)
@@ -957,13 +974,18 @@ def _kling_image_to_video(
         return _kling_poll(task_id, output_path, api_key)
     except Exception as e:
         print(f"[SCENE] Kling error: {e}")
+        print("[KLING] Fallback path active")
         return None
 
 
 def _kling_poll(task_id: str, output_path: str, api_key: str, timeout: int = 180) -> str | None:
     deadline = time.time() + timeout
+    retry_logged = False
     while time.time() < deadline:
         time.sleep(10)
+        if retry_logged:
+            print("[KLING] Retry path active")
+        retry_logged = True
         try:
             r = requests.get(
                 f"https://api.klingai.com/v1/videos/image2video/{task_id}",
@@ -1394,7 +1416,9 @@ def create_animation_video(
     topic    = script_data.get("topic", "")
     language = script_data.get("language", "english")
     video_id = re.sub(r'[^a-z0-9_]', '_', topic.lower())[:30] + f"_anim_{int(time.time())}"
-    is_short = "short" in video_id
+    is_short = bool(script_data.get("is_short") or script_data.get("short_script_en") or "short" in video_id)
+    if is_short and "_short_" not in video_id:
+        video_id = video_id.replace("_anim_", "_short_anim_")
 
     os.makedirs(output_dir, exist_ok=True)
     chars_dir = os.path.join(output_dir, "characters")
@@ -1403,6 +1427,13 @@ def create_animation_video(
     os.makedirs(clips_dir, exist_ok=True)
 
     # ── Step 1: Character identity ────────────────────────────────────────────
+    if language == "arabic":
+        try:
+            from agents.script_quality import enforce_arabic_purity
+            script_data["script"] = enforce_arabic_purity(script_data.get("script", ""))
+        except Exception as e:
+            print(f"[AR PURITY] Final sanitize failed: {e}")
+
     identity = build_character_identity(research, topic, chars_dir)
 
     # ── Step 2: Audio (TTS via existing pipeline) ─────────────────────────────

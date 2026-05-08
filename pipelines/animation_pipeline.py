@@ -133,6 +133,32 @@ def _make_animation_video(
         return ""
 
 
+def _make_standalone_short(
+    short_data: dict,
+    research: dict,
+    output_dir: str,
+    stats: dict,
+    label: str,
+    language: str = "english",
+) -> str:
+    if not short_data:
+        return ""
+    _log("Shorts", "[SHORT PATH A] Independent render active")
+    data = dict(short_data)
+    data["is_short"] = True
+    data["language"] = language
+    if language == "arabic":
+        data["script"] = data.get("short_script_ar") or data.get("script", "")
+        data["topic"] = f"{data.get('topic', '')} short ar".strip()
+    elif not en_short_path:
+        data["script"] = data.get("short_script_en") or data.get("script", "")
+        data["topic"] = f"{data.get('topic', '')} short en".strip()
+    if not data.get("script"):
+        _log("Shorts", f"{label}: no standalone script available", "WARN")
+        return ""
+    return _make_animation_video(data, research, output_dir, stats, label)
+
+
 def get_duration(video_path: str) -> str:
     try:
         from moviepy import VideoFileClip
@@ -423,7 +449,7 @@ def run_pipeline() -> None:
         }
         _ctrl.set_topic(_manual_topic)
         _ctrl.start()
-    else:
+    elif not ar_short_path:
         # Auto-discover candidates, let user choose via Telegram
         _ctrl.update_stage("Research", "discovering topic candidates")
         _log("Research", "Discovering topic candidates for Telegram selection")
@@ -715,8 +741,8 @@ def run_pipeline() -> None:
     _log("AnimGen", "Generating AR animation video")
 
     _ar_wc_check  = len(ar_long.get("script", "").split())
-    _ar_min_check = _ar_wc_check / 250.0
-    _AR_LONG_MIN  = 10.0
+    _ar_min_check = _ar_wc_check / 175.0
+    _AR_LONG_MIN  = 11.0
     if ar_long.get("script_too_short") or _ar_min_check < _AR_LONG_MIN:
         _block_msg = (
             f"[AR BLOCKED] Runtime below minimum: {_ar_min_check:.1f}min "
@@ -731,7 +757,7 @@ def run_pipeline() -> None:
         ar_long_path = _make_animation_video(ar_long, topic.get("research", {}), FINAL_DIR, stats, "AR long")
 
     # ── Arabic runtime auto-rebuild ───────────────────────────────────────────
-    _AR_MIN_SECS  = 600
+    _AR_MIN_SECS  = 660
     _ar_rebuild   = 0
     _ar_max_rb    = 3
     while ar_long_path and os.path.exists(ar_long_path):
@@ -748,7 +774,7 @@ def run_pipeline() -> None:
         _log("AnimGen", f"[AR EXPANSION] Runtime {_ar_secs/60:.1f}min < 10min — auto-rebuilding (attempt {_ar_rebuild}/{_ar_max_rb})", "WARN")
         send_message(f"[ANIM] Arabic runtime {_ar_secs/60:.1f}min < 10min — auto-rebuilding (attempt {_ar_rebuild}/{_ar_max_rb})...")
         from agent.script_agent import expand_arabic_runtime as _ear
-        ar_long["script"] = _ear(ar_long["script"], target_min=11.0, topic=topic_text)
+        ar_long["script"] = _ear(ar_long["script"], target_min=12.0, topic=topic_text)
         ar_long_path = _make_animation_video(ar_long, topic.get("research", {}), FINAL_DIR, stats, "AR long")
 
     _check_cancel("after AR animation render")
@@ -762,8 +788,25 @@ def run_pipeline() -> None:
 
     en_short_path = ""
     ar_short_path = ""
+    _dedicated_short = {}
+    try:
+        _dedicated_short = write_short_script(en_long)
+    except Exception as _se:
+        _log("Shorts", f"Dedicated short script failed: {_se}", "WARN")
 
-    if en_long_path and os.path.exists(en_long_path):
+    if _dedicated_short:
+        en_short_path = _make_standalone_short(
+            _dedicated_short, topic.get("research", {}), FINAL_DIR, stats, "EN standalone short", "english"
+        )
+        ar_short_path = _make_standalone_short(
+            _dedicated_short, topic.get("research", {}), FINAL_DIR, stats, "AR standalone short", "arabic"
+        )
+
+    if (not en_long_path or not os.path.exists(en_long_path)) and (not ar_long_path or not os.path.exists(ar_long_path)):
+        _log("Shorts", "[SHORT] Long render unavailable", "WARN")
+        _log("Shorts", "[SHORT] Continuing standalone generation", "WARN")
+
+    if not en_short_path and en_long_path and os.path.exists(en_long_path):
         _log("Shorts", "Cutting EN short from animation video")
         try:
             _cuts = cut_best_short(en_long_path, en_long)
@@ -784,7 +827,7 @@ def run_pipeline() -> None:
         _log("Shorts", "EN long video missing — cannot cut short", "WARN")
 
     _ctrl.update_stage("Shorts", "cutting AR promo short from animation")
-    if ar_long_path and os.path.exists(ar_long_path):
+    if not ar_short_path and ar_long_path and os.path.exists(ar_long_path):
         _log("Shorts", "Cutting AR short from animation video")
         try:
             _cuts = cut_best_short(ar_long_path, ar_long)
@@ -824,7 +867,7 @@ def run_pipeline() -> None:
                 en_long, topic.get("research", {}), FINAL_DIR, stats, "EN long"
             )
             _ar_wc_recheck = len(ar_long.get("script", "").split())
-            if not (ar_long.get("script_too_short") or (_ar_wc_recheck / 250.0) < 10.0):
+            if not (ar_long.get("script_too_short") or (_ar_wc_recheck / 175.0) < 11.0):
                 ar_long_path = _make_animation_video(
                     ar_long, topic.get("research", {}), FINAL_DIR, stats, "AR long"
                 )
@@ -832,7 +875,19 @@ def run_pipeline() -> None:
                 ar_long_path = ""
             en_short_path = ""
             ar_short_path = ""
-            if en_long_path and os.path.exists(en_long_path):
+            _rerender_short = {}
+            try:
+                _rerender_short = write_short_script(en_long)
+            except Exception:
+                _rerender_short = {}
+            if _rerender_short:
+                en_short_path = _make_standalone_short(
+                    _rerender_short, topic.get("research", {}), FINAL_DIR, stats, "EN standalone short", "english"
+                )
+                ar_short_path = _make_standalone_short(
+                    _rerender_short, topic.get("research", {}), FINAL_DIR, stats, "AR standalone short", "arabic"
+                )
+            if not en_short_path and en_long_path and os.path.exists(en_long_path):
                 try:
                     _cuts = cut_best_short(en_long_path, en_long)
                     _p = _cuts[0]["path"] if _cuts else ""
@@ -842,7 +897,7 @@ def run_pipeline() -> None:
                         _log("Shorts", f"[SHORT BLOCKED] EN rerender cut {_video_secs(_p):.1f}s < 60s", "ERROR")
                 except Exception:
                     pass
-            if ar_long_path and os.path.exists(ar_long_path):
+            if not ar_short_path and ar_long_path and os.path.exists(ar_long_path):
                 try:
                     _cuts = cut_best_short(ar_long_path, ar_long)
                     _p = _cuts[0]["path"] if _cuts else ""

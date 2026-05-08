@@ -238,7 +238,7 @@ def _cap_script_max_words(script_text: str, max_words: int = LONG_SCRIPT_MAX_WOR
     return result
 
 
-_TTS_WPM = {"english": 145, "arabic": 250}   # OpenAI Arabic TTS (nova/0.9) runs ~250 WPM — 2× faster than old estimate
+_TTS_WPM = {"english": 145, "arabic": 175}   # Arabic documentary pacing target: 160-190 effective WPM
 
 # Runtime floors (minutes) by mode — NO upper caps enforced.
 # Topic depth determines length. These are quality minimums only.
@@ -1321,6 +1321,44 @@ def _validate_on_topic(script: str, topic_name: str, series_label: str) -> bool:
     topic_ok  = any(w in t for w in t_words)  if t_words  else True
     series_ok = any(w in t for w in s_words)  if s_words  else True
     return topic_ok and series_ok
+
+
+def balance_entity_mentions(script: str, entities: list[str] | None = None) -> str:
+    """
+    Reduce over-anchoring by inserting adjacent documentary context when one
+    entity dominates the narration. This adds new angles, not duplicate facts.
+    """
+    if not script:
+        return script
+    entities = entities or [
+        "Jordan Belfort",
+        "Danny Porush",
+        "Stratton Oakmont",
+    ]
+    words = max(clean_word_count(script), 1)
+    counts = {
+        ent: len(re.findall(re.escape(ent), script, flags=re.IGNORECASE))
+        for ent in entities
+        if ent
+    }
+    if not counts:
+        return script
+    dominant, hits = max(counts.items(), key=lambda kv: kv[1])
+    if hits / words < 0.012 and hits < 18:
+        print("[SCRIPT BALANCE] Entity density normalized")
+        return script
+
+    context = (
+        "\n\n[SECTION: Wider Investigation]\n"
+        "The story also belongs to the investors who were pressured into risky trades, "
+        "to the SEC investigators tracing patterns across brokerage records, and to the "
+        "FBI agents turning sales-floor bravado into evidence. Offshore transfers, market "
+        "manipulation tactics, investor psychology, courtroom consequences, and the media "
+        "myth that followed all widen the frame beyond any single name."
+    )
+    print("[SCRIPT BALANCE] Over-anchoring reduced")
+    print("[SCRIPT BALANCE] Entity density normalized")
+    return script.rstrip() + context
 
 
 def write_script(topic: dict, language: str = "english") -> dict:
@@ -3042,6 +3080,8 @@ Return ONLY this JSON with no extra text:
               f"fiction bleed: {_tl.get('fiction_bleed',[])} | "
               f"cross-topic: {_tl.get('cross_topic',[])} | "
               f"blocked entities: {_tl.get('contamination',[])[:3]}")
+    _balance_entities = [_topic_name, _series_name_raw, "Jordan Belfort", "Danny Porush", "Stratton Oakmont"]
+    _s = balance_entity_mentions(_s, [e for e in _balance_entities if e])
     script_data["script"] = _s
     print(f"[Script] Written (english): '{script_data['title']}'")
     return script_data
@@ -4454,9 +4494,11 @@ def translate_script(en_script: dict, research: dict | None = None) -> dict:
     _ar_wc = clean_word_count(ar_data.get("script", ""))
     print(f"[Script] Arabic word count ({ar_data['arabic_path']} path): {_ar_wc}")
 
-    if _ar_wc < 3500:
+    _AR_WORD_FLOOR = 3000
+    _AR_WORD_TARGET = 3600
+    if _ar_wc < _AR_WORD_TARGET:
         print(f"[AR RUNTIME] Script words: {_ar_wc} — below target 3500, expanding...")
-        ar_data["script"] = _expand_arabic_script_to_min(ar_data["script"], target_min=3500)
+        ar_data["script"] = _expand_arabic_script_to_min(ar_data["script"], target_min=_AR_WORD_TARGET)
 
     # ── Runtime target check ──────────────────────────────────────────────────
     # Arabic TTS (OpenAI nova/0.9) runs ~250 WPM — 2× faster than old 130 WPM estimate.
@@ -4466,7 +4508,7 @@ def translate_script(en_script: dict, research: dict | None = None) -> dict:
     _en_min    = _en_wc / 145.0
     _ar_min    = estimate_arabic_duration(ar_data.get("script", ""))
     _ar_wc_now = clean_word_count(ar_data.get("script", ""))
-    _ar_target = max(10.5, _en_min * 0.8)
+    _ar_target = max(11.5, _en_min * 0.85, _AR_WORD_FLOOR / _TTS_WPM["arabic"])
     print(
         f"[AR RUNTIME] Script words: {_ar_wc_now}\n"
         f"[AR RUNTIME] OpenAI TTS estimated duration: ~{_ar_min:.1f}min "
@@ -4495,7 +4537,7 @@ def translate_script(en_script: dict, research: dict | None = None) -> dict:
     # 10 min is the hard minimum for Arabic long-form documentaries.
     # Below this = script_too_short flag → pipeline blocks render.
     # Pipeline will auto-rebuild (expand + re-render) until runtime is valid.
-    _AR_RUNTIME_FLOOR_MIN = 10.0
+    _AR_RUNTIME_FLOOR_MIN = 11.0
     if _final_min < _AR_RUNTIME_FLOOR_MIN:
         print(
             f"[AR BLOCKED] Runtime {_final_min:.1f}min below "

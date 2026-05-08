@@ -19,6 +19,7 @@
 #   validate_timeline_consistency(text, topic, expected_era) -> dict
 
 import re
+import unicodedata
 from typing import List
 
 # ── Banned filler phrases ─────────────────────────────────────────────────────
@@ -730,6 +731,94 @@ def enforce_arabic_purity(ar_text: str) -> str:
 
 
 # ── Timeline & entity consistency validation ─────────────────────────────────
+
+def enforce_arabic_purity(ar_text: str) -> str:
+    """
+    Final Arabic sanitizer: strip non-Arabic Unicode, invisible glyphs,
+    hybrid tokens, and unapproved Latin while preserving vetted entities.
+    """
+    if not ar_text:
+        return ar_text
+
+    allowed_latin = {
+        "Jordan Belfort",
+        "Stratton Oakmont",
+        "FBI",
+        "SEC",
+        "Leonardo DiCaprio",
+    }
+    placeholders: dict[str, str] = {}
+    protected = ar_text
+    for idx, name in enumerate(sorted(allowed_latin, key=len, reverse=True)):
+        token = f"__{idx}__"
+        protected = re.sub(re.escape(name), token, protected, flags=re.IGNORECASE)
+        placeholders[token] = name
+
+    cleaned: List[str] = []
+    removed_unicode = 0
+    removed_hybrid = 0
+    removed_latin = 0
+
+    for line in protected.splitlines():
+        if not line.strip() or line.strip().startswith("[SECTION:"):
+            cleaned.append(line)
+            continue
+
+        before = line
+        line = re.sub(r'[\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]', '', line)
+        line = re.sub(r'[\u0600-\u06ff]+[A-Za-z]{2,}|[A-Za-z]{2,}[\u0600-\u06ff]+', '', line)
+        if line != before:
+            removed_hybrid += 1
+
+        chars: list[str] = []
+        for ch in line:
+            if ch == "_" or ch.isascii():
+                chars.append(ch)
+                continue
+            code = ord(ch)
+            cat = unicodedata.category(ch)
+            allowed = (
+                0x0600 <= code <= 0x06FF
+                or 0x0750 <= code <= 0x077F
+                or 0x08A0 <= code <= 0x08FF
+                or 0xFB50 <= code <= 0xFDFF
+                or 0xFE70 <= code <= 0xFEFF
+                or cat[0] in {"P", "N", "Z"}
+            )
+            if allowed:
+                chars.append(ch)
+            else:
+                removed_unicode += 1
+        line = "".join(chars)
+
+        def _drop_unapproved_latin(m: re.Match) -> str:
+            nonlocal removed_latin
+            token = m.group()
+            if token in placeholders:
+                return token
+            removed_latin += 1
+            return ""
+
+        line = re.sub(r'\b[A-Za-z][A-Za-z.\'-]*\b', _drop_unapproved_latin, line)
+        line = re.sub(r'[ \t]{2,}', ' ', line).strip()
+        if line:
+            cleaned.append(line)
+
+    result = "\n".join(cleaned)
+    for token, name in placeholders.items():
+        result = result.replace(token, name)
+    result = re.sub(r'[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af\u0400-\u04ff]', '', result)
+    result = re.sub(r'\n{3,}', '\n\n', result).strip()
+
+    if removed_unicode:
+        print(f"[AR PURITY] Removed Unicode contamination: {removed_unicode} char(s)")
+    if removed_hybrid:
+        print("[AR PURITY] Removed hybrid token")
+    if removed_latin:
+        print(f"[AR PURITY] Removed unapproved Latin token(s): {removed_latin}")
+    print("[AR PURITY] Final validation passed")
+    return result
+
 
 # Fictional characters from crime/drama shows that should NEVER appear in the
 # historical narration sections (only allowed in "Show vs Reality" chapters).
