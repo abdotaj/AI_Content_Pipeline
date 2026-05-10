@@ -561,12 +561,20 @@ def run_pipeline():
         if _media_attempt < 4:
             _log("Media", f"No media loaded (attempt {_media_attempt + 1}/5) — retrying in 1s", "WARN")
             time.sleep(1)
-    # Raise hard error if content folder exists but media is still empty
+    # If folder exists but no media loaded, switch to AI/web fallback mode
     _content_folder = find_content_folder(_topic_for_media)
+
     if _content_folder and os.path.exists(_content_folder) and not (_gh_images or _gh_videos):
-        raise RuntimeError(
-            f"[MEDIA] Content folder '{_content_folder}' exists but no media loaded after 5 retries — aborting"
+        _log(
+            "Media",
+            f"No local media found in '{_content_folder}' "
+            f"— switching to AI/web fallback mode",
+            "WARN"
         )
+
+        _gh_images = []
+        _gh_videos = []
+        
     if _gh_images or _gh_videos:
         print(f"[MEDIA] Loaded {len(_gh_images)} images, {len(_gh_videos)} videos (user mode)")
 

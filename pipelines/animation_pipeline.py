@@ -150,7 +150,7 @@ def _make_standalone_short(
     if language == "arabic":
         data["script"] = data.get("short_script_ar") or data.get("script", "")
         data["topic"] = f"{data.get('topic', '')} short ar".strip()
-    elif not en_short_path:
+    else:
         data["script"] = data.get("short_script_en") or data.get("script", "")
         data["topic"] = f"{data.get('topic', '')} short en".strip()
     if not data.get("script"):
