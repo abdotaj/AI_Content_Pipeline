@@ -2909,6 +2909,19 @@ def _apply_intro_outro_overlay(
         print("[Overlay] ffmpeg not found — skipping overlays")
         return video_path
 
+    # ── Pre-validate video before building filter chain ────────────────────
+    if not video_path or not os.path.exists(video_path):
+        print("[Overlay] Video file missing — skipping overlays")
+        return video_path
+    try:
+        _pre_dur = _ffprobe_duration(video_path) or 0.0
+        if _pre_dur < 5.0:
+            print(f"[Overlay] Video too short ({_pre_dur:.1f}s) — skipping overlays")
+            return video_path
+    except Exception as _pv_e:
+        print(f"[Overlay] Pre-validation probe failed ({_pv_e}) — skipping overlays")
+        return video_path
+
     arabic = (language or "").lower().startswith("ar")
     font = _find_text_font(arabic=arabic)
     if not font:
@@ -2985,20 +2998,26 @@ def _apply_intro_outro_overlay(
         # Chapter transition flashes (0.5s white flash text overlay)
         chapters = _parse_chapter_timestamps(chapters_str)
         for ch_time, ch_label in chapters:
+            # Guard: ensure ch_time is a valid float in range
+            try:
+                ch_time = float(ch_time)
+            except (TypeError, ValueError):
+                print(f"[Overlay] Invalid chapter timestamp ({ch_time!r}) — skipping")
+                continue
             if ch_time < 6.0:
                 continue
             if _vid_dur > 0 and ch_time >= _vid_dur - 1.0:
                 print(f"[Overlay] Chapter timestamp {ch_time:.1f}s out of range "
                       f"(video={_vid_dur:.1f}s) — skipping")
                 continue
-            ch_esc = _escape_drawtext(ch_label[:40])
+            ch_esc    = _escape_drawtext((ch_label or "")[:40])
             flash_end = ch_time + 0.5
             filters += [
                 f"drawbox=x=0:y=0:w={w}:h={h}:color=white@0.25:t=fill"
-                f":enable='between(t,{ch_time},{flash_end})'",
+                f":enable='between(t,{ch_time:.3f},{flash_end:.3f})'",
                 f"drawtext=fontfile='{font_esc}':text='{ch_esc}':fontsize=52:fontcolor=white"
                 f":x=(w-text_w)/2:y=(h/2 - 30)"
-                f":enable='between(t,{ch_time},{flash_end})'",
+                f":enable='between(t,{ch_time:.3f},{flash_end:.3f})'",
             ]
 
         # Outro: use already-fetched duration
@@ -5916,8 +5935,11 @@ def assemble_video_with_hook(
     # FAST mode: max 8 s/clip → 8+ visual transitions/min → no long image holds.
     # FULL mode: max 14 s/clip → more cinematic breathing room.
     _n_imgs = max(len(image_paths), 1)
-    _dur_cap = 8.0 if PIPELINE_MODE == "fast" else 14.0
-    _adaptive_base = max(6.0, min(_dur_cap, main_duration / (2.0 * _n_imgs + 1)))
+    # FULL: 6s max/clip → 10+ visual cuts/min → cinematic Netflix documentary pace
+    # FAST: 8s max/clip → 7+ cuts/min
+    _dur_cap = 8.0 if PIPELINE_MODE == "fast" else 6.0
+    _floor   = 2.5 if PIPELINE_MODE == "fast" else 3.0
+    _adaptive_base = max(_floor, min(_dur_cap, main_duration / (2.0 * _n_imgs + 1)))
     if _adaptive_base >= _dur_cap:
         print(f"[Visual] Clip duration capped at {_dur_cap:.0f}s "
               f"({_n_imgs} images, {main_duration:.0f}s main) — coverage loop will fill gaps")
@@ -6026,37 +6048,94 @@ def calculate_unique_images(is_short: bool = False) -> int:
     return 6 if is_short else 20
 
 
-def _generate_emergency_visuals(n: int, output_dir: str, is_short: bool = False) -> list[str]:
-    """Generate solid-color PIL images as an absolute last-resort visual fallback.
+def plan_visual_requirements(runtime_secs: float, is_short: bool = False) -> dict:
+    """Compute the visual inventory required for high-density cinematic documentary.
 
-    Called only when Pollinations, stock search, and user content all fail.
-    Returns a list of valid image paths (empty on total failure).
+    FULL mode target: 5 unique images/min × 2 clip-variants = 10 cuts/min
+    (one visual change every ~6s — Netflix documentary pacing).
+    Returns a planning dict for logging and downstream use.
     """
+    if is_short:
+        return {"n_unique": 6, "n_target": 6, "clips_per_min": 8.0,
+                "insert_count": 0, "runtime_min": 0.0}
+    runtime_min   = max(runtime_secs / 60, 0.1)
+    n_unique      = max(30, min(120, int(runtime_min * 5 + 0.5)))
+    insert_count  = max(4, int(n_unique * 0.20))   # 20% cinematic inserts
+    clips_per_min = round(n_unique * 2 / runtime_min, 1)
+    print(f"[FULL] Visual plan: {n_unique} unique imgs | {insert_count} cinematic inserts | "
+          f"~{clips_per_min} cuts/min for {runtime_min:.1f}min documentary")
+    return {
+        "n_unique":      n_unique,
+        "n_target":      n_unique,
+        "insert_count":  insert_count,
+        "clips_per_min": clips_per_min,
+        "runtime_min":   runtime_min,
+    }
+
+
+def _generate_emergency_visuals(
+    n: int, output_dir: str, is_short: bool = False, topic: str = ""
+) -> list[str]:
+    """Generate cinematic emergency visuals when Pollinations, stock, and user content all fail.
+
+    Priority:
+      Tier 1 — Pollinations AI with crime documentary prompts
+      Tier 2 — PIL dark-gradient images (never flat solid colors)
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    paths: list[str] = []
+
+    # Tier 1: Pollinations with cinematic inserts
+    _EM_PROMPTS = [
+        f"{'true crime documentary dark cinematic evidence investigation' if not topic else topic + ' crime investigation dark documentary cinematic'}{_IMAGE_PROMPT_SUFFIX}",
+        f"police investigation dark room crime file dramatic cinematic{_IMAGE_PROMPT_SUFFIX}",
+        f"crime scene night urban dark atmospheric documentary{_IMAGE_PROMPT_SUFFIX}",
+        f"interrogation room single overhead light shadow detective{_IMAGE_PROMPT_SUFFIX}",
+        f"evidence board crime photos newspaper clippings dark documentary{_IMAGE_PROMPT_SUFFIX}",
+    ]
+    _em_seed = random.randint(1, 99999)
+    for i in range(n):
+        prompt   = _EM_PROMPTS[i % len(_EM_PROMPTS)]
+        em_path  = os.path.join(output_dir, f"_emergency_{i:03d}.png")
+        result   = generate_ai_image(prompt, em_path, seed=_em_seed + i)
+        if result:
+            paths.append(result)
+        if len(paths) >= n:
+            break
+
+    if paths:
+        print(f"[Emergency] {len(paths)}/{n} AI cinematic emergency visuals generated")
+        return paths
+
+    # Tier 2: PIL dark-gradient fallback (not flat solid)
     try:
         from PIL import Image as _PIL, ImageDraw as _D
     except ImportError:
-        print("[Emergency] PIL not available — cannot generate emergency visuals")
+        print("[Emergency] PIL not available — cannot generate gradient fallback")
         return []
-    os.makedirs(output_dir, exist_ok=True)
-    # Dark cinematic palette: near-black with slight color casts
-    _PALETTE = [
-        (18, 18, 24), (22, 16, 28), (14, 22, 28),
-        (20, 24, 18), (28, 18, 14), (16, 20, 26),
-        (24, 14, 20), (12, 26, 22), (22, 22, 14),
-        (16, 16, 20),
+    _GRADIENT_PAIRS = [
+        ((18, 18, 24), (34, 26, 44)), ((14, 22, 28), (22, 40, 46)),
+        ((22, 16, 28), (40, 26, 34)), ((20, 24, 18), (36, 44, 30)),
+        ((28, 18, 14), (46, 32, 22)), ((16, 20, 26), (28, 38, 46)),
     ]
     w, h = (1080, 1920) if is_short else (1920, 1080)
-    paths: list[str] = []
-    for i in range(n):
-        path = os.path.join(output_dir, f"_emergency_{i:03d}.jpg")
+    for i in range(n - len(paths)):
+        grad_path = os.path.join(output_dir, f"_emergency_grad_{i:03d}.jpg")
         try:
-            bg = _PALETTE[i % len(_PALETTE)]
-            img = _PIL.new("RGB", (w, h), bg)
-            img.save(path, "JPEG", quality=85)
-            paths.append(path)
+            c1, c2    = _GRADIENT_PAIRS[i % len(_GRADIENT_PAIRS)]
+            img       = _PIL.new("RGB", (w, h), c1)
+            draw      = _D.Draw(img)
+            for y in range(h):
+                ratio = y / h
+                r = int(c1[0] + (c2[0] - c1[0]) * ratio)
+                g = int(c1[1] + (c2[1] - c1[1]) * ratio)
+                b = int(c1[2] + (c2[2] - c1[2]) * ratio)
+                draw.line([(0, y), (w, y)], fill=(r, g, b))
+            img.save(grad_path, "JPEG", quality=85)
+            paths.append(grad_path)
         except Exception as _e:
-            print(f"[Emergency] Failed to generate visual {i}: {_e}")
-    print(f"[Emergency] Generated {len(paths)} emergency visuals ({w}×{h})")
+            print(f"[Emergency] Gradient fallback {i}: {_e}")
+    print(f"[Emergency] {len(paths)} total emergency visuals ({w}×{h})")
     return paths
 
 
@@ -6067,6 +6146,148 @@ def calculate_total_images(user_images=None) -> int:
     total      = ai_images + user_count
     print(f"[Video] Images: {ai_images} AI + {user_count} user = {total} total")
     return total
+
+
+# Cinematic insert prompts for Netflix-documentary texture
+_CINEMATIC_INSERT_PROMPTS = [
+    "crime investigation evidence board photographs newspaper clippings case files dark cinematic documentary",
+    "vintage CCTV surveillance camera screenshot grainy black white crime scene night documentary",
+    "newspaper front page headline arrest conviction crime black white archival documentary photo",
+    "police interrogation room single overhead light table chair shadow dramatic cinematic",
+    "crime scene chalk outline police tape night urban dark atmospheric forensic documentary",
+    "courtroom trial evidence exhibit newspaper photograph dramatic documentary cinematic",
+    "detective wall case notes photos string map crime connections dark investigation",
+    "police evidence file folder case documents dramatic cinematic dark documentary",
+    "urban street map crime location pin night documentary noir cinematic aerial",
+    "criminal mugshot photograph police station grey background stark documentary style",
+    "forensic laboratory crime scene evidence analysis dark cinematic documentary",
+    "detective office crime case wall photographs news clippings noir atmospheric",
+    "archive news footage 1970s 1980s crime report dark vintage documentary grain",
+    "security camera timestamp corner criminal activity grainy dark surveillance footage",
+    "crime scene police barrier yellow tape night rain dark atmospheric cinematic",
+]
+
+
+def _generate_cinematic_inserts(
+    topic: str, count: int, video_id: str, is_short: bool = False
+) -> list[str]:
+    """Generate AI cinematic inserts via Pollinations for documentary texture.
+
+    Types: evidence boards, CCTV stills, newspaper clips, interrogation rooms,
+    crime scenes, detective walls, court exhibits — interleaved into visual pool
+    to prevent the static slideshow feel.
+    """
+    _img_dir = _get_images_dir()
+    paths: list[str] = []
+    topic_prompt = (
+        f"{topic} true crime investigation evidence cinematic dark documentary"
+        if topic else ""
+    )
+    prompt_pool = ([topic_prompt] if topic_prompt else []) + _CINEMATIC_INSERT_PROMPTS
+    seed = random.randint(10000, 99999)
+    for i in range(count):
+        prompt   = prompt_pool[i % len(prompt_pool)] + _IMAGE_PROMPT_SUFFIX
+        out_path = os.path.join(_img_dir, f"{video_id}_insert_{i:03d}.png")
+        if os.path.exists(out_path) and os.path.getsize(out_path) > 5_000:
+            paths.append(out_path)
+            continue
+        result = generate_ai_image(prompt, out_path, seed=seed + i)
+        if result:
+            paths.append(result)
+            print(f"[Insert] Cinematic insert {i+1}/{count}: {prompt[:55]}")
+        else:
+            print(f"[Insert] Failed insert {i+1} — Pollinations unavailable")
+    print(f"[Insert] Generated {len(paths)}/{count} cinematic inserts")
+    return paths
+
+
+def _generate_full_visual_pool(
+    base_images: list[str],
+    n_target: int,
+    topic: str,
+    video_id: str,
+    is_short: bool = False,
+) -> list[str]:
+    """Expand base_images to n_target using cinematic inserts + PIL variants.
+
+    Strategy:
+      1. Inject cinematic inserts at every 5th slot (20% of pool)
+      2. Apply 7-op PIL variation engine to fill remaining gap
+      3. Return pool sized to n_target (NOT shuffled — caller shuffles in assembler)
+    """
+    import itertools as _it
+    if not base_images:
+        return base_images
+
+    # Step 1: interleave cinematic inserts
+    _insert_n  = max(4, int(n_target * 0.20))
+    _inserts   = _generate_cinematic_inserts(topic, _insert_n, video_id + "_ci", is_short=is_short)
+    _interleaved: list[str] = []
+    _ins_idx = 0
+    for _i, _p in enumerate(base_images):
+        _interleaved.append(_p)
+        if _ins_idx < len(_inserts) and (_i + 1) % 5 == 0:
+            _interleaved.append(_inserts[_ins_idx])
+            _ins_idx += 1
+    _interleaved.extend(_inserts[_ins_idx:])
+    pool = _interleaved
+
+    # Step 2: PIL variation engine fills gap
+    _gap = n_target - len(pool)
+    if _gap > 0:
+        _real_img_exts = {".jpg", ".jpeg", ".png", ".webp"}
+        _base_imgs = [
+            p for p in base_images
+            if not _is_video_file(p)
+            and os.path.splitext(p)[1].lower() in _real_img_exts
+            and os.path.exists(p)
+        ]
+        if _base_imgs:
+            _w, _h = (1080, 1920) if is_short else (1920, 1080)
+            try:
+                from PIL import Image as _PILV, ImageEnhance as _PILEN
+                _VAR_OPS_FULL = [
+                    ("cc",   lambda im: im.crop((im.width//8, im.height//8,
+                                                 im.width*7//8, im.height*7//8))
+                                         .resize(im.size, _PILV.LANCZOS)),
+                    ("gs",   lambda im: _PILV.merge("RGB", [im.convert("L")] * 3)),
+                    ("hc",   lambda im: _PILEN.Contrast(im).enhance(1.8)),
+                    ("lo",   lambda im: _PILEN.Brightness(im).enhance(0.45)),
+                    ("warm", lambda im: _PILEN.Color(im).enhance(0.25)),
+                    ("tl",   lambda im: im.crop((0, 0, im.width * 3 // 4, im.height * 3 // 4))
+                                         .resize(im.size, _PILV.LANCZOS)),
+                    ("br",   lambda im: im.crop((im.width // 4, im.height // 4,
+                                                 im.width, im.height))
+                                         .resize(im.size, _PILV.LANCZOS)),
+                ]
+                _created = 0
+                for _bpath, (_tag, _op) in zip(
+                    _it.cycle(_base_imgs), _it.cycle(_VAR_OPS_FULL)
+                ):
+                    if _created >= _gap:
+                        break
+                    _vname = (f"{os.path.splitext(os.path.basename(_bpath))[0]}"
+                              f"_{_tag}_full.jpg")
+                    _vpath = os.path.join(IMAGES_DIR, _vname)
+                    if os.path.exists(_vpath) and os.path.getsize(_vpath) > 2_000:
+                        pool.append(_vpath)
+                        _created += 1
+                        continue
+                    try:
+                        _img = _PILV.open(_bpath).convert("RGB").resize(
+                            (_w, _h), _PILV.LANCZOS
+                        )
+                        _var = _op(_img)
+                        _var.save(_vpath, "JPEG", quality=82)
+                        pool.append(_vpath)
+                        _created += 1
+                    except Exception:
+                        pass
+                print(f"[FULL] PIL variation engine: +{_created} variants → {len(pool)} total")
+            except ImportError:
+                print("[FULL] PIL not available — skipping variation engine")
+
+    return pool
 
 
 def build_image_list(user_images: list, ai_images: list[str]) -> list[str]:
@@ -7632,18 +7853,17 @@ def run_full_pipeline(
         except Exception as _ws_e:
             print(f"[Subtitle] Skipping Whisper (non-fatal): {_ws_e}")
 
-    # ── Image / clip counts — density-driven: 3 unique images per minute ──
-    # 3 imgs/min × 4 clip-variants = 12 visual transitions/min (new clip every ~5s)
+    # ── Visual planning — 5 unique imgs/min × 2 clips = 10 cuts/min ─────
+    # Targets a visual change every ~6s — Netflix investigative documentary pace.
+    # PIL variation engine + cinematic inserts expand the pool further at assembly.
     import math as _math
+    _vis_plan = plan_visual_requirements(_real_audio_secs, is_short=is_short)
     if is_short:
         n_images = 6
     elif _real_audio_secs > 0:
-        _density_floor = _math.ceil(_real_audio_secs / 60 * 3)
-        n_images = max(20, min(60, _density_floor))
-        print(f"[FULL] Visual density: {n_images} images for {_real_audio_secs/60:.1f}min audio "
-              f"(3 imgs/min → 12 clips/min, capped at 60)")
+        n_images = _vis_plan["n_unique"]
     else:
-        n_images = calculate_unique_images(is_short=False)
+        n_images = 30  # safe floor when audio duration unavailable
     calculate_total_images(user_images)
     print(f"[FULL] Building {n_images} visuals ({'short' if is_short else 'long'})")
     script_text = script_data.get("script", "")
@@ -7757,16 +7977,16 @@ def run_full_pipeline(
                     gap_imgs = _rank_visual_pool(gap_imgs, topic=topic_str)
                 image_paths.extend(gap_imgs)
         else:
-            stock = fetch_stock_videos(script_text, n_images, video_id, topic=topic_str)
+            # FULL mode auto path: real video clips + Wikimedia/AI images in parallel
+            stock = fetch_stock_videos(script_text, min(n_images, 8), video_id, topic=topic_str)
             image_paths.extend(stock)
-            if len(image_paths) < max(6, n_images // 2):
-                missing = max(0, n_images - len(image_paths))
-                if missing:
-                    print(f"[Stock] Fallback: generating {missing} image visuals")
-                    image_paths.extend(
-                        fetch_real_images(script_text, missing, video_id,
-                                          topic=topic_str, style_profile=_style_profile)
-                    )
+            # Always fetch real photos for FULL mode — do not skip based on stock count
+            _real_target = max(n_images // 2, 15)
+            print(f"[FULL] Fetching {_real_target} real photos (Wikimedia + AI)")
+            image_paths.extend(
+                fetch_real_images(script_text, _real_target, video_id,
+                                  topic=topic_str, style_profile=_style_profile)
+            )
             if image_paths:
                 image_paths = _rank_visual_pool(image_paths, topic=topic_str)
     except Exception as e:
@@ -7837,6 +8057,25 @@ def run_full_pipeline(
             print("[FULL] Enhancement complete")
     except Exception as _enh_err:
         print(f"[FULL] Enhancement skipped (non-fatal): {_enh_err}")
+
+    # ── FULL visual pool expansion: cinematic inserts + PIL variants ──────
+    # Expands the raw image list to n_images using:
+    #   20% AI cinematic inserts (evidence boards, CCTV, newspaper clips)
+    #   80% PIL crop/color/tone variants of real images
+    if not is_short and all_image_paths:
+        _pre_expand = len(all_image_paths)
+        all_image_paths = _generate_full_visual_pool(
+            all_image_paths, n_images, topic_str, video_id, is_short=False
+        )
+        print(f"[FULL] Visual pool: {_pre_expand} raw → {len(all_image_paths)} after expansion")
+
+    # Fallback: if pool still too small, add emergency visuals
+    if not is_short and len(all_image_paths) < 8:
+        print(f"[FULL] Pool critically small ({len(all_image_paths)}) — activating emergency engine")
+        _em = _generate_emergency_visuals(
+            n_images - len(all_image_paths), IMAGES_DIR, is_short=False, topic=topic_str
+        )
+        all_image_paths.extend(_em)
 
     # ── Pre-assembly validation ────────────────────────────────────────────
     _missing = [p for p in all_image_paths if not p or not os.path.exists(p)]
