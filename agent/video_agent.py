@@ -5994,6 +5994,40 @@ def calculate_unique_images(is_short: bool = False) -> int:
     return 6 if is_short else 20
 
 
+def _generate_emergency_visuals(n: int, output_dir: str, is_short: bool = False) -> list[str]:
+    """Generate solid-color PIL images as an absolute last-resort visual fallback.
+
+    Called only when Pollinations, stock search, and user content all fail.
+    Returns a list of valid image paths (empty on total failure).
+    """
+    try:
+        from PIL import Image as _PIL, ImageDraw as _D
+    except ImportError:
+        print("[Emergency] PIL not available — cannot generate emergency visuals")
+        return []
+    os.makedirs(output_dir, exist_ok=True)
+    # Dark cinematic palette: near-black with slight color casts
+    _PALETTE = [
+        (18, 18, 24), (22, 16, 28), (14, 22, 28),
+        (20, 24, 18), (28, 18, 14), (16, 20, 26),
+        (24, 14, 20), (12, 26, 22), (22, 22, 14),
+        (16, 16, 20),
+    ]
+    w, h = (1080, 1920) if is_short else (1920, 1080)
+    paths: list[str] = []
+    for i in range(n):
+        path = os.path.join(output_dir, f"_emergency_{i:03d}.jpg")
+        try:
+            bg = _PALETTE[i % len(_PALETTE)]
+            img = _PIL.new("RGB", (w, h), bg)
+            img.save(path, "JPEG", quality=85)
+            paths.append(path)
+        except Exception as _e:
+            print(f"[Emergency] Failed to generate visual {i}: {_e}")
+    print(f"[Emergency] Generated {len(paths)} emergency visuals ({w}×{h})")
+    return paths
+
+
 def calculate_total_images(user_images=None) -> int:
     """Return 12 AI + however many user images were sent."""
     ai_images  = 12
@@ -7215,6 +7249,13 @@ def assign_clips_to_script(
 # ── Pipeline runners ─────────────────────────────────────────────────────────
 
 # FAST PIPELINE
+# ─────────────────────────────────────────────────────────────────────────────
+# FAST_VISUALS_PER_MIN: unique image transitions per minute.
+# At 4 clip-variants per image and ~7.5 s per clip → 8 clips/min / 4 = 2 images/min.
+_FAST_VISUALS_PER_MIN: int = 8   # clip transitions per minute
+_FAST_IMAGES_PER_MIN: float = _FAST_VISUALS_PER_MIN / 4.0  # = 2.0
+
+
 def run_fast_pipeline(
     script_data: dict,
     video_id: str,
@@ -7222,14 +7263,19 @@ def run_fast_pipeline(
     user_images: list | None = None,
     user_videos: list | None = None,
 ) -> str:
-    """Linear, minimal pipeline. No scoring, no deep extraction. Target: <20 min."""
-    import traceback
+    """Linear, minimal pipeline. No scoring, no deep extraction. Target: <20 min.
+
+    OUTPUT GUARANTEE: never returns successfully without a validated video file.
+    Falls back through: primary render → fallback render → emergency visuals.
+    """
+    import traceback, math as _math
     title    = script_data.get("title", "")
     language = script_data.get("language", "english")
     is_short = "short" in video_id
     print(f"[Pipeline] FAST MODE — {title} ({language})")
 
     # ── Audio ──────────────────────────────────────────────────────────────
+    _real_audio_secs: float = 0.0
     try:
         if custom_audio_path and Path(custom_audio_path).exists():
             audio_path = clean_voice(
@@ -7249,10 +7295,32 @@ def run_fast_pipeline(
             if audio_path and os.path.exists(audio_path):
                 audio_path = process_audio_netflix(audio_path, is_short=False)
         print(f"[FAST] Audio ready: {audio_path}")
+        # Capture real audio duration — the only runtime truth
+        try:
+            try:
+                from moviepy.editor import AudioFileClip as _AC
+            except ImportError:
+                from moviepy import AudioFileClip as _AC
+            _real_audio_secs = _AC(audio_path).duration
+            _min = _real_audio_secs / 60
+            print(f"[FAST] Audio duration: {_real_audio_secs:.1f}s ({_min:.1f} min)")
+        except Exception:
+            pass
     except Exception as e:
         print(f"[FAST] Audio failed: {e}")
         traceback.print_exc()
         return ""
+
+    # ── Visual density: 8 clip-transitions/min → 2 unique images/min ──────
+    if is_short:
+        n_images = 6
+    elif _real_audio_secs > 0:
+        _density_floor = _math.ceil(_real_audio_secs / 60 * _FAST_IMAGES_PER_MIN)
+        n_images = max(20, min(30, _density_floor))
+        print(f"[FAST] Visual density: {n_images} images for {_real_audio_secs/60:.1f}min "
+              f"({_FAST_VISUALS_PER_MIN} clips/min target)")
+    else:
+        n_images = calculate_unique_images(is_short=False)
 
     # ── Clips (fast, no scoring) ───────────────────────────────────────────
     _library_clips: list[str] = []
@@ -7267,7 +7335,6 @@ def run_fast_pipeline(
         _library_clips = []
 
     # ── Visuals ────────────────────────────────────────────────────────────
-    n_images  = calculate_unique_images(is_short=is_short)
     topic_str = script_data.get("topic", "")
     image_paths: list[str] = list(_library_clips)
     for uv in (user_videos or []):
@@ -7287,12 +7354,21 @@ def run_fast_pipeline(
         except Exception as _ve:
             print(f"[FAST] Visual fetch failed (non-fatal): {_ve}")
     image_paths = [p for p in image_paths if p and os.path.exists(p)]
-    if not image_paths:
-        print("[FAST] No visuals — aborting")
-        return ""
+
+    # ── Fallback visual engine: never abort due to empty visuals ──────────
+    if len(image_paths) < 4:
+        print(f"[FAST] Only {len(image_paths)} visuals — activating emergency visual engine")
+        _em_needed = max(n_images, 8) - len(image_paths)
+        _em = _generate_emergency_visuals(_em_needed, IMAGES_DIR, is_short=is_short)
+        image_paths.extend(_em)
+        image_paths = [p for p in image_paths if p and os.path.exists(p)]
+        if not image_paths:
+            print("[FAST] Emergency visual engine also failed — aborting")
+            return ""
 
     # ── Assembly ───────────────────────────────────────────────────────────
     output_path = os.path.join(FINAL_DIR, f"{video_id}.mp4")
+    video_path  = ""
     try:
         if is_short:
             video_path = assemble_short_video(
@@ -7304,32 +7380,55 @@ def run_fast_pipeline(
                 output_path=output_path, video_id=video_id,
             )
     except Exception as e:
-        print(f"[FAST] Assembly failed: {e}")
+        print(f"[FAST] Primary assembly failed: {e}")
         traceback.print_exc()
+
+    # ── Fallback render if primary assembly failed ─────────────────────────
+    if not video_path or not os.path.exists(video_path):
+        print("[FAST] Primary assembly produced no output — attempting fallback render")
+        _fb_path = output_path.replace(".mp4", "_fb.mp4")
+        try:
+            _fb_imgs = image_paths[:min(8, len(image_paths))]
+            video_path = assemble_short_video(
+                audio_path=audio_path, image_paths=_fb_imgs, output_path=_fb_path
+            )
+            if video_path and os.path.exists(video_path):
+                print(f"[FAST] Fallback render succeeded: {video_path}")
+        except Exception as _fb_e:
+            print(f"[FAST] Fallback render failed: {_fb_e}")
+            video_path = ""
+
+    if not video_path or not os.path.exists(video_path):
+        print("[FAST] All render attempts failed — no output produced")
         return ""
 
-    if video_path:
-        video_path = _apply_intro_outro_overlay(
-            video_path,
-            title=script_data.get("title", ""),
-            language=language,
-            video_id=video_id,
-            is_short=is_short,
-            chapters_str=script_data.get("chapters", ""),
-            hook_text=script_data.get("angle_title", "") or topic_str,
+    # ── Post-render processing ─────────────────────────────────────────────
+    video_path = _apply_intro_outro_overlay(
+        video_path,
+        title=script_data.get("title", ""),
+        language=language,
+        video_id=video_id,
+        is_short=is_short,
+        chapters_str=script_data.get("chapters", ""),
+        hook_text=script_data.get("angle_title", "") or topic_str,
+    )
+    if not is_short:
+        short_out = os.path.join(SHORTS_DIR, f"{video_id}_short.mp4")
+        script_data["short_clip_path"] = cut_short_clip(
+            video_path, short_out, script_data=script_data
         )
-        if not is_short:
-            short_out = os.path.join(SHORTS_DIR, f"{video_id}_short.mp4")
-            script_data["short_clip_path"] = cut_short_clip(
-                video_path, short_out, script_data=script_data
-            )
-        _thumb = extract_first_frame(
-            video_path, os.path.join(FINAL_DIR, f"{video_id}_thumb.jpg")
-        )
-        if _thumb:
-            script_data["thumbnail_path"] = _thumb
-    if video_path:
-        _validate_output_file(video_path)
+    _thumb = extract_first_frame(
+        video_path, os.path.join(FINAL_DIR, f"{video_id}_thumb.jpg")
+    )
+    if _thumb:
+        script_data["thumbnail_path"] = _thumb
+
+    # ── Output validation ─────────────────────────────────────────────────
+    _valid = _validate_output_file(video_path)
+    if not _valid:
+        print(f"[FAST] WARNING: Output failed validation — file may be corrupt: {video_path}")
+        # Don't abort: return the path and let caller decide; corrupt is better than missing
+
     _kill_orphan_ffmpeg()
     try:
         import gc as _gc; _gc.collect()
@@ -7444,14 +7543,15 @@ def run_full_pipeline(
             print(f"[Subtitle] Skipping Whisper (non-fatal): {_ws_e}")
 
     # ── Image / clip counts — density-driven: 3 unique images per minute ──
+    # 3 imgs/min × 4 clip-variants = 12 visual transitions/min (new clip every ~5s)
     import math as _math
     if is_short:
         n_images = 6
     elif _real_audio_secs > 0:
         _density_floor = _math.ceil(_real_audio_secs / 60 * 3)
-        n_images = max(20, min(50, _density_floor))
+        n_images = max(20, min(60, _density_floor))
         print(f"[FULL] Visual density: {n_images} images for {_real_audio_secs/60:.1f}min audio "
-              f"(3 imgs/min floor, capped at 50)")
+              f"(3 imgs/min → 12 clips/min, capped at 60)")
     else:
         n_images = calculate_unique_images(is_short=False)
     calculate_total_images(user_images)

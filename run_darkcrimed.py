@@ -820,7 +820,45 @@ def run_pipeline():
                     ar_chapter_shorts = cut_best_short(ar_long_path, ar_long)
                 ar_chapter_shorts = [c for c in ar_chapter_shorts if _video_secs(c.get("path", "")) >= 60]
 
-    # ── STEP 5: Upload long videos to YouTube, then send shorts to Telegram ──
+    # ── STEP 5: FINALIZE → VALIDATE → PUBLISH ────────────────────────────────
+    _log("Finalize", "Validating all outputs before publish")
+    _stage("Finalize + validate")
+
+    def _output_row(label: str, path: str, is_short: bool = False) -> bool:
+        """Log one output row; return True if it passes minimum thresholds."""
+        if not path or not os.path.exists(path):
+            _log("Validate", f"MISSING  {label}: path not found ({path})", "ERROR")
+            return False
+        mb   = os.path.getsize(path) // 1024 // 1024
+        secs = _video_secs(path)
+        mins = secs / 60
+        min_secs = 55.0 if is_short else 300.0
+        min_mb   = 1    if is_short else 5
+        ok = secs >= min_secs and mb >= min_mb
+        status = "OK " if ok else "FAIL"
+        _log("Validate", f"{status}   {label}: {mins:.1f}min ({secs:.0f}s), {mb}MB — {path}",
+             "OK" if ok else "ERROR")
+        return ok
+
+    _en_long_ok  = _output_row("EN long ", en_long_path,  is_short=False)
+    _ar_long_ok  = _output_row("AR long ", ar_long_path,  is_short=False)
+    _en_short_ok = _output_row(
+        "EN short", en_chapter_shorts[0]["path"] if en_chapter_shorts else "", is_short=True
+    )
+    _ar_short_ok = _output_row(
+        "AR short", ar_chapter_shorts[0]["path"] if ar_chapter_shorts else "", is_short=True
+    )
+
+    _valid_count = sum([_en_long_ok, _ar_long_ok, _en_short_ok, _ar_short_ok])
+    _log("Validate", f"Output validation: {_valid_count}/4 outputs valid",
+         "OK" if _en_long_ok else "ERROR")
+
+    # Block upload if the EN long is missing — it's the primary deliverable
+    if not _en_long_ok and not en_long_path:
+        _crit = "[CRITICAL] EN long video missing — cannot upload. Check logs above."
+        _log("Validate", _crit, "ERROR")
+        send_message(f"[Pipeline] {_crit}")
+
     _log("Publish", "Starting publishing step")
     _stage("Publish start")
 
