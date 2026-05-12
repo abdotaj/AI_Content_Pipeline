@@ -126,6 +126,25 @@ VOICE TONE:
 - Example of dry understatement: "He planned the perfect crime. He forgot that cameras exist."
 - Never mock victims. Dry humor only at criminals or corrupt officials. One line maximum per chapter.
 
+DOCUMENTARY DENSITY ENGINE — non-negotiable for every chapter:
+Every 50–75 words (≈ 20–30 seconds of narration) MUST introduce at least ONE of:
+  • New clue, lead, or discovery with a specific name or date
+  • Named person with a specific action, decision, or consequence
+  • Timeline shift: a documented year, event, or location change
+  • Forensic or physical evidence item
+  • Witness statement, court testimony, or documented quote
+  • Psychological revelation about a person's motive or mental state
+  • Investigative development: arrest, raid, interrogation, or court ruling
+  • Contradiction or reversal: what was believed vs. what was proven
+  • Hidden information the public never learned about the case
+
+ATMOSPHERIC LANGUAGE LIMITS — strict enforcement:
+Words like "shadows", "darkness", "silence", "fear", "mystery" are acceptable at most ONCE per 400 words.
+Isolated short dramatic lines (3–6 words) are BANNED as standalone sentences.
+BAD: "The fear grew." / "Silence fell." / "Nobody spoke."
+GOOD: "Her fear grew when she recognised his handwriting on the second note."
+Every sentence must either advance the narrative, reveal specific information, or build character psychology through documented facts.
+
 NARRATIVE TENSION — sustained across every chapter:
 - Each chapter must introduce a new unresolved question, hidden conflict, or suppressed truth.
 - Do NOT fully resolve tension within the same chapter — leave something open that pulls into the next.
@@ -474,12 +493,13 @@ def expand_section(existing_text: str, missing_words: int,
     prompt = (
         f"Continue the following documentary section with approximately {target} new words.\n\n"
         f"RULES — the continuation MUST:\n"
-        f"- Add at least one new VERIFIABLE FACT: a real name, date, number, location, or documented event\n"
-        f"- Advance the narrative — new cause, new consequence, new evidence, or new person\n"
+        f"- Add at least one new VERIFIABLE FACT per 50 words: a real name, date, number, location, or documented event\n"
+        f"- Advance the narrative — new cause, new consequence, new evidence, new person, or timeline shift\n"
         f"- Match the investigative documentary voice already established\n\n"
         f"RULES — the continuation must NOT:\n"
         f"- Repeat, restate, or paraphrase anything already written\n"
-        f"- Add generic suspense language or filler phrases\n"
+        f"- Add atmospheric filler: 'The fear grew', 'Silence fell', 'The shadows deepened', etc.\n"
+        f"- Write isolated short dramatic lines of 3-5 words\n"
         f"- Summarise what was just said\n\n"
         f"Write ONLY the new continuation text — do not include the original section.\n\n"
         f"EXISTING SECTION:\n{existing_text}"
@@ -557,9 +577,10 @@ def expand_script_runtime(script_text: str, missing_words: int,
     topic_hint    = f"This is about: {topic}. " if topic else ""
     doc_sys_prompt = (
         f"You are a documentary scriptwriter. {topic_hint}"
-        "Add new specific atmospheric narrative details to the section. "
-        "Use cinematic, investigative language. "
-        "Do NOT repeat or restate anything already in the text."
+        "Add new SPECIFIC FACTUAL content to the section — new names, dates, locations, evidence, or consequences. "
+        "Every added sentence must introduce verifiable new information. "
+        "Do NOT add atmospheric filler, mood language, or restate anything already written. "
+        "Do NOT write sentences like 'The fear grew' or 'Silence fell' — these are banned filler."
     )
 
     expanded_map: dict[str, str] = {}
@@ -1999,6 +2020,23 @@ def write_long_script_split(topic: dict, research: dict, series_info: tuple | No
                     print(f"[EntityGuard] Section {call_num} sanitised — "
                           f"{len(offending)} offending line(s) removed")
 
+        # Information density audit — log verdict, auto-expand if LOW
+        try:
+            from agents.script_quality import validate_information_density, remove_filler_phrases
+            _density = validate_information_density(result, language="english")
+            _dv      = _density.get("verdict", "?")
+            _dp      = _density.get("density_pct", 0)
+            _fc      = _density.get("filler_count", 0)
+            print(
+                f"[Density] Section {call_num} ({label}): "
+                f"{_dp:.0f}% informative [{_dv}] | filler={_fc} | "
+                f"fragments={_density.get('fragment_count',0)}"
+            )
+            if _fc > 0:
+                result = remove_filler_phrases(result)
+        except Exception as _de:
+            print(f"[Density] Section {call_num} check (non-fatal): {_de}")
+
         return result
 
     sections: list[str] = []
@@ -2277,23 +2315,32 @@ PREVIOUS CHAPTERS (context only — do NOT repeat anything from them):
         print(f"[Script] Safety cap: {total_real}w > {LONG_SCRIPT_MAX_WORDS}w — trimming to ~60 min")
         full_script = _cap_script_max_words(full_script, LONG_SCRIPT_MAX_WORDS)
 
-    # ── Quality summary ───────────────────────────────────────────────────────
+    # ── Quality summary + density audit ──────────────────────────────────────
     try:
         from agents.script_quality import (
             detect_quality_issues, validate_timeline_consistency,
+            validate_information_density, remove_filler_phrases,
         )
+        # Remove filler phrases from final assembled script
+        full_script = remove_filler_phrases(full_script)
+
         _qi  = detect_quality_issues(full_script)
         _era = rvf.get("time_period", "") if rvf else ""
         _tl  = validate_timeline_consistency(full_script, topic=name, expected_era=_era)
         _filler = _qi.get("filler_count", 0)
         _rep    = len(_qi.get("repeated_phrases", []))
+
+        _density = validate_information_density(full_script, language="english")
         print(
             f"[Quality] SUMMARY — words: {_qi.get('word_count',0)} | "
             f"filler: {_filler} | repeats: {_rep} | "
-            f"timeline OK: {_tl.get('consistent',True)} | violations: {_tl.get('violation_count',0)}"
+            f"density: {_density.get('density_pct',0):.0f}% [{_density.get('verdict','?')}] | "
+            f"timeline OK: {_tl.get('consistent',True)}"
         )
+        if _density.get("verdict") == "LOW":
+            print(f"[Quality] WARNING: Low information density — {_density.get('filler_count',0)} filler sentences detected")
         if _filler:
-            print(f"[Quality] Filler: {_qi.get('filler_phrases',[])[:3]}")
+            print(f"[Quality] Filler phrases found: {_qi.get('filler_phrases',[])[:3]}")
         if not _tl.get("consistent", True):
             print(f"[Quality] Timeline violations — "
                   f"fiction bleed: {_tl.get('fiction_bleed',[])} | "
@@ -4059,6 +4106,34 @@ _AR_SCRIPT_SYSTEM_PROMPT = """أنت راوٍ وثائقي عربي محترف. 
 - النساء والشخصيات المساندة تحصل على تغطية متساوية
 
 ══════════════════════════════════════
+محرك الكثافة المعلوماتية — إلزامي
+══════════════════════════════════════
+كل 50–75 كلمة يجب أن تتضمن واحداً على الأقل مما يلي:
+- اسم شخص حقيقي مع فعل محدد (اعتُقل، اعترف، كشف، أدلى بشهادة)
+- تاريخ أو سنة موثقة أو انتقال زمني
+- دليل مادي أو وثيقة قانونية أو تقرير جنائي
+- شهادة أو اقتباس موثق أو موقف محدد
+- تطور تحقيقي: تفتيش، مداهمة، استجواب، حكم قضائي
+- انعطافة في الرواية: ما كان يُعتقد مقابل ما ثبت فعلياً
+- كشف نفسي: دافع موثق أو حالة عقلية مثبتة قانونياً
+
+العبارات المزاجية المحظورة — محظورة نهائياً بأي كثافة:
+"كان الخوف يملأ المكان" / "العالم كان يراقب" / "الغموض يزداد" / "الصمت يسود"
+"الظلال تتحرك" / "السر لم يُكشف بعد" / "الرعب يملأ الأرواح"
+هذه العبارات مقبولة مرة واحدة فقط كل 400 كلمة — إذا تجاوزت الحد أعد الكتابة.
+الجمل المنعزلة القصيرة (2-5 كلمات) من نوع المزاج محظورة تماماً.
+الأجواء تأتي من التفاصيل الحقيقية — لا من الكلمات المزاجية.
+
+مثال سيء (لا تكتب هكذا):
+"كان الخوف يملأ المكان.
+والظلام يحيط بكل شيء.
+والصمت يقول ما لا تقوله الكلمات."
+
+مثال جيد (اكتب هكذا):
+"حين وصل المحققون إلى الشقة، وجدوا اثنتي عشرة رسالة موقعة باسم مستعار،
+كلها تحمل التاريخ ذاته — الليلة التي أُبلغ عن اختفائها فيها."
+
+══════════════════════════════════════
 قواعد عدم التكرار
 ══════════════════════════════════════
 - لا تكرر حقيقة أو اسماً أو تاريخاً ذُكر في فصل سابق
@@ -4156,9 +4231,20 @@ def _write_arabic_from_research(en_script: dict, ar_research: dict) -> str:
     disc_line   = f"ملاحظة خاصة من البحث: {ar_disc}\n" if ar_disc else ""
 
     _tts_reminder = (
-        "\n[تذكير إيقاع TTS]: تناوب بين الجمل القصيرة (5-8 كلمات) والمتوسطة (12-18 كلمة). "
-        "لا جملة تتجاوز 20 كلمة. لا بنية إنجليزية. لا عبارات يوتيوب-دراما. "
-        "النص يُستمع إليه — ليس يُقرأ.\n"
+        "\n[قواعد الكثافة المعلوماتية — إلزامية]:\n"
+        "كل 50-75 كلمة يجب أن تتضمن واحداً على الأقل من: اسم شخص مع فعل محدد، "
+        "تاريخ أو سنة موثقة، دليل جنائي، اعتراف أو شهادة، تطور تحقيقي، "
+        "انعطافة في القصة، أو حقيقة نفسية موثقة.\n"
+        "محظور نهائياً: جمل مزاجية خالية من المعلومات مثل: "
+        "'كان الخوف يملأ المكان' / 'العالم كان يراقب' / 'الغموض يزداد' / "
+        "'الصمت يسود' / 'الظلال تتحرك'. هذه العبارات مقبولة مرة واحدة فقط "
+        "لكل 400 كلمة — وليس أكثر.\n"
+        "الجمل المنعزلة القصيرة (2-5 كلمات) من نوع 'الخوف يتصاعد.' أو 'الصمت يسود.' "
+        "ممنوعة تماماً — ادمج الأجواء دائماً مع حقيقة موثقة.\n"
+        "مثال سيء: 'كان الخوف يملأ المكان.'\n"
+        "مثال جيد: 'ازداد الخوف حين وجد المحققون الرسالة الثانية موقعة باسمه الحقيقي.'\n"
+        "[إيقاع TTS]: تناوب بين الجمل القصيرة (8-12 كلمة) والمتوسطة (15-20 كلمة). "
+        "لا جملة تتجاوز 22 كلمة. أسلوب وثائقي تحقيقي — ليس شعراً ظلامياً.\n"
     )
 
     prompt_1 = (
@@ -4402,7 +4488,27 @@ def _write_arabic_from_research(en_script: dict, ar_research: dict) -> str:
     if not parts:
         return ""
 
-    return "\n\n".join(parts)
+    full_ar = "\n\n".join(parts)
+
+    # Post-process: remove atmospheric filler and log density
+    try:
+        from agents.script_quality import (
+            remove_arabic_filler_phrases,
+            validate_information_density,
+            apply_all_quality_filters,
+        )
+        full_ar = remove_arabic_filler_phrases(full_ar)
+        full_ar = apply_all_quality_filters(full_ar, language="arabic")
+        _ar_density = validate_information_density(full_ar, language="arabic")
+        print(
+            f"[Density-AR] Script density: {_ar_density.get('density_pct',0):.0f}% [{_ar_density.get('verdict','?')}] "
+            f"| filler removed={_ar_density.get('filler_count',0)} "
+            f"| fragments={_ar_density.get('fragment_count',0)}"
+        )
+    except Exception as _dae:
+        print(f"[Density-AR] Post-process (non-fatal): {_dae}")
+
+    return full_ar
 
 
 def translate_script(en_script: dict, research: dict | None = None) -> dict:
@@ -4524,11 +4630,20 @@ def translate_script(en_script: dict, research: dict | None = None) -> dict:
     if ar_data.get("script"):
         ar_data["script"] = upgrade_arabic_script(ar_data["script"])
         ar_data["script"] = evaluate_and_fix_script(ar_data["script"])
-        from agents.script_quality import normalize_arabic_documentary_text, normalize_arabic_tts, enforce_arabic_purity
+        from agents.script_quality import (
+            normalize_arabic_documentary_text, normalize_arabic_tts, enforce_arabic_purity,
+            remove_arabic_filler_phrases, validate_information_density,
+        )
         ar_data["script"] = normalize_arabic_documentary_text(ar_data["script"])
         ar_data["script"] = normalize_arabic_tts(ar_data["script"])
         ar_data["script"] = enforce_arabic_purity(ar_data["script"])
-        print("[AR Narration] Documentary pacing validated")
+        ar_data["script"] = remove_arabic_filler_phrases(ar_data["script"])
+        _ar_final_density = validate_information_density(ar_data["script"], language="arabic")
+        print(
+            f"[AR Narration] Documentary pacing validated | "
+            f"density: {_ar_final_density.get('density_pct',0):.0f}% [{_ar_final_density.get('verdict','?')}] | "
+            f"filler_removed={_ar_final_density.get('filler_count',0)}"
+        )
 
     _final_wc  = clean_word_count(ar_data.get("script", ""))
     _final_min = estimate_arabic_duration(ar_data.get("script", ""))
@@ -4578,11 +4693,18 @@ SENTENCE RULES:
 - Mix 5-word punches with 12-word builds. Vary the rhythm.
 - No descriptive filler. Every sentence must move the story forward.
 
+INFORMATION DENSITY — mandatory:
+Every sentence must do ONE of: reveal new information, name a specific fact, or escalate specific tension.
+BANNED FILLER SENTENCES: "The silence grew." / "The darkness deepened." / "Fear spread." / "Nobody could believe it."
+GOOD: "His name appeared in three unsolved cases before investigators connected the dots."
+GOOD: "She had been reported missing six hours before the body was found."
+Maximum 1 atmospheric sentence in the entire short. Every other sentence = a specific fact.
+
 LENGTH: Target 190-215 words. Acceptable range 170-230. Hard minimum 170.
 
 BANNED OPENERS: "This video explains...", "In this story...", "In an era...", "Throughout history...", "This is the story of...", "He was...", "This is about..."
 BANNED FORMAT: Any headings, labels, or section markers in the output.
-BANNED STYLE: Summaries, educational tone, documentary narration, generic phrases."""
+BANNED STYLE: Summaries, educational tone, generic atmosphere phrases, repetitive suspense loops."""
 
 
 def estimate_short_duration_secs(text: str, language: str = "english") -> float:

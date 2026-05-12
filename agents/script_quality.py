@@ -1111,10 +1111,225 @@ def detect_fiction_bleed(
 
 # ── Master filter ─────────────────────────────────────────────────────────────
 
-def apply_all_quality_filters(text: str) -> str:
+def apply_all_quality_filters(text: str, language: str = "english") -> str:
     """Run all post-generation quality filters in order."""
     if not text:
         return text
     text = remove_filler_phrases(text)
     text = deduplicate_paragraphs(text)
+    if language == "arabic":
+        text = remove_arabic_filler_phrases(text)
     return text
+
+
+# ── Atmospheric filler — Arabic ───────────────────────────────────────────────
+# Pure mood phrases with zero factual value; acceptable sparingly but toxic
+# when they dominate large sections.  Listed longest-first.
+ATMOSPHERIC_FILLER_AR: List[str] = [
+    "العالم كان يراقب",
+    "العالم يراقب",
+    "كان العالم يراقب",
+    "العالم بأسره كان يراقب",
+    "كان الخوف يملأ المكان",
+    "الخوف يملأ المكان",
+    "الخوف يسكن المكان",
+    "الخوف يملأ القلوب",
+    "السر لم يُكشف بعد",
+    "السر لا يزال مدفوناً",
+    "السر ظل مخفياً",
+    "السر بقي طي الكتمان",
+    "الظلال تتحرك",
+    "الظلام يلف المكان",
+    "في عتمة الظلام",
+    "تحت ستار الظلام",
+    "الغموض يزداد",
+    "الغموض يتعمق",
+    "الغموض يكتنف المكان",
+    "الصمت يسود",
+    "الصمت يخيم",
+    "يخيم الصمت",
+    "الصمت المطبق يسود",
+    "الرعب يسكن الأرواح",
+    "الرعب يملأ المكان",
+    "الهلع ينتشر",
+    "لم يكن أحد يعلم",
+    "لا أحد كان يتوقع",
+    "لم يخطر ببال أحد",
+    "الحقيقة ستظهر يوماً ما",
+    "الحقيقة لن تبقى مخفية",
+    "الوقت وحده سيكشف الحقيقة",
+    "التاريخ لن ينسى",
+    "الأرقام لا تكذب",
+]
+
+# Arabic words that — when they dominate a short sentence — signal pure atmosphere
+_AR_FILLER_WORDS: frozenset = frozenset([
+    "الخوف", "الغموض", "الظلام", "الظلال", "الصمت", "الرعب", "الهلع",
+    "المجهول", "الوحشة", "الكآبة", "اليأس", "الوجع", "الألم", "الترقب",
+])
+
+
+def remove_arabic_filler_phrases(text: str) -> str:
+    """
+    Remove or compress Arabic atmospheric filler phrases.
+
+    Sentences ≤15 words that consist primarily of atmospheric words or match
+    an exact filler pattern are deleted.  Paragraphs that become empty are
+    dropped entirely.
+    """
+    if not text:
+        return text
+
+    paragraphs = text.split("\n\n")
+    cleaned: List[str] = []
+    removed = 0
+
+    for para in paragraphs:
+        if not para.strip() or para.strip().startswith("[SECTION:"):
+            cleaned.append(para)
+            continue
+
+        sentences = re.split(r"(?<=[.?!؟،])\s+", para.strip())
+        kept: List[str] = []
+
+        for sent in sentences:
+            s = sent.strip()
+            if not s:
+                continue
+
+            s_lower = s
+
+            # Exact multi-word filler match
+            is_filler = any(phrase in s_lower for phrase in ATMOSPHERIC_FILLER_AR)
+
+            # Short sentences dominated by filler words
+            if not is_filler:
+                ar_words = re.findall(r"[؀-ۿ]{2,}", s)
+                if 2 <= len(ar_words) <= 8:
+                    filler_wc = sum(1 for w in ar_words if w in _AR_FILLER_WORDS)
+                    if filler_wc >= max(1, len(ar_words) // 2):
+                        is_filler = True
+
+            if is_filler:
+                removed += 1
+            else:
+                kept.append(s)
+
+        if kept:
+            cleaned.append(" ".join(kept))
+
+    if removed:
+        print(f"[Quality-AR] Removed {removed} atmospheric filler phrase(s)")
+
+    return "\n\n".join(cleaned)
+
+
+# ── Information density validator ─────────────────────────────────────────────
+
+# Causal / evidence connectors that mark informative sentences
+_INFO_CONNECTORS_EN: List[str] = [
+    "because", "therefore", "resulted in", "led to", "discovered",
+    "revealed", "confirmed", "arrested", "charged", "convicted",
+    "testified", "admitted", "confessed", "according to", "evidence",
+    "investigators", "witnesses", "records show", "court documents",
+]
+_INFO_CONNECTORS_AR: List[str] = [
+    "لأن", "بسبب", "نتيجة", "أفضى إلى", "كشف", "اكتشف", "اعترف",
+    "أدلى", "شهادة", "اعتُقل", "حُكم عليه", "وفقاً لـ", "أثبتت",
+    "محققون", "شهود", "وثائق", "سجلات", "تحقيق",
+]
+
+
+def validate_information_density(text: str, language: str = "english") -> dict:
+    """
+    Measure the informational density of a script section.
+
+    A sentence is "informative" if it contains at least ONE of:
+      - A year (1800–2099) or cardinal number
+      - 2+ capitalized proper-noun tokens (English)
+      - A causal/evidence connector from the language list
+      - A substantial Arabic sentence (≥8 Arabic words — presumed factual content)
+
+    Returns:
+      informative_count  — sentences with a fact/event marker
+      total_sentences    — qualifying sentences (≥5 words)
+      density_pct        — percentage that are informative
+      filler_count       — atmospheric filler sentences detected
+      fragment_count     — isolated lines ≤4 words (hurts TTS cadence)
+      verdict            — "HIGH" (≥55%) / "MEDIUM" (30-55%) / "LOW" (<30%)
+    """
+    if not text:
+        return {"verdict": "EMPTY", "density_pct": 0.0}
+
+    _year_re   = re.compile(r"\b(1[89]\d{2}|20\d{2})\b")
+    _number_re = re.compile(r"\b\d+\b")
+    _cap_re    = re.compile(r"\b[A-Z][a-z]{2,}")
+    lang       = (language or "english").lower()
+    connectors = _INFO_CONNECTORS_AR if lang == "arabic" else _INFO_CONNECTORS_EN
+
+    sentences = re.split(r"(?<=[.?!؟])\s+", text.strip())
+    sentences = [s for s in sentences if not s.strip().startswith("[SECTION:")]
+
+    total = informative = filler_count = fragment_count = 0
+
+    for sent in sentences:
+        stripped = sent.strip()
+        if not stripped:
+            continue
+
+        words     = stripped.split()
+        word_cnt  = len(words)
+
+        if word_cnt < 3:
+            continue
+
+        # Fragment: ≤5 words — check if atmosphere-only
+        if word_cnt <= 5:
+            ar_words = re.findall(r"[؀-ۿ]{2,}", stripped)
+            if lang == "arabic" and ar_words:
+                filler_wc = sum(1 for w in ar_words if w in _AR_FILLER_WORDS)
+                if filler_wc >= max(1, len(ar_words) // 2):
+                    filler_count += 1
+                    fragment_count += 1
+                    continue
+            en_lower = stripped.lower()
+            if lang == "english" and word_cnt <= 5 and any(
+                w in en_lower for w in ["shadow", "silence", "darkness", "fear", "mystery", "dread", "terror"]
+            ):
+                filler_count += 1
+                fragment_count += 1
+                continue
+
+        if word_cnt < 5:
+            continue
+
+        total += 1
+
+        # Exact Arabic atmospheric filler match
+        if lang == "arabic" and any(p in stripped for p in ATMOSPHERIC_FILLER_AR):
+            filler_count += 1
+            continue
+
+        # Informative markers
+        is_informative = (
+            bool(_year_re.search(stripped))
+            or bool(_number_re.search(stripped))
+            or (lang == "english" and len(_cap_re.findall(stripped)) >= 2)
+            or any(c in stripped.lower() for c in connectors)
+            or (lang == "arabic" and len(re.findall(r"[؀-ۿ]{3,}", stripped)) >= 8)
+        )
+
+        if is_informative:
+            informative += 1
+
+    density = (informative / total * 100) if total > 0 else 0.0
+    verdict = "HIGH" if density >= 55 else ("MEDIUM" if density >= 30 else "LOW")
+
+    return {
+        "informative_count": informative,
+        "total_sentences":   total,
+        "density_pct":       round(density, 1),
+        "filler_count":      filler_count,
+        "fragment_count":    fragment_count,
+        "verdict":           verdict,
+    }
