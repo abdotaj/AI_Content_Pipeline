@@ -2409,7 +2409,7 @@ def extract_visual_events(
         return []
 
     runtime_min = max(runtime_secs / 60, 1.0) if runtime_secs > 0 else len(words) / 150.0
-    n_events    = max(30, int(runtime_min * 12))
+    n_events    = max(30, min(120, int(runtime_min * 12)))
     chunk_size  = max(8, len(words) // n_events)
 
     chunks: list[str] = []
@@ -6342,7 +6342,7 @@ def plan_visual_requirements(runtime_secs: float, is_short: bool = False) -> dic
         return {"n_unique": 6, "n_target": 6, "clips_per_min": 8.0,
                 "insert_count": 0, "runtime_min": 0.0}
     runtime_min   = max(runtime_secs / 60, 0.1)
-    n_unique      = max(60, min(240, int(runtime_min * 12)))
+    n_unique      = max(60, min(120, int(runtime_min * 12)))
     clips_per_min = round(n_unique * 2 / runtime_min, 1)
     print(f"[FULL] Visual plan: {n_unique} unique semantic events | "
           f"~{clips_per_min} cuts/min for {runtime_min:.1f}min documentary")
