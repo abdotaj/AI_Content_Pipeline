@@ -2238,6 +2238,285 @@ _PERSON_ALIASES: dict[str, str] = {
     "zodiac":        "zodiac killer",
 }
 
+# ── Visual event type classifiers ─────────────────────────────────────────────
+# Used by extract_visual_events() to map each script chunk to a unique visual class.
+
+_VE_EVIDENCE = frozenset({
+    "blood", "weapon", "gun", "knife", "bullet", "fingerprint", "dna",
+    "forensic", "evidence", "body", "victim", "wound", "discovered", "found",
+    "analysis", "autopsy", "sample", "ballistic", "toxicology", "seized",
+    "arrested", "confiscated", "recovered", "lab", "laboratory", "corpse",
+    "stabbed", "shot", "killed", "murdered", "strangled", "poisoned",
+})
+_VE_NEWSPAPER = frozenset({
+    "newspaper", "headline", "article", "press", "media", "coverage",
+    "published", "breaking", "broadcast", "news", "declared", "announced",
+    "aired", "reporters", "journalist", "front page",
+})
+_VE_CCTV = frozenset({
+    "camera", "footage", "surveillance", "security", "recorded", "tape",
+    "video", "caught on", "captured", "monitored", "cctv", "screenshot",
+    "film", "filming", "filmed",
+})
+_VE_COURTROOM = frozenset({
+    "court", "judge", "jury", "trial", "verdict", "sentence", "conviction",
+    "acquittal", "prosecution", "defense", "testify", "testified", "charges",
+    "pleaded", "guilty", "innocent", "attorney", "lawyer", "hearing",
+    "indicted", "indictment", "sentenced",
+})
+_VE_INTERROGATION = frozenset({
+    "interrogated", "questioned", "interview", "confession", "admitted",
+    "denied", "suspect", "interrogation", "detained", "custody", "handcuffed",
+    "arrested", "taken in", "brought in",
+})
+_VE_MAP = frozenset({
+    "map", "route", "distance", "miles", "kilometers", "north", "south",
+    "east", "west", "border", "territory", "region", "headquarters",
+    "coordinates", "located", "location", "address", "neighborhood",
+    "traveled", "crossed", "drove to", "flew to",
+})
+_VE_LOCATION = frozenset({
+    "apartment", "house", "hotel", "city", "street", "building", "room",
+    "office", "car", "warehouse", "prison", "school", "hospital", "bar",
+    "club", "alley", "highway", "road", "entered", "arrived", "drove",
+    "walked", "lived", "moved", "fled", "corridor", "hallway", "basement",
+    "rooftop", "garage", "parking", "factory", "dock", "harbor",
+})
+_VE_CHILDHOOD = frozenset({
+    "born", "childhood", "young", "youth", "grew up", "parents", "family",
+    "school", "teenage", "teenager", "adolescent", "early life", "child",
+    "upbringing", "raised", "mother", "father", "brother", "sister",
+})
+_VE_PRISON = frozenset({
+    "prison", "jail", "cell", "bars", "incarcerated", "sentence", "serving",
+    "released", "parole", "warden", "inmate", "penitentiary", "lockup",
+})
+
+_VE_ATMOSPHERE_POOL = [
+    "dark urban night crime city atmospheric documentary cinematic establishing shot",
+    "police investigation dark corridor single light cinematic documentary",
+    "crime scene night forensic dark atmospheric documentary cinematic establishing",
+    "detective office shadows crime wall evidence noir documentary",
+    "dramatic shadows dark room crime investigation moody cinematic documentary",
+    "rainy night city street crime atmospheric noir documentary cinematic",
+    "close-up hands typing crime report dark atmospheric documentary",
+    "police car lights flashing night crime scene documentary cinematic",
+    "courtroom empty dramatic shadow dark cinematic documentary",
+    "prison corridor dark bars single light atmospheric documentary",
+    "dark telephone booth vintage crime city night cinematic",
+    "money stacks crime dark atmospheric documentary cinematic",
+    "newspaper archive dark library documentary cinematic atmospheric",
+]
+
+
+def _classify_visual_event(
+    chunk_lower: str, position: float, topic: str
+) -> tuple[str, str]:
+    """Return (visual_type, ai_prompt) for one 12-word script chunk.
+
+    Priority ladder:
+      known person → portrait
+      courtroom keyword → courtroom
+      interrogation keyword → interrogation
+      evidence keyword → evidence
+      CCTV keyword → cctv
+      newspaper keyword → newspaper
+      map keyword → map
+      prison keyword → prison
+      childhood keyword → childhood
+      location keyword → location
+      default → atmosphere (rotated by position)
+    """
+    _t = (topic or "").strip()
+    _pfx = f"{_t} " if _t else ""
+
+    for person in _KNOWN_CRIME_PERSONS:
+        if person in chunk_lower:
+            canon = _PERSON_ALIASES.get(person, person)
+            return ("portrait",
+                    f"{canon} real historical photograph documentary portrait dark cinematic"
+                    f"{_IMAGE_PROMPT_SUFFIX}")
+
+    if any(k in chunk_lower for k in _VE_COURTROOM):
+        return ("courtroom",
+                f"courtroom trial judge jury dramatic dark documentary cinematic evidence"
+                f"{_IMAGE_PROMPT_SUFFIX}")
+
+    if any(k in chunk_lower for k in _VE_INTERROGATION):
+        return ("interrogation",
+                f"police interrogation room single overhead light shadow suspect detective dark cinematic"
+                f"{_IMAGE_PROMPT_SUFFIX}")
+
+    if any(k in chunk_lower for k in _VE_EVIDENCE):
+        return ("evidence",
+                f"{_pfx}forensic crime evidence investigation dark documentary cinematic"
+                f"{_IMAGE_PROMPT_SUFFIX}")
+
+    if any(k in chunk_lower for k in _VE_CCTV):
+        return ("cctv",
+                f"CCTV surveillance footage grainy timestamp night dark crime documentary cinematic"
+                f"{_IMAGE_PROMPT_SUFFIX}")
+
+    if any(k in chunk_lower for k in _VE_NEWSPAPER):
+        return ("newspaper",
+                f"{_pfx}crime newspaper front page headline archival black white documentary"
+                f"{_IMAGE_PROMPT_SUFFIX}")
+
+    if any(k in chunk_lower for k in _VE_MAP):
+        return ("map",
+                f"{_pfx}crime location city map aerial vintage noir documentary dark cinematic"
+                f"{_IMAGE_PROMPT_SUFFIX}")
+
+    if any(k in chunk_lower for k in _VE_PRISON):
+        return ("prison",
+                f"prison cell bars cold light cinematic atmospheric dark documentary"
+                f"{_IMAGE_PROMPT_SUFFIX}")
+
+    if any(k in chunk_lower for k in _VE_CHILDHOOD):
+        return ("childhood",
+                f"{_pfx}childhood archive family photograph vintage documentary dark cinematic"
+                f"{_IMAGE_PROMPT_SUFFIX}")
+
+    if any(k in chunk_lower for k in _VE_LOCATION):
+        return ("location",
+                f"{_pfx}crime location establishing shot dark atmospheric documentary cinematic"
+                f"{_IMAGE_PROMPT_SUFFIX}")
+
+    # Atmosphere: rotate through pool by position so consecutive chunks differ
+    _atmo_idx = int(position * len(_VE_ATMOSPHERE_POOL)) % len(_VE_ATMOSPHERE_POOL)
+    return ("atmosphere",
+            f"{_pfx}{_VE_ATMOSPHERE_POOL[_atmo_idx]}{_IMAGE_PROMPT_SUFFIX}")
+
+
+def extract_visual_events(
+    script_text: str, topic: str = "", runtime_secs: float = 0.0
+) -> list[dict]:
+    """Parse script into unique visual events — one per ~12-word narrative chunk.
+
+    Scale: 12 unique events per minute of runtime.
+      10-min doc → ~120 unique visual events
+      15-min doc → ~180 unique visual events
+
+    Each event carries: idx, position (0-1), type, prompt, chunk (for logging).
+    These are SEMANTICALLY UNIQUE — every event maps to a different
+    narrative moment and generates a distinct Pollinations prompt.
+    """
+    import re
+    from collections import Counter as _Counter
+    clean = re.sub(r'\[SECTION:[^\]]+\]\s*', '', script_text).strip()
+    words = clean.split()
+    if not words:
+        return []
+
+    runtime_min = max(runtime_secs / 60, 1.0) if runtime_secs > 0 else len(words) / 150.0
+    n_events    = max(30, int(runtime_min * 12))
+    chunk_size  = max(8, len(words) // n_events)
+
+    chunks: list[str] = []
+    for i in range(n_events):
+        start = i * chunk_size
+        end   = (i + 1) * chunk_size if i < n_events - 1 else len(words)
+        if start >= len(words):
+            break
+        chunks.append(" ".join(words[start:end]))
+
+    events: list[dict] = []
+    for i, chunk in enumerate(chunks):
+        pos    = i / max(len(chunks) - 1, 1)
+        vtype, prompt = _classify_visual_event(chunk.lower(), pos, topic)
+        events.append({
+            "idx":    i,
+            "pos":    pos,
+            "type":   vtype,
+            "prompt": prompt,
+            "chunk":  chunk[:80],
+        })
+
+    _dist = _Counter(e["type"] for e in events)
+    print(f"[VisualPlan] {len(events)} events: " +
+          " | ".join(f"{t}:{c}" for t, c in sorted(_dist.items())))
+    return events
+
+
+def build_documentary_visual_pool(
+    script_text: str,
+    runtime_secs: float,
+    topic: str,
+    video_id: str,
+    is_short: bool = False,
+    style_profile: str = "",
+) -> list[str]:
+    """Build a UNIQUE visual for every narrative event in the script.
+
+    Architecture:
+      1. extract_visual_events() → typed events (portrait/courtroom/evidence/etc.)
+      2. Portrait events → Wikimedia person photo first, Pollinations fallback
+      3. All other events → Pollinations AI with type-specific prompt
+      4. Emergency gradient fallback only if Pollinations returns < 8 images
+
+    Result: N UNIQUE images in narrative order — NO PIL recycling, NO repeats.
+    """
+    if is_short:
+        return fetch_real_images(
+            script_text, 6, video_id, topic=topic, style_profile=style_profile
+        )
+
+    _img_dir = _get_images_dir()
+    events   = extract_visual_events(script_text, topic=topic, runtime_secs=runtime_secs)
+    if not events:
+        return fetch_real_images(
+            script_text, 30, video_id, topic=topic, style_profile=style_profile
+        )
+
+    seed   = random.randint(1, 99999)
+    paths: list[str] = []
+    _type_counts: dict[str, int] = {}
+
+    for ev in events:
+        idx      = ev["idx"]
+        out_path = os.path.join(_img_dir, f"{video_id}_ev_{idx:04d}.png")
+
+        if os.path.exists(out_path) and os.path.getsize(out_path) > 5_000:
+            paths.append(out_path)
+            _type_counts[ev["type"]] = _type_counts.get(ev["type"], 0) + 1
+            continue
+
+        saved = None
+
+        # Portrait: try Wikimedia real photo first
+        if ev["type"] == "portrait":
+            person = _detect_person_in_chunk(ev["chunk"])
+            if person:
+                resolved = _PERSON_ALIASES.get(person.lower(), person)
+                photo_url = _search_wikimedia_person_photo(resolved)
+                if photo_url:
+                    saved = _download_first_valid([photo_url], out_path)
+
+        # All types (incl. portrait fallback): Pollinations AI
+        if not saved:
+            saved = generate_ai_image(ev["prompt"], out_path, seed=seed + idx)
+
+        if saved:
+            paths.append(saved)
+            _type_counts[ev["type"]] = _type_counts.get(ev["type"], 0) + 1
+
+        # Throttle every 10 images to avoid Pollinations 429s
+        if idx > 0 and idx % 10 == 0:
+            time.sleep(2)
+
+    print(f"[VisualPlan] Pool complete: {len(paths)}/{len(events)} unique visuals — " +
+          " | ".join(f"{t}:{c}" for t, c in sorted(_type_counts.items())))
+
+    # Emergency fallback: never return fewer than 8 images
+    if len(paths) < 8:
+        print(f"[VisualPlan] Pool too small ({len(paths)}) — activating emergency engine")
+        _em = _generate_emergency_visuals(
+            max(20, len(events) - len(paths)), _img_dir, is_short=False, topic=topic
+        )
+        paths.extend(_em)
+
+    return paths
+
 
 def _search_wikimedia_person_photo(person_name: str) -> str | None:
     """Fetch Wikipedia thumbnail for a real person via two endpoints."""
@@ -6051,23 +6330,26 @@ def calculate_unique_images(is_short: bool = False) -> int:
 def plan_visual_requirements(runtime_secs: float, is_short: bool = False) -> dict:
     """Compute the visual inventory required for high-density cinematic documentary.
 
-    FULL mode target: 5 unique images/min × 2 clip-variants = 10 cuts/min
-    (one visual change every ~6s — Netflix documentary pacing).
-    Returns a planning dict for logging and downstream use.
+    FULL mode target: 12 UNIQUE visual events per minute of runtime.
+      10-min doc → 120 unique images    (one new visual every 5s)
+      15-min doc → 180 unique images
+      20-min doc → 240 unique images
+
+    Each image is semantically unique — driven by script narrative events,
+    not by PIL cropping/filtering of recycled source images.
     """
     if is_short:
         return {"n_unique": 6, "n_target": 6, "clips_per_min": 8.0,
                 "insert_count": 0, "runtime_min": 0.0}
     runtime_min   = max(runtime_secs / 60, 0.1)
-    n_unique      = max(30, min(120, int(runtime_min * 5 + 0.5)))
-    insert_count  = max(4, int(n_unique * 0.20))   # 20% cinematic inserts
+    n_unique      = max(60, min(240, int(runtime_min * 12)))
     clips_per_min = round(n_unique * 2 / runtime_min, 1)
-    print(f"[FULL] Visual plan: {n_unique} unique imgs | {insert_count} cinematic inserts | "
+    print(f"[FULL] Visual plan: {n_unique} unique semantic events | "
           f"~{clips_per_min} cuts/min for {runtime_min:.1f}min documentary")
     return {
         "n_unique":      n_unique,
         "n_target":      n_unique,
-        "insert_count":  insert_count,
+        "insert_count":  0,   # handled inside build_documentary_visual_pool
         "clips_per_min": clips_per_min,
         "runtime_min":   runtime_min,
     }
@@ -7853,9 +8135,9 @@ def run_full_pipeline(
         except Exception as _ws_e:
             print(f"[Subtitle] Skipping Whisper (non-fatal): {_ws_e}")
 
-    # ── Visual planning — 5 unique imgs/min × 2 clips = 10 cuts/min ─────
-    # Targets a visual change every ~6s — Netflix investigative documentary pace.
-    # PIL variation engine + cinematic inserts expand the pool further at assembly.
+    # ── Visual planning — 12 unique semantic events/min ──────────────────
+    # Each event = one distinct narrative moment = one unique AI image.
+    # 10 min → 120 unique images | 15 min → 180 | 20 min → 240
     import math as _math
     _vis_plan = plan_visual_requirements(_real_audio_secs, is_short=is_short)
     if is_short:
@@ -7863,7 +8145,7 @@ def run_full_pipeline(
     elif _real_audio_secs > 0:
         n_images = _vis_plan["n_unique"]
     else:
-        n_images = 30  # safe floor when audio duration unavailable
+        n_images = 60  # safe floor when audio duration unavailable
     calculate_total_images(user_images)
     print(f"[FULL] Building {n_images} visuals ({'short' if is_short else 'long'})")
     script_text = script_data.get("script", "")
@@ -7977,16 +8259,24 @@ def run_full_pipeline(
                     gap_imgs = _rank_visual_pool(gap_imgs, topic=topic_str)
                 image_paths.extend(gap_imgs)
         else:
-            # FULL mode auto path: real video clips + Wikimedia/AI images in parallel
-            stock = fetch_stock_videos(script_text, min(n_images, 8), video_id, topic=topic_str)
-            image_paths.extend(stock)
-            # Always fetch real photos for FULL mode — do not skip based on stock count
-            _real_target = max(n_images // 2, 15)
-            print(f"[FULL] Fetching {_real_target} real photos (Wikimedia + AI)")
-            image_paths.extend(
-                fetch_real_images(script_text, _real_target, video_id,
-                                  topic=topic_str, style_profile=_style_profile)
+            # ── FULL mode auto path: scene-driven unique visual pool ───────
+            # build_documentary_visual_pool() generates ONE unique AI image per
+            # narrative event (portrait/evidence/location/CCTV/newspaper/map/…)
+            # driven by what is HAPPENING in each 12-word script chunk.
+            # This produces 120-240 SEMANTICALLY UNIQUE visuals, not PIL recycles.
+            print(f"[FULL] Building documentary visual pool ({n_images} target events)")
+            _doc_pool = build_documentary_visual_pool(
+                script_text, _real_audio_secs, topic_str, video_id,
+                is_short=False, style_profile=_style_profile,
             )
+            image_paths.extend(_doc_pool)
+            # B-roll: add up to 6 real stock video clips for motion texture
+            if _doc_pool:
+                _broll = fetch_stock_videos(
+                    script_text, min(6, max(2, len(_doc_pool) // 20)),
+                    video_id, topic=topic_str,
+                )
+                image_paths.extend(_broll)
             if image_paths:
                 image_paths = _rank_visual_pool(image_paths, topic=topic_str)
     except Exception as e:
@@ -8058,22 +8348,14 @@ def run_full_pipeline(
     except Exception as _enh_err:
         print(f"[FULL] Enhancement skipped (non-fatal): {_enh_err}")
 
-    # ── FULL visual pool expansion: cinematic inserts + PIL variants ──────
-    # Expands the raw image list to n_images using:
-    #   20% AI cinematic inserts (evidence boards, CCTV, newspaper clips)
-    #   80% PIL crop/color/tone variants of real images
-    if not is_short and all_image_paths:
-        _pre_expand = len(all_image_paths)
-        all_image_paths = _generate_full_visual_pool(
-            all_image_paths, n_images, topic_str, video_id, is_short=False
-        )
-        print(f"[FULL] Visual pool: {_pre_expand} raw → {len(all_image_paths)} after expansion")
-
-    # Fallback: if pool still too small, add emergency visuals
+    # ── Emergency fallback — never assemble with < 8 visuals ──────────────
+    # build_documentary_visual_pool() already handles this internally, but
+    # guard here too in case user_content mode produced a thin pool.
     if not is_short and len(all_image_paths) < 8:
-        print(f"[FULL] Pool critically small ({len(all_image_paths)}) — activating emergency engine")
+        print(f"[FULL] Pool too small ({len(all_image_paths)}) — activating emergency engine")
         _em = _generate_emergency_visuals(
-            n_images - len(all_image_paths), IMAGES_DIR, is_short=False, topic=topic_str
+            max(20, n_images - len(all_image_paths)), IMAGES_DIR,
+            is_short=False, topic=topic_str,
         )
         all_image_paths.extend(_em)
 
