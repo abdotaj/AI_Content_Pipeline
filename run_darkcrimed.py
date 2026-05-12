@@ -621,25 +621,10 @@ def run_pipeline():
         en_long_path = _make_video(en_long, en_long_id, stats, user_images=user_images, user_videos=user_videos)
 
         # OUTPUT 2 — Arabic long-form
-        # Pre-render runtime floor: block renders that would produce broken output.
-        # The 9-second video incident was caused by a collapsed 882-word script
-        # silently passing through to video assembly.
-        _ar_wc_check  = len(ar_long.get("script", "").split())
-        _ar_min_check = _ar_wc_check / 250.0
-        _AR_LONG_MIN  = 10.0  # minutes — less than this = auto-rebuild, then block if still failing
-        if ar_long.get("script_too_short") or _ar_min_check < _AR_LONG_MIN:
-            _block_msg = (
-                f"[AR BLOCKED] Runtime below minimum: {_ar_min_check:.1f}min "
-                f"({_ar_wc_check}w) < {_AR_LONG_MIN}min — "
-                f"blocking Arabic render to prevent invalid upload"
-            )
-            _log("VideoGen", _block_msg, "ERROR")
-            send_message(_block_msg)
-            ar_long_path = ""
-            stats["errors"] += 1
-        else:
-            ar_long_id   = f"{today}_{uuid.uuid4().hex[:8]}_arabic_long"
-            ar_long_path = _make_video(ar_long, ar_long_id, stats, user_images=user_images, user_videos=user_videos)
+        # Word-count pre-render check removed. Real audio duration is the only truth:
+        # the post-render auto-rebuild loop below measures actual video seconds.
+        ar_long_id   = f"{today}_{uuid.uuid4().hex[:8]}_arabic_long"
+        ar_long_path = _make_video(ar_long, ar_long_id, stats, user_images=user_images, user_videos=user_videos)
 
     # ── Arabic runtime auto-rebuild ───────────────────────────────────────────
     # Measure ACTUAL rendered video length. If < 10 min, expand script + re-render.
@@ -801,14 +786,13 @@ def run_pipeline():
         elif _approval_2 == "rerender":
             _log("VideoGen", "Re-render requested — regenerating all videos", "WARN")
             send_message("[Pipeline] Re-rendering all videos...")
+            # Clear stale short paths before rerender to prevent duplicate outputs
+            en_chapter_shorts = []
+            ar_chapter_shorts = []
             en_long_id   = f"{today}_{uuid.uuid4().hex[:8]}_english_long"
             en_long_path = _make_video(en_long, en_long_id, stats, user_images=user_images, user_videos=user_videos)
-            _ar_wc_recheck = len(ar_long.get("script", "").split())
-            if not (ar_long.get("script_too_short") or (_ar_wc_recheck / 250.0) < 10.0):
-                ar_long_id   = f"{today}_{uuid.uuid4().hex[:8]}_arabic_long"
-                ar_long_path = _make_video(ar_long, ar_long_id, stats, user_images=user_images, user_videos=user_videos)
-            else:
-                ar_long_path = ""
+            ar_long_id   = f"{today}_{uuid.uuid4().hex[:8]}_arabic_long"
+            ar_long_path = _make_video(ar_long, ar_long_id, stats, user_images=user_images, user_videos=user_videos)
             if en_long_path and os.path.exists(en_long_path):
                 _en_ss = en_long.get("short_script_en", "")
                 if _en_ss:

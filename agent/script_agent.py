@@ -2020,7 +2020,7 @@ def write_long_script_split(topic: dict, research: dict, series_info: tuple | No
                     print(f"[EntityGuard] Section {call_num} sanitised — "
                           f"{len(offending)} offending line(s) removed")
 
-        # Information density audit — log verdict, auto-expand if LOW
+        # Information density audit — remove filler, rewrite on LOW density
         try:
             from agents.script_quality import validate_information_density, remove_filler_phrases
             _density = validate_information_density(result, language="english")
@@ -2034,6 +2034,26 @@ def write_long_script_split(topic: dict, research: dict, series_info: tuple | No
             )
             if _fc > 0:
                 result = remove_filler_phrases(result)
+            if _dv == "LOW":
+                print(f"[Density] Section {call_num} LOW — requesting high-density rewrite")
+                _dense_prompt = (
+                    "The following script section has too much vague atmosphere and not enough "
+                    "facts, names, or dates. Rewrite it with maximum information density.\n\n"
+                    "RULES: Every 50 words must contain at least one of: "
+                    "specific name + action, year/date, piece of evidence, forensic/legal detail, "
+                    "or investigative development. No filler phrases. No suspense atmosphere without facts.\n\n"
+                    f"Section to rewrite:\n{result}\n\n"
+                    "Return the rewritten section only."
+                )
+                _dense_result = _ai_script_call(
+                    _dense_prompt, max_tokens=_max_tok,
+                    system_prompt=_SCRIPT_SYSTEM_PROMPT, premium=True,
+                )
+                if _dense_result and clean_word_count(_dense_result) >= int(min_w * 0.75):
+                    result = _dense_result
+                    print(f"[Density] Section {call_num} rewritten: {clean_word_count(result)}w")
+                else:
+                    print(f"[Density] Section {call_num} rewrite skipped — insufficient output")
         except Exception as _de:
             print(f"[Density] Section {call_num} check (non-fatal): {_de}")
 
@@ -3625,17 +3645,21 @@ Return ONLY the Arabic translation. No explanations, no notes."""
                         {
                             "role": "system",
                             "content": (
-                                "You are a professional Arabic translator specialising in "
-                                "true crime and investigative documentary narration. "
-                                "Translate into natural spoken Modern Standard Arabic — "
-                                "not formal Classical Arabic. "
-                                "When an English sentence is long, break it into two shorter "
-                                "Arabic sentences for better spoken rhythm. "
+                                "You are a professional Arabic documentary translator for a Netflix/Al Jazeera "
+                                "investigative true crime series. "
+                                "Translate into natural spoken Modern Standard Arabic — not formal Classical Arabic. "
+                                "TARGET STYLE: Netflix investigative documentary narration — cold, factual, evidence-driven. "
+                                "FORBIDDEN STYLE: poetic horror atmosphere, vague suspense filler, repetitive dark "
+                                "phrases, emotional monologue without facts. "
+                                "INVESTIGATION-FIRST RULES: every translated paragraph must preserve at least one of: "
+                                "a specific name + concrete action, a date or timeline marker, "
+                                "a piece of forensic evidence or legal testimony, or an investigative development. "
+                                "Atmospheric sentences (mood without facts) are tolerated only once per four paragraphs — "
+                                "all others must carry factual weight. "
+                                "When an English sentence is long, break it into two shorter Arabic sentences for spoken rhythm. "
                                 "Short punchy English sentences must stay short in Arabic. "
-                                "Adapt idioms and sarcasm naturally — never translate them literally. "
-                                "Preserve every fact, name, and date — never summarise or skip content. "
-                                "Maintain dramatic tension: if the English builds suspense, "
-                                "the Arabic must build the same suspense."
+                                "Adapt idioms and sarcasm naturally — never translate literally. "
+                                "Preserve every fact, name, and date — never summarise or skip content."
                             ),
                         },
                         {"role": "user", "content": prompt_text},

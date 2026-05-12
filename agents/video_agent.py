@@ -89,7 +89,13 @@ def _check_image_prompt_cache(prompt: str) -> str | None:
             _cache = _js.load(_f)
         _path = _cache.get(_h)
         if _path and os.path.exists(_path) and os.path.getsize(_path) > 5_000:
-            return _path
+            try:
+                from PIL import Image as _PILImg
+                with _PILImg.open(_path) as _img:
+                    _img.verify()
+                return _path
+            except Exception:
+                pass  # corrupted image — treat as cache miss
     except Exception:
         pass
     return None
@@ -2948,10 +2954,20 @@ def _apply_intro_outro_overlay(
             f":enable='between(t,0,{hook_end})'",
         ]
 
+        # Get video duration before chapter loop for timestamp validation
+        try:
+            _vid_dur = _ffprobe_duration(video_path) or 0.0
+        except Exception:
+            _vid_dur = 0.0
+
         # Chapter transition flashes (0.5s white flash text overlay)
         chapters = _parse_chapter_timestamps(chapters_str)
         for ch_time, ch_label in chapters:
             if ch_time < 6.0:
+                continue
+            if _vid_dur > 0 and ch_time >= _vid_dur - 1.0:
+                print(f"[Overlay] Chapter timestamp {ch_time:.1f}s out of range "
+                      f"(video={_vid_dur:.1f}s) — skipping")
                 continue
             ch_esc = _escape_drawtext(ch_label[:40])
             flash_end = ch_time + 0.5
@@ -2963,12 +2979,10 @@ def _apply_intro_outro_overlay(
                 f":enable='between(t,{ch_time},{flash_end})'",
             ]
 
-        # Outro: fade to black at last 4.5s + CTA text
-        # Use ffprobe to get duration, fall back to expression
+        # Outro: use already-fetched duration
         try:
-            _dur = _ffprobe_duration(video_path) or 0.0
-            if _dur > 10:
-                outro_start = _dur - 4.5
+            if _vid_dur > 10:
+                outro_start = _vid_dur - 4.5
             else:
                 outro_start = 9999.0
         except Exception:
@@ -4515,13 +4529,17 @@ def _kill_orphan_ffmpeg() -> None:
 
 
 def _validate_output_file(path: str) -> bool:
-    """Return True if path is a valid, non-corrupt MP4 file."""
+    """Return True if path is a valid, non-corrupt MP4 with acceptable duration and size."""
     if not os.path.exists(path):
         print(f"[Render] Validation FAILED — file missing: {path}")
         return False
     size_mb = os.path.getsize(path) // (1024 * 1024)
     if size_mb < 1:
         print(f"[Render] Validation FAILED — too small ({size_mb} MB): {path}")
+        return False
+    is_short_file = "short" in os.path.basename(path).lower()
+    if not is_short_file and size_mb < 5:
+        print(f"[Render] Validation FAILED — long video too small ({size_mb} MB < 5 MB): {path}")
         return False
     ffmpeg_bin = _get_ffmpeg()
     if not ffmpeg_bin:
@@ -4535,7 +4553,12 @@ def _validate_output_file(path: str) -> bool:
         if "moov atom not found" in result.stderr or "Invalid data" in result.stderr:
             print(f"[Render] Validation FAILED — corrupt MP4: {result.stderr[:200]}")
             return False
-        print(f"[Render] Output validated: {os.path.basename(path)} ({size_mb} MB)")
+        dur = _ffprobe_duration(path) or 0.0
+        min_dur = 55.0 if is_short_file else 300.0
+        if dur > 0 and dur < min_dur:
+            print(f"[Render] Validation FAILED — duration {dur:.1f}s < minimum {min_dur:.0f}s: {path}")
+            return False
+        print(f"[Render] Output validated: {os.path.basename(path)} ({size_mb} MB, {dur:.0f}s)")
         return True
     except Exception as _ve:
         print(f"[Render] Validation error (assuming OK): {_ve}")
@@ -7388,12 +7411,14 @@ def run_full_pipeline(
             if audio_path and os.path.exists(audio_path):
                 audio_path = process_audio_netflix(audio_path, is_short=True)
         print(f"[FULL] Audio ready: {audio_path}")
+        _real_audio_secs = 0.0
         try:
             try:
                 from moviepy.editor import AudioFileClip as _AC
             except ImportError:
                 from moviepy import AudioFileClip as _AC
             _dur = _AC(audio_path).duration
+            _real_audio_secs = _dur
             _min = _dur / 60
             if is_short:
                 if _dur < 60:   print(f"[FULL] WARNING: Short audio too short: {_dur:.1f}s (need 60-90s)")
@@ -7418,8 +7443,17 @@ def run_full_pipeline(
         except Exception as _ws_e:
             print(f"[Subtitle] Skipping Whisper (non-fatal): {_ws_e}")
 
-    # ── Image / clip counts ────────────────────────────────────────────────
-    n_images    = calculate_unique_images(is_short=is_short)
+    # ── Image / clip counts — density-driven: 3 unique images per minute ──
+    import math as _math
+    if is_short:
+        n_images = 6
+    elif _real_audio_secs > 0:
+        _density_floor = _math.ceil(_real_audio_secs / 60 * 3)
+        n_images = max(20, min(50, _density_floor))
+        print(f"[FULL] Visual density: {n_images} images for {_real_audio_secs/60:.1f}min audio "
+              f"(3 imgs/min floor, capped at 50)")
+    else:
+        n_images = calculate_unique_images(is_short=False)
     calculate_total_images(user_images)
     print(f"[FULL] Building {n_images} visuals ({'short' if is_short else 'long'})")
     script_text = script_data.get("script", "")
