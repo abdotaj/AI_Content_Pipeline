@@ -824,6 +824,25 @@ def run_pipeline():
     _log("Finalize", "Validating all outputs before publish")
     _stage("Finalize + validate")
 
+    def _ffprobe_res(path: str) -> str:
+        """Return WxH resolution string from ffprobe, e.g. '1920x1080'."""
+        try:
+            import subprocess as _sp
+            import shutil as _sh
+            _ffp = _sh.which("ffprobe") or _sh.which("ffmpeg")
+            if not _ffp:
+                return "?"
+            _r = _sp.run(
+                [_ffp, "-v", "quiet", "-select_streams", "v:0",
+                 "-show_entries", "stream=width,height",
+                 "-of", "csv=s=x:p=0", path],
+                capture_output=True, text=True, timeout=15,
+            )
+            res = _r.stdout.strip()
+            return res if res else "?"
+        except Exception:
+            return "?"
+
     def _output_row(label: str, path: str, is_short: bool = False) -> bool:
         """Log one output row; return True if it passes minimum thresholds."""
         if not path or not os.path.exists(path):
@@ -832,11 +851,13 @@ def run_pipeline():
         mb   = os.path.getsize(path) // 1024 // 1024
         secs = _video_secs(path)
         mins = secs / 60
+        res  = _ffprobe_res(path)
         min_secs = 55.0 if is_short else 300.0
         min_mb   = 1    if is_short else 5
         ok = secs >= min_secs and mb >= min_mb
         status = "OK " if ok else "FAIL"
-        _log("Validate", f"{status}   {label}: {mins:.1f}min ({secs:.0f}s), {mb}MB — {path}",
+        _log("Validate",
+             f"{status}   {label}: {mins:.1f}min ({secs:.0f}s), {mb}MB, {res} — {path}",
              "OK" if ok else "ERROR")
         return ok
 

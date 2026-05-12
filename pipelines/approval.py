@@ -6,6 +6,10 @@
 # AUTO_APPROVE=1 disables all gates — pipeline runs fully autonomous.
 # Default: AUTO_APPROVE=0 (human approval required at each stage).
 #
+# APPROVAL_TIMEOUT_MINUTES — minutes before auto-approve on timeout.
+#   Default: 20 on GitHub Actions CI, 0 (infinite) elsewhere.
+#   Set to any positive integer to override.
+#
 # Supported commands (case-insensitive, leading / optional):
 #   /approve   — proceed to next stage
 #   /rewrite   — regenerate scripts  (scripts gate)
@@ -38,6 +42,22 @@ _COMMAND_ALIASES: dict[str, str] = {
 }
 
 
+def _get_timeout_minutes() -> int:
+    """Return approval wait timeout in minutes (0 = infinite).
+
+    Priority order:
+    1. APPROVAL_TIMEOUT_MINUTES env var (explicit override)
+    2. GitHub Actions CI (GITHUB_ACTIONS=true) → 20 minutes
+    3. Default → 0 (infinite, preserves existing manual-run behaviour)
+    """
+    _env = os.getenv("APPROVAL_TIMEOUT_MINUTES", "").strip()
+    if _env.isdigit():
+        return int(_env)
+    if os.getenv("GITHUB_ACTIONS", "").lower() == "true":
+        return 20
+    return 0
+
+
 def wait_for_approval(
     stage_name: str,
     available_commands: list | None = None,
@@ -54,6 +74,10 @@ def wait_for_approval(
     Exits immediately when AUTO_APPROVE=1 is set in the environment
     (returns "approve" without any Telegram interaction).
 
+    On GitHub Actions (GITHUB_ACTIONS=true), auto-approves after 20 minutes
+    to prevent the CI runner from timing out and losing rendered artifacts.
+    Override with APPROVAL_TIMEOUT_MINUTES=N.
+
     *available_commands* is shown in the notification only — all aliases
     are always accepted regardless of this list.
     """
@@ -61,6 +85,7 @@ def wait_for_approval(
         print(f"[APPROVAL] AUTO_APPROVE=1 — skipping gate: {stage_name}")
         return "approve"
 
+    _timeout_mins = _get_timeout_minutes()
     _cmds = available_commands or [
         "approve", "rewrite", "rerender", "publish", "cancel"
     ]
@@ -91,12 +116,16 @@ def wait_for_approval(
         pass
 
     # Build the notification message
-    _cmd_lines = "\n".join(f"  /{c}" for c in _cmds)
+    _cmd_lines  = "\n".join(f"  /{c}" for c in _cmds)
+    _timeout_note = (
+        f"\n\nAuto-approve in {_timeout_mins}min if no response."
+        if _timeout_mins > 0 else ""
+    )
     _notif = (
         f"[{mode.upper()} PAUSED]\n"
         f"Stage: {stage_name}\n\n"
         f"Commands:\n{_cmd_lines}\n\n"
-        f"Waiting for approval..."
+        f"Waiting for approval...{_timeout_note}"
     )
     try:
         requests.post(
@@ -108,10 +137,33 @@ def wait_for_approval(
         print(f"[APPROVAL] Telegram send failed: {e} — auto-approving")
         return "approve"
 
-    print(f"[APPROVAL] Paused at '{stage_name}' — accepted: {_cmds}")
+    print(f"[APPROVAL] Paused at '{stage_name}' — accepted: {_cmds}"
+          + (f" — timeout: {_timeout_mins}min" if _timeout_mins else ""))
+
+    _gate_start = time.time()
 
     while True:
         time.sleep(10)
+
+        # ── Timeout check ──────────────────────────────────────────────────
+        if _timeout_mins > 0:
+            elapsed_min = (time.time() - _gate_start) / 60
+            if elapsed_min >= _timeout_mins:
+                _tmsg = (
+                    f"[{mode.upper()}] No response in {_timeout_mins}min — "
+                    f"auto-approving gate: {stage_name}"
+                )
+                print(f"[APPROVAL] TIMEOUT: {_tmsg}")
+                try:
+                    requests.post(
+                        f"{base}/sendMessage",
+                        json={"chat_id": chat_id, "text": _tmsg},
+                        timeout=10,
+                    )
+                except Exception:
+                    pass
+                return "approve"
+
         try:
             params: dict = {
                 "timeout": 0,

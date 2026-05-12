@@ -5884,14 +5884,17 @@ def assemble_video_with_hook(
     print(f"[Video] Hook: {len(hook_clips)} fast cuts in {hook_total:.1f}s")
 
     # -- MAIN CONTENT (1:30 to end): adaptive slow cuts with zoom + pan variety --
-    # Adaptive duration: scale up per-clip length when image count is low vs target
+    # FAST mode: max 8 s/clip → 8+ visual transitions/min → no long image holds.
+    # FULL mode: max 14 s/clip → more cinematic breathing room.
     _n_imgs = max(len(image_paths), 1)
-    _adaptive_base = max(6.0, min(18.0, main_duration / (2.0 * _n_imgs + 1)))
-    if _adaptive_base > 9.0:
-        print(f"[Visual] Dynamic stretch activated: {_adaptive_base:.1f}s/clip "
-              f"({_n_imgs} images for {main_duration:.0f}s target)")
+    _dur_cap = 8.0 if PIPELINE_MODE == "fast" else 14.0
+    _adaptive_base = max(6.0, min(_dur_cap, main_duration / (2.0 * _n_imgs + 1)))
+    if _adaptive_base >= _dur_cap:
+        print(f"[Visual] Clip duration capped at {_dur_cap:.0f}s "
+              f"({_n_imgs} images, {main_duration:.0f}s main) — coverage loop will fill gaps")
     else:
-        print(f"[Visual] Standard clip duration: {_adaptive_base:.1f}s/clip")
+        print(f"[Visual] Adaptive clip duration: {_adaptive_base:.1f}s/clip "
+              f"({_n_imgs} images for {main_duration:.0f}s target)")
 
     main_clips = []
     for idx, img_path in enumerate(image_paths):
@@ -7355,6 +7358,57 @@ def run_fast_pipeline(
             print(f"[FAST] Visual fetch failed (non-fatal): {_ve}")
     image_paths = [p for p in image_paths if p and os.path.exists(p)]
 
+    # ── Smart PIL variation engine — reach n_images without extra API calls ─
+    # If real images are fewer than target: create PIL crop/tint variants so
+    # the assembler has enough unique visuals to avoid long-hold repetition.
+    if 0 < len(image_paths) < n_images:
+        _real_img_exts = {".jpg", ".jpeg", ".png", ".webp"}
+        _base_imgs = [
+            p for p in image_paths
+            if not _is_video_file(p)
+            and os.path.splitext(p)[1].lower() in _real_img_exts
+        ]
+        _needed_variants = n_images - len(image_paths)
+        _created = 0
+        try:
+            from PIL import Image as _PILV, ImageEnhance as _PILEN, ImageFilter as _PILF
+            _VAR_OPS = [
+                ("cc",  lambda im: im.crop((im.width//8, im.height//8,
+                                            im.width*7//8, im.height*7//8))
+                                    .resize(im.size, _PILV.LANCZOS)),
+                ("gs",  lambda im: _PILV.merge("RGB", [im.convert("L")] * 3)),
+                ("hc",  lambda im: _PILEN.Contrast(im).enhance(1.6)),
+                ("lo",  lambda im: _PILEN.Brightness(im).enhance(0.6)),
+                ("sat", lambda im: _PILEN.Color(im).enhance(0.3)),
+            ]
+            import itertools as _it
+            for _bpath, (_tag, _op) in zip(
+                _it.cycle(_base_imgs), _it.cycle(_VAR_OPS)
+            ):
+                if _created >= _needed_variants:
+                    break
+                _vname = f"{os.path.splitext(os.path.basename(_bpath))[0]}_{_tag}.jpg"
+                _vpath = os.path.join(IMAGES_DIR, _vname)
+                if os.path.exists(_vpath):
+                    image_paths.append(_vpath)
+                    _created += 1
+                    continue
+                try:
+                    _img = _PILV.open(_bpath).convert("RGB").resize(
+                        (1080, 1920) if is_short else (1920, 1080), _PILV.LANCZOS
+                    )
+                    _var = _op(_img)
+                    _var.save(_vpath, "JPEG", quality=80)
+                    image_paths.append(_vpath)
+                    _created += 1
+                except Exception:
+                    pass
+            if _created:
+                print(f"[FAST] PIL variation engine: +{_created} variants → "
+                      f"{len(image_paths)} total images")
+        except ImportError:
+            print("[FAST] PIL not available — skipping variation engine")
+
     # ── Fallback visual engine: never abort due to empty visuals ──────────
     if len(image_paths) < 4:
         print(f"[FAST] Only {len(image_paths)} visuals — activating emergency visual engine")
@@ -7366,9 +7420,11 @@ def run_fast_pipeline(
             print("[FAST] Emergency visual engine also failed — aborting")
             return ""
 
-    # ── Assembly ───────────────────────────────────────────────────────────
-    output_path = os.path.join(FINAL_DIR, f"{video_id}.mp4")
-    video_path  = ""
+    # ── Assembly — with render watchdog ───────────────────────────────────
+    output_path  = os.path.join(FINAL_DIR, f"{video_id}.mp4")
+    video_path   = ""
+    _FAST_RENDER_WARN_MIN = 20  # warn if render takes > 20 min
+    _render_t0 = time.time()
     try:
         if is_short:
             video_path = assemble_short_video(
@@ -7382,6 +7438,11 @@ def run_fast_pipeline(
     except Exception as e:
         print(f"[FAST] Primary assembly failed: {e}")
         traceback.print_exc()
+    _render_elapsed = (time.time() - _render_t0) / 60
+    if _render_elapsed > _FAST_RENDER_WARN_MIN:
+        print(f"[FAST] WATCHDOG: render took {_render_elapsed:.1f}min > {_FAST_RENDER_WARN_MIN}min limit")
+    else:
+        print(f"[FAST] Render time: {_render_elapsed:.1f}min")
 
     # ── Fallback render if primary assembly failed ─────────────────────────
     if not video_path or not os.path.exists(video_path):
