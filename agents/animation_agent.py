@@ -28,13 +28,16 @@ import random
 import hashlib
 import requests
 
-# ── Directories ───────────────────────────────────────────────────────────────
+# ── Directories (legacy fallback — primary storage is content/<topic>/) ────────
 _ANIM_DIR   = "output/animation"
 _CLIPS_DIR  = "output/animation/clips"
 _CHARS_DIR  = "output/animation/characters"
 
 for _d in [_ANIM_DIR, _CLIPS_DIR, _CHARS_DIR]:
     os.makedirs(_d, exist_ok=True)
+
+# ── Per-topic content paths (set by init_topic_lock → ensure_topic_content) ───
+_CONTENT_PATHS: dict = {}
 
 # ── Style presets ─────────────────────────────────────────────────────────────
 _STYLE_PRESETS: dict[str, str] = {
@@ -258,8 +261,9 @@ def init_topic_lock(topic: str) -> None:
     before any identity/scene/clip work. Clears provider health, stale
     character photos, and sets the topic namespace + semantic domain for
     cache isolation and domain-aware template selection.
+    Also initialises persistent content paths for this topic.
     """
-    global _TOPIC_LOCK
+    global _TOPIC_LOCK, _CONTENT_PATHS
     _h = hashlib.sha256(topic.encode()).hexdigest()[:16]
 
     # Classify semantic domain so all downstream template selectors can use it
@@ -272,6 +276,20 @@ def init_topic_lock(topic: str) -> None:
 
     _TOPIC_LOCK = {"topic": topic, "topic_hash": _h, "domain": _domain}
     _health._failures.clear()
+
+    # Initialise persistent per-topic content storage
+    try:
+        import sys as _sys
+        _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        if _root not in _sys.path:
+            _sys.path.insert(0, _root)
+        from utils.content_manager import ensure_topic_content
+        _CONTENT_PATHS = ensure_topic_content(topic)
+        print(f"[CONTENT] Topic storage: {_CONTENT_PATHS['path']}")
+    except Exception as _ce:
+        print(f"[CONTENT] Content paths setup (non-fatal): {_ce}")
+        _CONTENT_PATHS = {}
+
     _purge_stale_char_photos(topic)
     print(f"[TOPIC LOCK] Active — {topic}")
     print(f"[DOMAIN] {_domain}")
@@ -283,16 +301,21 @@ def init_topic_lock(topic: str) -> None:
 def _purge_stale_char_photos(topic: str) -> None:
     """Delete character images saved by previous (different) topic runs."""
     safe_slug = re.sub(r'[^a-z0-9_]', '_', topic.lower())[:30]
-    try:
-        for fname in os.listdir(_CHARS_DIR):
-            if fname.startswith("char_") and not fname.startswith(f"char_{safe_slug}"):
-                try:
-                    os.remove(os.path.join(_CHARS_DIR, fname))
-                    print(f"[IDENTITY] Purged stale character photo: {fname}")
-                except Exception:
-                    pass
-    except Exception:
-        pass
+    _anim_content = _CONTENT_PATHS.get("animations_path", "")
+    _content_chars = os.path.join(_anim_content, "characters") if _anim_content else ""
+    for chars_dir in filter(None, [_CHARS_DIR, _content_chars]):
+        try:
+            if not os.path.isdir(chars_dir):
+                continue
+            for fname in os.listdir(chars_dir):
+                if fname.startswith("char_") and not fname.startswith(f"char_{safe_slug}"):
+                    try:
+                        os.remove(os.path.join(chars_dir, fname))
+                        print(f"[IDENTITY] Purged stale character photo: {fname}")
+                    except Exception:
+                        pass
+        except Exception:
+            pass
 
 
 def _validate_entity(entity_name: str, topic: str, research: dict) -> bool:
@@ -328,7 +351,8 @@ def _clip_cache_key(prompt: str, duration: int) -> str:
 
 
 def _clip_cache_path(key: str) -> str:
-    return os.path.join(_CLIPS_DIR, f"cache_{key}.mp4")
+    cache_dir = _CONTENT_PATHS.get("cache_path") or _CLIPS_DIR
+    return os.path.join(cache_dir, f"cache_{key}.mp4")
 
 
 def _clip_cache_get(prompt: str, duration: int) -> str | None:
@@ -1412,19 +1436,26 @@ def create_animation_video(
     Returns final video path, or "" on failure.
     """
     import traceback
+    import shutil as _shutil
 
     topic    = script_data.get("topic", "")
     language = script_data.get("language", "english")
-    video_id = re.sub(r'[^a-z0-9_]', '_', topic.lower())[:30] + f"_anim_{int(time.time())}"
-    is_short = bool(script_data.get("is_short") or script_data.get("short_script_en") or "short" in video_id)
-    if is_short and "_short_" not in video_id:
-        video_id = video_id.replace("_anim_", "_short_anim_")
+    is_short = bool(script_data.get("is_short") or script_data.get("short_script_en"))
 
-    os.makedirs(output_dir, exist_ok=True)
-    chars_dir = os.path.join(output_dir, "characters")
-    clips_dir = os.path.join(output_dir, "clips")
-    os.makedirs(chars_dir, exist_ok=True)
-    os.makedirs(clips_dir, exist_ok=True)
+    # Stable ID (no timestamp) — used for clip filenames so reruns reuse clips
+    _lang_tag  = "ar" if language == "arabic" else "en"
+    _type_tag  = "short" if is_short else "long"
+    stable_id  = re.sub(r'[^a-z0-9_]', '_', topic.lower())[:30] + f"_{_lang_tag}_{_type_tag}"
+
+    # Timestamped ID only for the unique final output filename
+    video_id   = stable_id + f"_{int(time.time())}"
+
+    # Route persistent storage through content/<topic>/ when available
+    _anim_path = _CONTENT_PATHS.get("animations_path") or output_dir
+    chars_dir  = os.path.join(_anim_path, "characters")
+    clips_dir  = os.path.join(_anim_path, "clips")
+    for _d in [output_dir, chars_dir, clips_dir]:
+        os.makedirs(_d, exist_ok=True)
 
     # ── Step 1: Character identity ────────────────────────────────────────────
     if language == "arabic":
@@ -1464,19 +1495,23 @@ def create_animation_video(
         print("[Anim] No scenes parsed — aborting")
         return ""
 
-    # ── Step 4: Talking portrait for hook ────────────────────────────────────
+    # ── Step 4: Talking portrait for hook (resume-aware) ─────────────────────
     portrait_clip = None
     hook_scene    = scenes[0] if scenes else None
+    portrait_out  = os.path.join(clips_dir, f"{stable_id}_portrait.mp4")
 
-    if hook_scene and identity.get("ref_image_path") and os.path.exists(identity["ref_image_path"] or ""):
-        portrait_out = os.path.join(clips_dir, f"{video_id}_portrait.mp4")
+    # Reuse existing portrait clip if valid
+    if os.path.exists(portrait_out) and os.path.getsize(portrait_out) > 10_000:
+        portrait_clip = portrait_out
+        print(f"[SCENE] Reusing existing portrait clip: {os.path.basename(portrait_out)}")
+    elif hook_scene and identity.get("ref_image_path") and os.path.exists(identity["ref_image_path"] or ""):
         portrait_clip = generate_talking_portrait(
             identity["ref_image_path"],
             audio_path,
             portrait_out,
         )
 
-    # ── Step 5: Generate motion clips per scene ───────────────────────────────
+    # ── Step 5: Generate motion clips per scene (resume-aware) ───────────────
     clip_paths: list[str] = []
     if portrait_clip and os.path.exists(portrait_clip):
         clip_paths.append(portrait_clip)
@@ -1487,13 +1522,20 @@ def create_animation_video(
         if i == 0 and portrait_clip:
             continue
 
-        clip_out = os.path.join(clips_dir, f"{video_id}_scene_{i:02d}.mp4")
-        clip     = generate_scene_clip(scene, identity, clip_out, duration=5)
+        clip_out = os.path.join(clips_dir, f"{stable_id}_scene_{i:02d}.mp4")
+
+        # Resume: reuse existing valid clip from a prior run
+        if os.path.exists(clip_out) and os.path.getsize(clip_out) > 10_000:
+            print(f"[SCENE] Reusing existing clip: {os.path.basename(clip_out)}")
+            clip_paths.append(clip_out)
+            continue
+
+        clip = generate_scene_clip(scene, identity, clip_out, duration=5)
         if clip:
             clip_paths.append(clip)
         else:
             # Always ensure at least a fallback clip
-            fallback_bg = os.path.join(clips_dir, f"{video_id}_scene_{i:02d}_bg.jpg")
+            fallback_bg = os.path.join(clips_dir, f"{stable_id}_scene_{i:02d}_bg.jpg")
             fb_img = _generate_fallback_image(scene, identity, fallback_bg)
             if fb_img:
                 motions = ["zoom_in", "zoom_out", "pan_right", "pan_left"]
@@ -1515,8 +1557,22 @@ def create_animation_video(
     # ── Step 6: Assemble ──────────────────────────────────────────────────────
     output_path = os.path.join(output_dir, f"{video_id}.mp4")
     result = assemble_animation_video(clip_paths, audio_path, output_path)
-    if result:
-        print(f"[Anim] Documentary complete: {result}")
+    if not result:
+        return ""
+
+    print(f"[Anim] Documentary complete: {result}")
+
+    # ── Step 7: Persist final video into content/<topic>/videos/ ─────────────
+    _videos_path = _CONTENT_PATHS.get("videos_path")
+    if _videos_path:
+        dest_name = f"{_lang_tag}_{'short' if is_short else 'long'}.mp4"
+        dest      = os.path.join(_videos_path, dest_name)
+        try:
+            _shutil.copy2(result, dest)
+            print(f"[CONTENT] Video persisted: {dest}")
+        except Exception as _ce:
+            print(f"[CONTENT] Video copy (non-fatal): {_ce}")
+
     return result
 
 

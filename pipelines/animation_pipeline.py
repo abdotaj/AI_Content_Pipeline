@@ -64,7 +64,8 @@ from agent.research_agent    import (
 )
 from agent.script_agent      import write_script, translate_script, generate_chapters, write_short_script, clean_word_count, expand_script_runtime
 from agent.animation_agent   import create_animation_video, init_topic_lock
-from agent.video_agent       import ensure_music_assets, cut_best_short
+from agent.video_agent       import ensure_music_assets, cut_best_short, set_active_topic_content
+from utils.content_manager   import ensure_topic_content, save_topic_metadata
 from agent.notify_agent      import (
     send_message, send_video_to_telegram, send_daily_report,
     send_english_script_preview, send_arabic_script_preview, send_document,
@@ -526,6 +527,11 @@ def run_pipeline() -> None:
     # Hard reset: clear all identity/character/clip state from any previous run
     init_topic_lock(topic_text)
 
+    # Initialise persistent content storage and wire into image pipeline
+    _topic_content = ensure_topic_content(topic_text)
+    set_active_topic_content(_topic_content)
+    _log("Research", f"Content storage: {_topic_content['path']}", "OK")
+
     # ── Pre-research semantic gate ────────────────────────────────────────────
     # Two independent scores are computed:
     #   entity_conf  — is this a real identifiable subject? (structural check)
@@ -652,9 +658,10 @@ def run_pipeline() -> None:
     except Exception as _e:
         _log("Scripts", f"Script preview (non-fatal): {_e}", "WARN")
 
-    _script_txt_path = f"output/anim_script_{today}.txt"
+    _meta_dir = _topic_content.get("metadata_path", "output")
+    os.makedirs(_meta_dir, exist_ok=True)
+    _script_txt_path = os.path.join(_meta_dir, f"anim_script_{today}.txt")
     try:
-        os.makedirs("output", exist_ok=True)
         with open(_script_txt_path, "w", encoding="utf-8") as _sf:
             _sf.write(
                 f"TITLE: {en_long.get('title','')}\n"
@@ -693,6 +700,35 @@ def run_pipeline() -> None:
         ar_long["language"] = "arabic"
 
     _check_cancel("after all scripts")
+
+    # ── Persist scripts and research into content/<topic>/metadata/ ───────────
+    try:
+        save_topic_metadata(
+            topic_text,
+            en_script=(
+                f"TITLE: {en_long.get('title','')}\n"
+                f"WORDS: {_en_wc}  EST: ~{_est_min} min\n"
+                f"{'='*60}\n\n"
+                f"{en_long.get('script','')}"
+            ),
+            ar_script=(
+                f"TITLE: {ar_long.get('title','')}\n"
+                f"{'='*60}\n\n"
+                f"{ar_long.get('script','')}"
+            ),
+            research=topic.get("research", {}),
+            metadata={
+                "date":      today,
+                "topic":     topic_text,
+                "en_title":  en_long.get("title", ""),
+                "ar_title":  ar_long.get("title", ""),
+                "en_words":  _en_wc,
+                "pipeline":  "animation",
+            },
+        )
+        _log("Scripts", f"Scripts/research persisted to content/{_topic_content['topic']}/metadata/", "OK")
+    except Exception as _me:
+        _log("Scripts", f"Metadata persist (non-fatal): {_me}", "WARN")
 
     # ── Approval gate 1: Scripts ─────────────────────────────────────────────
     while True:

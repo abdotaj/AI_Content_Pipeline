@@ -57,6 +57,65 @@ STOCK_VIDEOS_DIR = "output/stock_videos"
 for d in [AUDIO_DIR, VIDEO_DIR, FINAL_DIR, IMAGES_DIR, STOCK_VIDEOS_DIR]:
     Path(d).mkdir(parents=True, exist_ok=True)
 
+# ── Active topic content paths (set by set_active_topic_content) ─────────────
+_ACTIVE_TOPIC_CONTENT: dict = {}
+
+
+def set_active_topic_content(paths: dict) -> None:
+    """Register per-topic content paths so image generation persists there."""
+    global _ACTIVE_TOPIC_CONTENT
+    _ACTIVE_TOPIC_CONTENT = paths or {}
+    if _ACTIVE_TOPIC_CONTENT.get("images_path"):
+        print(f"[Image] Active topic images dir: {_ACTIVE_TOPIC_CONTENT['images_path']}")
+
+
+def _get_images_dir() -> str:
+    """Return active topic images dir, falling back to the legacy shared dir."""
+    return _ACTIVE_TOPIC_CONTENT.get("images_path") or IMAGES_DIR
+
+
+def _check_image_prompt_cache(prompt: str) -> str | None:
+    """Return cached image path for this prompt, or None if not cached/invalid."""
+    cache_dir = _ACTIVE_TOPIC_CONTENT.get("cache_path")
+    if not cache_dir:
+        return None
+    try:
+        import hashlib as _hl, json as _js
+        _h    = _hl.sha256(prompt.encode("utf-8")).hexdigest()[:20]
+        _file = os.path.join(cache_dir, "images_cache.json")
+        if not os.path.exists(_file):
+            return None
+        with open(_file, encoding="utf-8") as _f:
+            _cache = _js.load(_f)
+        _path = _cache.get(_h)
+        if _path and os.path.exists(_path) and os.path.getsize(_path) > 5_000:
+            return _path
+    except Exception:
+        pass
+    return None
+
+
+def _save_image_prompt_cache(prompt: str, image_path: str) -> None:
+    """Persist a prompt → image_path mapping in the topic cache."""
+    cache_dir = _ACTIVE_TOPIC_CONTENT.get("cache_path")
+    if not cache_dir:
+        return
+    try:
+        import hashlib as _hl, json as _js
+        _h    = _hl.sha256(prompt.encode("utf-8")).hexdigest()[:20]
+        _file = os.path.join(cache_dir, "images_cache.json")
+        _tmp  = _file + ".tmp"
+        _cache: dict = {}
+        if os.path.exists(_file):
+            with open(_file, encoding="utf-8") as _f:
+                _cache = _js.load(_f)
+        _cache[_h] = image_path
+        with open(_tmp, "w", encoding="utf-8") as _f:
+            _js.dump(_cache, _f, indent=2)
+        os.replace(_tmp, _file)
+    except Exception:
+        pass
+
 # Unified TTS speed — sourced from config so one constant controls all engines/languages.
 TTS_SPEED = OPENAI_TTS_SPEED
 EDGETTS_RATE_120 = "+0%"
@@ -4150,12 +4209,15 @@ def fetch_real_images(script_text: str, count: int, video_id: str,
     else:
         fallback_base = f"true crime historical documentary scene cinematic dark{_IMAGE_PROMPT_SUFFIX}"
 
+    _img_dir = _get_images_dir()
+
     if not words:
         paths = []
         for i in range(count):
-            p = os.path.join(IMAGES_DIR, f"{video_id}_img_{i}.png")
+            p = os.path.join(_img_dir, f"{video_id}_img_{i}.png")
             r = generate_ai_image(fallback_base, p, seed=seed + i)
             if r:
+                _save_image_prompt_cache(fallback_base, r)
                 paths.append(r)
         return paths
 
@@ -4163,7 +4225,7 @@ def fetch_real_images(script_text: str, count: int, video_id: str,
     user_folder_images = _load_user_images_from_folders(topic)
     preloaded_paths: list[str] = []
     for uimg in user_folder_images:
-        dest = os.path.join(IMAGES_DIR, f"{video_id}_user_{len(preloaded_paths)}.png")
+        dest = os.path.join(_img_dir, f"{video_id}_user_{len(preloaded_paths)}.png")
         try:
             shutil.copy2(uimg["path"], dest)
             preloaded_paths.append(dest)
@@ -4195,7 +4257,7 @@ def fetch_real_images(script_text: str, count: int, video_id: str,
     ai_count      = 0
 
     for i, chunk in enumerate(chunks):
-        img_path = os.path.join(IMAGES_DIR, f"{video_id}_img_{i}.png")
+        img_path = os.path.join(_img_dir, f"{video_id}_img_{i}.png")
         saved    = None
 
         # Step 1: person photo — runs on raw chunk, highest priority, before query gate
@@ -4240,11 +4302,19 @@ def fetch_real_images(script_text: str, count: int, video_id: str,
 
         # Step 3: AI fallback — Pollinations with topic-specific prompt
         if not saved:
-            print(f"[Image] chunk {i}: no real image found, using AI generation")
             ai_prompt = ai_prompts[i] if i < len(ai_prompts) else fallback_base
-            saved = generate_ai_image(ai_prompt, img_path, seed=seed + i)
-            if saved:
-                ai_count += 1
+            # Check prompt hash cache before generating (avoids duplicate AI calls)
+            _cached_img = _check_image_prompt_cache(ai_prompt)
+            if _cached_img:
+                shutil.copy2(_cached_img, img_path)
+                saved = img_path
+                print(f"[Image] chunk {i}: reusing cached AI image for prompt hash")
+            else:
+                print(f"[Image] chunk {i}: no real image found, using AI generation")
+                saved = generate_ai_image(ai_prompt, img_path, seed=seed + i)
+                if saved:
+                    _save_image_prompt_cache(ai_prompt, saved)
+                    ai_count += 1
 
         if saved:
             image_paths.append(saved)
