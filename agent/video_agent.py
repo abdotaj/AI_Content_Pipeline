@@ -2210,17 +2210,39 @@ def _internet_archive_image_results(query: str, max_results: int = 5) -> list[st
 
 
 _KNOWN_CRIME_PERSONS = {
-    "john douglas", "robert ressler", "ann burgess", "edmund kemper",
-    "charles manson", "david berkowitz", "ted bundy", "jeffrey dahmer",
-    "pablo escobar", "el chapo", "griselda blanco", "frank lucas",
-    "henry hill", "al capone", "lucky luciano", "whitey bulger",
-    "richard ramirez", "john wayne gacy", "btk", "dennis rader",
-    "henry lee lucas", "aileen wuornos",
+    # Profilers / investigators
+    "john douglas", "robert ressler", "ann burgess",
+    # Serial killers
+    "edmund kemper", "charles manson", "david berkowitz", "ted bundy",
+    "jeffrey dahmer", "richard ramirez", "john wayne gacy", "btk",
+    "dennis rader", "henry lee lucas", "aileen wuornos", "gary ridgway",
+    "night stalker", "son of sam", "zodiac",
+    # Organized crime
+    "pablo escobar", "el chapo", "joaquin guzman", "griselda blanco",
+    "frank lucas", "henry hill", "al capone", "lucky luciano",
+    "whitey bulger", "john gotti", "meyer lansky", "bugsy siegel",
+    "carlo gambino", "vito genovese", "frank costello",
+    # Cartel figures
+    "amado carrillo", "felix gallardo", "miguel angel felix gallardo",
+    # Classic gangsters / outlaws
+    "bonnie parker", "clyde barrow", "john dillinger", "pretty boy floyd",
+    "machine gun kelly",
+}
+
+# Canonical Wikipedia name for aliases that resolve poorly on their own
+_PERSON_ALIASES: dict[str, str] = {
+    "el chapo":      "joaquin guzman",
+    "btk":           "dennis rader",
+    "night stalker": "richard ramirez",
+    "son of sam":    "david berkowitz",
+    "zodiac":        "zodiac killer",
 }
 
 
 def _search_wikimedia_person_photo(person_name: str) -> str | None:
     """Fetch Wikipedia thumbnail for a real person via two endpoints."""
+    # Resolve alias to canonical Wikipedia name (e.g. "el chapo" → "joaquin guzman")
+    person_name = _PERSON_ALIASES.get(person_name.lower(), person_name)
     print(f'[Image] Wikimedia person search: {person_name}')
     encoded = requests.utils.quote(person_name)
 
@@ -4297,6 +4319,13 @@ def fetch_real_images(script_text: str, count: int, video_id: str,
                     wiki_urls = _search_wikimedia_commons(query)
                     if not wiki_urls:
                         wiki_urls = _wikimedia_image_results(query)
+                    # Step 2a-retry: no results → try with first 3 words (drops rare modifiers)
+                    if not wiki_urls and len(query.split()) > 3:
+                        _short_q = " ".join(query.split()[:3])
+                        print(f"[Image] Wikimedia retry with shorter query: '{_short_q}'")
+                        wiki_urls = _search_wikimedia_commons(_short_q)
+                        if not wiki_urls:
+                            wiki_urls = _wikimedia_image_results(_short_q)
                     if wiki_urls:
                         saved = _download_first_valid(wiki_urls, img_path)
                         if saved:
