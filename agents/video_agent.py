@@ -6937,7 +6937,7 @@ def ensure_music_assets() -> None:
             continue
 
         # CDN 403/blocked -- generate brown-noise ambient track locally
-        fallback_seconds = 90 if "short" in os.path.basename(path).lower() else 660
+        fallback_seconds = 90 if "short" in os.path.basename(path).lower() else 900
         print(f"[Music] Generating {fallback_seconds}s brown-noise ambient track: {path}")
         if not _create_ambient_music_fallback(path, fallback_seconds):
             print(f"[Music] Could not generate ambient track for {path} -- voice-only mode")
@@ -8266,9 +8266,20 @@ def run_full_pipeline(
                 elif _dur > 90: print(f"[FULL] WARNING: Short audio too long: {_dur:.1f}s (need 60-90s)")
                 else:           print(f"[FULL] Short duration OK: {_dur:.1f}s")
             else:
-                if _dur < 600:   print(f"[FULL] WARNING: Long audio too short: {_min:.1f} min (need 10-14 min)")
-                elif _dur > 840: print(f"[FULL] WARNING: Long audio too long: {_min:.1f} min (need 10-14 min)")
-                else:            print(f"[FULL] Long duration OK: {_min:.1f} min")
+                try:
+                    from agents.script_agent import get_runtime_contract as _grc
+                except ImportError:
+                    try:
+                        from script_agent import get_runtime_contract as _grc  # type: ignore
+                    except ImportError:
+                        def _grc(m): return {"min_seconds": 900.0, "max_seconds": 5400.0}  # type: ignore
+                _rc = _grc("full")
+                if _dur < _rc["min_seconds"]:
+                    print(f"[FULL] WARNING: Long audio too short: {_min:.1f} min (contract: {_rc['min_seconds']/60:.0f}-{_rc['max_seconds']/60:.0f} min)")
+                elif _dur > _rc["max_seconds"]:
+                    print(f"[FULL] WARNING: Long audio too long: {_min:.1f} min (contract: {_rc['min_seconds']/60:.0f}-{_rc['max_seconds']/60:.0f} min)")
+                else:
+                    print(f"[FULL] Long duration OK: {_min:.1f} min")
         except Exception:
             pass
     except Exception as e:

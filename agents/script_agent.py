@@ -361,7 +361,7 @@ def _cap_script_max_words(script_text: str, max_words: int = LONG_SCRIPT_MAX_WOR
     return result
 
 
-_TTS_WPM = {"english": 145, "arabic": 175}   # Arabic documentary pacing target: 160-190 effective WPM
+_TTS_WPM = {"english": 145, "arabic": 175}   # Arabic cinematic narrative pacing target: 160-190 effective WPM
 
 # Runtime floors (minutes) by mode — ABSOLUTE MINIMUMS.
 # Any long video below 15 minutes is an automatic failure.
@@ -379,6 +379,27 @@ _RUNTIME_CAPS = {
     "fast":  {"min": 15, "max": 999},
     "short": {"min": 0,  "max": 1.5},
 }
+
+# ── Single source of truth for all runtime contracts ────────────────────────
+# ALL validators MUST reference get_runtime_contract() — no hardcoded seconds.
+# Approval gates must use REAL rendered audio duration, not WPM estimates.
+RUNTIME_CONTRACTS: dict[str, dict] = {
+    "fast":      {"min_minutes": 15.0, "max_minutes": 45.0},
+    "full":      {"min_minutes": 15.0, "max_minutes": 90.0},
+    "animation": {"min_minutes": 15.0, "max_minutes": 60.0},
+    "short":     {"min_minutes": 0.0,  "max_minutes": 1.5},
+}
+
+
+def get_runtime_contract(mode: str) -> dict:
+    """Return runtime contract for the given pipeline mode. Falls back to 'fast'."""
+    contract = RUNTIME_CONTRACTS.get(mode, RUNTIME_CONTRACTS["fast"])
+    return {
+        "min_minutes": contract["min_minutes"],
+        "max_minutes": contract["max_minutes"],
+        "min_seconds": contract["min_minutes"] * 60.0,
+        "max_seconds": contract["max_minutes"] * 60.0,
+    }
 
 
 def estimate_runtime_minutes(word_count: int, language: str = "english") -> float:
@@ -5507,15 +5528,15 @@ def translate_script(en_script: dict, research: dict | None = None) -> dict:
     _final_wc  = clean_word_count(ar_data.get("script", ""))
     _final_min = estimate_arabic_duration(ar_data.get("script", ""))
 
-    # ── Runtime floor — hard block before any render ──────────────────────────
-    # 10 min is the hard minimum for Arabic long-form documentaries.
-    # Below this = script_too_short flag → pipeline blocks render.
-    # Pipeline will auto-rebuild (expand + re-render) until runtime is valid.
-    _AR_RUNTIME_FLOOR_MIN = 11.0
+    # ── Runtime floor — pre-render WPM estimate gate ─────────────────────────
+    # Uses WPM estimate only — REAL validation happens on rendered audio duration.
+    # Below contract minimum = script_too_short flag → pipeline blocks render.
+    _ar_contract          = get_runtime_contract("fast")
+    _AR_RUNTIME_FLOOR_MIN = _ar_contract["min_minutes"]
     if _final_min < _AR_RUNTIME_FLOOR_MIN:
         print(
-            f"[AR BLOCKED] Runtime {_final_min:.1f}min below "
-            f"{_AR_RUNTIME_FLOOR_MIN}min minimum ({_final_wc}w) — "
+            f"[AR BLOCKED] Estimated runtime {_final_min:.1f}min below "
+            f"{_AR_RUNTIME_FLOOR_MIN:.0f}min contract minimum ({_final_wc}w) — "
             f"marking script as too short to render"
         )
         ar_data["script_too_short"] = True
@@ -5524,9 +5545,17 @@ def translate_script(en_script: dict, research: dict | None = None) -> dict:
     ar_data["estimated_runtime_min"] = round(_final_min, 1)
 
     if _final_min < _AR_RUNTIME_FLOOR_MIN:
-        print(f"[AR RUNTIME] Final render duration estimate: ~{_final_min:.1f}min — BELOW MINIMUM 10min")
+        print(
+            f"[AR RUNTIME] Estimated duration: ~{_final_min:.1f}min — "
+            f"BELOW {_AR_RUNTIME_FLOOR_MIN:.0f}min contract minimum "
+            f"(WPM estimate only — real validation on rendered audio)"
+        )
     else:
-        print(f"[AR PASSED] Runtime valid for upload: ~{_final_min:.1f}min >= {_AR_RUNTIME_FLOOR_MIN}min")
+        print(
+            f"[AR RUNTIME] Estimated duration: ~{_final_min:.1f}min >= "
+            f"{_AR_RUNTIME_FLOOR_MIN:.0f}min contract minimum "
+            f"(WPM estimate only — real validation on rendered audio)"
+        )
     print(
         f"[Script] Arabic done ({ar_data['arabic_path']} path): "
         f"'{ar_data['title']}' | {_final_wc}w | ~{_final_min:.1f}min"

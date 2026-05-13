@@ -49,7 +49,7 @@ NICHES = [
 NICHE_WEIGHTS = [0.20, 0.20, 0.15, 0.15, 0.10, 0.10, 0.05, 0.05]
 
 VIDEOS_PER_DAY = 2                 # how many videos to generate daily
-LONG_VIDEO_DURATION    = 660   # 11 minutes target (10-12 min = 600-720 s); audio drives actual length
+LONG_VIDEO_DURATION    = 900   # 15 minutes target (contract min); audio drives actual length
 SHORT_VIDEO_DURATION   = 55    # 55 seconds; audio drives actual length
 EDGETTS_RATE           = "+0%"   # edge-tts speaking rate for fallback TTS (+0% = normal speed)
 VIDEO_DURATION_SECONDS = LONG_VIDEO_DURATION  # legacy alias
