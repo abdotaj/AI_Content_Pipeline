@@ -7833,6 +7833,95 @@ def _extract_dominant_phase(script_text: str) -> str:
     return _STORY_PHASE_VISUAL_STYLE["default"]
 
 
+# ── Event-specific visual sequences ──────────────────────────────────────────
+# Maps specific story events to concrete visual prompt sequences.
+# Provides cinematic specificity beyond phase-level style keywords.
+_EVENT_VISUAL_SEQUENCES: dict[str, list[str]] = {
+    "witness_contradiction": [
+        "interrogation room dim single overhead light suspect seated cinematic",
+        "closeup reaction face shock witness stand courtroom dramatic lighting",
+        "evidence photos spread table investigation documents crime",
+        "surveillance footage timestamp visible blurry figure cinematic",
+    ],
+    "arrest": [
+        "police vehicles flashing lights night raid exterior dramatic",
+        "handcuffs wrists close restraint dramatic dark lighting",
+        "suspect escorted through crowd cameras flashing press cinematic",
+        "booking room fluorescent lights processing cinematic dark",
+    ],
+    "courtroom_testimony": [
+        "courtroom wide shot packed gallery dramatic lighting cinematic",
+        "judge bench gavel documents formal proceedings dark",
+        "attorney pointing evidence board jury watching cinematic",
+        "defendant dock expressionless waiting verdict dramatic",
+    ],
+    "confession": [
+        "interrogation room overhead single light stark shadows cinematic",
+        "signed document confession closeup hands pen paper dramatic",
+        "detective across table silence tension low light",
+        "police station corridor fluorescent aftermath cinematic",
+    ],
+    "manhunt": [
+        "surveillance footage blurry suspect street corner night cinematic",
+        "detective pinning photo location map board investigation",
+        "police radio dispatch night urban rain cinematic dark",
+        "roadblock headlights dark highway rain dramatic",
+    ],
+    "crime_scene": [
+        "crime scene tape police barrier urban night cinematic",
+        "forensic gloves evidence collection examination dramatic",
+        "investigator flashlight dark location discovery cinematic",
+        "aerial view crime scene photographs evidence table dark",
+    ],
+    "verdict": [
+        "courthouse exterior steps reporters cameras crowd cinematic",
+        "jury foreman standing verdict paper dramatic lighting",
+        "family victim support group emotional moment cinematic",
+        "courtroom reaction gallery verdict delivered dramatic dark",
+    ],
+}
+
+_EVENT_KEYWORDS: dict[str, list[str]] = {
+    "witness_contradiction": ["witness", "testimony", "testified", "recanted", "contradicted", "lied under oath", "statement changed"],
+    "arrest": ["arrested", "raided", "apprehended", "captured", "detained", "taken into custody", "fled and was caught"],
+    "courtroom_testimony": ["courtroom", "trial", "judge", "jury", "prosecutor", "defense attorney", "sentenced", "acquitted"],
+    "confession": ["confessed", "confession", "admitted to", "told investigators", "broke down", "revealed to police"],
+    "manhunt": ["manhunt", "fled", "on the run", "evaded", "pursued", "tracked", "surveillance footage", "informant"],
+    "crime_scene": ["crime scene", "body was found", "discovered the body", "forensic", "evidence collected", "investigators found"],
+    "verdict": ["verdict", "found guilty", "not guilty", "sentenced to", "life sentence", "acquitted", "years in prison"],
+}
+
+
+def event_visual_mapper(script_segment: str) -> list[str]:
+    """
+    Map story events in a script segment to specific visual prompt sequences.
+    Returns up to 8 visual descriptors ordered by event match score.
+    Returns empty list if no events detected — caller falls back to phase style.
+    """
+    if not script_segment:
+        return []
+
+    low = script_segment.lower()
+    matched: list[tuple[int, str]] = []
+
+    for event_key, keywords in _EVENT_KEYWORDS.items():
+        score = sum(1 for kw in keywords if kw.lower() in low)
+        if score > 0:
+            matched.append((score, event_key))
+
+    if not matched:
+        return []
+
+    matched.sort(key=lambda x: x[0], reverse=True)
+    top_events = [key for _, key in matched[:2]]
+
+    visuals: list[str] = []
+    for event_key in top_events:
+        visuals.extend(_EVENT_VISUAL_SEQUENCES.get(event_key, []))
+
+    return visuals[:8]
+
+
 def run_fast_pipeline(
     script_data: dict,
     video_id: str,
@@ -7929,13 +8018,21 @@ def run_fast_pipeline(
             image_paths.append(p)
     if len(image_paths) < n_images:
         try:
-            needed = n_images - len(image_paths)
-            _phase_style = _extract_dominant_phase(script_data.get("script", ""))
-            print(f"[FAST] Visual phase: {_phase_style[:60]}…")
+            needed         = n_images - len(image_paths)
+            _phase_style   = _extract_dominant_phase(script_data.get("script", ""))
+            _event_visuals = event_visual_mapper(script_data.get("script", ""))
+            if _event_visuals:
+                # Blend first event sequence with phase style for cinematic specificity
+                _blend_style = _event_visuals[0] + " " + _phase_style
+                print(f"[FAST] Event visuals: {len(_event_visuals)} sequences | "
+                      f"phase: {_phase_style[:40]}…")
+            else:
+                _blend_style = _phase_style
+                print(f"[FAST] Visual phase: {_phase_style[:60]}…")
             image_paths.extend(
                 fetch_real_images(
                     script_data["script"], needed, video_id,
-                    topic=topic_str, style_profile=_phase_style,
+                    topic=topic_str, style_profile=_blend_style,
                 )
             )
         except Exception as _ve:

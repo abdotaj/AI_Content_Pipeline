@@ -260,6 +260,53 @@ _WORD_CEILINGS = {
 LONG_SCRIPT_MIN_WORDS: int = _WORD_FLOORS["fast"]["english"]    # 3,500
 LONG_SCRIPT_MAX_WORDS: int = _WORD_CEILINGS["full"]["english"]  # 15,000
 
+# ── Story variation profiles — prevents formula fatigue ──────────────────────
+# Each profile shifts the narrative APPROACH without removing the 5-act structure.
+# Selection is deterministic per topic (MD5 hash) → consistent across re-runs.
+_STORY_VARIATION_PROFILES: dict[str, dict] = {
+    "slow_burn": {
+        "description": "Build dread gradually. Linger on normalcy before the crack appears.",
+        "opening_style": "Open at a quiet moment — then pull back to reveal what's wrong beneath the surface.",
+        "act_emphasis": "Act 1: stretch the atmosphere of normalcy. Act 3: layered slow reveals, not rapid fire.",
+    },
+    "courtroom_heavy": {
+        "description": "Legal proceedings drive the revelation. Testimony is the turning point.",
+        "opening_style": "Open with a single piece of testimony — then rewind to show how we got here.",
+        "act_emphasis": "Act 4: expand courtroom moments — each witness stand is a story beat, not a summary.",
+    },
+    "panic_escalation": {
+        "description": "Events accelerate rapidly. Each scene shorter and sharper than the last.",
+        "opening_style": "Open mid-crisis — chaos already happening. Then rewind to show what lit the fuse.",
+        "act_emphasis": "Act 3: rapid succession of short punchy scenes. No breathing room between events.",
+    },
+    "psychological_collapse": {
+        "description": "Internal unraveling. Behavioral tells and contradictions drive the story.",
+        "opening_style": "Open with the moment the facade cracked — a small detail nobody recognised at the time.",
+        "act_emphasis": "Act 2: focus on psychological evidence and behavioral investigation. Show the mind, not just the acts.",
+    },
+    "mystery_first": {
+        "description": "Begin with the unsolved question. Viewer discovers alongside investigators.",
+        "opening_style": "Open with the anomaly — the detail that didn't fit. What started the investigation.",
+        "act_emphasis": "Act 1: mystery framing — what's missing, what doesn't add up. Hold back the answer.",
+    },
+    "manhunt_first": {
+        "description": "Pursuit drives the narrative. Each act tightens the net.",
+        "opening_style": "Open at a moment of near-capture — then reveal how far the hunt had to go.",
+        "act_emphasis": "Act 2: manhunt mechanics — surveillance, informants, near-misses. The mechanics of pursuit.",
+    },
+}
+
+
+def _pick_variation_profile(topic_name: str, series_name: str = "") -> dict:
+    """Select a narrative variation profile deterministically per topic (MD5 hash)."""
+    import hashlib as _hl
+    keys = list(_STORY_VARIATION_PROFILES.keys())
+    idx  = int(_hl.md5(f"{topic_name}{series_name}".encode()).hexdigest(), 16) % len(keys)
+    key  = keys[idx]
+    profile = _STORY_VARIATION_PROFILES[key].copy()
+    profile["name"] = key
+    return profile
+
 
 def _cap_script_max_words(script_text: str, max_words: int = LONG_SCRIPT_MAX_WORDS) -> str:
     """
@@ -1604,6 +1651,7 @@ def scene_progression_validator(script_text: str) -> dict:
         return {"stalled_zones": [], "has_stalls": False, "progression_score": 1.0}
 
     stalled: list[str] = []
+    stalled_chunks: list[str] = []
     for idx, chunk in enumerate(chunks):
         prog  = sum(1 for p in _PROGRESS if _re.search(p, chunk, _re.IGNORECASE))
         stall = sum(1 for p in _STALL    if _re.search(p, chunk, _re.IGNORECASE))
@@ -1612,9 +1660,56 @@ def scene_progression_validator(script_text: str) -> dict:
                 f"Zone {idx + 1} (~words {idx * chunk_size}–{(idx + 1) * chunk_size}): "
                 f"progress_signals={prog}, stall_signals={stall}"
             )
+            stalled_chunks.append(chunk)
 
     score = round(max(0.0, 1.0 - len(stalled) / max(len(chunks), 1)), 2)
-    return {"stalled_zones": stalled, "has_stalls": bool(stalled), "progression_score": score}
+    return {
+        "stalled_zones": stalled,
+        "stalled_chunks": stalled_chunks,
+        "has_stalls": bool(stalled),
+        "progression_score": score,
+    }
+
+
+def rewrite_dead_zone(
+    segment: str,
+    topic_name: str = "",
+    act_label: str = "",
+) -> str:
+    """
+    Soft-rewrite a 150–700 word stalled segment.
+    Only replaces low-momentum ranges — does NOT regenerate the full script.
+    Returns the original segment unchanged if the rewrite fails or word count drifts.
+    """
+    wc = len(segment.split())
+    if wc < 150 or wc > 700:
+        return segment  # outside safe rewrite window — leave untouched
+
+    label_hint = f" in {act_label}" if act_label else ""
+    prompt = (
+        f"You are editing a crime documentary script{label_hint} about {topic_name}.\n\n"
+        "The following segment has been flagged as low-momentum — it repeats emotional beats, "
+        "uses atmosphere loops, or rephrases already-stated facts without advancing the story.\n\n"
+        f"ORIGINAL SEGMENT ({wc} words):\n{segment}\n\n"
+        "REWRITE RULES:\n"
+        "1. Keep the same approximate word count (±60 words)\n"
+        "2. Preserve ALL specific names, dates, and documented facts\n"
+        "3. Replace atmosphere loops with a NEW documented detail, witness account, or investigation step\n"
+        "4. Replace rephrased discoveries with a forward-moving story beat\n"
+        "5. Do NOT add fictional events or unverified claims\n"
+        "6. End on a beat that pulls the story forward\n\n"
+        "Output ONLY the rewritten segment — no preamble, no explanation."
+    )
+    try:
+        rewritten = _ai_script_call(prompt, max_tokens=900, temperature=0.65)
+        if not rewritten:
+            return segment
+        new_wc = len(rewritten.split())
+        if new_wc < wc * 0.60 or new_wc > wc * 1.55:
+            return segment  # word count drifted — not safe to use
+        return rewritten
+    except Exception:
+        return segment  # always fail safe — original is better than broken
 
 
 def write_animation_script(topic: dict) -> dict:
@@ -2405,6 +2500,17 @@ def write_long_script_split(topic: dict, research: dict, series_info: tuple | No
     _angle_hook    = _angle.get("angle_hook", "")
     _angle_content = _angle.get("angle_content", "")
 
+    # ── Story variation profile — prevents formula fatigue ───────────────────
+    _vp = _pick_variation_profile(name, series)
+    _variation_header = (
+        f"\n🎬 NARRATIVE STYLE: {_vp['name'].upper().replace('_', ' ')}\n"
+        f"Style description: {_vp['description']}\n"
+        f"Opening approach: {_vp['opening_style']}\n"
+        f"Act emphasis: {_vp['act_emphasis']}\n"
+        f"Apply this style rhythm to this act — stay within the scene chain, bring this energy.\n"
+    )
+    print(f"[NARRATIVE] Variation profile: {_vp['name']} — {_vp['description'][:60]}…")
+
     # ── 5-ACT NARRATIVE FLOW ENGINE — story progression phases, not documentary chapters ──
     # Each act = a distinct STORY STATE SHIFT. Viewer must feel: story is MOVING, not explained.
     # Act state chain: UNEASE → INVESTIGATION → ESCALATION → COLLAPSE → AFTERMATH
@@ -2613,7 +2719,7 @@ Return ONLY valid JSON, no explanation:
 
     section_prompts = [
         # ── ACT 1: Unease & First Clue ────────────────────────────────────────
-        lambda: f"""{_topic_context}{_entity_lock}
+        lambda: f"""{_topic_context}{_entity_lock}{_variation_header}
 Write ACT 1 — UNEASE & FIRST CLUE for a cinematic crime story about {name}.
 
 STORY STATE THIS ACT: NORMAL WORLD → FIRST CRACK OF UNEASE.
@@ -2820,18 +2926,42 @@ PREVIOUS ACTS (context — do NOT repeat):
           f"→ Est. runtime: ~{minutes:.0f} min")
 
     # ── Narrative flow audit — story progression metrics ─────────────────────
-    _spv = scene_progression_validator(full_script)
+    _spv         = scene_progression_validator(full_script)
     _stall_count = len(_spv["stalled_zones"])
     _prog_score  = _spv["progression_score"]
+    # Repetition clusters: count repeated 4+ word phrases (proxy via detect_quality_issues)
+    _rep_clusters = 0
+    try:
+        from agents.script_quality import detect_quality_issues as _dqi
+        _rep_clusters = len(_dqi(full_script).get("repeated_phrases", []))
+    except Exception:
+        pass
+    # momentum_score: blend of progression_score and inverse-repetition penalty
+    _momentum_score = round(_prog_score * max(0.5, 1.0 - _rep_clusters * 0.03), 2)
     print(
-        f"[NARRATIVE] story_state_changes={len(sections)} acts | "
-        f"progression_score={_prog_score:.0%} | "
-        f"dead_zones={_stall_count}"
+        f"[NARRATIVE] profile={_vp['name']} | "
+        f"dead_zones={_stall_count} | "
+        f"repetition_clusters={_rep_clusters} | "
+        f"momentum_score={_momentum_score:.0%} | "
+        f"state_changes={len(sections)}"
     )
     if _spv["has_stalls"]:
         print(f"[NARRATIVE] ⚠️ Momentum stalls detected ({_stall_count} zones):")
         for _z in _spv["stalled_zones"][:4]:
             print(f"  {_z}")
+        # Soft repair — rewrite up to 2 stalled zones; never blocks if repair fails
+        _stalled_texts = _spv.get("stalled_chunks", [])[:2]
+        _repairs = 0
+        for _sz_text in _stalled_texts:
+            if _sz_text and len(_sz_text.split()) >= 150:
+                _repaired = rewrite_dead_zone(_sz_text, topic_name=name)
+                if _repaired is not _sz_text and _repaired != _sz_text:
+                    full_script = full_script.replace(_sz_text, _repaired, 1)
+                    _repairs += 1
+                    print(f"[NARRATIVE] Dead zone repaired: "
+                          f"{len(_sz_text.split())}w → {len(_repaired.split())}w")
+        if _repairs:
+            print(f"[NARRATIVE] Soft repair complete — {_repairs} zone(s) rewritten")
     else:
         print(f"[NARRATIVE] ✅ Story progression healthy — no dead zones")
 
@@ -5184,6 +5314,46 @@ def _write_arabic_from_research(en_script: dict, ar_research: dict) -> str:
     return full_ar
 
 
+def tts_readability_pass(arabic_text: str) -> str:
+    """
+    Lightweight regex post-processor for Arabic TTS readability.
+    Splits connector-heavy sentences to improve spoken cadence.
+    Does NOT touch facts, names, or dates — pure structural cleanup.
+    """
+    import re as _re
+    if not arabic_text or len(arabic_text.split()) < 100:
+        return arabic_text
+
+    t = arabic_text
+
+    # 1. حيث / إذ mid-sentence → sentence break, preserve connector at new sentence start
+    t = _re.sub(r'،\s*(حيث|إذ)\s+', r'.\n\1 ', t)
+
+    # 2. بينما / وقد mid-sentence → sentence break
+    t = _re.sub(r'،\s*(بينما|وقد)\s+', r'.\n\1 ', t)
+
+    # 3. Triple-و chain: phrase، وphrase، وphrase → split at second join
+    t = _re.sub(
+        r'([^.،؟!\n]{15,50})،\s*و([^.،؟!\n]{10,35})،\s*و',
+        r'\1.\n\2.\n',
+        t,
+    )
+
+    # 4. Add dramatic pause (blank line) before key pivot phrases
+    t = _re.sub(r'\.\s+(بدلاً من|في الواقع|في الحقيقة|والحقيقة أن|غير أن)\s+', r'.\n\n\1 ', t)
+
+    # 5. Normalise: no triple newlines
+    t = _re.sub(r'\n{3,}', '\n\n', t)
+
+    # 6. Sentences ending mid-line before \n get a closing period
+    t = _re.sub(r'([^\.\n!؟،])\n', r'\1.\n', t)
+
+    # 7. Remove double periods
+    t = _re.sub(r'\.{2,}', '.', t)
+
+    return t.strip()
+
+
 def translate_script(en_script: dict, research: dict | None = None) -> dict:
     """
     Generate the Arabic script for a given English script.
@@ -5311,6 +5481,7 @@ def translate_script(en_script: dict, research: dict | None = None) -> dict:
         )
         ar_data["script"] = normalize_arabic_documentary_text(ar_data["script"])
         ar_data["script"] = normalize_arabic_tts(ar_data["script"])
+        ar_data["script"] = tts_readability_pass(ar_data["script"])
         ar_data["script"] = enforce_arabic_purity(ar_data["script"])
         ar_data["script"] = remove_arabic_filler_phrases(ar_data["script"])
         _ar_final_density = validate_information_density(ar_data["script"], language="arabic")
