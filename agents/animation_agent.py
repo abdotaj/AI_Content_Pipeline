@@ -1799,7 +1799,7 @@ def create_animation_video(
     global _ENVIRONMENT_LOCK
     _ENVIRONMENT_LOCK = {}
 
-    # ── Step 1: Character cast ────────────────────────────────────────────────
+    # ── Step 1: Character cast (CHARACTER PIPELINE) ──────────────────────────
     if language == "arabic":
         try:
             from agents.script_quality import enforce_arabic_purity
@@ -1807,10 +1807,45 @@ def create_animation_video(
         except Exception as e:
             print(f"[AR PURITY] Final sanitize failed: {e}")
 
-    cast = build_cast(research, topic, chars_dir)
+    # Determine style for this topic before building cast
+    _topic_lower  = topic.lower()
+    _niche_lower  = (research.get("niche", "") or "").lower()
+    _style_preset = "default"
+    for _dom, _kws in _ANIM_DOMAIN_KEYWORDS.items():
+        if any(kw in _topic_lower or kw in _niche_lower for kw in _kws):
+            _style_preset = _DOMAIN_TO_STYLE.get(_dom, "default")
+            break
+    if _style_preset == "default":
+        for _skey in _STYLE_PRESETS:
+            if _skey in _topic_lower or _skey in _niche_lower:
+                _style_preset = _skey
+                break
+    _style_keywords = _STYLE_PRESETS.get(_style_preset, _STYLE_PRESETS["default"])
+
+    # Use the proper characters_path from content storage if available
+    _chars_content_path = _CONTENT_PATHS.get("characters_path") or chars_dir
+    os.makedirs(_chars_content_path, exist_ok=True)
+
+    try:
+        from agents.character_pipeline import build_episode_cast
+        cast = build_episode_cast(
+            research, topic,
+            output_dir=_chars_content_path,
+            script_text=script_data.get("script", ""),
+            style_preset=_style_preset,
+            style_keywords=_style_keywords,
+        )
+        # Ensure style fields are set on cast members
+        for _cm in cast.values():
+            _cm.setdefault("style_preset",  _style_preset)
+            _cm.setdefault("style_keywords", _style_keywords)
+    except Exception as _ce:
+        print(f"[CHARACTER] character_pipeline failed ({_ce}) — falling back to build_cast()")
+        cast = build_cast(research, topic, chars_dir)
+
     identity = cast["main"]  # backward compat — main subject
-    print(f"[CHARACTER] Real identity locked: {identity['name']} | style={identity['style_preset']}")
-    print(f"[VISUAL] Consistent cinematic style active: {identity['style_preset']}")
+    print(f"[CHARACTER] Real identity locked: {identity['name']} | style={_style_preset}")
+    print(f"[VISUAL] Consistent cinematic style active: {_style_preset}")
 
     # ── Step 2: Audio (TTS via existing pipeline) ─────────────────────────────
     if not audio_path or not os.path.exists(audio_path):

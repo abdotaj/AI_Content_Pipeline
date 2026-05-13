@@ -23,6 +23,7 @@ def ensure_topic_content(topic: str) -> dict:
         content/<topic>/images/      — AI + real images (persistent, reusable)
         content/<topic>/videos/      — final assembled videos (en/ar long/short)
         content/<topic>/animations/  — motion clips and character photos
+        content/<topic>/characters/  — real photos, cast.json identity lock
         content/<topic>/cache/       — prompt/image/clip hash index
         content/<topic>/metadata/    — scripts, research, metadata JSON
     """
@@ -31,25 +32,28 @@ def ensure_topic_content(topic: str) -> dict:
     images_path     = os.path.join(topic_path, "images")
     videos_path     = os.path.join(topic_path, "videos")
     animations_path = os.path.join(topic_path, "animations")
+    characters_path = os.path.join(topic_path, "characters")
     cache_path      = os.path.join(topic_path, "cache")
     metadata_path   = os.path.join(topic_path, "metadata")
 
-    for p in [images_path, videos_path, animations_path, cache_path, metadata_path]:
+    for p in [images_path, videos_path, animations_path, characters_path,
+              cache_path, metadata_path]:
         os.makedirs(p, exist_ok=True)
 
     images = [f for f in os.listdir(images_path) if f.lower().endswith((".jpg", ".png"))]
     videos = [f for f in os.listdir(videos_path) if f.lower().endswith(".mp4")]
 
     return {
-        "topic":           slug,
-        "path":            topic_path,
-        "images_path":     images_path,
-        "videos_path":     videos_path,
-        "animations_path": animations_path,
-        "cache_path":      cache_path,
-        "metadata_path":   metadata_path,
-        "images_count":    len(images),
-        "videos_count":    len(videos),
+        "topic":            slug,
+        "path":             topic_path,
+        "images_path":      images_path,
+        "videos_path":      videos_path,
+        "animations_path":  animations_path,
+        "characters_path":  characters_path,
+        "cache_path":       cache_path,
+        "metadata_path":    metadata_path,
+        "images_count":     len(images),
+        "videos_count":     len(videos),
     }
 
 
