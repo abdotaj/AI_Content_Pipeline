@@ -1388,109 +1388,267 @@ def write_script(topic: dict, language: str = "english") -> dict:
     return _write_darkcrimed_script(topic)
 
 
+# ============================================================
+# ANIMATION MODE QUALITY GUARDS
+# — fact-anchor system, duplication detection, repetition memory,
+#   timeline validation. Called inside write_animation_script().
+# ============================================================
+
+def _build_fact_anchor_map(research: dict) -> str:
+    """Build a structured fact injection block for animation script prompts."""
+    facts    = research.get("research_facts") or []
+    shocking = research.get("research_shocking") or []
+    rvf      = research.get("real_vs_fiction") or {}
+    timeline = rvf.get("time_period", "")
+    locs     = rvf.get("real_locations", [])
+
+    lines = ["FACT ANCHOR MAP — every section MUST reference at least one entry:"]
+    if timeline:
+        lines.append(f"DOCUMENTED ERA:      {timeline}")
+    if locs:
+        lines.append(f"REAL LOCATIONS:      {', '.join(str(l) for l in locs[:5])}")
+    for i, f in enumerate(facts[:14], 1):
+        lines.append(f"FACT {i:02d}:            {f}")
+    for i, s in enumerate(shocking[:6], 1):
+        lines.append(f"KEY EVENT {i:02d}:       {s}")
+    return "\n".join(lines)
+
+
+def section_similarity_check(script_text: str) -> dict:
+    """
+    Detect duplicate or over-similar sections in a script.
+    Returns {section_name: overlap_pct, "has_duplicates": bool}.
+    Threshold: >30% sentence overlap with any prior section = duplicate.
+    """
+    import re as _re
+
+    parts = _re.split(r'(\[SECTION:[^\]]+\])', script_text)
+    pairs: list[tuple[str, str]] = []
+    i = 0
+    if parts and not _re.match(r'\[SECTION:', parts[0].strip()):
+        i = 1   # skip preamble
+    while i < len(parts) - 1:
+        if _re.match(r'\[SECTION:[^\]]+\]', parts[i]):
+            pairs.append((parts[i].strip(), parts[i + 1].strip() if i + 1 < len(parts) else ""))
+            i += 2
+        else:
+            i += 1
+
+    if len(pairs) < 2:
+        return {"has_duplicates": False}
+
+    def _sents(text: str) -> set:
+        return {s.strip().lower() for s in _re.split(r'[.!?؟\n]', text) if len(s.strip()) > 25}
+
+    result: dict = {}
+    prior_pool: set = set()
+    for label, body in pairs:
+        curr = _sents(body)
+        if curr:
+            overlap = len(curr & prior_pool) / len(curr)
+            if overlap > 0.30:
+                result[label] = f"{overlap:.0%} overlap with prior sections"
+        prior_pool |= curr
+
+    result["has_duplicates"] = bool({k: v for k, v in result.items() if k != "has_duplicates"})
+    return result
+
+
+def _animation_repetition_check(script_text: str) -> dict:
+    """
+    Track overused atmospheric phrases, internal-monologue templates,
+    and suspense sentence patterns in animation scripts.
+    Returns {"overused_phrases": {pattern: count}, "has_repetition": bool}.
+    Limit: any pattern appearing >= 3 times is flagged.
+    """
+    import re as _re
+
+    _WATCH_PATTERNS = [
+        # Arabic internal monologue — الإشكالية السابعة
+        r"كان يعرف", r"كان يشعر", r"كان يدرك", r"كانت تعرف", r"كانت تشعر",
+        # English internal monologue
+        r"\bhe knew\b", r"\bhe felt\b", r"\bhe realized\b",
+        r"\bshe knew\b", r"\bshe felt\b", r"\bshe realized\b",
+        # Atmosphere loops
+        r"\bthe silence\b", r"\bthe darkness\b", r"\bthe shadows\b",
+        r"\bfear grew\b", r"\bdread\b", r"\bterror\b",
+        # Generic suspense wrappers
+        r"\bnobody knew\b", r"\bno one knew\b", r"\bnothing was\b",
+        r"الصمت", r"الظلام", r"الخوف يتصاعد",
+    ]
+
+    hits = {}
+    for pat in _WATCH_PATTERNS:
+        count = len(_re.findall(pat, script_text, _re.IGNORECASE))
+        if count >= 3:
+            hits[pat] = count
+
+    return {"overused_phrases": hits, "has_repetition": bool(hits)}
+
+
+def timeline_checkpoint_validation(script_text: str, research_facts: list) -> dict:
+    """
+    Validate that the script's years/dates stay within the documented range.
+    Flags years that appear in the script but are far outside the research window.
+    Returns {"consistent": bool, "issues": list[str], "script_years": list, "fact_years": list}.
+    """
+    import re as _re
+
+    sy = [int(y) for y in _re.findall(r'\b(1[6-9]\d{2}|20\d{2})\b', script_text)]
+    fy = [int(y) for y in _re.findall(r'\b(1[6-9]\d{2}|20\d{2})\b', " ".join(str(f) for f in research_facts))]
+
+    issues: list[str] = []
+    if sy and fy:
+        fmin, fmax = min(fy), max(fy)
+        for yr in set(sy):
+            if yr < fmin - 30 or yr > fmax + 5:
+                issues.append(f"Year {yr} is far outside documented range {fmin}–{fmax}")
+
+    return {
+        "consistent": len(issues) == 0,
+        "issues": issues,
+        "script_years": sorted(set(sy)),
+        "fact_years":   sorted(set(fy)),
+    }
+
+
 def write_animation_script(topic: dict) -> dict:
     """
-    Cinematic storytelling script for animation mode.
-    Same length as documentary (1,800-2,500 words) but written as a thriller
-    narrative — short punchy sentences, sensory details, present-tense urgency.
+    Fact-anchored cinematic documentary script for animation mode.
+    Same length as documentary (1,800-2,500 words). Cinematic storytelling
+    grounded in verified facts — NOT thriller fiction.
     """
     research    = topic.get("research", {})
     real_person = research.get("real_person") or topic.get("topic", "")
     topic_text  = topic.get("topic", real_person)
-    era         = (research.get("verified_facts") or {}).get("time_period", "")
-    locs        = (research.get("verified_facts") or {}).get("real_locations", [])
-    location    = locs[0] if locs else ""
     facts       = research.get("research_facts") or []
     shocking    = research.get("research_shocking") or []
 
-    facts_text    = "\n".join(f"- {f}" for f in facts[:10]) or "(use general knowledge about this subject)"
-    shocking_text = "\n".join(f"- {s}" for s in shocking[:5]) or "(include the most unsettling true details)"
+    # Build the fact anchor map — injected into the prompt so every section
+    # stays connected to documented reality, not fictional reconstruction.
+    fact_map = _build_fact_anchor_map(research)
 
-    script_prompt = f"""You are a cinematic crime storyteller writing a full spoken-word animation script.
+    script_prompt = f"""You are writing a FACT-ANCHORED cinematic documentary script.
+This is cinematic storytelling grounded in documented reality — NOT thriller fiction.
+
 SUBJECT: {real_person}
 TOPIC: {topic_text}
-ERA: {era or 'research from facts'}
-LOCATION: {location or 'research from facts'}
 
-VERIFIED RESEARCH FACTS — use all of these:
-{facts_text}
+{fact_map}
 
-SHOCKING DETAILS — weave these as turning points:
-{shocking_text}
+━━━ CORE RULE — FACT ANCHOR SYSTEM ━━━
+Every section MUST contain ALL THREE of:
+1. At least ONE verified item from the FACT ANCHOR MAP (date, name, location, documented action)
+2. ONE timeline anchor connecting to the documented sequence of events
+3. ONE investigation/consequence progression — what happened next, who found out, what changed
 
-━━━ CINEMATIC WRITING RULES — NON-NEGOTIABLE ━━━
+CINEMATIC RECREATION vs INVENTION:
+- Write documented facts AS SCENES — but stay within what is documented
+- Reconstruct moments from known police reports, court testimony, confessions, news records
+- NEVER invent: daily routines, wandering, gas-station life, survival sequences,
+  conversations with no documented basis, emotional inner journeys not in any source
+
+INVESTIGATION MOMENTUM — mandatory per section:
+  event → reaction → investigation → discovery → escalation → consequence
+Every section must ADVANCE the story. Ask: "What NEW documented fact or progression is here?"
+If a section answers only "atmosphere" — rewrite it with a documented fact.
+
+BANNED INVENTIONS — never write any of these:
+- Invented gas-station life, city wandering, survival sequences
+- Fictional daily routines ("He woke up, made coffee...")
+- Imaginary conversations with no documented basis
+- Unsupported emotional arcs ("He began to feel the weight of...")
+- Fake locations or actions not in any documented source
+
+INTERNAL MONOLOGUE LIMIT:
+Phrases like "he knew", "he felt", "he realized", "she knew", "she felt" are
+acceptable once per section maximum. Replace with: action, reaction, investigation move,
+documented dialogue, or physical evidence.
+
 SENTENCE STYLE:
-- Mix ultra-short impact lines (5-10 words) with medium narrative sentences (15-20 words)
-- Present tense or present perfect for immediacy: "He opens the door." not "He opened the door."
-- Sensory writing: smell, sound, texture, temperature — what the body registers
-- Atmospheric tension: "The apartment was quiet. Too quiet." — contrast and silence
-- NO Wikipedia-style narration: never "born on", "according to", "it was reported that"
-- Every paragraph ends with a hook that pulls into the next
+- Mix short punches (8-12 words) with medium narrative sentences (15-20 words)
+- Ground scenes in documented facts: "On [date], investigators found..."
+- NO Wikipedia narration: never "born on", "according to", "it was reported that"
+- Every paragraph ends with a documented progression hook
 
-BANNED PHRASES (never write any of these):
+ATMOSPHERE LIMIT: Maximum ONE atmospheric sentence per 300 words.
+BAD: "The apartment was quiet. Too quiet." (pure atmosphere)
+GOOD: "The apartment was quiet. Officers found the second note under the kitchen table."
+
+BANNED PHRASES:
 "in a shocking twist", "little did they know", "nobody could have predicted",
 "what happened next", "throughout history", "this is a story about",
 "the truth was darker", "changed the world forever", "behind the scenes"
 
 PROSE RULES:
-- No bullet points. No numbered lists. No headers. Pure prose.
+- No bullet points. No numbered lists. Pure prose.
 - Minimum 4 sentences per paragraph, maximum 6.
-- Show cause and effect: decisions have weight, actions have consequences.
-- Name exact facts, dates, places — make the specific detail carry the tension.
+- Specific documented facts carry the tension — not atmospheric language.
 
-━━━ STRUCTURE — use these exact markers, in order ━━━
+━━━ STRUCTURE ━━━
 
 [SECTION: hook]
-DROP THE VIEWER MID-SCENE. One visceral moment — no setup, no introduction.
-Start at the worst moment. Smell, sound, silence. 3-4 paragraphs. ~200 words.
+BEGIN AT A DOCUMENTED CRITICAL MOMENT — arrest, discovery, confrontation, or court moment.
+NOT invented atmosphere. A real event that anchors the story immediately.
+3-4 paragraphs. ~200 words.
 
 [SECTION: background]
-WHO WAS THIS PERSON. Not a biography — a character study. The forces that shaped them.
-What they wanted. What they feared. What they hid. 4-5 paragraphs. ~280 words.
+DOCUMENTED HISTORY of this person. Real biography from known sources.
+Real family, known locations, documented associations.
+What the record shows about the forces that shaped them. 4-5 paragraphs. ~280 words.
 
 [SECTION: childhood]
-THE EARLY YEARS. Specific childhood details — the home, the neighborhood, the first warning signs.
-What nobody noticed at the time. 3-4 paragraphs. ~220 words.
+DOCUMENTED EARLY HISTORY. Specific known facts about formative years.
+First documented warning signs or incidents from real records. 3-4 paragraphs. ~220 words.
 
 [SECTION: story]
-THE CRIME OR EVENT — scene by scene, as if we are there. Specific dates, specific locations.
-Not a summary — a reconstruction. What happened in each moment. 5-6 paragraphs. ~380 words.
+THE DOCUMENTED CRIME OR EVENT — scene by scene from real records.
+Specific dates and locations from documented sources.
+Police reports, witness accounts, court records reconstructed as narrative.
+5-6 paragraphs. ~380 words.
 
 [SECTION: evidence]
-THE INVESTIGATION. What investigators found. What the evidence said. The forensic facts
-that told the story the suspect could not. 3-4 paragraphs. ~220 words.
+THE DOCUMENTED INVESTIGATION — what investigators found and recorded.
+Specific forensic evidence, documented items, official reports.
+How the documented evidence built the case. 3-4 paragraphs. ~220 words.
 
 [SECTION: confession]
-THE BREAK. The arrest, the interrogation, the moment the mask came off.
-Dialogue fragments if any exist. Emotional truth of the moment. 3-4 paragraphs. ~200 words.
+THE DOCUMENTED BREAK — arrest, interrogation, known turning point.
+What is on record about the suspect's statements.
+Real documented quotes or paraphrased known testimony. 3-4 paragraphs. ~200 words.
 
 [SECTION: trial]
-THE COURTROOM. The prosecutor's case. The defense. Key testimony moments.
-The faces of the jury. The silences that said everything. 3-4 paragraphs. ~220 words.
+DOCUMENTED COURTROOM PROCEEDINGS.
+Prosecutor's documented arguments. Key documented testimony.
+Known facts about verdict process. 3-4 paragraphs. ~220 words.
 
 [SECTION: verdict]
-THE MOMENT. Exactly what was said. Exactly what happened. The sentence.
-The reaction in the room. The finality. 2-3 paragraphs. ~160 words.
+THE DOCUMENTED OUTCOME — exactly what the record shows.
+Known sentence, documented reactions, confirmed final facts. 2-3 paragraphs. ~160 words.
 
 [SECTION: aftermath]
-WHAT REMAINS. What happened to survivors, families, investigators.
-The unanswered questions. What this case changed — if anything. 3-4 paragraphs. ~200 words.
+DOCUMENTED AFTERMATH — what happened to known parties per verified sources.
+Changes to law, policy, or investigation methods from documented record.
+Unanswered questions from documented case files. 3-4 paragraphs. ~200 words.
 
 [SECTION: conclusion]
-THE LEGACY. The final thought — not a summary, a reckoning.
-One image. One question. No neat closure. 2-3 paragraphs. ~120 words.
+THE DOCUMENTED LEGACY — real impact grounded in verifiable outcomes.
+Final thought from documented facts. 2-3 paragraphs. ~120 words.
 
 ━━━ TOTAL TARGET: 2,000-2,400 words ━━━
 Write ONLY the script with section markers. No meta-commentary. No word count labels.
-Every sentence must earn its place."""
+Every sentence must reference a documented fact or serve direct narrative progression.
+Pure atmosphere sentences with no documented basis must not appear."""
 
     script_text = _ai_script_call(
         script_prompt,
         max_tokens=4500,
-        temperature=0.82,
+        temperature=0.75,
         system_prompt=(
-            "You are a cinematic crime narrator. Write short, punchy, atmospheric prose. "
-            "No passive voice. No throat-clearing. Every sentence must hit."
+            "You are a documentary narrator writing fact-anchored cinematic storytelling. "
+            "Every sentence must be grounded in documented reality. "
+            "Do NOT invent fictional scenes, wandering sequences, or unsupported emotional arcs. "
+            "Cinematic means: real facts presented with scene-level specificity and narrative momentum."
         ),
     ).strip()
 
@@ -1500,6 +1658,20 @@ Every sentence must earn its place."""
         return _write_darkcrimed_script(topic)
 
     script_text = check_hallucination(script_text)
+
+    # ── Quality gate: duplication, repetition, timeline ──────────────────────
+    _dup = section_similarity_check(script_text)
+    if _dup.get("has_duplicates"):
+        print(f"[Script][ANIM] Duplicate sections detected: "
+              f"{[k for k in _dup if k != 'has_duplicates']}")
+
+    _rep = _animation_repetition_check(script_text)
+    if _rep.get("has_repetition"):
+        print(f"[Script][ANIM] Overused phrases: {list(_rep['overused_phrases'].keys())}")
+
+    _tl = timeline_checkpoint_validation(script_text, facts + shocking)
+    if not _tl.get("consistent"):
+        print(f"[Script][ANIM] Timeline issues: {_tl['issues']}")
 
     # Metadata generation
     meta_prompt = f"""Generate YouTube metadata for this animation crime documentary.
@@ -3997,21 +4169,28 @@ def _expand_arabic_script_to_min(ar_script: str, target_min: int = 3500) -> str:
         max_tok = _tok_budgets[_attempt - 1]
         if _attempt == 1:
             instruction = (
-                f"واصل وطوّل النص العربي التالي بإضافة {needed + 100} كلمة على الأقل. "
-                f"أضف تفاصيل سردية جديدة، أوصاف مشاهد، ووقفات تأملية سينمائية. "
-                f"لا تلخص أو تكرر ما تم ذكره. استمر بشكل طبيعي من الجملة الأخيرة. "
-                f"الأسلوب: راوٍ وثائقي بإيقاع هادئ ومحكوم."
+                f"أضف {needed + 100} كلمة على الأقل لهذا النص الوثائقي. "
+                f"الزيادة يجب أن تكون بحقائق موثقة فقط: "
+                f"تفاصيل تحقيق، شهادات محققين أو شهود، أدلة جنائية، "
+                f"تطورات قضائية، أسماء حقيقية وتواريخ محددة. "
+                f"لا تخترع أحداثاً أو مشاهد أو محادثات غير موثقة. "
+                f"لا تضف حياة يومية خيالية أو تجوالاً مخترعاً أو تأملات سينمائية. "
+                f"وسّع الحقائق الموجودة بعمق تحقيقي أكبر — لا تُضِف خيالاً. "
+                f"استمر بشكل طبيعي من الجملة الأخيرة. "
+                f"الأسلوب: تحقيق وثائقي — ليس رواية خيالية."
             )
         elif _attempt == 2:
             instruction = (
-                f"أضف {needed + 80} كلمة جديدة على الأقل بأسلوب سردي سينمائي. "
-                f"أضف أحداثاً تفصيلية وأسماء وشروحات وانعكاسات إنسانية. "
-                f"لا تكرر ما قيل. استمر مباشرة بعد النص الموجود."
+                f"أضف {needed + 80} كلمة جديدة على الأقل. "
+                f"وسّع تفاصيل التحقيق الموثق: اسم المحقق، طبيعة الأدلة، "
+                f"تطور المحاكمة، شهادات موثقة، قرارات قضائية. "
+                f"لا تكرر ما قيل. استمر مباشرة بعد النص الموجود. "
+                f"لا تخترع حوادث أو لقاءات أو مشاعر لم تُذكر في مصادر موثقة."
             )
         else:
             instruction = (
                 f"أكمل النص بإضافة {needed + 50} كلمة جديدة. "
-                f"عمّق السرد وأضف تفاصيل إضافية عن الأحداث والشخصيات. "
+                f"استخدم فقط ما هو موثق: أسماء، تواريخ، أدلة، شهادات، قرارات قضائية. "
                 f"لا تعيد ما قيل. استمر بعد آخر جملة مباشرة."
             )
         max_tok = _tok_budgets[_attempt - 1]
@@ -4059,14 +4238,15 @@ def expand_arabic_narration_style(section_text: str, topic: str = "") -> str:
     topic_line = f"الموضوع: {topic}\n" if topic else ""
     prompt = (
         f"{topic_line}"
-        "أنت راوٍ وثائقي. أعد كتابة النص العربي التالي بأسلوب سينمائي أكثر توسعاً وإثارة.\n\n"
+        "أنت راوٍ وثائقي. أعد كتابة النص العربي التالي بأسلوب وثائقي تحقيقي أكثر عمقاً.\n\n"
         "القواعد الصارمة:\n"
         "- لا تحذف أي معلومة أو اسم أو تاريخ من النص الأصلي\n"
-        "- أضف جملاً تصف المشهد والجو والتوتر الدرامي\n"
-        "- استخدم الحذف (...) بعد اللحظات المشحونة\n"
-        "- وسّع الجمل القصيرة إلى جمل أكثر سردية\n"
-        "- اكتب بأسلوب التعليق الوثائقي المنطوق لا المكتوب\n"
-        "- لا تضف معلومات خاطئة\n"
+        "- وسّع تفاصيل التحقيق الموثق: إجراءات المحققين، طبيعة الأدلة، شهادات موثقة\n"
+        "- لا تخترع أحداثاً أو مشاهد أو محادثات لم تُذكر في المصدر\n"
+        "- لا تضف حياة يومية خيالية أو تجوالاً مخترعاً أو أوصاف جو فارغة\n"
+        "- وسّع الحقائق الموجودة بعمق أكبر — لا تُضِف خيالاً\n"
+        "- اكتب بأسلوب التحقيق الوثائقي المنطوق: حقائق + عواقب + تطورات\n"
+        "- لا تضف معلومات خاطئة أو غير موثقة\n"
         f"- الهدف: حوالي {target} كلمة\n\n"
         "النص الأصلي:\n"
         f"{section_text}\n\n"
