@@ -62,7 +62,7 @@ from agent.research_agent    import (
     entity_confidence_score, build_canonical_research_payload,
     repair_research_payload,
 )
-from agent.script_agent      import write_script, translate_script, generate_chapters, write_short_script, clean_word_count, expand_script_runtime
+from agent.script_agent      import write_script, write_animation_script, translate_script, generate_chapters, write_short_script, clean_word_count, expand_script_runtime
 from agent.animation_agent   import create_animation_video, init_topic_lock
 from agent.video_agent       import ensure_music_assets, cut_best_short, set_active_topic_content
 from utils.content_manager   import ensure_topic_content, save_topic_metadata
@@ -614,9 +614,9 @@ def run_pipeline() -> None:
     # ── STEP 2: Scripts (EN + AR) ─────────────────────────────────────────────
     print(f"\n{'='*50}\n  SCRIPTS\n{'='*50}\n", flush=True)
     _ctrl.update_stage("Scripts", "writing English script")
-    _log("Scripts", "Writing English script")
+    _log("Scripts", "Writing English script (cinematic animation style)")
     try:
-        en_long = write_script(topic, language="english")
+        en_long = write_animation_script(topic)
     except Exception as e:
         traceback.print_exc()
         send_message(f"[ANIM] Script failed: {type(e).__name__}: {e}")
@@ -750,7 +750,7 @@ def run_pipeline() -> None:
             _log("Scripts", "Rewrite requested — regenerating all scripts", "WARN")
             send_message("[ANIM] Rewriting scripts...")
             try:
-                en_long  = write_script(topic, language="english")
+                en_long  = write_animation_script(topic)
                 _en_wc   = clean_word_count(en_long.get("script", ""))
                 _est_min = round(_en_wc / WORDS_PER_MINUTE, 1)
                 _ctrl.set_latest_script(en_long)

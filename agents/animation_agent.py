@@ -545,6 +545,122 @@ def build_character_identity(
     return identity
 
 
+# ── Scene type → character role mapping ──────────────────────────────────────
+# Determines which cast member's image/descriptor is used per scene.
+_SCENE_TYPE_TO_CHAR_ROLE: dict[str, str] = {
+    "talking_portrait":   "main",
+    "era_reenactment":    "main",
+    "investigation_scene":"detective",
+    "evidence_scene":     "detective",
+    "comparison_scene":   "main",
+    "memorial_scene":     "victim",
+    "interrogation_room": "main",
+    "courtroom_drama":    "detective",
+    "prison_cell":        "main",
+    "childhood_archive":  "main",
+    "flashback":          "main",
+    "cctv_footage":       "detective",
+    "newspaper_reveal":   "detective",
+}
+
+
+def build_cast(
+    research: dict,
+    topic: str,
+    output_dir: str = _CHARS_DIR,
+) -> dict[str, dict]:
+    """
+    Extract up to 5 characters from research: main, detective, victim, witness.
+    Returns a dict keyed by role. Each value has the same shape as build_character_identity().
+    Falls back to generic descriptors when specific names can't be extracted.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    era  = (research.get("verified_facts") or {}).get("time_period", "") or ""
+    locs = (research.get("verified_facts") or {}).get("real_locations", [])
+    loc  = locs[0] if locs else ""
+    facts_raw = (
+        (research.get("research_facts") or [])
+        + (research.get("real_facts") or [])
+        + [str((research.get("verified_facts") or {}).get("story", ""))]
+    )
+    facts_text = " ".join(facts_raw).lower()
+
+    # Role extraction patterns
+    _DETECTIVE_KW = ["detective", "agent", "inspector", "officer", "investigator",
+                     "fbi", "cia", "dea", "sheriff", "marshal", "prosecutor", "detective sergeant"]
+    _VICTIM_KW    = ["victim", "murdered", "killed", "found dead", "disappeared",
+                     "abducted", "missing", "slain", "body of"]
+
+    def _extract_named_person(keywords: list[str]) -> str:
+        """Find first capitalized proper name appearing near a keyword in the facts."""
+        for kw in keywords:
+            for fact in facts_raw:
+                if kw.lower() in fact.lower():
+                    named = re.findall(r'\b([A-Z][a-z]{2,}(?:\s+[A-Z][a-z]{2,})+)\b', fact)
+                    for n in named:
+                        n_lower = n.lower()
+                        main_lower = (research.get("real_person") or topic).lower()
+                        if n_lower != main_lower and _validate_entity(n, topic, research):
+                            return n
+        return ""
+
+    # Main subject (suspect / criminal)
+    main_identity = build_character_identity(research, topic, output_dir)
+
+    # Detective / investigator
+    detective_name = _extract_named_person(_DETECTIVE_KW)
+    if detective_name:
+        detective_img = _fetch_character_photo(detective_name, output_dir)
+        detective_desc = f"{detective_name}, law enforcement investigator, {era}"
+        print(f"[CHARACTER] Detective identified: {detective_name}")
+    else:
+        detective_name = "lead investigator"
+        detective_img  = None
+        detective_desc = f"law enforcement investigator, {era or 'modern'}, official uniform"
+
+    # Victim
+    victim_name = _extract_named_person(_VICTIM_KW)
+    if victim_name:
+        victim_img  = _fetch_character_photo(victim_name, output_dir)
+        victim_desc = f"{victim_name}, victim, {era}"
+        print(f"[CHARACTER] Victim identified: {victim_name}")
+    else:
+        victim_name = "victim"
+        victim_img  = None
+        victim_desc = f"victim memorial portrait, {era or 'documentary'}, somber atmosphere"
+
+    # Witness — generic, rarely has a findable photo
+    witness_name = "witness"
+    witness_img  = None
+    witness_desc = f"anonymous witness, {era or 'modern'}, documentary interview framing"
+
+    style_preset    = main_identity["style_preset"]
+    style_keywords  = main_identity["style_keywords"]
+
+    def _make_cast_member(name: str, img: str | None, desc: str, role: str) -> dict:
+        return {
+            "name":           name,
+            "role":           role,
+            "ref_image_path": img,
+            "descriptor":     desc,
+            "era":            era or "historical documentary",
+            "location":       loc or "unknown location",
+            "style_preset":   style_preset,
+            "style_keywords": style_keywords,
+        }
+
+    cast = {
+        "main":      main_identity,
+        "detective": _make_cast_member(detective_name, detective_img, detective_desc, "detective"),
+        "victim":    _make_cast_member(victim_name, victim_img, victim_desc, "victim"),
+        "witness":   _make_cast_member(witness_name, witness_img, witness_desc, "witness"),
+    }
+    print(f"[CHARACTER] Cast assembled: {list(cast.keys())} — "
+          f"photos: main={bool(main_identity.get('ref_image_path'))}, "
+          f"detective={bool(detective_img)}, victim={bool(victim_img)}")
+    return cast
+
+
 def _fetch_character_photo(name: str, output_dir: str) -> str | None:
     """Try Wikipedia, then DDG, return saved local path or None."""
     # 1. Wikipedia REST summary
@@ -762,18 +878,21 @@ def _extract_scene_context(chunk: str, section_label: str, topic: str, research:
             mood = m
             break
 
+    character_role = _SCENE_TYPE_TO_CHAR_ROLE.get(scene_type, "main")
+
     scene = {
-        "section":    section_label,
-        "scene_type": scene_type,
-        "text":       chunk,
-        "who":        who,
-        "where":      where,
-        "era":        era,
-        "mood":       mood,
-        "event":      event,
-        "domain":     domain,
+        "section":        section_label,
+        "scene_type":     scene_type,
+        "text":           chunk,
+        "who":            who,
+        "where":          where,
+        "era":            era,
+        "mood":           mood,
+        "event":          event,
+        "domain":         domain,
+        "character_role": character_role,
     }
-    print(f"[SCENE] Semantic validation passed: domain={domain} era={era or 'n/a'} event={event or 'n/a'}")
+    print(f"[SCENE] Semantic validation passed: domain={domain} era={era or 'n/a'} event={event or 'n/a'} role={character_role}")
     return scene
 
 
@@ -901,19 +1020,19 @@ def generate_scene_clip(
     if src_img:
         # Scene-type → motion mode mapping for atmospheric variety
         _SCENE_MOTIONS: dict[str, str] = {
-            "talking_portrait":  "breathe",
-            "interrogation_room":"flicker",
-            "courtroom_drama":   "pan_right",
-            "evidence_scene":    "zoom_in",
-            "cctv_footage":      "flicker",
-            "newspaper_reveal":  "zoom_in",
-            "prison_cell":       "pan_up",
-            "childhood_archive": "parallax",
-            "flashback":         "rain",
-            "era_reenactment":   "pan_right",
+            "talking_portrait":   "breathe",
+            "interrogation_room": "flicker",
+            "courtroom_drama":    "pan_right",
+            "evidence_scene":     "zoom_in",
+            "cctv_footage":       "flicker",
+            "newspaper_reveal":   "zoom_in",
+            "prison_cell":        "pan_up",
+            "childhood_archive":  "parallax",
+            "flashback":          "fog",
+            "era_reenactment":    "fog",
             "investigation_scene":"zoom_out",
-            "comparison_scene":  "pan_left",
-            "memorial_scene":    "zoom_out",
+            "comparison_scene":   "pan_left",
+            "memorial_scene":     "smoke",
         }
         motion = _SCENE_MOTIONS.get(scene.get("scene_type", ""), "zoom_in")
         result = _enhanced_still_clip(src_img, output_path, duration=duration, motion=motion)
@@ -1251,6 +1370,16 @@ def _enhanced_still_clip(
                 # Rain: slight left drift over time
                 ox    = int((w * 0.06) * progress) if motion == "rain" else (int(w * scale) - w) // 2
                 oy    = (int(h * scale) - h) // 2
+            elif motion == "fog":
+                # Slow push-in + brightening haze building over time
+                scale = 1.0 + 0.08 * progress
+                ox    = (int(w * scale) - w) // 2
+                oy    = (int(h * scale) - h) // 2
+            elif motion == "smoke":
+                # Slow pull-back + dark atmospheric pulse
+                scale = 1.12 - 0.06 * progress
+                ox    = (int(w * scale) - w) // 2
+                oy    = (int(h * scale) - h) // 2
             else:
                 scale = 1.0 + 0.10 * progress
                 ox    = (int(w * scale) - w) // 2
@@ -1273,9 +1402,21 @@ def _enhanced_still_clip(
                 cropped = cropped * brightness
 
             elif motion == "rain":
-                # Progressive darkening bottom-to-top rain feel
                 darkness = 1.0 - 0.25 * progress
                 cropped = cropped * darkness
+
+            elif motion == "fog":
+                # White/grey haze that builds from 0% → 18% opacity
+                fog_opacity = 0.18 * progress
+                fog_layer   = np.full_like(cropped, 210.0)  # pale grey
+                cropped     = cropped * (1.0 - fog_opacity) + fog_layer * fog_opacity
+                # Also slightly brighten (fog diffuses light)
+                cropped     = cropped * (1.0 + 0.08 * progress)
+
+            elif motion == "smoke":
+                # Dark atmospheric pulse — two slow cycles of darkening
+                smoke_factor = 0.85 + 0.15 * abs(math.sin(math.pi * progress * 2))
+                cropped = cropped * smoke_factor
 
             # Dark vignette overlay for cinematic feel
             vignette = _make_vignette(h, w, strength=0.45)
@@ -1566,8 +1707,25 @@ def assemble_animation_video(
 
     print(f"[Anim] {len(ordered)} clips cover {accumulated:.1f}s / {total_secs:.1f}s audio")
 
+    # Apply cinematic crossfade between clips (0.4s overlap)
+    _XFADE = 0.4
     try:
-        final = concatenate_videoclips(ordered, method="chain").set_audio(audio)
+        _xfade_clips = []
+        for _xi, _xc in enumerate(ordered):
+            if _xi > 0 and _xc.duration > _XFADE + 0.2:
+                _xc = _xc.crossfadein(_XFADE)
+            _xfade_clips.append(_xc)
+        _concat_method = "compose"
+        _concat_padding = -_XFADE
+    except Exception:
+        _xfade_clips = ordered
+        _concat_method = "chain"
+        _concat_padding = 0
+
+    try:
+        final = concatenate_videoclips(
+            _xfade_clips, method=_concat_method, padding=_concat_padding
+        ).set_audio(audio)
         os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
         final.write_videofile(
             output_path,
@@ -1641,7 +1799,7 @@ def create_animation_video(
     global _ENVIRONMENT_LOCK
     _ENVIRONMENT_LOCK = {}
 
-    # ── Step 1: Character identity ────────────────────────────────────────────
+    # ── Step 1: Character cast ────────────────────────────────────────────────
     if language == "arabic":
         try:
             from agents.script_quality import enforce_arabic_purity
@@ -1649,7 +1807,8 @@ def create_animation_video(
         except Exception as e:
             print(f"[AR PURITY] Final sanitize failed: {e}")
 
-    identity = build_character_identity(research, topic, chars_dir)
+    cast = build_cast(research, topic, chars_dir)
+    identity = cast["main"]  # backward compat — main subject
     print(f"[CHARACTER] Real identity locked: {identity['name']} | style={identity['style_preset']}")
     print(f"[VISUAL] Consistent cinematic style active: {identity['style_preset']}")
 
@@ -1681,46 +1840,50 @@ def create_animation_video(
         print("[Anim] No scenes parsed — aborting")
         return ""
 
-    # ── Step 4: Talking portraits for ~30% of portrait-type scenes ───────────
-    # D-ID applied to hook + up to 2 additional portrait/investigation scenes
+    # ── Step 4: Talking portraits — per-character, for ~30% of portrait scenes ──
+    # D-ID applied to hook + up to 2 more portrait scenes, using scene-assigned char
     _PORTRAIT_TYPES = {"talking_portrait", "investigation_scene", "memorial_scene"}
     _portrait_indices = [
         i for i, s in enumerate(scenes)
         if s.get("scene_type") in _PORTRAIT_TYPES
     ]
-    # Always include scene 0 (hook); add up to 2 more evenly spaced
     _max_portraits = max(1, min(3, len(_portrait_indices)))
     if len(_portrait_indices) > _max_portraits:
-        # Keep first + evenly spaced through the remaining portrait indices
         _step = max(1, len(_portrait_indices) // _max_portraits)
         _portrait_indices = _portrait_indices[::_step][:_max_portraits]
-    _portrait_index_set = set(_portrait_indices)
 
     portrait_clips: dict[int, str] = {}
-    _has_ref_img = bool(identity.get("ref_image_path") and os.path.exists(identity.get("ref_image_path") or ""))
+    _did_key = os.getenv("DID_API_KEY", "").strip()
 
-    if _has_ref_img and os.getenv("DID_API_KEY", "").strip():
+    if _did_key:
         for pi in _portrait_indices:
+            scene_i = scenes[pi]
+            # Pick the character assigned to this scene
+            char_role = scene_i.get("character_role", "main")
+            char = cast.get(char_role) or identity
+            char_img = char.get("ref_image_path")
+            if not char_img or not os.path.exists(char_img):
+                # Fallback to main if scene's assigned character has no photo
+                char_img = identity.get("ref_image_path")
+            if not char_img or not os.path.exists(char_img):
+                continue
+
             _port_out = os.path.join(clips_dir, f"{stable_id}_portrait_{pi:02d}.mp4")
             if os.path.exists(_port_out) and os.path.getsize(_port_out) > 10_000:
                 portrait_clips[pi] = _port_out
                 print(f"[SCENE] Reusing existing portrait clip [{pi}]: {os.path.basename(_port_out)}")
                 continue
-            _port_result = generate_talking_portrait(
-                identity["ref_image_path"],
-                audio_path,
-                _port_out,
-            )
+            _port_result = generate_talking_portrait(char_img, audio_path, _port_out)
             if _port_result:
                 portrait_clips[pi] = _port_result
-                print(f"[CHARACTER] Talking portrait generated: scene {pi} → {scenes[pi]['scene_type']}")
+                print(f"[CHARACTER] Talking portrait generated: scene {pi} → "
+                      f"{scene_i['scene_type']} (role={char_role}, char={char['name']})")
                 print(f"[ANIMATION] Lip-sync applied: scene {pi}")
 
     # ── Step 5: Generate motion clips per scene (resume-aware) ───────────────
     clip_paths: list[str] = []
 
     for i, scene in enumerate(scenes):
-        # Use pre-generated talking portrait if available for this scene index
         if i in portrait_clips:
             clip_paths.append(portrait_clips[i])
             print(f"[SCENE] Narration-linked visual active (talking portrait): {scene['scene_type']}")
@@ -1728,22 +1891,26 @@ def create_animation_video(
 
         clip_out = os.path.join(clips_dir, f"{stable_id}_scene_{i:02d}.mp4")
 
-        # Resume: reuse existing valid clip from a prior run
         if os.path.exists(clip_out) and os.path.getsize(clip_out) > 10_000:
             print(f"[SCENE] Reusing existing clip: {os.path.basename(clip_out)}")
             clip_paths.append(clip_out)
             continue
 
-        clip = generate_scene_clip(scene, identity, clip_out, duration=10)
+        # Use scene-assigned character — falls back to main if role has no photo
+        char_role  = scene.get("character_role", "main")
+        scene_char = cast.get(char_role) or identity
+        if not scene_char.get("ref_image_path") or not os.path.exists(scene_char.get("ref_image_path") or ""):
+            scene_char = identity  # main always has the best chance of a real photo
+
+        clip = generate_scene_clip(scene, scene_char, clip_out, duration=10)
         if clip:
             clip_paths.append(clip)
         else:
-            # Always ensure at least a fallback clip
             fallback_bg = os.path.join(clips_dir, f"{stable_id}_scene_{i:02d}_bg.jpg")
-            fb_img = _generate_fallback_image(scene, identity, fallback_bg)
+            fb_img = _generate_fallback_image(scene, scene_char, fallback_bg)
             if fb_img:
                 _FALLBACK_MOTIONS = ["zoom_in", "zoom_out", "pan_right", "pan_left",
-                                     "breathe", "flicker", "rain", "parallax"]
+                                     "breathe", "flicker", "rain", "parallax", "fog", "smoke"]
                 fb_clip = _enhanced_still_clip(
                     fb_img, clip_out,
                     duration=10,

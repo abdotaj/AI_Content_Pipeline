@@ -1388,6 +1388,161 @@ def write_script(topic: dict, language: str = "english") -> dict:
     return _write_darkcrimed_script(topic)
 
 
+def write_animation_script(topic: dict) -> dict:
+    """
+    Cinematic storytelling script for animation mode.
+    Same length as documentary (1,800-2,500 words) but written as a thriller
+    narrative — short punchy sentences, sensory details, present-tense urgency.
+    """
+    research    = topic.get("research", {})
+    real_person = research.get("real_person") or topic.get("topic", "")
+    topic_text  = topic.get("topic", real_person)
+    era         = (research.get("verified_facts") or {}).get("time_period", "")
+    locs        = (research.get("verified_facts") or {}).get("real_locations", [])
+    location    = locs[0] if locs else ""
+    facts       = research.get("research_facts") or []
+    shocking    = research.get("research_shocking") or []
+
+    facts_text    = "\n".join(f"- {f}" for f in facts[:10]) or "(use general knowledge about this subject)"
+    shocking_text = "\n".join(f"- {s}" for s in shocking[:5]) or "(include the most unsettling true details)"
+
+    script_prompt = f"""You are a cinematic crime storyteller writing a full spoken-word animation script.
+SUBJECT: {real_person}
+TOPIC: {topic_text}
+ERA: {era or 'research from facts'}
+LOCATION: {location or 'research from facts'}
+
+VERIFIED RESEARCH FACTS — use all of these:
+{facts_text}
+
+SHOCKING DETAILS — weave these as turning points:
+{shocking_text}
+
+━━━ CINEMATIC WRITING RULES — NON-NEGOTIABLE ━━━
+SENTENCE STYLE:
+- Mix ultra-short impact lines (5-10 words) with medium narrative sentences (15-20 words)
+- Present tense or present perfect for immediacy: "He opens the door." not "He opened the door."
+- Sensory writing: smell, sound, texture, temperature — what the body registers
+- Atmospheric tension: "The apartment was quiet. Too quiet." — contrast and silence
+- NO Wikipedia-style narration: never "born on", "according to", "it was reported that"
+- Every paragraph ends with a hook that pulls into the next
+
+BANNED PHRASES (never write any of these):
+"in a shocking twist", "little did they know", "nobody could have predicted",
+"what happened next", "throughout history", "this is a story about",
+"the truth was darker", "changed the world forever", "behind the scenes"
+
+PROSE RULES:
+- No bullet points. No numbered lists. No headers. Pure prose.
+- Minimum 4 sentences per paragraph, maximum 6.
+- Show cause and effect: decisions have weight, actions have consequences.
+- Name exact facts, dates, places — make the specific detail carry the tension.
+
+━━━ STRUCTURE — use these exact markers, in order ━━━
+
+[SECTION: hook]
+DROP THE VIEWER MID-SCENE. One visceral moment — no setup, no introduction.
+Start at the worst moment. Smell, sound, silence. 3-4 paragraphs. ~200 words.
+
+[SECTION: background]
+WHO WAS THIS PERSON. Not a biography — a character study. The forces that shaped them.
+What they wanted. What they feared. What they hid. 4-5 paragraphs. ~280 words.
+
+[SECTION: childhood]
+THE EARLY YEARS. Specific childhood details — the home, the neighborhood, the first warning signs.
+What nobody noticed at the time. 3-4 paragraphs. ~220 words.
+
+[SECTION: story]
+THE CRIME OR EVENT — scene by scene, as if we are there. Specific dates, specific locations.
+Not a summary — a reconstruction. What happened in each moment. 5-6 paragraphs. ~380 words.
+
+[SECTION: evidence]
+THE INVESTIGATION. What investigators found. What the evidence said. The forensic facts
+that told the story the suspect could not. 3-4 paragraphs. ~220 words.
+
+[SECTION: confession]
+THE BREAK. The arrest, the interrogation, the moment the mask came off.
+Dialogue fragments if any exist. Emotional truth of the moment. 3-4 paragraphs. ~200 words.
+
+[SECTION: trial]
+THE COURTROOM. The prosecutor's case. The defense. Key testimony moments.
+The faces of the jury. The silences that said everything. 3-4 paragraphs. ~220 words.
+
+[SECTION: verdict]
+THE MOMENT. Exactly what was said. Exactly what happened. The sentence.
+The reaction in the room. The finality. 2-3 paragraphs. ~160 words.
+
+[SECTION: aftermath]
+WHAT REMAINS. What happened to survivors, families, investigators.
+The unanswered questions. What this case changed — if anything. 3-4 paragraphs. ~200 words.
+
+[SECTION: conclusion]
+THE LEGACY. The final thought — not a summary, a reckoning.
+One image. One question. No neat closure. 2-3 paragraphs. ~120 words.
+
+━━━ TOTAL TARGET: 2,000-2,400 words ━━━
+Write ONLY the script with section markers. No meta-commentary. No word count labels.
+Every sentence must earn its place."""
+
+    script_text = _ai_script_call(
+        script_prompt,
+        max_tokens=4500,
+        temperature=0.82,
+        system_prompt=(
+            "You are a cinematic crime narrator. Write short, punchy, atmospheric prose. "
+            "No passive voice. No throat-clearing. Every sentence must hit."
+        ),
+    ).strip()
+
+    # Ensure section markers present — fall back to documentary script if generation failed badly
+    if "[SECTION:" not in script_text or clean_word_count(script_text) < 800:
+        print("[Script] Animation script fallback — output too short or missing markers, using documentary style")
+        return _write_darkcrimed_script(topic)
+
+    script_text = check_hallucination(script_text)
+
+    # Metadata generation
+    meta_prompt = f"""Generate YouTube metadata for this animation crime documentary.
+
+SUBJECT: {real_person}
+Script opening (first 300 chars): {script_text[:300]}
+
+Return ONLY valid JSON — no other text:
+{{
+  "title": "YouTube title — 55-70 chars, factual and compelling, no clickbait superlatives",
+  "hook": "Opening 1-2 sentences from the script (direct quote)",
+  "caption": "2-3 sentence YouTube description",
+  "hashtags": "#truecrime #documentary #crime #darkcrimedeocded #realcrime #animation",
+  "thumbnail_text": "3-4 word thumbnail label"
+}}"""
+
+    meta = normalize_ai_json_response(
+        _ai_script_call(meta_prompt, max_tokens=500, temperature=0.3, json_mode=True),
+        required_keys=["title", "hook", "caption", "hashtags", "thumbnail_text"],
+        list_keys=[],
+    )
+
+    _wc = clean_word_count(script_text)
+    return {
+        "title":           meta.get("title") or f"{real_person}: The Real Story | Dark Crime Decoded",
+        "hook":            meta.get("hook") or script_text[:120],
+        "script":          script_text,
+        "on_screen_texts": [],
+        "caption":         meta.get("caption", f"The real story of {real_person}. Follow Dark Crime Decoded."),
+        "hashtags":        meta.get("hashtags", "#truecrime #documentary #darkcrimedeocded"),
+        "thumbnail_text":  meta.get("thumbnail_text") or real_person[:30],
+        "chapters":        generate_chapters(_wc),
+        "topic":           topic_text,
+        "niche":           topic.get("niche", topic_text),
+        "search_query":    topic.get("search_query", ""),
+        "keywords":        topic.get("keywords", [topic_text]),
+        "language":        "english",
+        "series_name":     research.get("series_name", ""),
+        "series_type":     research.get("series_type", "Documentary"),
+        "anim_mode":       True,
+    }
+
+
 def _write_shopmart_script(topic: dict) -> dict:
     """Product review / top-list style script for Shopmart Global."""
     word_count = 130  # ~55-second short video
