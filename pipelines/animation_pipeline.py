@@ -172,9 +172,25 @@ def get_duration(video_path: str) -> str:
 
 
 def _video_secs(path: str) -> float:
-    """Return actual video duration in seconds (0 on error)."""
+    """Return actual video duration in seconds (0 on error). ffprobe-first to avoid file locks."""
+    import subprocess
     try:
-        from moviepy import VideoFileClip
+        result = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", path],
+            capture_output=True, text=True, timeout=15,
+        )
+        if result.returncode == 0:
+            val = result.stdout.strip()
+            if val and val != "N/A":
+                return float(val)
+    except Exception:
+        pass
+    try:
+        try:
+            from moviepy.editor import VideoFileClip
+        except ImportError:
+            from moviepy import VideoFileClip
         c = VideoFileClip(path)
         d = c.duration
         c.close()
@@ -788,7 +804,7 @@ def run_pipeline() -> None:
     ar_long_path = _make_animation_video(ar_long, topic.get("research", {}), FINAL_DIR, stats, "AR long")
 
     # ── Arabic runtime auto-rebuild ───────────────────────────────────────────
-    _AR_MIN_SECS  = 660
+    _AR_MIN_SECS  = 900
     _ar_rebuild   = 0
     _ar_max_rb    = 3
     while ar_long_path and os.path.exists(ar_long_path):

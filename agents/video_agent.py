@@ -507,7 +507,7 @@ def generate_voiceover_openai(text: str, language: str, output_path: str,
     if language == "arabic":
         model = "tts-1"
         voice = voice_override or "nova"
-        speed = speed_override if speed_override is not None else 0.9
+        speed = speed_override if speed_override is not None else 1.1
         label = "Arabic"
     else:
         model = "tts-1"
