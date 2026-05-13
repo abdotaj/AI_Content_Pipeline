@@ -1571,6 +1571,52 @@ def timeline_checkpoint_validation(script_text: str, research_facts: list) -> di
     }
 
 
+def scene_progression_validator(script_text: str) -> dict:
+    """
+    Detect story stalls — 250-word chunks where narrative state doesn't evolve.
+    Returns {"stalled_zones": list[str], "has_stalls": bool, "progression_score": float}.
+    Called after script assembly to flag momentum collapse before video generation.
+    """
+    import re as _re
+
+    _PROGRESS = [
+        r'\b(found|discovered|revealed|uncovered|confirmed|identified|arrested|charged|convicted)\b',
+        r'\b(investigators?|detectives?|police|FBI|court|trial|testimony|confession|evidence)\b',
+        r'\b(witness|document|report|record|forensic|interrogat|indicted)\b',
+        r'\b(19\d{2}|20\d{2})\b',
+        r'\b(then|next|meanwhile|later|finally|suddenly|unexpectedly|instead|however)\b',
+        r'\b(but|yet|despite|although|turned out|revealed that|showed that)\b',
+    ]
+
+    _STALL = [
+        r'\b(was known for|had a reputation|was described as|people said he|people said she)\b',
+        r'\b(according to|it was reported that|sources say|experts believe)\b',
+        r'\b(had always|had never|had been known|was always|was never)\b',
+        r'\b(throughout his|throughout her|all his life|all her life)\b',
+        r'\b(it is worth noting|it should be noted|as we mentioned|as noted earlier)\b',
+    ]
+
+    words = script_text.split()
+    chunk_size = 250
+    chunks = [" ".join(words[i:i + chunk_size]) for i in range(0, len(words), chunk_size)]
+
+    if len(chunks) < 2:
+        return {"stalled_zones": [], "has_stalls": False, "progression_score": 1.0}
+
+    stalled: list[str] = []
+    for idx, chunk in enumerate(chunks):
+        prog  = sum(1 for p in _PROGRESS if _re.search(p, chunk, _re.IGNORECASE))
+        stall = sum(1 for p in _STALL    if _re.search(p, chunk, _re.IGNORECASE))
+        if prog < 2 or stall >= 3:
+            stalled.append(
+                f"Zone {idx + 1} (~words {idx * chunk_size}–{(idx + 1) * chunk_size}): "
+                f"progress_signals={prog}, stall_signals={stall}"
+            )
+
+    score = round(max(0.0, 1.0 - len(stalled) / max(len(chunks), 1)), 2)
+    return {"stalled_zones": stalled, "has_stalls": bool(stalled), "progression_score": score}
+
+
 def write_animation_script(topic: dict) -> dict:
     """
     Fact-anchored cinematic animation script — 4,000+ EN words (15–60 min).
@@ -2359,22 +2405,24 @@ def write_long_script_split(topic: dict, research: dict, series_info: tuple | No
     _angle_hook    = _angle.get("angle_hook", "")
     _angle_content = _angle.get("angle_content", "")
 
-    # (label, min_words, max_words, is_final)
-    # Minimum totals: 700+750+950+700+400 = 3,500 words → ~24 min at 145 WPM (EN FAST floor)
+    # ── 5-ACT NARRATIVE FLOW ENGINE — story progression phases, not documentary chapters ──
+    # Each act = a distinct STORY STATE SHIFT. Viewer must feel: story is MOVING, not explained.
+    # Act state chain: UNEASE → INVESTIGATION → ESCALATION → COLLAPSE → AFTERMATH
+    # Minimum totals: 700+750+950+700+400 = 3,500 words → ~24 min at 145 WPM
     _SECTIONS_META = [
-        ("Opening Atmosphere",      700, 900,  False),
-        ("Untold Angle",            750, 950,  False),
-        ("Background & Real Story", 950, 1200, False),
-        ("Show vs Reality",         700, 900,  False),
-        ("Final Insight",           400, 500,  True),
+        ("Act 1 — Unease & First Clue",    700, 900,  False),
+        ("Act 2 — Investigation Begins",   750, 950,  False),
+        ("Act 3 — Escalation",             950, 1200, False),
+        ("Act 4 — Collapse & Exposure",    700, 900,  False),
+        ("Act 5 — Aftermath & Legacy",     400, 500,  True),
     ]
 
     _SECTION_LABELS = [
-        "[SECTION: Introduction]",
-        "[SECTION: Untold Angle]",
-        "[SECTION: The Real Story]",
-        "[SECTION: Show vs Reality]",
-        "[SECTION: Conclusion]",
+        "[SECTION: Act 1 — Unease & First Clue]",
+        "[SECTION: Act 2 — Investigation Begins]",
+        "[SECTION: Act 3 — Escalation]",
+        "[SECTION: Act 4 — Collapse & Exposure]",
+        "[SECTION: Act 5 — Aftermath & Legacy]",
     ]
 
     def _section_instruction(min_w: int, max_w: int, is_final: bool) -> str:
@@ -2506,240 +2554,242 @@ def write_long_script_split(topic: dict, research: dict, series_info: tuple | No
         _rf = (research.get("research_facts") or research.get("what_show_got_right") or [])[:8]
         _sh = (research.get("research_shocking") or research.get("shocking_real_facts") or [])[:4]
         _in = (research.get("research_inaccuracies") or research.get("what_show_got_wrong") or [])[:4]
-        _outline_prompt = f"""You are outlining a documentary script about: {name} (related to {series} {stype}).
+        _outline_prompt = f"""You are building a SCENE BEAT MAP for a cinematic crime story about: {name} (related to {series} {stype}).
 
-Task: Distribute 10–15 unique specific facts across exactly 5 chapters.
-Each fact must appear in EXACTLY ONE chapter — never repeated elsewhere.
-Every fact must be SPECIFIC: include a real name, date, number, or location.
+Task: Distribute 10–15 unique specific story beats across exactly 5 acts.
+Each beat must appear in EXACTLY ONE act — never repeated elsewhere.
+Every beat must be SPECIFIC: include a real name, date, number, or documented event.
 
 RESEARCH MATERIAL:
 Facts: {_rf}
 Shocking details: {_sh}
 Show inaccuracies: {_in}
 
-UNTOLD ANGLE (reserved for Chapter 2):
+HIDDEN ANGLE (reserved for Act 2):
 Title: {_angle_title}
 Detail: {_angle_content}
 
-Assign facts to chapters using these STRICT roles:
-- ch1: 2 facts — (a) the specific scene/moment that made {series} famous; (b) ONE unanswered question it raises
-- ch2: 3–4 facts — the hidden truth details ONLY, all expanding on the untold angle above
-- ch3: 4–5 facts — chronological documented history in order (earliest first, each with a year)
-- ch4: 3–4 facts — direct comparisons only, each formatted as "Show depicted X, reality was Y"
-- ch5: 2 facts — aftermath and present-day legacy ONLY (consequences after the main story ended)
+Assign story beats to acts using these STRICT story-state roles:
+- act1: 2 beats — (a) the specific real-life opening scene (the real moment behind what {series} made famous); (b) the first documented contradiction that creates unease
+- act2: 3–4 beats — investigation launch trigger, first evidence found, the hidden angle detail, one witness or informant beat
+- act3: 4–5 beats — escalation events each with a year/date; the biggest documented lie {series} told; investigation pressure or key mistake
+- act4: 3–4 beats — arrest/capture scene; confession or key statement; key courtroom testimony; the show's final romanticization exposed
+- act5: 2 beats — documented aftermath (what happened to key figures); the final haunting legacy fact
 
 Return ONLY valid JSON, no explanation:
-{{"ch1": ["...", "..."], "ch2": ["...", "...", "..."], "ch3": ["...", "...", "...", "..."], "ch4": ["...", "...", "..."], "ch5": ["...", "..."]}}"""
+{{"act1": ["...", "..."], "act2": ["...", "...", "..."], "act3": ["...", "...", "...", "..."], "act4": ["...", "...", "..."], "act5": ["...", "..."]}}"""
 
         try:
             raw  = _ai_script_call(_outline_prompt, max_tokens=900, json_mode=True, temperature=0.4)
             data = normalize_ai_json_response(
                 raw,
-                required_keys=["ch1", "ch2", "ch3", "ch4", "ch5"],
-                list_keys=["ch1", "ch2", "ch3", "ch4", "ch5"],
+                required_keys=["act1", "act2", "act3", "act4", "act5"],
+                list_keys=["act1", "act2", "act3", "act4", "act5"],
             )
-            if any(data.get(k) for k in ("ch1", "ch2", "ch3", "ch4", "ch5")):
-                total = sum(len(data.get(k) or []) for k in ("ch1","ch2","ch3","ch4","ch5"))
-                print(f"[Script] Master outline: {total} unique facts pre-assigned across 5 chapters")
+            if any(data.get(k) for k in ("act1", "act2", "act3", "act4", "act5")):
+                total = sum(len(data.get(k) or []) for k in ("act1","act2","act3","act4","act5"))
+                print(f"[Script] Scene beat map: {total} unique beats pre-assigned across 5 acts")
                 return data
-            print("[Fallback] Master outline returned empty — proceeding without pre-assignment")
+            print("[Fallback] Scene beat map returned empty — proceeding without pre-assignment")
         except Exception as e:
-            print(f"[Fallback] Master outline failed ({e}) — proceeding without outline")
+            print(f"[Fallback] Scene beat map failed ({e}) — proceeding without pre-assignment")
         return {}
 
     _outline = _generate_master_outline()
     time.sleep(2)  # brief pause before chapter writing begins
 
-    def _facts_block(ch_key: str) -> str:
-        """Inject pre-assigned facts as a hard writing directive for one chapter."""
-        facts = _outline.get(ch_key, [])
+    def _facts_block(act_key: str) -> str:
+        """Inject pre-assigned story beats as a scene-writing directive for one act."""
+        facts = _outline.get(act_key, [])
         if not facts:
             return ""
         lines = "\n".join(f"  • {f}" for f in facts)
         return (
-            f"📋 YOUR PRE-ASSIGNED FACTS — write ONLY about these specific points "
-            f"(they were reserved exclusively for this chapter and appear nowhere else):\n"
+            f"📋 YOUR PRE-ASSIGNED STORY BEATS — write scenes around these specific points "
+            f"(reserved exclusively for this act; do not appear in any other act):\n"
             f"{lines}\n"
-            "Stay within this list. Do NOT introduce other events or facts from the research."
+            "Anchor every scene to this list. Do NOT introduce other events from the research."
         )
 
     section_prompts = [
-        # ── Chapter 1: Hook Intro ─────────────────────────────────────────────
+        # ── ACT 1: Unease & First Clue ────────────────────────────────────────
         lambda: f"""{_topic_context}{_entity_lock}
-Write CHAPTER 1 — CINEMATIC OPENING for a longform crime story about {name}.
+Write ACT 1 — UNEASE & FIRST CLUE for a cinematic crime story about {name}.
 
-THIS IS SCENE-DRIVEN STORYTELLING — not a documentary summary.
-The viewer must feel: "I am trapped inside a cinematic crime story."
+STORY STATE THIS ACT: NORMAL WORLD → FIRST CRACK OF UNEASE.
+The viewer does not yet know the full story. The crack appears.
 
-YOUR EXCLUSIVE JOB in this chapter:
-1. Open with ONE SPECIFIC SCENE — a real moment, a year, a place, one person caught in an action. Short sentences. Put the viewer inside the moment.
-2. Escalate: 2-3 sentences that increase the stakes. Each sentence adds pressure, not background.
-3. What made {series} famous — one moment millions remember — then immediately pivot: the real story was different.
-4. End with an open loop: one unanswered question that forces the viewer forward.
+SCENE CHAIN — write each as a SCENE, not an explanation:
 
-NARRATIVE MOMENTUM — every 50-80 words must contain a story beat:
-  event → reaction → investigation → discovery → escalation → setback → reveal
+Scene 1 (Opening): Begin at ONE specific documented real-world moment. Not an introduction — a scene. Real place, real year, real person caught in an action. 3-4 sentences. Put the viewer inside it.
 
-{_facts_block("ch1")}
+Scene 2 (The Famous Version vs Reality): Cut to {series} — what millions saw. One specific scene the show is famous for. 2-3 sentences maximum. Then the pivot: "The real story was different."
 
-STRICT SCOPE — this chapter does NOT cover:
-- Real history or biography in detail (that is Chapter 3)
-- The hidden truth or untold angle (that is Chapter 2)
-- Show-vs-reality comparisons (that is Chapter 4)
-Plant the hook and build the pull. Nothing more.
+Scene 3 (First Contradiction): The specific documented detail that doesn't match. The clue that was there from the start. Name it. Give it a year if documented.
+
+Scene 4 (Unease Builds): The first real warning sign nobody took seriously. One documented moment — what happened, what it meant, why nobody acted. End on an unresolved question that forces the viewer forward.
+
+{_facts_block("act1")}
+
+STRICT SCOPE — this act does NOT cover:
+- Real history or biography in depth (that is Act 3)
+- The full investigation (that is Act 2)
+- Show-vs-reality comparisons in depth (those are Acts 3 and 4)
+Plant the hook and the crack. Nothing more.
 
 NARRATION RULES:
-- First sentence: a specific scene, not a statement. 10 words or fewer.
-- Second and third sentences ESCALATE — never explain.
-- No generic openers. No summaries. No encyclopedia facts.
-- Mix short punches (5-10 words) with medium narrative sentences (15-22 words).
+- First sentence: a specific scene, not a statement. Under 12 words.
+- Mix short punches (5-10 words) with narrative sentences (15-22 words).
+- No generic openers ("In a world…", "Throughout history…").
 
-Write flowing cinematic narration — no lists, no bullet points. Minimum 3 sentences per paragraph. Always complete sentences.
-{_section_instruction(500, 650, False)}""",
+Write flowing cinematic narration — no lists, no bullet points. Minimum 3 sentences per paragraph.
+{_section_instruction(700, 900, False)}""",
 
-        # ── Chapter 2: Untold Angle ───────────────────────────────────────────
+        # ── ACT 2: Investigation Begins ───────────────────────────────────────
         lambda: f"""{_topic_context}{_entity_lock}
-Write CHAPTER 2 — THE HIDDEN TRUTH for a longform crime story about {name}.
+Write ACT 2 — INVESTIGATION BEGINS for a cinematic crime story about {name}.
 
-THIS IS THE INVESTIGATION TURN — the moment the viewer discovers what {series} never showed.
-Every sentence must move through a story beat. No summaries. No explanations.
+STORY STATE THIS ACT: CRACK → INVESTIGATION LAUNCHED → FIRST DISCOVERIES.
+Something has been found, reported, or triggered. The machinery of discovery starts moving.
 
-ANGLE TITLE: {_angle_title}
-ANGLE HOOK — open the chapter with EXACTLY this sentence: {_angle_hook}
-ANGLE DETAIL — this is your seed. Grow it into a full investigation sequence: {_angle_content}
+SCENE CHAIN:
 
-NARRATIVE STRUCTURE for this chapter:
-  Scene 1: The hook revelation — what was hidden and why
-  Scene 2: The investigation trail — who found it, when, what they discovered
-  Scene 3: The escalation — what this revelation means for the whole story
-  Scene 4: The consequence — what changed, who was affected, what remained hidden
+Scene 1 (Trigger): The specific documented event, report, or discovery that launched the investigation. Real date and person where possible. What happened, who responded, what they found.
 
-{_facts_block("ch2")}
+Scene 2 (Hidden Angle — OPEN WITH EXACTLY): {_angle_hook}
+Expand this into a full 2-3 paragraph investigation scene: {_angle_content}
+This is {_angle_title} — the thing {series} never showed.
 
-STRICT SCOPE — this chapter does NOT:
-- Re-introduce the show or describe what it depicted (Chapter 1 did that)
-- Cover the general real history or biography (Chapter 3 does that)
-- Compare show scenes to real events (Chapter 4 does that)
-Every sentence must add NEW specific information that ADVANCES the investigation.
+Scene 3 (First Evidence): The first piece of documented evidence or witness account. Specific — a name, a location, a date. What investigators thought it meant.
+
+Scene 4 (The Lead That Was Missed): A documented investigation mistake, missed clue, or wrong turn. What slipped through. Why. The consequence of that mistake.
+
+{_facts_block("act2")}
+
+STRICT SCOPE — this act does NOT:
+- Re-introduce or describe the show's famous scenes (Act 1 handled that)
+- Tell the full chronological real history (Act 3 does that)
+- Compare multiple show scenes to reality (Act 4 does that)
+Every sentence must advance the investigation narrative.
 
 {_used_facts_block(1)}
 
-Open with the ANGLE HOOK sentence exactly as written. Build it into a cinematic investigation sequence. Specific names, dates, and decisions — never vague.
-{_section_instruction(550, 700, False)}
+Write flowing cinematic narration — no lists, no bullet points. Minimum 3 sentences per paragraph.
+{_section_instruction(750, 950, False)}
 
-PREVIOUS CHAPTER (context only — do NOT repeat anything from it):
+PREVIOUS ACT (context — do NOT repeat):
 {sections[0]}""",
 
-        # ── Chapter 3: The Real Story ─────────────────────────────────────────
-        # _topic_context has NO fictional characters — only real people and verified facts.
-        # _ch3_mandatory names ONLY the real counterparts, not fictional show characters.
+        # ── ACT 3: Escalation ─────────────────────────────────────────────────
         lambda: f"""{_topic_context}{_ch3_mandatory}{_entity_lock}
-Write CHAPTER 3 — THE REAL STORY for a longform crime story about {name}.
+Write ACT 3 — ESCALATION for a cinematic crime story about {name}.
 
-THIS IS THE CINEMATIC NARRATIVE — the full story told as a sequence of scenes, not a biography summary.
-Move through the story chronologically, but write each era as a SCENE, not an explanation.
+STORY STATE THIS ACT: INVESTIGATION UNDERWAY → PRESSURE BUILDS → STORY EXPLODES.
+New facts emerge. Contradictions multiply. The real story becomes bigger and darker.
 
-{_facts_block("ch3")}
+SCENE CHAIN:
 
-SCENE-BY-SCENE STRUCTURE:
-- Scene: who this person was, what world they came from — one specific moment, not a summary
-- Scene: first turning point — what happened that set the story in motion
-- Scene: rise, escalation, key events — each as a moment with action and reaction
-- Scene: real victims, real locations, real consequences — named, specific, human
-- Every named person in the research gets a dedicated scene, not a passing mention
+Scene 1 (First Escalation Event): A new documented event that changed everything. New victim, new evidence, new development — with a specific date.
 
-NARRATIVE MOMENTUM — required:
-Each scene must end with a story beat that pulls to the next.
-event → reaction → investigation → discovery → escalation → consequence
+Scene 2 (What {series} Hid): The biggest documented difference between {series} and reality. Write it as a revelation that unfolds in the narrative — not a comparison list: "Here is what {series} showed. Here is what was actually happening."
 
-STRICT SCOPE — this chapter does NOT:
-- Re-describe what the show depicted (Chapter 1 did that)
-- Re-state the hidden angle from Chapter 2 (already covered)
-- Make show vs reality comparisons (Chapter 4 does that)
+Scene 3 (Real People — one scene each): For every named real person relevant to this act: one paragraph of documented history, one specific action they took, one consequence. Do NOT use fictional character names here.
+
+Scene 4 (Investigation Pressure): Investigators closing in — or missing crucial leads. Documented public fear, media pressure, institutional failure. Be specific.
+
+Scene 5 (Major Twist or Setback): A documented turning point that reframes the whole story. Something that shocked investigators, the public, or the system. End this act at maximum pressure — about to collapse.
+
+{_facts_block("act3")}
+
+STRICT SCOPE:
+- Do NOT re-describe what the show is about (Acts 1–2 established that)
+- Do NOT re-state the hidden angle from Act 2 (already covered)
+- Do NOT deliver the capture or verdict (Act 4 does that)
 
 {_used_facts_block(2)}
 
-Write flowing cinematic narration — no lists, no bullet points. Minimum 3 sentences per paragraph. Mix short (5-10 word) punches with narrative sentences.
-{_section_instruction(700, 900, False)}
+Write flowing cinematic narration — no lists, no bullet points. Mix short punches with narrative sentences.
+{_section_instruction(950, 1200, False)}
 
-PREVIOUS CHAPTERS (context only — do NOT repeat anything from them):
+PREVIOUS ACTS (context — do NOT repeat):
 {sections[0]}
 
 {sections[1]}""",
 
-        # ── Chapter 4: Show vs Reality ────────────────────────────────────────
+        # ── ACT 4: Collapse & Exposure ────────────────────────────────────────
         lambda: f"""{_ch4_context}{_ch4_mandatory}{_entity_lock}
-Write CHAPTER 4 — SHOW VS REALITY for a longform crime story about {name}.
+Write ACT 4 — COLLAPSE & EXPOSURE for a cinematic crime story about {name}.
 
-THIS IS THE REVEAL SEQUENCE — each comparison is a story beat, not a fact list.
-Write comparisons as scenes: what viewers saw, then what actually happened, then why it matters.
-Fictional character names from the show (listed above) may be used HERE and only here.
+STORY STATE THIS ACT: EVERYTHING COLLAPSES → TRUTH EXPOSED → VERDICT LANDS.
+The arrest. The confession. The courtroom. Each as a documented scene, not a summary.
 
-{_facts_block("ch4")}
+SCENE CHAIN:
 
-REQUIRED STRUCTURE:
+Scene 1 (Capture): The documented arrest, confrontation, or turning point. Where it happened. Who was there. What was said. Write the scene.
 
-PART A — start with EXACTLY: "Here is what {series} got RIGHT:"
-Cover 3 or more specific things the show accurately depicted.
-For each: write the specific moment the show captured, then the documented real event that inspired it.
-Make each comparison a story beat — not a list item.
+Scene 2 (Confession or Key Statement): What is on record about the suspect's statements. Real documented quotes or known paraphrases. What it revealed that nobody expected.
 
-PART B — start with EXACTLY: "Here is what they completely changed or left out:"
-Cover 3 or more specific changes — invented scenes, erased characters, compressed timelines, reversed facts.
-For each: show specifically what was changed AND what the real story reveals that the show hid.
+Scene 3 (Courtroom): Key documented testimony. The prosecutor's case. Defense moves. What came out in court that shocked everyone — the thing that was never in {series}.
+Fictional character names from the show (listed above) may be used HERE in comparisons.
 
-STRICT SCOPE — this chapter does NOT:
-- Re-tell the real history (Chapter 3 already did that)
-- Re-introduce people who were fully covered in Chapter 3
-- Re-state the untold angle from Chapter 2
-Every comparison must introduce NEW story details not yet stated in Chapters 1–3.
+Scene 4 (Show's Truth Exposed):
+Start with EXACTLY: "Here is what {series} got RIGHT:" (2-3 specific things the show accurately depicted)
+Then EXACTLY: "Here is what they completely changed or left out:" (2-3 specific things changed)
+Each comparison must be a story beat — what the show showed, what actually happened, why it matters.
+
+{_facts_block("act4")}
+
+STRICT SCOPE:
+- Do NOT re-tell the chronological real history (Act 3 covered that)
+- Do NOT repeat investigation details from Acts 2–3
+Every comparison must introduce NEW story details not yet stated in Acts 1–3.
 
 {_used_facts_block(3)}
 
-Write flowing cinematic narration — minimum 3 sentences per paragraph. Each comparison is a story beat.
-{_section_instruction(550, 700, False)}
+Write flowing cinematic narration — minimum 3 sentences per paragraph.
+{_section_instruction(700, 900, False)}
 
-PREVIOUS CHAPTERS (context only — do NOT repeat anything from them):
+PREVIOUS ACTS (context — do NOT repeat):
 {sections[0]}
 
 {sections[1]}
 
 {sections[2]}""",
 
-        # ── Chapter 5: Conclusion ─────────────────────────────────────────────
+        # ── ACT 5: Aftermath & Legacy ─────────────────────────────────────────
         lambda: f"""{_topic_context}{_entity_lock}
-Write CHAPTER 5 — FINAL REVELATION AND CLOSING for a longform crime story about {name}.
+Write ACT 5 — AFTERMATH & LEGACY for a cinematic crime story about {name}.
 
-THIS IS THE LAST STORY BEAT — not a summary, not a recap. A final revelation that lands hard.
+STORY STATE THIS ACT: VERDICT DELIVERED → ECHOES REMAIN → STORY NEVER FULLY ENDS.
+Not a summary. Not a recap. The consequences, the unanswered questions, the lasting weight.
 
-YOUR EXCLUSIVE JOB in this chapter:
-1. Open with ONE final fact that has NOT appeared anywhere in Chapters 1–4.
-   Deliver it like a verdict: short, direct, no softening. Two sentences maximum.
-2. The aftermath scene: what happened to the key people after the story ended.
-   Write it as scenes — consequences, fates, unanswered questions.
-3. What this story reveals: one paragraph connecting {name}'s story to something larger —
-   power, corruption, the gap between what we are shown and what is real.
-4. Close with: "Follow Dark Crime Decoded for more real stories behind your favourite crime series and films."
+SCENE CHAIN:
 
-{_facts_block("ch5")}
+Scene 1 (Immediate Aftermath): What happened to the key people. Fates, sentences, disappearances, reinventions. Write as scenes — who went where, what happened to them, what remained unresolved.
 
-STRICT SCOPE — this chapter does NOT:
-- Recap or summarize Chapters 1–4
-- Repeat ANY fact from earlier chapters (see fence below)
-- Use words like "In conclusion", "To summarize", "As we have seen"
+Scene 2 (The Unanswered Question): The documented gap that remains. What was never proven. What was never found. What the case files show was left open.
 
-NARRATION RULES:
-- Opening fact: delivered like a verdict. Short. Direct.
-- Aftermath: scenes not summaries — who went where, what happened to them, what was never resolved.
-- Final paragraph: the narrator speaks directly to the viewer. Weight. Not a tagline.
+Scene 3 (What This Story Reveals): One paragraph connecting {name}'s story to something larger — power, corruption, the gap between what we are shown and what is real.
+
+Scene 4 (Close): End with exactly: "Follow Dark Crime Decoded for more real stories behind your favourite crime series and films."
+
+{_facts_block("act5")}
+
+STRICT SCOPE:
+- Do NOT recap or summarize Acts 1–4
+- Do NOT repeat ANY fact from earlier acts (see fence below)
+- Do NOT use phrases like "In conclusion", "To summarize", "As we have seen", "As we explored"
 
 {_used_facts_block(4)}
 
+Opening: delivered like a verdict — short, direct, no softening.
+Aftermath: scenes not summaries.
+
 CRITICAL: End with a fully complete sentence. Never end mid-thought.
 Write flowing cinematic narration — no lists, no bullet points.
-{_section_instruction(300, 400, True)}
+{_section_instruction(400, 500, True)}
 
-PREVIOUS CHAPTERS (context only — do NOT repeat anything from them):
+PREVIOUS ACTS (context — do NOT repeat):
 {sections[0]}
 
 {sections[1]}
@@ -2768,6 +2818,22 @@ PREVIOUS CHAPTERS (context only — do NOT repeat anything from them):
     minutes    = total_real / 163  # ~163 wpm for documentary English narration
     print(f"[Script] Total English: {total_real} real words (raw {total_raw}) "
           f"→ Est. runtime: ~{minutes:.0f} min")
+
+    # ── Narrative flow audit — story progression metrics ─────────────────────
+    _spv = scene_progression_validator(full_script)
+    _stall_count = len(_spv["stalled_zones"])
+    _prog_score  = _spv["progression_score"]
+    print(
+        f"[NARRATIVE] story_state_changes={len(sections)} acts | "
+        f"progression_score={_prog_score:.0%} | "
+        f"dead_zones={_stall_count}"
+    )
+    if _spv["has_stalls"]:
+        print(f"[NARRATIVE] ⚠️ Momentum stalls detected ({_stall_count} zones):")
+        for _z in _spv["stalled_zones"][:4]:
+            print(f"  {_z}")
+    else:
+        print(f"[NARRATIVE] ✅ Story progression healthy — no dead zones")
 
     if total_real < LONG_SCRIPT_MIN_WORDS:
         print(f"[Script] ⚠️ RUNTIME BELOW 15-MIN FLOOR: {total_real} words (~{minutes:.0f} min) — "
@@ -4697,7 +4763,64 @@ _AR_SCRIPT_SYSTEM_PROMPT = """أنت راوٍ سينمائي عربي متخصص
   الجزء الأول يبدأ بالضبط بـ: "إليك ما أصابت فيه [اسم العمل]:"
   الجزء الثاني يبدأ بالضبط بـ: "وإليك ما غيّرته أو أغفلته تماماً:"
 - كل جزء يغطي على الأقل ثلاث مقارنات محددة بأسماء وتواريخ ومشاهد حقيقية
-- هذا الهيكل إلزامي لأي موضوع مبني على أحداث حقيقية"""
+- هذا الهيكل إلزامي لأي موضوع مبني على أحداث حقيقية
+
+══════════════════════════════════════
+وضع السرد الشفهي — إلزامي تماماً
+══════════════════════════════════════
+هذا النص يُقرأ بصوت عالٍ أمام ميكروفون — ليس مقالاً مكتوباً.
+المستمع لا يرى النص — يسمعه فقط.
+الجمل المركّبة والطويلة تُضيع المستمع — قصّرها.
+كل فقرة يجب أن تُسمع بشكل طبيعي في نفَس واحد أو نفَسين.
+
+قواعد السرد الشفهي:
+١. الفقرة القصيرة: 3–4 جمل كحد أقصى
+   الفقرة الطويلة تُتعب الأذن — اقطع النص إلى لحظات صغيرة قابلة للتنفس
+٢. التوقف الدرامي الطبيعي:
+   النقطة هي توقف قصير. الفقرة الجديدة هي توقف أطول.
+   استخدمها كأداة إيقاعية — وليس فقط لتنظيم النص
+٣. الجملة المنفردة للصدمة:
+   أحياناً جملة قصيرة وحيدة هي أقوى لحظة في الفقرة.
+   "وجدوه في الصباح." — ثم فقرة جديدة.
+٤. الإيقاع العاطفي:
+   الإسراع في التصعيد (جمل قصيرة متتالية)
+   التباطؤ في الكشف (جملة متوسطة + جملة قصيرة للصدمة)
+   التأمل في العواقب (جمل متوسطة هادئة)
+
+الأسلوب المحظور في السرد الشفهي:
+- الجمل المركّبة من أكثر من فكرتين (قسّمها)
+- المصطلحات الأكاديمية الرسمية غير المألوفة للمستمع العربي
+- الحشد المعلوماتي في جملة واحدة (اسم + تاريخ + مكان + حدث)
+- الربط المفرط بـ"حيث" و"إذ" و"بينما" (يُرهق الأذن)
+- الجمل الاعتراضية الطويلة بين شرطتين — اجعلها جملة مستقلة
+
+══════════════════════════════════════
+مراحل القصة — تسلسل الحالة السردية
+══════════════════════════════════════
+القصة تتحرك عبر خمس حالات — لكل حالة إيقاعها الخاص:
+
+الحالة ١ — القلق والإشارة الأولى:
+  إيقاع هادئ + مقلق. جمل قصيرة تُلمّح. لا تكشف كل شيء.
+  "كان شيء ما غير مكتمل في تلك اللحظة."
+
+الحالة ٢ — بدء التحقيق:
+  إيقاع حيوي. جمل تتصاعد. كل جملة تكشف شيئاً جديداً.
+  "وجد المحقق الورقة. ثم وجد الثانية. ثم الثالثة."
+
+الحالة ٣ — التصعيد:
+  إيقاع سريع. جمل قصيرة متتالية. الأحداث تتسارع.
+  "أُفلت. ثم ضُبط. ثم أُفلت مرة أخرى."
+
+الحالة ٤ — الانهيار والكشف:
+  إيقاع حاد. جمل التوقف الدرامي. الحقيقة تُلقى كحكم.
+  "اعترف. في الجلسة الثالثة. بعد ست سنوات من الصمت."
+
+الحالة ٥ — التداعيات والإرث:
+  إيقاع أبطأ وأثقل. جمل متأملة. الأسئلة تبقى.
+  "لا أحد يعرف حتى اليوم ما حدث للحقيبة الثانية."
+
+الانتقال بين الحالات يجب أن يُشعر المستمع بـ: "شيء تغيّر الآن."
+ليس: "انتهى الفصل وبدأ فصل جديد." """
 
 
 def translate_research_to_arabic(research: dict) -> dict:

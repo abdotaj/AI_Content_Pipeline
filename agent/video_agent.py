@@ -7791,6 +7791,49 @@ def assign_clips_to_script(
 _FAST_VISUALS_PER_MIN: int = 12  # clip transitions per minute (was 8)
 _FAST_IMAGES_PER_MIN: float = _FAST_VISUALS_PER_MIN / 4.0  # = 3.0
 
+# ── Story-phase visual style engine ──────────────────────────────────────────
+# Maps ACT section labels → visual style keywords injected into image prompts.
+# Ensures visuals evolve WITH the story, not generic throughout.
+_STORY_PHASE_VISUAL_STYLE: dict[str, str] = {
+    "act 1": "surveillance dark alley warning signs cinematic unease shadow",
+    "act 2": "detective office evidence board documents maps investigation cinematic",
+    "act 3": "escalation tension police pursuit panic crowd chaos cinematic dark",
+    "act 4": "courtroom arrest confession handcuffs documents testimony dramatic",
+    "act 5": "aftermath quiet emotional memorial reflection cinematic slow",
+    "default": "cinematic dark crime documentary",
+}
+
+
+def _extract_dominant_phase(script_text: str) -> str:
+    """
+    Detect the dominant narrative act in a script and return a visual style string.
+    Looks for [SECTION: Act X ...] markers; falls back to full-script heuristics.
+    """
+    import re as _re
+    counts: dict[str, int] = {}
+    for m in _re.finditer(r'\[SECTION:\s*Act\s+(\d)', script_text, _re.IGNORECASE):
+        key = f"act {m.group(1)}"
+        counts[key] = counts.get(key, 0) + 1
+    if counts:
+        labels = [lbl.strip().lower() for lbl in _re.findall(r'\[SECTION:\s*(Act\s+\w[^\]]*)\]', script_text, _re.IGNORECASE)]
+        for lbl in labels:
+            key = f"act {lbl.split()[1]}" if len(lbl.split()) > 1 else lbl
+            counts[key] = counts.get(key, 0) + 1
+        dominant = max(counts, key=counts.get)
+        return _STORY_PHASE_VISUAL_STYLE.get(dominant, _STORY_PHASE_VISUAL_STYLE["default"])
+
+    # Heuristic fallback — presence of keywords signals phase
+    low = script_text.lower()
+    if any(k in low for k in ("arrested", "confession", "courtroom", "sentenced", "verdict")):
+        return _STORY_PHASE_VISUAL_STYLE["act 4"]
+    if any(k in low for k in ("escalat", "panic", "disappear", "more victims", "pressure")):
+        return _STORY_PHASE_VISUAL_STYLE["act 3"]
+    if any(k in low for k in ("investigat", "evidence found", "witness", "detectives")):
+        return _STORY_PHASE_VISUAL_STYLE["act 2"]
+    if any(k in low for k in ("aftermath", "legacy", "what happened", "unanswered")):
+        return _STORY_PHASE_VISUAL_STYLE["act 5"]
+    return _STORY_PHASE_VISUAL_STYLE["default"]
+
 
 def run_fast_pipeline(
     script_data: dict,
@@ -7888,8 +7931,11 @@ def run_fast_pipeline(
     if len(image_paths) < n_images:
         try:
             needed = n_images - len(image_paths)
+            _phase_style = _extract_dominant_phase(script_data.get("script", ""))
+            print(f"[FAST] Visual phase: {_phase_style[:60]}…")
             image_paths.extend(
-                fetch_real_images(script_data["script"], needed, video_id, topic=topic_str)
+                fetch_real_images(script_data["script"], needed, video_id,
+                                  topic=topic_str, style_profile=_phase_style)
             )
         except Exception as _ve:
             print(f"[FAST] Visual fetch failed (non-fatal): {_ve}")
