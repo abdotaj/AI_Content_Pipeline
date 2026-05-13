@@ -414,6 +414,15 @@ def run_pipeline() -> None:
     today = datetime.date.today().isoformat()
     stats = {"generated": 0, "posted": 0, "skipped": 0, "errors": 0}
 
+    # Initialize ALL output path/URL variables before any conditional logic
+    # to prevent UnboundLocalError when early branches exit or skip assignments.
+    en_long_path  = ""
+    ar_long_path  = ""
+    en_short_path = ""
+    ar_short_path = ""
+    yt_en_url     = ""
+    yt_ar_url     = ""
+
     _ctrl = TelegramController(mode="animation")
 
     print(f"\n{'='*60}")
@@ -450,7 +459,7 @@ def run_pipeline() -> None:
         }
         _ctrl.set_topic(_manual_topic)
         _ctrl.start()
-    elif not ar_short_path:
+    else:
         # Auto-discover candidates, let user choose via Telegram
         _ctrl.update_stage("Research", "discovering topic candidates")
         _log("Research", "Discovering topic candidates for Telegram selection")
