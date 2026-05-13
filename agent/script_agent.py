@@ -239,13 +239,26 @@ def clean_word_count(text: str) -> int:
     return len([w for w in cleaned.split() if w.strip()])
 
 
-# FAST MODE: 15–45 min target. FULL MODE: 15–90 min target.
-# ABSOLUTE RULE: NO long video below 15 minutes — automatic failure.
-# 15 min × 155 WPM = 2,325 words minimum floor.
-# LONG_SCRIPT_MAX_WORDS is set high enough for 90-min storytelling;
-# it only exists to catch runaway generation bugs (> ~90 min).
-LONG_SCRIPT_MIN_WORDS: int = 2_325
-LONG_SCRIPT_MAX_WORDS: int = 13_500  # ~90 min safety valve — not a target
+# ── Strict minimum word floors by mode + language ─────────────────────────────
+# GLOBAL RULE: NO long video under 15 minutes — automatic failure.
+# Word counts are SAFETY FLOORS only. Real runtime authority is measured TTS audio:
+#   script → draft TTS → real duration → expand (new scenes only) → lock contract.
+# Arabic compresses faster in TTS (~175 WPM) → needs higher floors than English.
+_WORD_FLOORS = {
+    "fast":      {"english": 3_500, "arabic": 5_000},
+    "full":      {"english": 4_500, "arabic": 6_500},
+    "animation": {"english": 4_000, "arabic": 6_000},
+    "short":     {"english": 0,     "arabic": 0},
+}
+_WORD_CEILINGS = {
+    "fast":      {"english": 7_000,  "arabic": 9_000},
+    "full":      {"english": 15_000, "arabic": 18_000},
+    "animation": {"english": 10_000, "arabic": 14_000},
+    "short":     {"english": 500,    "arabic": 500},
+}
+# Legacy aliases — write_long_script_split and callers use fast/full English by default.
+LONG_SCRIPT_MIN_WORDS: int = _WORD_FLOORS["fast"]["english"]    # 3,500
+LONG_SCRIPT_MAX_WORDS: int = _WORD_CEILINGS["full"]["english"]  # 15,000
 
 
 def _cap_script_max_words(script_text: str, max_words: int = LONG_SCRIPT_MAX_WORDS) -> str:
@@ -1554,9 +1567,8 @@ def timeline_checkpoint_validation(script_text: str, research_facts: list) -> di
 
 def write_animation_script(topic: dict) -> dict:
     """
-    Fact-anchored cinematic documentary script for animation mode.
-    Same length as documentary (1,800-2,500 words). Cinematic storytelling
-    grounded in verified facts — NOT thriller fiction.
+    Fact-anchored cinematic animation script — 4,000+ EN words (15–60 min).
+    Scene-driven storytelling grounded in documented facts — NOT documentary summary.
     """
     research    = topic.get("research", {})
     real_person = research.get("real_person") or topic.get("topic", "")
@@ -1624,75 +1636,106 @@ PROSE RULES:
 
 ━━━ STRUCTURE ━━━
 
+NARRATIVE MOMENTUM ENGINE (applies to every section):
+Every 50-80 words must contain ONE story beat: clue, investigation turn, twist, reveal,
+consequence, or escalation. NEVER pad with repeated biography or atmosphere.
+
 [SECTION: hook]
 BEGIN AT A DOCUMENTED CRITICAL MOMENT — arrest, discovery, confrontation, or court moment.
 NOT invented atmosphere. A real event that anchors the story immediately.
-3-4 paragraphs. ~200 words.
+Build immediate cinematic tension: who, what, where, what it meant.
+5-6 paragraphs. ~400 words.
 
 [SECTION: background]
 DOCUMENTED HISTORY of this person. Real biography from known sources.
-Real family, known locations, documented associations.
-What the record shows about the forces that shaped them. 4-5 paragraphs. ~280 words.
+Real family, known locations, documented associations, early warning signs.
+Each paragraph must advance time or reveal something new — not restate what came before.
+6-7 paragraphs. ~550 words.
 
 [SECTION: childhood]
 DOCUMENTED EARLY HISTORY. Specific known facts about formative years.
-First documented warning signs or incidents from real records. 3-4 paragraphs. ~220 words.
+First documented warning signs or incidents from real records.
+Scene by scene — each paragraph = one documented moment, not a summary.
+5-6 paragraphs. ~400 words.
 
 [SECTION: story]
 THE DOCUMENTED CRIME OR EVENT — scene by scene from real records.
 Specific dates and locations from documented sources.
-Police reports, witness accounts, court records reconstructed as narrative.
-5-6 paragraphs. ~380 words.
+Police reports, witness accounts, court records reconstructed as narrative scenes.
+Every paragraph advances: event → reaction → investigation → consequence.
+8-10 paragraphs. ~750 words.
 
 [SECTION: evidence]
 THE DOCUMENTED INVESTIGATION — what investigators found and recorded.
 Specific forensic evidence, documented items, official reports.
-How the documented evidence built the case. 3-4 paragraphs. ~220 words.
+Investigation momentum: discovery → analysis → new lead → new discovery.
+5-6 paragraphs. ~400 words.
 
 [SECTION: confession]
 THE DOCUMENTED BREAK — arrest, interrogation, known turning point.
 What is on record about the suspect's statements.
-Real documented quotes or paraphrased known testimony. 3-4 paragraphs. ~200 words.
+Real documented quotes or paraphrased known testimony.
+Scene: location, who was there, what was said, what changed.
+5-6 paragraphs. ~350 words.
 
 [SECTION: trial]
 DOCUMENTED COURTROOM PROCEEDINGS.
-Prosecutor's documented arguments. Key documented testimony.
-Known facts about verdict process. 3-4 paragraphs. ~220 words.
+Prosecutor's documented arguments. Key documented testimony. Defense moves.
+Known facts about verdict process. Scene-by-scene courtroom momentum.
+5-6 paragraphs. ~400 words.
 
 [SECTION: verdict]
 THE DOCUMENTED OUTCOME — exactly what the record shows.
-Known sentence, documented reactions, confirmed final facts. 2-3 paragraphs. ~160 words.
+Known sentence, documented reactions, confirmed final facts.
+Scene: the moment of verdict, who reacted, what it meant.
+4-5 paragraphs. ~280 words.
 
 [SECTION: aftermath]
 DOCUMENTED AFTERMATH — what happened to known parties per verified sources.
 Changes to law, policy, or investigation methods from documented record.
-Unanswered questions from documented case files. 3-4 paragraphs. ~200 words.
+Unanswered questions from documented case files.
+5-6 paragraphs. ~350 words.
 
 [SECTION: conclusion]
 THE DOCUMENTED LEGACY — real impact grounded in verifiable outcomes.
-Final thought from documented facts. 2-3 paragraphs. ~120 words.
+Final thought from documented facts. Close with weight — not a summary.
+3-4 paragraphs. ~200 words.
 
-━━━ TOTAL TARGET: 2,000-2,400 words ━━━
+━━━ TOTAL TARGET: 4,000-5,000 words ━━━
 Write ONLY the script with section markers. No meta-commentary. No word count labels.
 Every sentence must reference a documented fact or serve direct narrative progression.
 Pure atmosphere sentences with no documented basis must not appear."""
 
     script_text = _ai_script_call(
         script_prompt,
-        max_tokens=4500,
+        max_tokens=9000,
         temperature=0.75,
         system_prompt=(
-            "You are a documentary narrator writing fact-anchored cinematic storytelling. "
-            "Every sentence must be grounded in documented reality. "
-            "Do NOT invent fictional scenes, wandering sequences, or unsupported emotional arcs. "
-            "Cinematic means: real facts presented with scene-level specificity and narrative momentum."
+            "You are a cinematic crime storyteller for animation mode — fact-anchored, scene-driven, "
+            "and binge-worthy. NARRATIVE MOMENTUM ENGINE: every 50-80 words must contain a story beat "
+            "(clue, investigation turn, twist, reveal, consequence, or escalation). "
+            "FORBIDDEN: invented daily routines, fictional wandering, atmosphere without documented facts, "
+            "repeated biography, psychological analysis loops, Wikipedia summary narration. "
+            "EVERY sentence must be grounded in documented reality. "
+            "Cinematic means: real facts reconstructed as scenes — not narrated as articles."
         ),
     ).strip()
 
-    # Ensure section markers present — fall back to documentary script if generation failed badly
-    if "[SECTION:" not in script_text or clean_word_count(script_text) < 800:
+    # Ensure section markers present — fall back if generation failed badly
+    if "[SECTION:" not in script_text or clean_word_count(script_text) < 1500:
         print("[Script] Animation script fallback — output too short or missing markers, using documentary style")
         return _write_darkcrimed_script(topic)
+
+    # Word count floor enforcement — animation needs 4,000+ EN words
+    _anim_floor = _WORD_FLOORS["animation"]["english"]
+    _wc_anim = clean_word_count(script_text)
+    if _wc_anim < _anim_floor:
+        _anim_missing = _anim_floor - _wc_anim
+        print(f"[Script][ANIM] ⚠️ Below {_anim_floor:,}w floor: {_wc_anim}w — "
+              f"expanding with {_anim_missing}+ new scene words")
+        script_text = expand_script_runtime(script_text, _anim_missing, topic=topic_text)
+        _wc_anim = clean_word_count(script_text)
+        print(f"[Script][ANIM] After expansion: {_wc_anim}w (~{_wc_anim/145:.0f}min)")
 
     script_text = check_hallucination(script_text)
 
@@ -2207,7 +2250,7 @@ angle_content: 2-3 sentences — all facts must be from {topic}'s actual documen
 
 def write_long_script_split(topic: dict, research: dict, series_info: tuple | None,
                              angle: dict | None = None) -> str:
-    """Write 1,450–1,900 real-word script via 5 OpenAI calls → ~10–14 min runtime."""
+    """Write 3,500+ real-word cinematic script via 5 AI calls → 24–45+ min runtime."""
     import time
 
     series = series_info[0] if series_info else topic.get("niche", topic.get("topic", ""))
@@ -2308,13 +2351,13 @@ def write_long_script_split(topic: dict, research: dict, series_info: tuple | No
     _angle_content = _angle.get("angle_content", "")
 
     # (label, min_words, max_words, is_final)
-    # Minimum totals: 500+550+700+550+300 = 2,600 words → ~17 min at 155 WPM
+    # Minimum totals: 700+750+950+700+400 = 3,500 words → ~24 min at 145 WPM (EN FAST floor)
     _SECTIONS_META = [
-        ("Opening Atmosphere",      500, 650, False),
-        ("Untold Angle",            550, 700, False),
-        ("Background & Real Story", 700, 900, False),
-        ("Show vs Reality",         550, 700, False),
-        ("Final Insight",           300, 400, True),
+        ("Opening Atmosphere",      700, 900,  False),
+        ("Untold Angle",            750, 950,  False),
+        ("Background & Real Story", 950, 1200, False),
+        ("Show vs Reality",         700, 900,  False),
+        ("Final Insight",           400, 500,  True),
     ]
 
     _SECTION_LABELS = [
@@ -2343,8 +2386,8 @@ def write_long_script_split(topic: dict, research: dict, series_info: tuple | No
 
     def _call_section(prompt: str, label: str, min_w: int, max_w: int,
                       call_num: int) -> str | None:
-        # Conclusion gets more tokens to prevent mid-sentence cutoff
-        _max_tok = 1000 if call_num == 5 else 1600
+        # Larger sections (700-1200 words each) require more output tokens
+        _max_tok = 1600 if call_num == 5 else 2400
         result = _ai_script_call(prompt, max_tokens=_max_tok,
                                   system_prompt=_SCRIPT_SYSTEM_PROMPT, premium=True)
         if not result:
@@ -5093,21 +5136,23 @@ def translate_script(en_script: dict, research: dict | None = None) -> dict:
     _ar_wc = clean_word_count(ar_data.get("script", ""))
     print(f"[Script] Arabic word count ({ar_data['arabic_path']} path): {_ar_wc}")
 
-    _AR_WORD_FLOOR = 3000
-    _AR_WORD_TARGET = 3600
+    # Arabic floor by mode — animation and full need higher minimums
+    _is_anim_script = bool(en_script.get("anim_mode"))
+    _AR_WORD_FLOOR  = (_WORD_FLOORS["animation"]["arabic"] if _is_anim_script
+                       else _WORD_FLOORS["fast"]["arabic"])    # 6,000 anim / 5,000 fast
+    _AR_WORD_TARGET = int(_AR_WORD_FLOOR * 1.1)               # 10% headroom above floor
     if _ar_wc < _AR_WORD_TARGET:
-        print(f"[AR RUNTIME] Script words: {_ar_wc} — below target 3500, expanding...")
+        print(f"[AR RUNTIME] Script words: {_ar_wc} — below target {_AR_WORD_TARGET:,}, expanding...")
         ar_data["script"] = _expand_arabic_script_to_min(ar_data["script"], target_min=_AR_WORD_TARGET)
 
     # ── Runtime target check ──────────────────────────────────────────────────
     # Arabic TTS (OpenAI nova/0.9) runs ~250 WPM — 2× faster than old 130 WPM estimate.
-    # Target: absolute minimum 10.5 min, or 80% of English runtime (whichever is higher).
-    # This ensures Arabic always hits 10+ min regardless of English script length.
+    # Absolute minimum: 15 min (global longform floor), or 90% of English runtime.
     _en_wc     = clean_word_count(en_script.get("script", ""))
     _en_min    = _en_wc / 145.0
     _ar_min    = estimate_arabic_duration(ar_data.get("script", ""))
     _ar_wc_now = clean_word_count(ar_data.get("script", ""))
-    _ar_target = max(11.5, _en_min * 0.85, _AR_WORD_FLOOR / _TTS_WPM["arabic"])
+    _ar_target = max(15.0, _en_min * 0.90, _AR_WORD_FLOOR / _TTS_WPM["arabic"])
     print(
         f"[AR RUNTIME] Script words: {_ar_wc_now}\n"
         f"[AR RUNTIME] OpenAI TTS estimated duration: ~{_ar_min:.1f}min "
