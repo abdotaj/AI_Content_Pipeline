@@ -377,7 +377,7 @@ _RUNTIME_FLOORS = {
 _RUNTIME_CAPS = {
     "full":  {"min": 15, "max": 999},
     "fast":  {"min": 15, "max": 999},
-    "short": {"min": 0,  "max": 1.5},
+    "short": {"min": 1,  "max": 1.5},
 }
 
 # ── Single source of truth for all runtime contracts ────────────────────────
@@ -387,7 +387,7 @@ RUNTIME_CONTRACTS: dict[str, dict] = {
     "fast":      {"min_minutes": 15.0, "max_minutes": 45.0},
     "full":      {"min_minutes": 15.0, "max_minutes": 90.0},
     "animation": {"min_minutes": 15.0, "max_minutes": 60.0},
-    "short":     {"min_minutes": 0.0,  "max_minutes": 1.5},
+    "short":     {"min_minutes": 1.0,  "max_minutes": 1.5},
 }
 
 
