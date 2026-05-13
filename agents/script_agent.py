@@ -55,14 +55,52 @@ def _groq_call(**kwargs):
 
 
 
-_SCRIPT_SYSTEM_PROMPT = """You are a professional true crime documentary scriptwriter. Write like a BBC/Netflix narrator — measured, cinematic, authoritative.
+_SCRIPT_SYSTEM_PROMPT = """You are a cinematic longform storyteller for a Netflix-style true crime channel. Your job is NOT to write documentary summaries. Your job is to write SCENE-DRIVEN SOCIAL STORYTELLING that keeps viewers locked in for 15-90 minutes.
 
-DOCUMENTARY VOICE — NOT AN ESSAY:
+TARGET STYLE: Netflix true crime + MrBallen rhythm + cinematic investigative storytelling.
+NOT: TV educational documentary narration. NOT: Wikipedia article narration.
+
+NARRATIVE MOMENTUM ENGINE — THE SINGLE MOST IMPORTANT RULE:
+Runtime must come from STORY MOVEMENT, not word inflation.
+
+ABSOLUTE FAILURE MODES — if you write any of these, the script fails:
+- Long static explanatory paragraphs that summarise what happened
+- Repeated biographical facts restated in different words
+- Psychological analysis repeated across sections
+- Atmosphere narration with no story progression
+- Timeline recaps that restate what was already told
+
+REQUIRED: Every 50-80 words (~20-40 seconds of audio), the viewer MUST experience ONE of:
+  • New clue or evidence discovery (specific name, date, or item)
+  • Contradiction: what investigators believed vs what they found
+  • Emotional shift: a decision that changes the direction of events
+  • Investigation turn: unexpected development or dead end
+  • Danger escalation or consequence
+  • Reveal: hidden information surfaces for the first time
+  • Setback: something goes wrong, a plan collapses
+  • New character entering with a specific action or secret
+
+SCENE-DRIVEN WRITING (mandatory):
+Replace summary narration with cinematic scene progression.
+BAD:  "Bundy manipulated investigators for years."
+GOOD: "The detective believed the witness had finally identified him.
+      Then the phone rang.
+      Another victim had disappeared."
+
+BAD:  "He built a criminal empire over the next decade."
+GOOD: "By 1975, the operation covered three cities.
+      The FBI knew something was happening.
+      They had no idea how big."
+
+Each section must move through a story arc:
+  event → reaction → investigation → discovery → escalation → setback → revelation → consequence
+
+CINEMATIC VOICE — NOT DOCUMENTARY:
 - This is SPOKEN narration, not text to be read on a screen. Every sentence must sound natural when read aloud.
 - Never open with generic lines: "In the world of crime...", "Throughout history...", "This story is about..."
-- Never write like a Wikipedia article, a blog post, or an essay. No thesis statements. No topic sentences announcing what you will cover.
-- Write the scene, not the summary. Show the moment, then draw meaning from it.
-- Every paragraph must EARN its place — no padding, no throat-clearing, no restatements of what was just said.
+- Never write like a Wikipedia article, a blog post, or an essay. No thesis statements.
+- Write the SCENE, not the summary. Put the viewer inside the moment.
+- Every paragraph must EARN its place — no padding, no restatements of what was just said.
 
 SENTENCE STRUCTURE FOR TTS:
 - Mix short punches (5–10 words) with medium narrative sentences (15–22 words). Vary the rhythm.
@@ -168,6 +206,12 @@ MICRO-TENSION — sustained within every chapter:
 - Use: unanswered questions, contradictions, reveals, or unexpected reversals.
 - Avoid: long explanations, flat narration, lists of facts without emotional weight.
 - The viewer must feel momentum — as if the story is accelerating toward something.
+- NEVER write more than 4 consecutive sentences without a story beat (clue, twist, reveal, or consequence).
+
+BINGE-STORYTELLING CONTRACT — the viewer must feel:
+"I am trapped inside a cinematic crime story."
+NOT: "I am listening to a narrated article."
+Each section must feel like a MINI-THRILLER SEQUENCE, not a factual explanation block.
 
 FACT PRIORITIZATION:
 - Lead with controversial, unknown, or psychologically revealing facts.
@@ -195,13 +239,13 @@ def clean_word_count(text: str) -> int:
     return len([w for w in cleaned.split() if w.strip()])
 
 
-# Both FAST and FULL modes enforce the same script quality standards.
-# 11.5 min × 156 WPM = 1,800 words (preferred minimum)
-# NO upper ceiling — topic depth determines length.
-# LONG_SCRIPT_MAX_WORDS is set high enough to never trigger in practice;
-# it only exists to catch runaway generation bugs (> ~60 min).
-LONG_SCRIPT_MIN_WORDS: int = 1_800
-LONG_SCRIPT_MAX_WORDS: int = 9_750   # ~60 min safety valve — not a target
+# FAST MODE: 15–45 min target. FULL MODE: 15–90 min target.
+# ABSOLUTE RULE: NO long video below 15 minutes — automatic failure.
+# 15 min × 155 WPM = 2,325 words minimum floor.
+# LONG_SCRIPT_MAX_WORDS is set high enough for 90-min storytelling;
+# it only exists to catch runaway generation bugs (> ~90 min).
+LONG_SCRIPT_MIN_WORDS: int = 2_325
+LONG_SCRIPT_MAX_WORDS: int = 13_500  # ~90 min safety valve — not a target
 
 
 def _cap_script_max_words(script_text: str, max_words: int = LONG_SCRIPT_MAX_WORDS) -> str:
@@ -259,11 +303,11 @@ def _cap_script_max_words(script_text: str, max_words: int = LONG_SCRIPT_MAX_WOR
 
 _TTS_WPM = {"english": 145, "arabic": 175}   # Arabic documentary pacing target: 160-190 effective WPM
 
-# Runtime floors (minutes) by mode — NO upper caps enforced.
-# Topic depth determines length. These are quality minimums only.
+# Runtime floors (minutes) by mode — ABSOLUTE MINIMUMS.
+# Any long video below 15 minutes is an automatic failure.
 _RUNTIME_FLOORS = {
-    "full":  10,   # abort if EN script < 10 min
-    "fast":  10,   # abort if EN script < 10 min
+    "full":  15,   # abort if EN script < 15 min — ABSOLUTE RULE
+    "fast":  15,   # abort if EN script < 15 min — ABSOLUTE RULE
     "short": 0,    # shorts have no minimum (governed by word targets)
 }
 
@@ -271,8 +315,8 @@ _RUNTIME_FLOORS = {
 # Max values are set to 999 (never triggered) to preserve the dict shape
 # without silently breaking anything that reads .get("max").
 _RUNTIME_CAPS = {
-    "full":  {"min": 10, "max": 999},
-    "fast":  {"min": 10, "max": 999},
+    "full":  {"min": 15, "max": 999},
+    "fast":  {"min": 15, "max": 999},
     "short": {"min": 0,  "max": 1.5},
 }
 
@@ -491,16 +535,17 @@ def expand_section(existing_text: str, missing_words: int,
     """
     target = max(missing_words, 80)
     prompt = (
-        f"Continue the following documentary section with approximately {target} new words.\n\n"
-        f"RULES — the continuation MUST:\n"
-        f"- Add at least one new VERIFIABLE FACT per 50 words: a real name, date, number, location, or documented event\n"
-        f"- Advance the narrative — new cause, new consequence, new evidence, new person, or timeline shift\n"
-        f"- Match the investigative documentary voice already established\n\n"
-        f"RULES — the continuation must NOT:\n"
+        f"Continue the following cinematic storytelling section with approximately {target} new words.\n\n"
+        f"MANDATORY — the continuation MUST add NEW STORY MOVEMENT:\n"
+        f"- A new scene, investigation beat, or narrative turn NOT already in the section\n"
+        f"- Move through: event → reaction → discovery → escalation → consequence\n"
+        f"- Every 50-80 words must contain a story beat: clue, twist, reveal, consequence, or turning point\n"
+        f"- At least one new VERIFIABLE FACT per 50 words: real name, date, location, or documented event\n\n"
+        f"FORBIDDEN — the continuation must NOT:\n"
         f"- Repeat, restate, or paraphrase anything already written\n"
-        f"- Add atmospheric filler: 'The fear grew', 'Silence fell', 'The shadows deepened', etc.\n"
-        f"- Write isolated short dramatic lines of 3-5 words\n"
-        f"- Summarise what was just said\n\n"
+        f"- Inflate with repeated biographical facts or psychological analysis\n"
+        f"- Add atmospheric filler: 'The fear grew', 'Silence fell', 'The shadows deepened'\n"
+        f"- Summarise what was just said — only NEW story scenes count\n\n"
         f"Write ONLY the new continuation text — do not include the original section.\n\n"
         f"EXISTING SECTION:\n{existing_text}"
     )
@@ -576,10 +621,11 @@ def expand_script_runtime(script_text: str, missing_words: int,
 
     topic_hint    = f"This is about: {topic}. " if topic else ""
     doc_sys_prompt = (
-        f"You are a documentary scriptwriter. {topic_hint}"
-        "Add new SPECIFIC FACTUAL content to the section — new names, dates, locations, evidence, or consequences. "
-        "Every added sentence must introduce verifiable new information. "
-        "Do NOT add atmospheric filler, mood language, or restate anything already written. "
+        f"You are a cinematic crime storyteller. {topic_hint}"
+        "Add NEW STORY MOVEMENT to the section — new scenes, investigation beats, or narrative turns. "
+        "Runtime must come from STORY PROGRESSION, not repeated facts or inflated descriptions. "
+        "Every added 50-80 words must contain a story beat: clue, twist, reveal, consequence, or turning point. "
+        "Do NOT repeat biographical facts, psychological analysis, or atmosphere already written. "
         "Do NOT write sentences like 'The fear grew' or 'Silence fell' — these are banned filler."
     )
 
@@ -2271,12 +2317,13 @@ def write_long_script_split(topic: dict, research: dict, series_info: tuple | No
     _angle_content = _angle.get("angle_content", "")
 
     # (label, min_words, max_words, is_final)
+    # Minimum totals: 500+550+700+550+300 = 2,600 words → ~17 min at 155 WPM
     _SECTIONS_META = [
-        ("Opening Atmosphere",      350, 450, False),
-        ("Untold Angle",            450, 550, False),
-        ("Background & Real Story", 550, 650, False),
-        ("Show vs Reality",         450, 550, False),
-        ("Final Insight",           200, 300, True),
+        ("Opening Atmosphere",      500, 650, False),
+        ("Untold Angle",            550, 700, False),
+        ("Background & Real Story", 700, 900, False),
+        ("Show vs Reality",         550, 700, False),
+        ("Final Insight",           300, 400, True),
     ]
 
     _SECTION_LABELS = [
@@ -2289,16 +2336,17 @@ def write_long_script_split(topic: dict, research: dict, series_info: tuple | No
 
     def _section_instruction(min_w: int, max_w: int, is_final: bool) -> str:
         conclude = (
-            "This is the final section — wrap up the story, deliver final thoughts, "
-            "call to action for viewers."
+            "This is the final section — deliver the last revelation, then close with weight. "
+            "Call to action for viewers. End with a thought that stays with them."
             if is_final else
-            "Do not summarize or conclude — the next section will continue the story. "
-            "End mid-story."
+            "Do NOT summarize or conclude — the next section continues the story. "
+            "End on a tension beat: a clue unresolved, a question unanswered, a consequence pending."
         )
         return (
             f"Write exactly {min_w}–{max_w} real words for this section. "
-            "Real words only — do not count punctuation, ellipses, or line breaks. "
-            "No filler. No repetition. Every sentence adds new information. "
+            "Runtime must come from STORY MOVEMENT — new scenes, new beats, new reveals. "
+            "Every 50-80 words must contain a story beat: clue, twist, reveal, turn, or consequence. "
+            "NEVER pad with repeated biography, atmosphere, or summaries of prior sections. "
             + conclude
         )
 
@@ -2475,40 +2523,53 @@ Return ONLY valid JSON, no explanation:
     section_prompts = [
         # ── Chapter 1: Hook Intro ─────────────────────────────────────────────
         lambda: f"""{_topic_context}{_entity_lock}
-Write CHAPTER 1 — OPENING ATMOSPHERE for a documentary about {name}.
+Write CHAPTER 1 — CINEMATIC OPENING for a longform crime story about {name}.
+
+THIS IS SCENE-DRIVEN STORYTELLING — not a documentary summary.
+The viewer must feel: "I am trapped inside a cinematic crime story."
 
 YOUR EXCLUSIVE JOB in this chapter:
-1. Open with a SPECIFIC vivid moment from the real story — a year, a place, one person in the middle of an action. Make the viewer see it. Do NOT open with a question or with "You think you know..."
-2. In 2–3 sentences: establish the atmosphere, the era, the stakes. What was the world like then?
-3. In 1 paragraph: explain what made {series} famous — the one moment that millions remember — then immediately contrast it: "But the real story was never that simple."
-4. End with ONE sharp unanswered question that the rest of the video will resolve.
+1. Open with ONE SPECIFIC SCENE — a real moment, a year, a place, one person caught in an action. Short sentences. Put the viewer inside the moment.
+2. Escalate: 2-3 sentences that increase the stakes. Each sentence adds pressure, not background.
+3. What made {series} famous — one moment millions remember — then immediately pivot: the real story was different.
+4. End with an open loop: one unanswered question that forces the viewer forward.
+
+NARRATIVE MOMENTUM — every 50-80 words must contain a story beat:
+  event → reaction → investigation → discovery → escalation → setback → reveal
 
 {_facts_block("ch1")}
 
-STRICT SCOPE — this chapter does NOT:
-- Cover the real history or biography in detail (that is Chapter 3)
-- Reveal the hidden truth or untold angle (that is Chapter 2)
-- Make show-vs-reality comparisons (that is Chapter 4)
-Set the mood and plant the hook. Nothing more.
+STRICT SCOPE — this chapter does NOT cover:
+- Real history or biography in detail (that is Chapter 3)
+- The hidden truth or untold angle (that is Chapter 2)
+- Show-vs-reality comparisons (that is Chapter 4)
+Plant the hook and build the pull. Nothing more.
 
 NARRATION RULES:
-- First sentence: a specific scene, not a statement. Put the viewer in the moment.
-- No generic openers: "In the world of crime...", "This is the story of...", "One man..."
-- Short punchy sentences to open, longer narrative sentences to build atmosphere.
+- First sentence: a specific scene, not a statement. 10 words or fewer.
+- Second and third sentences ESCALATE — never explain.
+- No generic openers. No summaries. No encyclopedia facts.
+- Mix short punches (5-10 words) with medium narrative sentences (15-22 words).
 
-Write flowing documentary narration — no lists, no bullet points, paragraphs only. Minimum 3 sentences per paragraph. Always complete sentences.
-{_section_instruction(300, 380, False)}""",
+Write flowing cinematic narration — no lists, no bullet points. Minimum 3 sentences per paragraph. Always complete sentences.
+{_section_instruction(500, 650, False)}""",
 
         # ── Chapter 2: Untold Angle ───────────────────────────────────────────
         lambda: f"""{_topic_context}{_entity_lock}
-Write CHAPTER 2 — THE UNTOLD ANGLE for a documentary about {name}.
+Write CHAPTER 2 — THE HIDDEN TRUTH for a longform crime story about {name}.
 
-YOUR EXCLUSIVE JOB in this chapter:
-Build the ENTIRE chapter around this single hidden truth — the one thing {series} never showed:
+THIS IS THE INVESTIGATION TURN — the moment the viewer discovers what {series} never showed.
+Every sentence must move through a story beat. No summaries. No explanations.
 
 ANGLE TITLE: {_angle_title}
 ANGLE HOOK — open the chapter with EXACTLY this sentence: {_angle_hook}
-ANGLE DETAIL — expand ONLY these 2–3 sentences into the full chapter: {_angle_content}
+ANGLE DETAIL — this is your seed. Grow it into a full investigation sequence: {_angle_content}
+
+NARRATIVE STRUCTURE for this chapter:
+  Scene 1: The hook revelation — what was hidden and why
+  Scene 2: The investigation trail — who found it, when, what they discovered
+  Scene 3: The escalation — what this revelation means for the whole story
+  Scene 4: The consequence — what changed, who was affected, what remained hidden
 
 {_facts_block("ch2")}
 
@@ -2516,12 +2577,12 @@ STRICT SCOPE — this chapter does NOT:
 - Re-introduce the show or describe what it depicted (Chapter 1 did that)
 - Cover the general real history or biography (Chapter 3 does that)
 - Compare show scenes to real events (Chapter 4 does that)
-Every sentence must add NEW specific information about this ONE hidden truth only.
+Every sentence must add NEW specific information that ADVANCES the investigation.
 
 {_used_facts_block(1)}
 
-Open with the ANGLE HOOK sentence exactly as written. Then expand with specific names, dates, and decisions — never vague. Minimum 3 sentences per paragraph.
-{_section_instruction(350, 420, False)}
+Open with the ANGLE HOOK sentence exactly as written. Build it into a cinematic investigation sequence. Specific names, dates, and decisions — never vague.
+{_section_instruction(550, 700, False)}
 
 PREVIOUS CHAPTER (context only — do NOT repeat anything from it):
 {sections[0]}""",
@@ -2530,18 +2591,23 @@ PREVIOUS CHAPTER (context only — do NOT repeat anything from it):
         # _topic_context has NO fictional characters — only real people and verified facts.
         # _ch3_mandatory names ONLY the real counterparts, not fictional show characters.
         lambda: f"""{_topic_context}{_ch3_mandatory}{_entity_lock}
-Write CHAPTER 3 — THE REAL STORY for a documentary about {name}.
+Write CHAPTER 3 — THE REAL STORY for a longform crime story about {name}.
 
-YOUR EXCLUSIVE JOB in this chapter:
-Deliver the full documented history in chronological order. This is the FIRST TIME viewers hear the complete real biography and timeline — not summaries, the full story.
+THIS IS THE CINEMATIC NARRATIVE — the full story told as a sequence of scenes, not a biography summary.
+Move through the story chronologically, but write each era as a SCENE, not an explanation.
 
 {_facts_block("ch3")}
 
-WHAT THIS CHAPTER MUST COVER (and ONLY this chapter covers):
-- Who each real person was before everything began: family, background, first crime
-- The key events in documented chronological order with exact years
-- Real victims, real locations, real consequences
-- Every named person in the research gets their own dedicated paragraph
+SCENE-BY-SCENE STRUCTURE:
+- Scene: who this person was, what world they came from — one specific moment, not a summary
+- Scene: first turning point — what happened that set the story in motion
+- Scene: rise, escalation, key events — each as a moment with action and reaction
+- Scene: real victims, real locations, real consequences — named, specific, human
+- Every named person in the research gets a dedicated scene, not a passing mention
+
+NARRATIVE MOMENTUM — required:
+Each scene must end with a story beat that pulls to the next.
+event → reaction → investigation → discovery → escalation → consequence
 
 STRICT SCOPE — this chapter does NOT:
 - Re-describe what the show depicted (Chapter 1 did that)
@@ -2550,8 +2616,8 @@ STRICT SCOPE — this chapter does NOT:
 
 {_used_facts_block(2)}
 
-Write flowing documentary narration — no lists, no bullet points. Minimum 3 sentences per paragraph. Always complete sentences.
-{_section_instruction(420, 560, False)}
+Write flowing cinematic narration — no lists, no bullet points. Minimum 3 sentences per paragraph. Mix short (5-10 word) punches with narrative sentences.
+{_section_instruction(700, 900, False)}
 
 PREVIOUS CHAPTERS (context only — do NOT repeat anything from them):
 {sections[0]}
@@ -2560,11 +2626,10 @@ PREVIOUS CHAPTERS (context only — do NOT repeat anything from them):
 
         # ── Chapter 4: Show vs Reality ────────────────────────────────────────
         lambda: f"""{_ch4_context}{_ch4_mandatory}{_entity_lock}
-Write CHAPTER 4 — SHOW VS REALITY for a documentary about {name}.
+Write CHAPTER 4 — SHOW VS REALITY for a longform crime story about {name}.
 
-YOUR EXCLUSIVE JOB in this chapter:
-Make direct comparisons between what {series} depicted and what the documented record shows.
-This is the ONLY chapter that compares screen to reality — do it thoroughly.
+THIS IS THE REVEAL SEQUENCE — each comparison is a story beat, not a fact list.
+Write comparisons as scenes: what viewers saw, then what actually happened, then why it matters.
 Fictional character names from the show (listed above) may be used HERE and only here.
 
 {_facts_block("ch4")}
@@ -2572,21 +2637,24 @@ Fictional character names from the show (listed above) may be used HERE and only
 REQUIRED STRUCTURE:
 
 PART A — start with EXACTLY: "Here is what {series} got RIGHT:"
-Cover 3 or more specific things the show accurately depicted — reference specific scenes, episodes, or character decisions by name.
+Cover 3 or more specific things the show accurately depicted.
+For each: write the specific moment the show captured, then the documented real event that inspired it.
+Make each comparison a story beat — not a list item.
 
 PART B — start with EXACTLY: "Here is what they completely changed or left out:"
-Cover 3 or more specific things — invented scenes, erased characters, compressed timelines, reversed facts. Be precise: name the specific change and what actually happened.
+Cover 3 or more specific changes — invented scenes, erased characters, compressed timelines, reversed facts.
+For each: show specifically what was changed AND what the real story reveals that the show hid.
 
 STRICT SCOPE — this chapter does NOT:
 - Re-tell the real history (Chapter 3 already did that)
 - Re-introduce people who were fully covered in Chapter 3
 - Re-state the untold angle from Chapter 2
-Every comparison must reference NEW specific details not yet stated in Chapters 1, 2, or 3.
+Every comparison must introduce NEW story details not yet stated in Chapters 1–3.
 
 {_used_facts_block(3)}
 
-Write flowing documentary narration — minimum 3 sentences per paragraph.
-{_section_instruction(350, 420, False)}
+Write flowing cinematic narration — minimum 3 sentences per paragraph. Each comparison is a story beat.
+{_section_instruction(550, 700, False)}
 
 PREVIOUS CHAPTERS (context only — do NOT repeat anything from them):
 {sections[0]}
@@ -2597,12 +2665,17 @@ PREVIOUS CHAPTERS (context only — do NOT repeat anything from them):
 
         # ── Chapter 5: Conclusion ─────────────────────────────────────────────
         lambda: f"""{_topic_context}{_entity_lock}
-Write CHAPTER 5 — FINAL INSIGHT for a documentary about {name}.
+Write CHAPTER 5 — FINAL REVELATION AND CLOSING for a longform crime story about {name}.
+
+THIS IS THE LAST STORY BEAT — not a summary, not a recap. A final revelation that lands hard.
 
 YOUR EXCLUSIVE JOB in this chapter:
-1. Open with ONE final fact from your pre-assigned list below — something that has NOT appeared anywhere in Chapters 1–4. Make it land hard: one or two short sentences, then silence.
-2. In 2–3 sentences: what does the story of {name} reveal about the world — about power, about crime, about the gap between what we are shown and what is real?
-3. In 1 sentence: what changed because of this story? What is different today?
+1. Open with ONE final fact that has NOT appeared anywhere in Chapters 1–4.
+   Deliver it like a verdict: short, direct, no softening. Two sentences maximum.
+2. The aftermath scene: what happened to the key people after the story ended.
+   Write it as scenes — consequences, fates, unanswered questions.
+3. What this story reveals: one paragraph connecting {name}'s story to something larger —
+   power, corruption, the gap between what we are shown and what is real.
 4. Close with: "Follow Dark Crime Decoded for more real stories behind your favourite crime series and films."
 
 {_facts_block("ch5")}
@@ -2611,18 +2684,17 @@ STRICT SCOPE — this chapter does NOT:
 - Recap or summarize Chapters 1–4
 - Repeat ANY fact from earlier chapters (see fence below)
 - Use words like "In conclusion", "To summarize", "As we have seen"
-This chapter delivers a final truth and lets it echo. It does not wrap things up neatly.
 
 NARRATION RULES:
-- The final fact should be delivered like a verdict — short, direct, no softening.
-- The insight paragraph should feel like the narrator is speaking directly to the viewer.
-- The closing sentence should have weight. Not a tagline — a thought that stays with the viewer.
+- Opening fact: delivered like a verdict. Short. Direct.
+- Aftermath: scenes not summaries — who went where, what happened to them, what was never resolved.
+- Final paragraph: the narrator speaks directly to the viewer. Weight. Not a tagline.
 
 {_used_facts_block(4)}
 
 CRITICAL: End with a fully complete sentence. Never end mid-thought.
-Write flowing documentary narration — no lists, no bullet points.
-{_section_instruction(200, 260, True)}
+Write flowing cinematic narration — no lists, no bullet points.
+{_section_instruction(300, 400, True)}
 
 PREVIOUS CHAPTERS (context only — do NOT repeat anything from them):
 {sections[0]}
@@ -2655,11 +2727,17 @@ PREVIOUS CHAPTERS (context only — do NOT repeat anything from them):
           f"→ Est. runtime: ~{minutes:.0f} min")
 
     if total_real < LONG_SCRIPT_MIN_WORDS:
-        print(f"[Script] NOTE: {total_real} words (~{minutes:.0f} min) — below preferred minimum "
-              f"{LONG_SCRIPT_MIN_WORDS:,}w. Proceeding — quality check recommended.")
+        print(f"[Script] ⚠️ RUNTIME BELOW 15-MIN FLOOR: {total_real} words (~{minutes:.0f} min) — "
+              f"minimum is {LONG_SCRIPT_MIN_WORDS:,}w ({LONG_SCRIPT_MIN_WORDS//155}+ min). "
+              f"Triggering runtime expansion with new story scenes.")
+        missing = LONG_SCRIPT_MIN_WORDS - total_real
+        full_script = expand_script_runtime(full_script, missing, topic=name)
+        total_real = clean_word_count(full_script)
+        minutes = total_real / 155
+        print(f"[Script] After expansion: {total_real} words (~{minutes:.0f} min)")
     elif total_real > LONG_SCRIPT_MAX_WORDS:
-        # Safety valve only — extremely rare; cap at ~60 min to prevent runaway generation
-        print(f"[Script] Safety cap: {total_real}w > {LONG_SCRIPT_MAX_WORDS}w — trimming to ~60 min")
+        # Safety valve only — extremely rare; cap at ~90 min to prevent runaway generation
+        print(f"[Script] Safety cap: {total_real}w > {LONG_SCRIPT_MAX_WORDS}w — trimming to ~90 min")
         full_script = _cap_script_max_words(full_script, LONG_SCRIPT_MAX_WORDS)
 
     # ── Quality summary + density audit ──────────────────────────────────────
@@ -3168,11 +3246,19 @@ The host found something most viewers don't know — celebrate that discovery.
     _dc_active_entity = build_active_entity(topic["topic"]) if is_single_subject(topic["topic"]) else {}
     _dc_entity_lock   = entity_lock_instruction(_dc_active_entity)
 
-    part1_prompt = f"""You are a top true crime documentary writer for YouTube.
-Write a 1800-2500 word 12-16 minute documentary script about: {topic['topic']}
+    part1_prompt = f"""You are a cinematic longform crime storyteller for YouTube.
+Write a 2400-3200 word SCENE-DRIVEN CINEMATIC STORY about: {topic['topic']}
 The related series/movie is: {series_label}
+ABSOLUTE MINIMUM: 2,325 words (15 minutes at 155 WPM). Videos below 15 minutes are automatic failures.
 {_dc_entity_lock}
-NARRATION STYLE: Write like Morgan Freeman narrating a documentary. Flowing paragraphs, no lists, no bullet points. Minimum 3 sentences per paragraph. Make every transition carry a specific fact — name the date, the person, the amount, the place. Generic suspense phrases are forbidden (see BANNED PHRASES in the system prompt).
+THIS IS NOT A DOCUMENTARY SUMMARY — IT IS LONGFORM SOCIAL STORYTELLING.
+Viewer must feel: "I am trapped inside a cinematic crime story." NOT: "I am listening to a narrated article."
+
+NARRATIVE MOMENTUM ENGINE: Runtime comes from STORY MOVEMENT, not word inflation.
+Every 50-80 words must contain a story beat: clue, twist, reveal, turn, or consequence.
+Move through: event → reaction → investigation → discovery → escalation → setback → revelation → consequence
+
+NARRATION STYLE: Scene-driven cinematic narration. Flowing paragraphs, no lists, no bullet points. Minimum 3 sentences per paragraph. Each section must feel like a mini-thriller sequence, not a factual explanation block.
 
 COVER ALL CHARACTERS: Dedicate at least one full paragraph to EACH major character. Never focus on just one person.
 {_mandatory_fb}{_rvf_fb_block}
@@ -3197,39 +3283,36 @@ TONE: Celebrate BOTH the real story AND the show. The show is great entertainmen
 
 Use this EXACT structure (no section labels in the output — spoken words only):
 
-HOOK (100 words = ~46 seconds):
-- Lead with ONE specific shocking fact: a real number, a real date, a real decision that defies belief.
-- Something that makes the viewer want to know more — a contradiction, a hidden truth, or an open question.
-- NEVER use generic suspense openers. The fact itself must be the hook.
-- Strong example: "In 1989, Pablo Escobar offered to pay Colombia's entire national debt — $10 billion — if the government would stop extraditing traffickers. They said no."
+HOOK (150 words = ~60 seconds):
+Write as a CINEMATIC SCENE — put the viewer inside ONE specific documented moment.
+Short punching sentences. Then escalate. End with an open question that forces watching.
+Do NOT open with a summary or generic suspense. The SCENE is the hook.
+Strong style: "He sat across from the investigator. His hands were steady. He had done this before."
 
-SERIES INTRO (220 words = ~1.4 minutes):
-- Celebrate what {series_label} showed the world — it is great television
-- Why millions of people loved it and why it matters
-- Build excitement: the real story that inspired it is even more incredible
-- Name {series_label} directly and what made it famous
+SERIES INTRO (280 words = ~1.8 minutes):
+Celebrate what {series_label} showed the world — it is great television.
+Write what made it famous as a SCENE — the moment viewers will remember.
+Then pivot: the real story has dimensions the show never captured.
 
-REAL BACKGROUND (320 words = ~2.1 minutes):
-- Real person's early life with specific facts
-- Family, childhood, origins — real dates, real places, real names
-- The fascinating true events BEFORE the series timeline begins
+REAL BACKGROUND (450 words = ~2.9 minutes):
+Write the real person's origins as SCENES, not biography summaries.
+Each era of their life is a new scene with a turning point.
+Specific dates, real places, real decisions — each with a consequence.
 
-MAIN STORY (520 words = ~3.3 minutes):
-- Full chronological real story
-- Key events the series captured — what {series_label} got RIGHT with evidence
-- How history inspired {series_label} and why filmmakers made their creative choices
-- Real quotes from people involved
-- Specific dates and facts throughout
+MAIN STORY (700 words = ~4.5 minutes):
+Write the full story as a cinematic sequence of scenes.
+Every scene ends with a story beat: clue, turn, reveal, or consequence.
+Documented events reconstructed with scene-level specificity.
+Real victims, real locations, real consequences — named and human.
 
-SHOCKING REVELATIONS (220 words = ~1.4 minutes):
-- 3-4 fascinating real facts that make the true story even more incredible than {series_label}
-- Remarkable real details the show's runtime couldn't fully capture
-- Things that would amaze even the biggest fans of the show
-- Real impact on real people and real history
+INVESTIGATION AND REVELATIONS (400 words = ~2.6 minutes):
+Write as an investigation sequence: what investigators found, in what order, what it revealed.
+Each discovery is a scene. Each revelation escalates the stakes.
+3-4 documented facts that even the show's biggest fans do not know.
 
-REAL STORY VS SCREEN STORY (80 words = ~0.5 minutes):
+REAL STORY VS SCREEN STORY (120 words = ~0.8 minutes):
 ONLY write a comparison if you have a VERIFIED, SPECIFIC difference with different facts or numbers.
-Format: "In {series_label}, they showed X. In reality, Y happened."
+Write each comparison as a story beat: "The show depicted X. The documented record shows Y."
 NEVER write the same number or fact twice as if they are different.
 NEVER invent a difference that does not exist.
 
@@ -3294,7 +3377,7 @@ Start immediately with the HOOK. Write spoken words only — no labels, no heade
     # Generate untold angle first — used in script + title + short video
     _angle_data = generate_untold_angle(topic["topic"], series_label)
 
-    # Primary: 5-call split targeting 2,500–3,050 real words
+    # Primary: 5-call split targeting 2,600–3,350 real words (~17-22 min)
     script_text = write_long_script_split(topic, research, _si_long, angle=_angle_data)
     if script_text and clean_word_count(script_text) >= LONG_SCRIPT_MIN_WORDS:
         script_text = validate_script(script_text)
@@ -4332,9 +4415,37 @@ def expand_arabic_runtime(ar_script: str, target_min: float, topic: str = "") ->
 # Mirror of _SCRIPT_SYSTEM_PROMPT — same cinematic weight, native Arabic voice.
 # Used when writing Arabic script directly from Arabic research (not translation).
 
-_AR_SCRIPT_SYSTEM_PROMPT = """أنت راوٍ وثائقي عربي محترف. هدفك الوحيد: كتابة نص يبدو كأن راوياً عربياً مخضرماً كتبه بالعربية — مباشرةً، دون ترجمة.
+_AR_SCRIPT_SYSTEM_PROMPT = """أنت راوٍ سينمائي عربي متخصص في قصص الجريمة الحقيقية. مهمتك الوحيدة: كتابة رواية سينمائية مشهدية تشعر المستمع بأنه محاصر داخل قصة جريمة سينمائية.
 
-المرجع الأسلوبي: وثائقيات الجزيرة الوثائقية، BBC عربي، قناة ناشيونال جيوغرافيك أبوظبي.
+المرجع الأسلوبي: إيقاع Netflix للجريمة الحقيقية + أسلوب التحقيق الدرامي العربي.
+هذا ليس ملخصاً وثائقياً — هذا سرد سينمائي بالعربية.
+
+══════════════════════════════════════
+محرك الزخم السردي — القاعدة الأهم
+══════════════════════════════════════
+وقت التشغيل يأتي من حركة القصة — ليس من تضخيم الكلمات.
+
+الأسلوب المحظور تماماً:
+- تكرار الحقائق السيرة الذاتية بصياغات مختلفة
+- تكرار التحليل النفسي في كل فصل
+- فقرات تفسيرية ثابتة بدون حركة سردية
+- ملخصات لما قيل في الفصل السابق
+
+المطلوب: كل 50-80 كلمة (~20-40 ثانية صوت) يجب أن يشعر المستمع بأحد:
+  • اكتشاف دليل جديد باسم أو تاريخ محدد
+  • تناقض: ما كان يُعتقد مقابل ما اكتُشف
+  • تحول في التحقيق: تطور غير متوقع
+  • تصعيد خطر أو عواقب
+  • كشف: معلومة مخفية تظهر للأول مرة
+  • انتكاسة: خطة تنهار، خيط يضيع
+
+الكتابة المشهدية المطلوبة:
+الخطأ: "كان بوندي يتلاعب بالمحققين لسنوات."
+الصواب: "ظن المحقق أن الشاهد عرّفه أخيراً.
+ثم رن الهاتف.
+ضحية أخرى اختفت."
+
+كل فصل يتحرك عبر: حدث → ردة فعل → تحقيق → اكتشاف → تصعيد → عاقبة
 
 ══════════════════════════════════════
 الأولوية القصوى: الكتابة للاستماع
@@ -4486,15 +4597,29 @@ _AR_SCRIPT_SYSTEM_PROMPT = """أنت راوٍ وثائقي عربي محترف. 
 ══════════════════════════════════════
 قانون زخم التحقيق — إلزامي
 ══════════════════════════════════════
-كل فقرة يجب أن تُحرّك التحقيق خطوة للأمام:
-- فقرة 1: الوضع الأولي + السؤال (ماذا حدث؟)
-- فقرة 2: الدليل الأول + رد فعل المحقق
+كل فصل يتحرك عبر سلسلة مشهدية متصلة:
+  حدث → ردة فعل → تحقيق → اكتشاف → تصعيد → انتكاسة → كشف → عاقبة
+
+كل فقرة يجب أن تُحرّك القصة خطوة للأمام:
+- فقرة 1: مشهد الانطلاق — اللحظة الحرجة + السؤال الذي يسحب
+- فقرة 2: الدليل الأول + ردة الفعل المباشرة
 - فقرة 3: الانعطاف — ما لم يتوقعه أحد — مع التاريخ والاسم الحقيقي
-- فقرة 4+: تصعيد الأدلة — كل فقرة تكشف طبقة أعمق من الحقيقة
-- الفصل الأخير: الحكم القضائي أو الإدانة أو المصير الموثق
+- فقرة 4+: تصعيد كل فقرة تكشف طبقة أعمق من الحقيقة
+- نهاية الفصل: توتر مفتوح يسحب المستمع للفصل التالي
 
 لا يُقبل أي فصل يُعيد ما قاله الفصل السابق بكلمات مختلفة.
 كل فصل يكشف معلومة جديدة لم تُذكر من قبل.
+الوقت يأتي من حركة القصة — ليس من إعادة شرح ما قيل.
+
+══════════════════════════════════════
+الكتابة المشهدية بالعربية — إلزامي
+══════════════════════════════════════
+لا تكتب ملخصاً — اكتب مشهداً.
+الجمل القصيرة للصدمة والتحول:
+"وصل المحقق. المكان كان فارغاً. الهاتف لا يزال يرن."
+الجمل المتوسطة للسرد الحقيقي:
+"في مارس 1985، عثر المحققون على وثيقة واحدة تُحوّل مسار القضية بالكامل."
+لا تكتب أربع جمل متتالية بدون نبضة سردية (دليل، تحول، كشف، عاقبة).
 
 ══════════════════════════════════════
 تسلسل الأدلة — الجدول الزمني

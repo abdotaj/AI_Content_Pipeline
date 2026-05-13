@@ -7786,9 +7786,10 @@ def assign_clips_to_script(
 # FAST PIPELINE
 # ─────────────────────────────────────────────────────────────────────────────
 # FAST_VISUALS_PER_MIN: unique image transitions per minute.
-# At 4 clip-variants per image and ~7.5 s per clip → 8 clips/min / 4 = 2 images/min.
-_FAST_VISUALS_PER_MIN: int = 8   # clip transitions per minute
-_FAST_IMAGES_PER_MIN: float = _FAST_VISUALS_PER_MIN / 4.0  # = 2.0
+# At 4 clip-variants per image and ~5 s per clip → 12 clips/min / 4 = 3 images/min.
+# Increased from 8→12 to improve visual rhythm and reduce portrait dominance.
+_FAST_VISUALS_PER_MIN: int = 12  # clip transitions per minute (was 8)
+_FAST_IMAGES_PER_MIN: float = _FAST_VISUALS_PER_MIN / 4.0  # = 3.0
 
 
 def run_fast_pipeline(
@@ -7839,6 +7840,10 @@ def run_fast_pipeline(
             _real_audio_secs = _AC(audio_path).duration
             _min = _real_audio_secs / 60
             print(f"[FAST] Audio duration: {_real_audio_secs:.1f}s ({_min:.1f} min)")
+            # Real audio contract enforcement — 15-min floor is ABSOLUTE
+            if not is_short and _real_audio_secs > 0 and _real_audio_secs < 900:
+                print(f"[FAST] ⚠️ RUNTIME CONTRACT VIOLATION: {_min:.1f}min < 15min minimum. "
+                      f"Script was too short — video assembly continues but runtime is below floor.")
         except Exception:
             pass
     except Exception as e:
@@ -7846,12 +7851,13 @@ def run_fast_pipeline(
         traceback.print_exc()
         return ""
 
-    # ── Visual density: 8 clip-transitions/min → 2 unique images/min ──────
+    # ── Visual density: 12 clip-transitions/min → 3 unique images/min ──────
+    # Cap raised to 60 images to support 15-90 min longform videos.
     if is_short:
         n_images = 6
     elif _real_audio_secs > 0:
         _density_floor = _math.ceil(_real_audio_secs / 60 * _FAST_IMAGES_PER_MIN)
-        n_images = max(20, min(30, _density_floor))
+        n_images = max(25, min(60, _density_floor))
         print(f"[FAST] Visual density: {n_images} images for {_real_audio_secs/60:.1f}min "
               f"({_FAST_VISUALS_PER_MIN} clips/min target)")
     else:
