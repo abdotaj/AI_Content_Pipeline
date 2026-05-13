@@ -78,24 +78,63 @@ _ANIM_DOMAIN_KEYWORDS: dict[str, list] = {
     "war_historical": ["world war", "civil war", "genocide", "holocaust", "revolution"],
 }
 
-# Section name → scene type mapping
+# Section name → scene type mapping (12 cinematic types)
 _SECTION_SCENE_TYPE: dict[str, str] = {
-    # Arabic
-    "مقدمة":   "talking_portrait",
-    "خلفية":   "era_reenactment",
-    "قصة":     "investigation_scene",
-    "واقع":    "comparison_scene",
-    "حقائق":   "evidence_scene",
-    "خاتمة":   "memorial_scene",
-    # English
-    "hook":        "talking_portrait",
-    "introduction":"talking_portrait",
-    "background":  "era_reenactment",
-    "story":       "investigation_scene",
-    "reality":     "comparison_scene",
-    "shocking":    "evidence_scene",
-    "conclusion":  "memorial_scene",
+    # Arabic section labels
+    "مقدمة":    "talking_portrait",
+    "خلفية":    "era_reenactment",
+    "قصة":      "investigation_scene",
+    "واقع":     "comparison_scene",
+    "حقائق":    "evidence_scene",
+    "خاتمة":    "memorial_scene",
+    "اعتراف":   "interrogation_room",
+    "محاكمة":   "courtroom_drama",
+    "سجن":      "prison_cell",
+    "طفولة":    "childhood_archive",
+    "شهادة":    "cctv_footage",
+    "كارثة":    "flashback",
+    # English section labels
+    "hook":          "talking_portrait",
+    "introduction":  "talking_portrait",
+    "background":    "era_reenactment",
+    "story":         "investigation_scene",
+    "reality":       "comparison_scene",
+    "shocking":      "evidence_scene",
+    "conclusion":    "memorial_scene",
+    "aftermath":     "memorial_scene",
+    "confession":    "interrogation_room",
+    "interrogation": "interrogation_room",
+    "trial":         "courtroom_drama",
+    "verdict":       "courtroom_drama",
+    "courtroom":     "courtroom_drama",
+    "prison":        "prison_cell",
+    "childhood":     "childhood_archive",
+    "flashback":     "flashback",
+    "surveillance":  "cctv_footage",
+    "newspaper":     "newspaper_reveal",
+    "headline":      "newspaper_reveal",
 }
+
+# Keyword → scene type override (applied when section label doesn't match)
+# Higher-priority keywords appear first
+_CHUNK_SCENE_OVERRIDES: list[tuple[frozenset, str]] = [
+    (frozenset({"confessed", "interrogated", "questioned", "admitted", "police station",
+                "detective asked", "hours of questioning", "broke down"}), "interrogation_room"),
+    (frozenset({"courtroom", "judge", "jury", "verdict", "sentenced", "acquitted",
+                "trial began", "prosecutor", "defense attorney"}),         "courtroom_drama"),
+    (frozenset({"cctv", "surveillance", "security camera", "footage showed",
+                "caught on camera", "captured on video"}),                 "cctv_footage"),
+    (frozenset({"newspaper", "headline", "front page", "reporters",
+                "press conference", "media reported"}),                     "newspaper_reveal"),
+    (frozenset({"born in", "grew up", "childhood", "as a child", "his mother",
+                "her mother", "his father", "her father", "young"}),        "childhood_archive"),
+    (frozenset({"prison", "cell", "behind bars", "incarcerated", "solitary",
+                "death row", "serving time"}),                              "prison_cell"),
+    (frozenset({"flashback", "years earlier", "decades before", "back in",
+                "rewind", "in his youth", "before the crime"}),            "flashback"),
+    (frozenset({"evidence", "forensic", "dna", "fingerprint", "blood",
+                "weapon found", "autopsy", "crime scene"}),                "evidence_scene"),
+]
 
 # Motion prompt templates — crime/biography domain (default)
 _MOTION_TEMPLATES: dict[str, str] = {
@@ -111,6 +150,20 @@ _MOTION_TEMPLATES: dict[str, str] = {
                           "documentary close-up slow motion, cinematic dramatic lighting, {style}, 9:16 vertical",
     "memorial_scene":     "{descriptor} memorial tribute, {era}, documentary ending atmosphere, "
                           "slow cinematic motion, {style}, 9:16 vertical",
+    "interrogation_room": "Dimly lit interrogation room {era}, single overhead light, metal chair, {event}, "
+                          "documentary POV slow push-in, psychological tension, {style}, 9:16 vertical",
+    "courtroom_drama":    "Dramatic courtroom scene {location} {era}, {event}, "
+                          "cinematic overhead shot, tension-filled atmosphere, {style}, 9:16 vertical",
+    "prison_cell":        "Dark prison cell corridor {location} {era}, {event}, "
+                          "cinematic dolly shot through bars, somber documentary realism, {style}, 9:16 vertical",
+    "childhood_archive":  "Vintage archival photograph style {era}, {descriptor} childhood scene, "
+                          "documentary sepia grain overlay, warm nostalgic light, {style}, 9:16 vertical",
+    "flashback":          "{descriptor} {location} {era}, {event}, cinematic flashback, "
+                          "film grain, warm faded tones, slow dissolve atmosphere, {style}, 9:16 vertical",
+    "cctv_footage":       "Grainy CCTV surveillance footage {location} {era}, {event}, "
+                          "timestamp overlay, fisheye wide angle, low-light documentary realism, {style}, 9:16 vertical",
+    "newspaper_reveal":   "Aged newspaper front page {era}, {event}, dramatic headline reveal, "
+                          "documentary close-up slow zoom, dramatic backlight, {style}, 9:16 vertical",
 }
 
 # Motion prompt templates — archaeology / biblical-history / ancient-world domain
@@ -127,6 +180,20 @@ _MOTION_TEMPLATES_ARCHAEOLOGY: dict[str, str] = {
                           "documentary close-up archaeology table, warm golden light, {style}, 9:16 vertical",
     "memorial_scene":     "Ancient ruins {location}, {era}, historical documentary ending atmosphere, "
                           "slow cinematic motion, warm dust haze, {style}, 9:16 vertical",
+    "interrogation_room": "Ancient council chamber {location} {era}, {event}, "
+                          "documentary candlelight atmosphere, stone walls, {style}, 9:16 vertical",
+    "courtroom_drama":    "Ancient tribunal or judgment hall {location} {era}, {event}, "
+                          "dramatic torchlight, cinematic overhead shot, {style}, 9:16 vertical",
+    "prison_cell":        "Ancient dungeon or holding cell {location} {era}, {event}, "
+                          "documentary torch-lit corridor, somber atmosphere, {style}, 9:16 vertical",
+    "childhood_archive":  "Archival reconstruction {era}, ancient childhood scene {location}, "
+                          "documentary warm dusty tones, historical detail, {style}, 9:16 vertical",
+    "flashback":          "Ancient {location} {era}, {event}, documentary historical flashback, "
+                          "sepia warm tones, slow dissolve, {style}, 9:16 vertical",
+    "cctv_footage":       "Ancient wall inscription or petroglyph {location} {era}, {event}, "
+                          "documentary close-up reveal, dramatic raking light, {style}, 9:16 vertical",
+    "newspaper_reveal":   "Ancient scroll or clay tablet {location} {era}, {event}, "
+                          "documentary inscription close-up slow zoom, dramatic backlight, {style}, 9:16 vertical",
 }
 
 # Domain → template set
@@ -135,6 +202,29 @@ _TEMPLATES_BY_DOMAIN: dict[str, dict] = {
     "war_historical":  _MOTION_TEMPLATES,   # reuse default; era will differentiate
     "default":         _MOTION_TEMPLATES,
 }
+
+# Environment continuity lock — set once per create_animation_video() call,
+# ensures repeated scene types reuse the same location/era descriptor
+# rather than generating disconnected backgrounds each time.
+_ENVIRONMENT_LOCK: dict[str, str] = {}
+
+
+def _lock_environment(scene_type: str, where: str, era: str) -> tuple[str, str]:
+    """
+    Return (where, era) for this scene, reusing established environment
+    descriptors when available.  First occurrence locks the descriptor;
+    subsequent calls return the locked value so the same interrogation
+    room / courtroom / prison cell persists across the episode.
+    """
+    key_where = f"{scene_type}_where"
+    key_era   = f"{scene_type}_era"
+    if key_where not in _ENVIRONMENT_LOCK and where:
+        _ENVIRONMENT_LOCK[key_where] = where
+        _ENVIRONMENT_LOCK[key_era]   = era
+        print(f"[ANIMATION] Environment continuity preserved: {scene_type} → {where}")
+    locked_where = _ENVIRONMENT_LOCK.get(key_where) or where
+    locked_era   = _ENVIRONMENT_LOCK.get(key_era)   or era
+    return locked_where, locked_era
 
 # ── Event keywords — crime/biography domain (default) ────────────────────────
 _EVENT_KEYWORDS: dict[str, str] = {
@@ -547,7 +637,9 @@ def parse_script_into_scenes(
 ) -> list[dict]:
     """
     Split script by [SECTION: ...] markers, then chunk each section into
-    ~150-word visual units. For each chunk extract:
+    ~50-word cinematic beats. Each beat maps to one unique visual moment.
+
+    For each chunk extract:
       section, text, scene_type, who, where, era, mood, event, prompt_hint
 
     Returns list of scene dicts ready for motion clip generation.
@@ -573,14 +665,25 @@ def parse_script_into_scenes(
         words = body.split()
         if not words:
             continue
-        # Chunk into ~150-word units (≈ 5-7 second narration segments)
-        chunk_size = max(80, len(words) // max(1, len(words) // 150))
+        # 50-word cinematic beats → each beat is one unique dramatic moment
+        chunk_size = max(30, len(words) // max(1, len(words) // 50))
         for ci in range(0, len(words), chunk_size):
             chunk = " ".join(words[ci: ci + chunk_size])
             scene = _extract_scene_context(chunk, section_label, topic, research)
+            # Keyword-based scene type override — overrides section-label type
+            # when narrative content clearly signals a different visual context
+            chunk_lower = chunk.lower()
+            for kw_set, override_type in _CHUNK_SCENE_OVERRIDES:
+                if any(kw in chunk_lower for kw in kw_set):
+                    scene["scene_type"] = override_type
+                    break
             scenes.append(scene)
 
-    print(f"[SCENE] Parsed {len(scenes)} visual scenes from script")
+    print(f"[SCENE] Parsed {len(scenes)} cinematic beats from script (50-word chunks)")
+    _type_dist: dict[str, int] = {}
+    for s in scenes:
+        _type_dist[s["scene_type"]] = _type_dist.get(s["scene_type"], 0) + 1
+    print(f"[SCENE] Scene type distribution: {_type_dist}")
     return scenes
 
 
@@ -678,6 +781,7 @@ def build_scene_motion_prompt(scene: dict, identity: dict) -> str:
     """
     Build a visually specific motion prompt for this scene.
     Template set is domain-aware — archaeology scenes NEVER get crime templates.
+    Environment continuity lock applied for repeated scene types.
     """
     # Select template set from topic lock domain (set once at pipeline start)
     domain    = _TOPIC_LOCK.get("domain") or scene.get("domain", "default")
@@ -688,10 +792,15 @@ def build_scene_motion_prompt(scene: dict, identity: dict) -> str:
     # when no template exists for the scene type in the selected set
     template = templates.get(scene_type) or templates.get("era_reenactment") or _MOTION_TEMPLATES["era_reenactment"]
 
+    # Apply environment continuity lock for repeated scene types
+    scene_where = scene.get("where") or identity.get("location", "")
+    scene_era   = scene.get("era")   or identity.get("era", "")
+    locked_where, locked_era = _lock_environment(scene_type, scene_where, scene_era)
+
     prompt = template.format(
         descriptor = identity.get("descriptor", identity.get("name", "")),
-        location   = scene.get("where") or identity.get("location", ""),
-        era        = scene.get("era")   or identity.get("era", ""),
+        location   = locked_where,
+        era        = locked_era,
         event      = scene.get("event") or scene.get("mood", ""),
         style      = identity.get("style_keywords", _STYLE_PRESETS["default"]),
     )
@@ -707,18 +816,21 @@ def generate_scene_clip(
     scene: dict,
     identity: dict,
     output_path: str,
-    duration: int = 5,
+    duration: int = 10,
 ) -> str | None:
     """
-    Generate a motion clip for this scene.
+    Generate a motion clip for this scene (8-12s).
     Tier 1 (portrait sections): D-ID talking portrait
     Tier 2: Runway Gen-3
     Tier 3: Luma Dream Machine
     Tier 4: Kling AI
-    Tier 5: Enhanced still (Ken Burns — always works)
+    Tier 5: Enhanced still (cinematic motion — always works)
     """
+    # Clamp duration to cinematic range
+    duration = max(8, min(12, int(duration or 10)))
+
     # ── Semantic scene validation before any generation ──────────────────────
-    locked_topic = _TOPIC_LOCK.get("topic") or identity.get("name", "")
+    locked_topic  = _TOPIC_LOCK.get("topic") or identity.get("name", "")
     locked_domain = _TOPIC_LOCK.get("domain", "default")
 
     # Validate scene entity against topic lock
@@ -747,7 +859,8 @@ def generate_scene_clip(
         if result:
             _health.reset("runway")
             _clip_cache_set(prompt, duration, result)
-            print(f"[SCENE] Motion reenactment generated (Runway): {scene['scene_type']}")
+            print(f"[SCENE] Reenactment scene created (Runway): {scene['scene_type']}")
+            print(f"[SCENE] Motion animation active: {scene['scene_type']}")
             return result
         _health.record_failure("runway")
 
@@ -757,7 +870,8 @@ def generate_scene_clip(
         if result:
             _health.reset("luma")
             _clip_cache_set(prompt, duration, result)
-            print(f"[SCENE] Motion reenactment generated (Luma): {scene['scene_type']}")
+            print(f"[SCENE] Reenactment scene created (Luma): {scene['scene_type']}")
+            print(f"[SCENE] Motion animation active: {scene['scene_type']}")
             return result
         _health.record_failure("luma")
 
@@ -773,20 +887,36 @@ def generate_scene_clip(
         if result:
             _health.reset("kling")
             _clip_cache_set(prompt, duration, result)
-            print(f"[SCENE] Motion reenactment generated (Kling): {scene['scene_type']}")
+            print(f"[SCENE] Reenactment scene created (Kling): {scene['scene_type']}")
+            print(f"[SCENE] Motion animation active: {scene['scene_type']}")
             return result
         print("[KLING] Fallback path active")
         _health.record_failure("kling")
 
-    # ── Tier 5: Enhanced still (Ken Burns — always works) ────────────────────
+    # ── Tier 5: Enhanced still (cinematic motion — always works) ─────────────
     src_img = ref_img
     if not src_img or not os.path.exists(src_img):
         src_img = _generate_fallback_image(scene, identity, output_path.replace(".mp4", "_bg.jpg"))
 
     if src_img:
-        motions = ["zoom_in", "zoom_out", "pan_right", "pan_left", "pan_up"]
-        motion  = motions[hash(prompt) % len(motions)]
-        result  = _enhanced_still_clip(src_img, output_path, duration=duration, motion=motion)
+        # Scene-type → motion mode mapping for atmospheric variety
+        _SCENE_MOTIONS: dict[str, str] = {
+            "talking_portrait":  "breathe",
+            "interrogation_room":"flicker",
+            "courtroom_drama":   "pan_right",
+            "evidence_scene":    "zoom_in",
+            "cctv_footage":      "flicker",
+            "newspaper_reveal":  "zoom_in",
+            "prison_cell":       "pan_up",
+            "childhood_archive": "parallax",
+            "flashback":         "rain",
+            "era_reenactment":   "pan_right",
+            "investigation_scene":"zoom_out",
+            "comparison_scene":  "pan_left",
+            "memorial_scene":    "zoom_out",
+        }
+        motion = _SCENE_MOTIONS.get(scene.get("scene_type", ""), "zoom_in")
+        result = _enhanced_still_clip(src_img, output_path, duration=duration, motion=motion)
         if result:
             _clip_cache_set(prompt, duration, result)
             print(f"[SCENE] Narration-linked visual active (enhanced still, {motion}): {scene['scene_type']}")
@@ -1038,20 +1168,31 @@ def _kling_poll(task_id: str, output_path: str, api_key: str, timeout: int = 180
 def _enhanced_still_clip(
     image_path: str,
     output_path: str,
-    duration: float = 5.0,
+    duration: float = 10.0,
     motion: str = "zoom_in",
 ) -> str | None:
     """
-    Create a cinematic motion clip from a still image using MoviePy.
-    Applies Ken Burns zoom/pan + dark vignette overlay + subtle blur.
-    No external API required.
+    Cinematic motion clip from a still image — no external API required.
+
+    Supported motion modes:
+      zoom_in    — slow push-in (Ken Burns)
+      zoom_out   — slow pull-back
+      pan_right  — slow horizontal drift right
+      pan_left   — slow horizontal drift left
+      pan_up     — slow vertical drift up
+      pan_down   — slow vertical drift down
+      breathe    — subtle oscillating scale (documentary talking head)
+      parallax   — foreground drift vs background lock (depth illusion)
+      flicker    — random brightness variation (old-film / CCTV / interrogation)
+      rain       — progressive left-drift + darkening (exterior night scene)
     """
     try:
         from PIL import Image as _PIL
         import numpy as np
+        import math
 
         try:
-            from moviepy.editor import VideoClip, AudioFileClip
+            from moviepy.editor import VideoClip
         except ImportError:
             from moviepy import VideoClip
 
@@ -1059,21 +1200,61 @@ def _enhanced_still_clip(
         img_np = np.array(img, dtype=np.float32)
         h, w   = img_np.shape[:2]
 
+        # Pre-seed deterministic flicker values for this clip
+        _rng = random.Random(hash(image_path + motion))
+        _flicker_vals = [
+            _rng.uniform(0.80, 1.0) if _rng.random() < 0.08 else _rng.uniform(0.93, 1.0)
+            for _ in range(int(duration * 24) + 10)
+        ]
+
         def make_frame(t: float):
             progress = t / max(duration, 0.001)
-            # Zoom factor: 1.0 → 1.15 (zoom in) or 1.15 → 1.0 (zoom out)
+            frame_idx = int(t * 24)
+
+            # ── Scale + offset calculation per motion mode ────────────────
             if motion == "zoom_in":
                 scale = 1.0 + 0.15 * progress
+                ox    = (int(w * scale) - w) // 2
+                oy    = (int(h * scale) - h) // 2
             elif motion == "zoom_out":
                 scale = 1.15 - 0.15 * progress
+                ox    = (int(w * scale) - w) // 2
+                oy    = (int(h * scale) - h) // 2
             elif motion == "pan_right":
                 scale = 1.10
+                ox    = int((w * 0.10) * progress)
+                oy    = (int(h * scale) - h) // 2
             elif motion == "pan_left":
                 scale = 1.10
+                ox    = int((w * 0.10) * (1.0 - progress))
+                oy    = (int(h * scale) - h) // 2
             elif motion == "pan_up":
                 scale = 1.10
+                ox    = (int(w * scale) - w) // 2
+                oy    = int((h * 0.10) * progress)
+            elif motion == "pan_down":
+                scale = 1.10
+                ox    = (int(w * scale) - w) // 2
+                oy    = int((h * 0.10) * (1.0 - progress))
+            elif motion == "breathe":
+                # Subtle inhale/exhale oscillation — 1.00 → 1.03 → 1.00
+                scale = 1.0 + 0.03 * abs(math.sin(math.pi * progress * 2))
+                ox    = (int(w * scale) - w) // 2
+                oy    = (int(h * scale) - h) // 2
+            elif motion == "parallax":
+                # Slight scale + asymmetric horizontal drift for depth
+                scale = 1.08
+                ox    = int((w * 0.08) * progress * 0.6)
+                oy    = (int(h * scale) - h) // 2
+            elif motion in ("flicker", "rain"):
+                scale = 1.06
+                # Rain: slight left drift over time
+                ox    = int((w * 0.06) * progress) if motion == "rain" else (int(w * scale) - w) // 2
+                oy    = (int(h * scale) - h) // 2
             else:
                 scale = 1.0 + 0.10 * progress
+                ox    = (int(w * scale) - w) // 2
+                oy    = (int(h * scale) - h) // 2
 
             new_h = int(h * scale)
             new_w = int(w * scale)
@@ -1082,21 +1263,19 @@ def _enhanced_still_clip(
                 dtype=np.float32,
             )
 
-            # Pan offset
-            if motion == "pan_right":
-                ox = int((new_w - w) * progress)
-                oy = (new_h - h) // 2
-            elif motion == "pan_left":
-                ox = int((new_w - w) * (1.0 - progress))
-                oy = (new_h - h) // 2
-            elif motion == "pan_up":
-                ox = (new_w - w) // 2
-                oy = int((new_h - h) * progress)
-            else:
-                ox = (new_w - w) // 2
-                oy = (new_h - h) // 2
-
+            ox = max(0, min(ox, new_w - w))
+            oy = max(0, min(oy, new_h - h))
             cropped = resized[oy:oy + h, ox:ox + w]
+
+            # ── Atmospheric overlays ──────────────────────────────────────
+            if motion == "flicker":
+                brightness = _flicker_vals[min(frame_idx, len(_flicker_vals) - 1)]
+                cropped = cropped * brightness
+
+            elif motion == "rain":
+                # Progressive darkening bottom-to-top rain feel
+                darkness = 1.0 - 0.25 * progress
+                cropped = cropped * darkness
 
             # Dark vignette overlay for cinematic feel
             vignette = _make_vignette(h, w, strength=0.45)
@@ -1457,6 +1636,11 @@ def create_animation_video(
     for _d in [output_dir, chars_dir, clips_dir]:
         os.makedirs(_d, exist_ok=True)
 
+    # Reset environment lock at the start of every video — prevents env state
+    # from leaking between successive calls within the same process
+    global _ENVIRONMENT_LOCK
+    _ENVIRONMENT_LOCK = {}
+
     # ── Step 1: Character identity ────────────────────────────────────────────
     if language == "arabic":
         try:
@@ -1466,6 +1650,8 @@ def create_animation_video(
             print(f"[AR PURITY] Final sanitize failed: {e}")
 
     identity = build_character_identity(research, topic, chars_dir)
+    print(f"[CHARACTER] Real identity locked: {identity['name']} | style={identity['style_preset']}")
+    print(f"[VISUAL] Consistent cinematic style active: {identity['style_preset']}")
 
     # ── Step 2: Audio (TTS via existing pipeline) ─────────────────────────────
     if not audio_path or not os.path.exists(audio_path):
@@ -1495,31 +1681,49 @@ def create_animation_video(
         print("[Anim] No scenes parsed — aborting")
         return ""
 
-    # ── Step 4: Talking portrait for hook (resume-aware) ─────────────────────
-    portrait_clip = None
-    hook_scene    = scenes[0] if scenes else None
-    portrait_out  = os.path.join(clips_dir, f"{stable_id}_portrait.mp4")
+    # ── Step 4: Talking portraits for ~30% of portrait-type scenes ───────────
+    # D-ID applied to hook + up to 2 additional portrait/investigation scenes
+    _PORTRAIT_TYPES = {"talking_portrait", "investigation_scene", "memorial_scene"}
+    _portrait_indices = [
+        i for i, s in enumerate(scenes)
+        if s.get("scene_type") in _PORTRAIT_TYPES
+    ]
+    # Always include scene 0 (hook); add up to 2 more evenly spaced
+    _max_portraits = max(1, min(3, len(_portrait_indices)))
+    if len(_portrait_indices) > _max_portraits:
+        # Keep first + evenly spaced through the remaining portrait indices
+        _step = max(1, len(_portrait_indices) // _max_portraits)
+        _portrait_indices = _portrait_indices[::_step][:_max_portraits]
+    _portrait_index_set = set(_portrait_indices)
 
-    # Reuse existing portrait clip if valid
-    if os.path.exists(portrait_out) and os.path.getsize(portrait_out) > 10_000:
-        portrait_clip = portrait_out
-        print(f"[SCENE] Reusing existing portrait clip: {os.path.basename(portrait_out)}")
-    elif hook_scene and identity.get("ref_image_path") and os.path.exists(identity["ref_image_path"] or ""):
-        portrait_clip = generate_talking_portrait(
-            identity["ref_image_path"],
-            audio_path,
-            portrait_out,
-        )
+    portrait_clips: dict[int, str] = {}
+    _has_ref_img = bool(identity.get("ref_image_path") and os.path.exists(identity.get("ref_image_path") or ""))
+
+    if _has_ref_img and os.getenv("DID_API_KEY", "").strip():
+        for pi in _portrait_indices:
+            _port_out = os.path.join(clips_dir, f"{stable_id}_portrait_{pi:02d}.mp4")
+            if os.path.exists(_port_out) and os.path.getsize(_port_out) > 10_000:
+                portrait_clips[pi] = _port_out
+                print(f"[SCENE] Reusing existing portrait clip [{pi}]: {os.path.basename(_port_out)}")
+                continue
+            _port_result = generate_talking_portrait(
+                identity["ref_image_path"],
+                audio_path,
+                _port_out,
+            )
+            if _port_result:
+                portrait_clips[pi] = _port_result
+                print(f"[CHARACTER] Talking portrait generated: scene {pi} → {scenes[pi]['scene_type']}")
+                print(f"[ANIMATION] Lip-sync applied: scene {pi}")
 
     # ── Step 5: Generate motion clips per scene (resume-aware) ───────────────
     clip_paths: list[str] = []
-    if portrait_clip and os.path.exists(portrait_clip):
-        clip_paths.append(portrait_clip)
-        print(f"[SCENE] Narration-linked visual active (portrait): {hook_scene['scene_type'] if hook_scene else 'hook'}")
 
     for i, scene in enumerate(scenes):
-        # Skip first scene if we have a portrait clip for it
-        if i == 0 and portrait_clip:
+        # Use pre-generated talking portrait if available for this scene index
+        if i in portrait_clips:
+            clip_paths.append(portrait_clips[i])
+            print(f"[SCENE] Narration-linked visual active (talking portrait): {scene['scene_type']}")
             continue
 
         clip_out = os.path.join(clips_dir, f"{stable_id}_scene_{i:02d}.mp4")
@@ -1530,7 +1734,7 @@ def create_animation_video(
             clip_paths.append(clip_out)
             continue
 
-        clip = generate_scene_clip(scene, identity, clip_out, duration=5)
+        clip = generate_scene_clip(scene, identity, clip_out, duration=10)
         if clip:
             clip_paths.append(clip)
         else:
@@ -1538,11 +1742,12 @@ def create_animation_video(
             fallback_bg = os.path.join(clips_dir, f"{stable_id}_scene_{i:02d}_bg.jpg")
             fb_img = _generate_fallback_image(scene, identity, fallback_bg)
             if fb_img:
-                motions = ["zoom_in", "zoom_out", "pan_right", "pan_left"]
+                _FALLBACK_MOTIONS = ["zoom_in", "zoom_out", "pan_right", "pan_left",
+                                     "breathe", "flicker", "rain", "parallax"]
                 fb_clip = _enhanced_still_clip(
                     fb_img, clip_out,
-                    duration=5,
-                    motion=motions[i % len(motions)],
+                    duration=10,
+                    motion=_FALLBACK_MOTIONS[i % len(_FALLBACK_MOTIONS)],
                 )
                 if fb_clip:
                     clip_paths.append(fb_clip)
@@ -1552,7 +1757,7 @@ def create_animation_video(
         return ""
 
     print(f"[SCENE] Total motion clips ready: {len(clip_paths)}")
-    print(f"[VISUAL] Consistent style mode active: {identity['style_preset']}")
+    print(f"[VISUAL] Consistent cinematic style active: {identity['style_preset']}")
 
     # ── Step 6: Assemble ──────────────────────────────────────────────────────
     output_path = os.path.join(output_dir, f"{video_id}.mp4")
