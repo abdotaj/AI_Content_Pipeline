@@ -380,7 +380,25 @@ def run_pipeline():
                 "search_query": topic_text,
                 "series_name":  series_name,
                 "research":     research,
+                "manual_topic": True,
             }
+
+            # ── Risk classification — manual topics always allowed ────────────
+            try:
+                from agents.topic_risk import classify_topic_risk, log_risk
+                _risk_manual = classify_topic_risk(topic_text, is_manual=True)
+                log_risk(topic_text, _risk_manual)
+                topic["risk_info"] = _risk_manual
+                if _risk_manual["editorial_mode"]:
+                    send_message(
+                        f"⚠️ Sensitive topic detected: {topic_text}\n\n"
+                        f"Risk level: {_risk_manual['risk_level']}\n"
+                        f"Editorial-assist mode is ACTIVE — narration will use evidential framing.\n"
+                        f"Creator retains full editorial control."
+                    )
+            except Exception as _risk_e:
+                print(f"[RISK] Classification failed (non-fatal): {_risk_e}")
+                topic["risk_info"] = {}
 
         else:
             # ── No topic sent — auto-discover ─────────────────────────────────
@@ -400,6 +418,24 @@ def run_pipeline():
             topic = auto_topics[0]
             topic_text  = topic.get("topic", "")
             topic_niche = topic.get("niche", "")
+
+            # ── Belt-and-suspenders risk check (research_agent already filters) ─
+            try:
+                from agents.topic_risk import classify_topic_risk, log_risk
+                _risk_auto = classify_topic_risk(topic_text, is_manual=False)
+                log_risk(topic_text, _risk_auto)
+                if _risk_auto.get("manual_confirmation_required"):
+                    print(f"[RISK] HIGH-RISK auto-topic blocked at pipeline level: '{topic_text}'")
+                    send_message(
+                        f"⚠️ HIGH-RISK topic blocked (auto mode):\n{topic_text}\n\n"
+                        f"Risk signals: {_risk_auto.get('matched_signals', [])}\n\n"
+                        f"Send a topic manually tomorrow to override with editorial-assist mode."
+                    )
+                    return
+                topic["risk_info"] = _risk_auto
+            except Exception as _risk_e:
+                print(f"[RISK] Auto classification failed (non-fatal): {_risk_e}")
+                topic.setdefault("risk_info", {})
 
             if is_fictional(topic_text, topic_niche):
                 print(f"[Pipeline] Fictional topic blocked: '{topic_text}'")

@@ -1452,8 +1452,47 @@ def research_topics(count: int = 2, niches: list[str] | None = None) -> list[dic
             f"True crime — real story behind {series}"
         )
         topic = get_trending_topic(series, niche)
+
+        # ── Risk classification — filter HIGH-RISK topics in AUTO mode ────────
+        try:
+            from agents.topic_risk import classify_topic_risk, log_risk
+            _risk = classify_topic_risk(topic.get("topic", series), is_manual=False)
+            log_risk(topic.get("topic", series), _risk)
+            if _risk["manual_confirmation_required"]:
+                print(
+                    f"[RISK] AUTO-SKIP: '{topic.get('topic', series)}' is HIGH RISK "
+                    f"for autonomous generation (signals: {_risk['matched_signals']}). "
+                    f"Creator must manually select this topic."
+                )
+                continue  # skip this topic — do not add to returned list
+            topic["risk_info"] = _risk
+        except Exception as _re:
+            print(f"[RISK] Classification failed (non-fatal): {_re}")
+
         topics.append(topic)
         print(f"[Research] Found topic: {topic['topic']} ({niche})")
+
+    # If all discovered topics were high-risk, fall back to safe NICHES
+    if not topics:
+        print("[RISK] All auto-discovered topics were high-risk — falling back to safe NICHES")
+        safe_series = [
+            niche.split("behind")[-1].strip() if "behind" in niche else niche
+            for niche in NICHES
+        ]
+        random.shuffle(safe_series)
+        for series in safe_series[:count]:
+            niche = next(
+                (n for n in NICHES if series.lower() in n.lower()),
+                f"True crime — real story behind {series}"
+            )
+            topic = get_trending_topic(series, niche)
+            topic["risk_info"] = {"risk_level": "LOW", "selection_mode": "AUTO",
+                                  "editorial_mode": False, "manual_confirmation_required": False,
+                                  "matched_signals": []}
+            topics.append(topic)
+            print(f"[Research] Safe fallback topic: {topic['topic']} ({niche})")
+            if len(topics) >= count:
+                break
 
     return topics
 

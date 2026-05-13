@@ -2502,6 +2502,19 @@ def write_long_script_split(topic: dict, research: dict, series_info: tuple | No
     )
     print(f"[NARRATIVE] Variation profile: {_vp['name']} — {_vp['description'][:60]}…")
 
+    # ── Editorial-assist mode — sensitive topic framing ───────────────────────
+    _risk_info       = topic.get("risk_info", {})
+    _risk_level      = _risk_info.get("risk_level", "LOW")
+    _editorial_mode  = _risk_info.get("editorial_mode", False)
+    _editorial_block = ""
+    if _editorial_mode:
+        try:
+            from agents.topic_risk import get_editorial_assist_prompt
+            _editorial_block = get_editorial_assist_prompt(_risk_level, name)
+            print(f"[RISK] Editorial-assist mode ACTIVE — risk={_risk_level}")
+        except Exception:
+            pass
+
     # (label, min_words, max_words, is_final)
     # Minimum totals: 700+750+950+700+400 = 3,500 words → ~24 min at 145 WPM (EN FAST floor)
     # ── 5-ACT NARRATIVE FLOW ENGINE — story progression phases, not documentary chapters ──
@@ -2712,7 +2725,7 @@ Return ONLY valid JSON, no explanation:
 
     section_prompts = [
         # ── ACT 1: Unease & First Clue ────────────────────────────────────────
-        lambda: f"""{_topic_context}{_entity_lock}{_variation_header}
+        lambda: f"""{_topic_context}{_entity_lock}{_variation_header}{_editorial_block}
 Write ACT 1 — UNEASE & FIRST CLUE for a cinematic crime story about {name}.
 
 STORY STATE THIS ACT: NORMAL WORLD → FIRST CRACK OF UNEASE.
