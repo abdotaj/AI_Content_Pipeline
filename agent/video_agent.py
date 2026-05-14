@@ -539,7 +539,18 @@ def generate_voiceover_openai(text: str, language: str, output_path: str,
         return any(sig in s for sig in _SIGNALS) or ("429" in err_str and "quota" in s)
 
     try:
-        chunks = _split_text(text, max_chars=4000)
+        # Use 3500-char limit for Arabic (preprocessing can inflate length)
+        _max_chars = 3500 if language == "arabic" else 4000
+        chunks = _split_text(text, max_chars=_max_chars)
+        # Hard-cap: any chunk still > 4090 chars gets split at whitespace boundary
+        _safe: list[str] = []
+        for _c in chunks:
+            if len(_c) > 4090:
+                for _start in range(0, len(_c), 4090):
+                    _safe.append(_c[_start:_start + 4090].strip())
+            else:
+                _safe.append(_c)
+        chunks = [c for c in _safe if c]
         print(f"[Voice] OpenAI TTS: {len(chunks)} chunk(s)")
 
         audio_files: list[str] = []
@@ -672,7 +683,8 @@ def _merge_chunks_pydub(chunk_files: list[str], output_path: str) -> bool:
 
 
 def _split_text(text: str, max_chars: int = 4000) -> list[str]:
-    """Split text preserving complete paragraphs; no content is ever dropped."""
+    """Split text preserving complete paragraphs; no content is ever dropped.
+    Supports Arabic sentence delimiters (، ؟ .) so Arabic paragraphs split correctly."""
     if len(text) <= max_chars:
         return [text]
 
@@ -685,9 +697,12 @@ def _split_text(text: str, max_chars: int = 4000) -> list[str]:
         else:
             if current:
                 chunks.append(current.strip())
-            # Paragraph itself too large — split on sentence boundaries
+            # Paragraph itself too large — split on sentence boundaries (Arabic + Latin)
             if len(para) > max_chars:
-                sentences = para.replace(". ", ".|").replace("! ", "!|").replace("? ", "?|").split("|")
+                sentences = (para
+                             .replace(". ", ".|").replace("! ", "!|").replace("? ", "?|")
+                             .replace("، ", "،|").replace("؟ ", "؟|").replace("۔ ", "۔|")
+                             .split("|"))
                 sub = ""
                 for sent in sentences:
                     if len(sub) + len(sent) + 1 <= max_chars:
@@ -695,7 +710,8 @@ def _split_text(text: str, max_chars: int = 4000) -> list[str]:
                     else:
                         if sub:
                             chunks.append(sub.strip())
-                        sub = sent
+                        # Hard-truncate sentences that individually exceed the limit
+                        sub = sent[:max_chars] if len(sent) > max_chars else sent
                 current = sub
             else:
                 current = para
@@ -2247,33 +2263,55 @@ _VE_EVIDENCE = frozenset({
     "analysis", "autopsy", "sample", "ballistic", "toxicology", "seized",
     "arrested", "confiscated", "recovered", "lab", "laboratory", "corpse",
     "stabbed", "shot", "killed", "murdered", "strangled", "poisoned",
+    # Arabic
+    "دم", "سلاح", "بندقية", "سكين", "رصاصة", "بصمة", "دنا",
+    "جنائي", "دليل", "أدلة", "جثة", "ضحية", "جرح", "اكتشف", "وجد",
+    "تحليل", "تشريح", "مختبر", "مصادرة", "استرداد",
+    "طعن", "أطلق", "قتل", "مقتل", "خنق", "تسمم", "اعتقل", "قبض",
 })
 _VE_NEWSPAPER = frozenset({
     "newspaper", "headline", "article", "press", "media", "coverage",
     "published", "breaking", "broadcast", "news", "declared", "announced",
     "aired", "reporters", "journalist", "front page",
+    # Arabic
+    "جريدة", "صحيفة", "عنوان", "مقال", "صحافة", "إعلام", "تغطية",
+    "نشر", "عاجل", "أخبار", "خبر", "أعلن", "صحفي", "بث",
 })
 _VE_CCTV = frozenset({
     "camera", "footage", "surveillance", "security", "recorded", "tape",
     "video", "caught on", "captured", "monitored", "cctv", "screenshot",
     "film", "filming", "filmed",
+    # Arabic
+    "كاميرا", "لقطات", "مراقبة", "تسجيل", "شريط", "فيديو",
+    "التقطت", "رصد", "صورة", "فيلم", "تصوير", "أمني",
 })
 _VE_COURTROOM = frozenset({
     "court", "judge", "jury", "trial", "verdict", "sentence", "conviction",
     "acquittal", "prosecution", "defense", "testify", "testified", "charges",
     "pleaded", "guilty", "innocent", "attorney", "lawyer", "hearing",
     "indicted", "indictment", "sentenced",
+    # Arabic
+    "محكمة", "قاضي", "قاض", "محلفين", "محاكمة", "حكم", "إدانة",
+    "براءة", "نيابة", "دفاع", "شهادة", "تهمة", "مذنب", "بريء",
+    "محامي", "جلسة", "اتهام", "صدر", "قرار",
 })
 _VE_INTERROGATION = frozenset({
     "interrogated", "questioned", "interview", "confession", "admitted",
     "denied", "suspect", "interrogation", "detained", "custody", "handcuffed",
     "arrested", "taken in", "brought in",
+    # Arabic
+    "استجواب", "استجوب", "اعتراف", "اعترف", "نفى", "مشتبه",
+    "احتجاز", "احتجز", "حجز", "مقيد", "اعتقال", "موقوف",
 })
 _VE_MAP = frozenset({
     "map", "route", "distance", "miles", "kilometers", "north", "south",
     "east", "west", "border", "territory", "region", "headquarters",
     "coordinates", "located", "location", "address", "neighborhood",
     "traveled", "crossed", "drove to", "flew to",
+    # Arabic
+    "خريطة", "مسار", "مسافة", "كيلومتر", "شمال", "جنوب",
+    "شرق", "غرب", "حدود", "منطقة", "إحداثيات", "موقع",
+    "سافر", "عبر", "قاد", "طار", "انتقل",
 })
 _VE_LOCATION = frozenset({
     "apartment", "house", "hotel", "city", "street", "building", "room",
@@ -2281,15 +2319,26 @@ _VE_LOCATION = frozenset({
     "club", "alley", "highway", "road", "entered", "arrived", "drove",
     "walked", "lived", "moved", "fled", "corridor", "hallway", "basement",
     "rooftop", "garage", "parking", "factory", "dock", "harbor",
+    # Arabic
+    "شقة", "منزل", "بيت", "فندق", "مدينة", "شارع", "مبنى",
+    "غرفة", "مكتب", "سيارة", "مستودع", "مدرسة", "مستشفى",
+    "زقاق", "طريق", "دخل", "وصل", "هرب", "فر", "قبو", "سطح",
+    "مرآب", "ميناء", "مصنع",
 })
 _VE_CHILDHOOD = frozenset({
     "born", "childhood", "young", "youth", "grew up", "parents", "family",
     "school", "teenage", "teenager", "adolescent", "early life", "child",
     "upbringing", "raised", "mother", "father", "brother", "sister",
+    # Arabic
+    "ولد", "طفولة", "صغير", "شباب", "نشأ", "والدان", "والده", "والدته",
+    "عائلة", "مراهق", "طفل", "تربية", "ربي", "أم", "أب", "أخ", "أخت",
 })
 _VE_PRISON = frozenset({
     "prison", "jail", "cell", "bars", "incarcerated", "sentence", "serving",
     "released", "parole", "warden", "inmate", "penitentiary", "lockup",
+    # Arabic
+    "سجن", "زنزانة", "قضبان", "محكوم", "أُفرج", "إفراج", "سجين",
+    "حبس", "معتقل", "سراح",
 })
 
 _VE_ATMOSPHERE_POOL = [
@@ -2492,7 +2541,7 @@ def build_documentary_visual_pool(
         for ev in events
     ]
     raw_results = parallel_map_safe(
-        _gen_event, tasks, max_workers=10, timeout=120, label="doc visual",
+        _gen_event, tasks, max_workers=25, timeout=120, label="doc visual",
     )
 
     paths: list[str] = []
@@ -3484,7 +3533,7 @@ def _fetch_gap_images(
         ]
         gen_results = parallel_map_safe(
             lambda args: generate_ai_image(args[0], args[1]),
-            _tasks, max_workers=3, timeout=120, label="AI image",
+            _tasks, max_workers=20, timeout=120, label="AI image",
         )
         for r in gen_results:
             if r and os.path.exists(r):
@@ -7133,8 +7182,9 @@ _SECTION_DISPLAY = {
     "Introduction":   "ðŸŽ¬ Introduction",
     "Background":     "🔺 Background & Context",
     "Main Story":     "🔍 Main Story",
-    "Shocking Facts": "ðŸ'€ Shocking Facts",
-    "Conclusion":     "ðŸŽ¯ Conclusion",
+    "Shocking Facts": "\U0001f480 Shocking Facts",
+    "Conclusion":     "\U0001f3af Conclusion",
+    "الرواية مقابل الواقع": "\U0001f3ad الرواية مقابل الواقع",
     "Ù…Ù‚Ø¯Ù…Ø©":          "ðŸŽ¬ Ù…Ù‚Ø¯Ù…Ø©",
     "Ø§Ù„Ø®Ù„ÙÙŠØ©":         "🔺 Ø§Ù„Ø®Ù„ÙÙŠØ© ÙˆØ§Ù„Ø³ÙŠØ§Ù‚",
     "Ø§Ù„Ù‚ØµØ© Ø§Ù„Ø±Ø¦ÙŠØ³ÙŠØ©":  "🔍 Ø§Ù„Ù‚ØµØ© Ø§Ù„Ø±Ø¦ÙŠØ³ÙŠØ©",
@@ -7145,7 +7195,10 @@ _SECTION_DISPLAY = {
 
 def _canonical_section_name(name: str) -> str:
     """Normalize section names to stable display keys."""
-    n = (name or "").strip().strip("-: ").lower()
+    import re as _re2
+    # Strip leading section numbers like "3 — " or "4. " before lookup
+    cleaned = _re2.sub(r'^\d+\s*[.—\-:–]+\s*', '', (name or "").strip()).strip()
+    n = (cleaned or name or "").strip().strip("-: ").lower()
     if not n:
         return "Introduction"
     aliases = {
@@ -7158,10 +7211,14 @@ def _canonical_section_name(name: str) -> str:
         "main story": "Main Story",
         "main events": "Main Story",
         "story": "Main Story",
+        "the real story": "Main Story",
         "shocking facts": "Shocking Facts",
+        "shocking details": "Shocking Facts",
         "revelations": "Shocking Facts",
         "conclusion": "Conclusion",
         "ending": "Conclusion",
+        "القصة الحقيقية": "القصة الرئيسية",
+        "الرواية مقابل الواقع": "الرواية مقابل الواقع",
         "Ù…Ù‚Ø¯Ù…Ø©": "Ù…Ù‚Ø¯Ù…Ø©",
         "Ø§Ù„Ù…Ù‚Ø¯Ù…Ø©": "Ù…Ù‚Ø¯Ù…Ø©",
         "Ø§Ù„Ø®Ù„ÙÙŠØ©": "Ø§Ù„Ø®Ù„ÙÙŠØ©",
@@ -7172,7 +7229,7 @@ def _canonical_section_name(name: str) -> str:
         "Ø§Ù„Ø­Ù‚Ø§Ø¦Ù‚ Ø§Ù„ØµØ§Ø¯Ù…Ø©": "Ø­Ù‚Ø§Ø¦Ù‚ ØµØ§Ø¯Ù…Ø©",
         "Ø§Ù„Ø®Ø§ØªÙ…Ø©": "Ø§Ù„Ø®Ø§ØªÙ…Ø©",
     }
-    return aliases.get(n, name.strip())
+    return aliases.get(n, cleaned.strip() or name.strip())
 
 
 def _parse_script_sections(script_text: str) -> list[tuple[str, str]]:
@@ -7320,7 +7377,7 @@ def generate_tts_sections(script_text: str, video_id: str, language: str) -> tup
     cumulative = 0.0
     chapter_lines = ["â±ï¸ CHAPTERS"]
     for i, (name, _) in enumerate(sections):
-        display = _SECTION_DISPLAY.get(name, f"🔌 {name}")
+        display = _SECTION_DISPLAY.get(name, f"📖 {name}")
         chapter_lines.append(f"{format_time(cumulative)} {display}")
         cumulative += section_durations[i]
 
@@ -8497,7 +8554,7 @@ def run_full_pipeline(
         if _to_enhance:
             print(f"[FULL] Enhancing {len(_to_enhance)} image(s)...")
             from concurrent.futures import ThreadPoolExecutor as _TPE
-            with _TPE(max_workers=min(4, len(_to_enhance))) as _pool:
+            with _TPE(max_workers=min(20, len(_to_enhance))) as _pool:
                 _enh_results = list(_pool.map(_enhance_image, _to_enhance))
             _enh_map        = dict(zip(_to_enhance, _enh_results))
             all_image_paths = [_enh_map.get(p) or p for p in all_image_paths]

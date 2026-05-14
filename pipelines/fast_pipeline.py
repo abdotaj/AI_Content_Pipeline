@@ -134,9 +134,25 @@ def get_duration(video_path: str) -> str:
 
 
 def _video_secs(path: str) -> float:
-    """Return actual video duration in seconds (0 on error)."""
+    """Return actual video duration in seconds (0 on error). ffprobe-first to avoid file locks."""
+    import subprocess
     try:
-        from moviepy import VideoFileClip
+        result = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", path],
+            capture_output=True, text=True, timeout=15,
+        )
+        if result.returncode == 0:
+            val = result.stdout.strip()
+            if val and val != "N/A":
+                return float(val)
+    except Exception:
+        pass
+    try:
+        try:
+            from moviepy.editor import VideoFileClip
+        except ImportError:
+            from moviepy import VideoFileClip
         c = VideoFileClip(path)
         d = c.duration
         c.close()
@@ -423,14 +439,7 @@ def run_pipeline() -> None:
     if gh_images or gh_videos:
         _log("Media", f"{len(gh_images)} images + {len(gh_videos)} videos loaded", "OK")
 
-    # ── STEP 4: Generate 4 videos ─────────────────────────────────────────────
-    _ctrl.update_stage("VideoGen", "rendering EN long video")
-    _log("VideoGen", "Rendering EN long video")
-    en_long_id   = f"{today}_{uuid.uuid4().hex[:8]}_english_long"
-    en_long_path = _make_video(en_long, en_long_id, stats, user_images=user_images, user_videos=user_videos)
-
-    _check_cancel("after EN long render")
-
+    # ── STEP 4: Generate 4 videos (Arabic first) ─────────────────────────────
     _ctrl.update_stage("VideoGen", "rendering AR long video")
     _log("VideoGen", "Rendering AR long video")
     _ar_wc_check  = len(ar_long.get("script", "").split())
@@ -475,66 +484,19 @@ def run_pipeline() -> None:
 
     _check_cancel("after AR long render")
 
-    # ── STEP 4c: Promo shorts (mandatory — EN + AR) ───────────────────────────
+    _ctrl.update_stage("VideoGen", "rendering EN long video")
+    _log("VideoGen", "Rendering EN long video")
+    en_long_id   = f"{today}_{uuid.uuid4().hex[:8]}_english_long"
+    en_long_path = _make_video(en_long, en_long_id, stats, user_images=user_images, user_videos=user_videos)
+
+    _check_cancel("after EN long render")
+
+    # ── STEP 4c: Promo shorts (Arabic first, mandatory — AR + EN) ────────────
     # Path A: render from promo script (best quality, full vertical format)
     # Path B: fallback — cut strongest moment from the rendered long video
     # Path B fires if Path A produces no file (script empty OR render failed)
     en_short_path = ""
     ar_short_path = ""
-
-    _ctrl.update_stage("Shorts", "rendering EN promo short")
-    _log("Shorts", "Rendering EN vertical short")
-    _en_short_script = en_long.get("short_script_en", "")
-    _en_short_via_script = False
-    if _en_short_script:
-        _log("Shorts", "Path A: rendering EN short from script")
-        _en_sid = f"{today}_{uuid.uuid4().hex[:8]}_english_short"
-        en_short_path = _make_video(
-            {**en_long, "script": _en_short_script},
-            _en_sid, stats, user_images=user_images, user_videos=user_videos,
-        )
-        _en_short_via_script = bool(en_short_path)
-    if not en_short_path and en_long_path and os.path.exists(en_long_path):
-        _log("Shorts", "Path B: cutting EN short from long video (fallback)", "WARN")
-        try:
-            _cuts = cut_best_short(en_long_path, en_long)
-            en_short_path = _cuts[0]["path"] if _cuts else ""
-        except Exception as _ce:
-            _log("Shorts", f"EN short cut failed: {_ce}", "ERROR")
-    # Auto-expansion: only for Path A renders, up to 2 attempts
-    if en_short_path and _en_short_via_script:
-        for _en_short_rebuild in range(1, 3):
-            _en_short_secs = _video_secs(en_short_path)
-            print(f"[SHORT RUNTIME] EN short: {_en_short_secs:.1f}s")
-            if _en_short_secs >= 60:
-                _log("Shorts", f"[SHORT PASSED] EN short: {_en_short_secs:.1f}s", "OK")
-                break
-            _log("Shorts", f"[SHORT EXPANSION] EN short {_en_short_secs:.1f}s < 60s — expanding (attempt {_en_short_rebuild}/2)", "WARN")
-            from agent.script_agent import expand_short_script as _ess
-            _en_short_script = _ess(_en_short_script, "english", en_long.get("topic", ""), 200)
-            en_long["short_script_en"] = _en_short_script
-            en_short_path = _make_video(
-                {**en_long, "script": _en_short_script},
-                f"{today}_{uuid.uuid4().hex[:8]}_english_short",
-                stats, user_images=user_images, user_videos=user_videos,
-            ) or en_short_path
-        else:
-            _en_short_secs = _video_secs(en_short_path)
-            if _en_short_secs < 60:
-                _log("Shorts", f"[SHORT BLOCKED] EN short {_en_short_secs:.1f}s < 60s after 2 expansions — will not upload", "ERROR")
-                en_short_path = ""
-    elif en_short_path:
-        _en_short_secs = _video_secs(en_short_path)
-        print(f"[SHORT RUNTIME] EN short (Path B cut): {_en_short_secs:.1f}s")
-        if _en_short_secs < 60:
-            _log("Shorts", f"[SHORT BLOCKED] EN short cut {_en_short_secs:.1f}s < 60s — will not upload", "ERROR")
-            en_short_path = ""
-    if en_short_path:
-        _log("Shorts", f"EN promo short ready: {en_short_path}", "OK")
-    else:
-        _log("Shorts", "EN promo short unavailable — check long video render", "ERROR")
-
-    _check_cancel("after long video renders")
 
     _ctrl.update_stage("Shorts", "rendering AR promo short")
     _log("Shorts", "Rendering AR vertical short")
@@ -587,6 +549,60 @@ def run_pipeline() -> None:
         _log("Shorts", f"AR promo short ready: {ar_short_path}", "OK")
     else:
         _log("Shorts", "AR promo short unavailable — check long video render", "ERROR")
+
+    _check_cancel("after AR short render")
+
+    _ctrl.update_stage("Shorts", "rendering EN promo short")
+    _log("Shorts", "Rendering EN vertical short")
+    _en_short_script = en_long.get("short_script_en", "")
+    _en_short_via_script = False
+    if _en_short_script:
+        _log("Shorts", "Path A: rendering EN short from script")
+        _en_sid = f"{today}_{uuid.uuid4().hex[:8]}_english_short"
+        en_short_path = _make_video(
+            {**en_long, "script": _en_short_script},
+            _en_sid, stats, user_images=user_images, user_videos=user_videos,
+        )
+        _en_short_via_script = bool(en_short_path)
+    if not en_short_path and en_long_path and os.path.exists(en_long_path):
+        _log("Shorts", "Path B: cutting EN short from long video (fallback)", "WARN")
+        try:
+            _cuts = cut_best_short(en_long_path, en_long)
+            en_short_path = _cuts[0]["path"] if _cuts else ""
+        except Exception as _ce:
+            _log("Shorts", f"EN short cut failed: {_ce}", "ERROR")
+    # Auto-expansion: only for Path A renders, up to 2 attempts
+    if en_short_path and _en_short_via_script:
+        for _en_short_rebuild in range(1, 3):
+            _en_short_secs = _video_secs(en_short_path)
+            print(f"[SHORT RUNTIME] EN short: {_en_short_secs:.1f}s")
+            if _en_short_secs >= 60:
+                _log("Shorts", f"[SHORT PASSED] EN short: {_en_short_secs:.1f}s", "OK")
+                break
+            _log("Shorts", f"[SHORT EXPANSION] EN short {_en_short_secs:.1f}s < 60s — expanding (attempt {_en_short_rebuild}/2)", "WARN")
+            from agent.script_agent import expand_short_script as _ess
+            _en_short_script = _ess(_en_short_script, "english", en_long.get("topic", ""), 200)
+            en_long["short_script_en"] = _en_short_script
+            en_short_path = _make_video(
+                {**en_long, "script": _en_short_script},
+                f"{today}_{uuid.uuid4().hex[:8]}_english_short",
+                stats, user_images=user_images, user_videos=user_videos,
+            ) or en_short_path
+        else:
+            _en_short_secs = _video_secs(en_short_path)
+            if _en_short_secs < 60:
+                _log("Shorts", f"[SHORT BLOCKED] EN short {_en_short_secs:.1f}s < 60s after 2 expansions — will not upload", "ERROR")
+                en_short_path = ""
+    elif en_short_path:
+        _en_short_secs = _video_secs(en_short_path)
+        print(f"[SHORT RUNTIME] EN short (Path B cut): {_en_short_secs:.1f}s")
+        if _en_short_secs < 60:
+            _log("Shorts", f"[SHORT BLOCKED] EN short cut {_en_short_secs:.1f}s < 60s — will not upload", "ERROR")
+            en_short_path = ""
+    if en_short_path:
+        _log("Shorts", f"EN promo short ready: {en_short_path}", "OK")
+    else:
+        _log("Shorts", "EN promo short unavailable — check long video render", "ERROR")
 
     # ── Approval gate 2: Render complete ─────────────────────────────────────
     while True:

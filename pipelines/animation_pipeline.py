@@ -792,15 +792,8 @@ def run_pipeline() -> None:
 
     os.makedirs(FINAL_DIR, exist_ok=True)
 
-    _ctrl.update_stage("AnimGen", "generating EN animation video")
-    _log("AnimGen", "Generating EN animation video (character-identity locked)")
-    en_long_path = _make_animation_video(en_long, topic.get("research", {}), FINAL_DIR, stats, "EN long")
-
-    _check_cancel("after EN animation render")
-
     _ctrl.update_stage("AnimGen", "generating AR animation video")
     _log("AnimGen", "Generating AR animation video")
-
     ar_long_path = _make_animation_video(ar_long, topic.get("research", {}), FINAL_DIR, stats, "AR long")
 
     # ── Arabic runtime auto-rebuild ───────────────────────────────────────────
@@ -826,6 +819,12 @@ def run_pipeline() -> None:
 
     _check_cancel("after AR animation render")
 
+    _ctrl.update_stage("AnimGen", "generating EN animation video")
+    _log("AnimGen", "Generating EN animation video (character-identity locked)")
+    en_long_path = _make_animation_video(en_long, topic.get("research", {}), FINAL_DIR, stats, "EN long")
+
+    _check_cancel("after EN animation render")
+
     # ── STEP 4: Promo shorts (cut from long animation videos) ─────────────────
     # Animation pipeline does not re-render a separate short script —
     # the motion clips are already the best possible visuals. We cut the
@@ -842,36 +841,16 @@ def run_pipeline() -> None:
         _log("Shorts", f"Dedicated short script failed: {_se}", "WARN")
 
     if _dedicated_short:
-        en_short_path = _make_standalone_short(
-            _dedicated_short, topic.get("research", {}), FINAL_DIR, stats, "EN standalone short", "english"
-        )
         ar_short_path = _make_standalone_short(
             _dedicated_short, topic.get("research", {}), FINAL_DIR, stats, "AR standalone short", "arabic"
+        )
+        en_short_path = _make_standalone_short(
+            _dedicated_short, topic.get("research", {}), FINAL_DIR, stats, "EN standalone short", "english"
         )
 
     if (not en_long_path or not os.path.exists(en_long_path)) and (not ar_long_path or not os.path.exists(ar_long_path)):
         _log("Shorts", "[SHORT] Long render unavailable", "WARN")
         _log("Shorts", "[SHORT] Continuing standalone generation", "WARN")
-
-    if not en_short_path and en_long_path and os.path.exists(en_long_path):
-        _log("Shorts", "Cutting EN short from animation video")
-        try:
-            _cuts = cut_best_short(en_long_path, en_long)
-            en_short_path = _cuts[0]["path"] if _cuts else ""
-            if en_short_path:
-                _en_s_secs = _video_secs(en_short_path)
-                print(f"[SHORT RUNTIME] EN short (cut): {_en_s_secs:.1f}s")
-                if _en_s_secs < 60:
-                    _log("Shorts", f"[SHORT BLOCKED] EN cut short {_en_s_secs:.1f}s < 60s — will not upload", "ERROR")
-                    en_short_path = ""
-                else:
-                    _log("Shorts", f"[SHORT PASSED] EN short: {_en_s_secs:.1f}s — {os.path.basename(en_short_path)}", "OK")
-            else:
-                _log("Shorts", "EN short cut returned no clip", "WARN")
-        except Exception as _ce:
-            _log("Shorts", f"EN short cut failed: {_ce}", "ERROR")
-    else:
-        _log("Shorts", "EN long video missing — cannot cut short", "WARN")
 
     _ctrl.update_stage("Shorts", "cutting AR promo short from animation")
     if not ar_short_path and ar_long_path and os.path.exists(ar_long_path):
@@ -893,6 +872,27 @@ def run_pipeline() -> None:
             _log("Shorts", f"AR short cut failed: {_ce}", "ERROR")
     else:
         _log("Shorts", "AR long video missing — cannot cut short", "WARN")
+
+    _ctrl.update_stage("Shorts", "cutting EN promo short from animation")
+    if not en_short_path and en_long_path and os.path.exists(en_long_path):
+        _log("Shorts", "Cutting EN short from animation video")
+        try:
+            _cuts = cut_best_short(en_long_path, en_long)
+            en_short_path = _cuts[0]["path"] if _cuts else ""
+            if en_short_path:
+                _en_s_secs = _video_secs(en_short_path)
+                print(f"[SHORT RUNTIME] EN short (cut): {_en_s_secs:.1f}s")
+                if _en_s_secs < 60:
+                    _log("Shorts", f"[SHORT BLOCKED] EN cut short {_en_s_secs:.1f}s < 60s — will not upload", "ERROR")
+                    en_short_path = ""
+                else:
+                    _log("Shorts", f"[SHORT PASSED] EN short: {_en_s_secs:.1f}s — {os.path.basename(en_short_path)}", "OK")
+            else:
+                _log("Shorts", "EN short cut returned no clip", "WARN")
+        except Exception as _ce:
+            _log("Shorts", f"EN short cut failed: {_ce}", "ERROR")
+    else:
+        _log("Shorts", "EN long video missing — cannot cut short", "WARN")
 
     # ── Approval gate 2: Render complete ─────────────────────────────────────
     while True:

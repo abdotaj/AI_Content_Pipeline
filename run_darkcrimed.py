@@ -652,15 +652,15 @@ def run_pipeline():
         stats["skipped"] += 2
         _log("VideoGen", "Reusing existing video files — skipping generation", "OK")
     else:
-        # OUTPUT 1 — English long-form
-        en_long_id   = f"{today}_{uuid.uuid4().hex[:8]}_english_long"
-        en_long_path = _make_video(en_long, en_long_id, stats, user_images=user_images, user_videos=user_videos)
-
-        # OUTPUT 2 — Arabic long-form
+        # OUTPUT 1 — Arabic long-form (first: catches runtime issues early)
         # Word-count pre-render check removed. Real audio duration is the only truth:
         # the post-render auto-rebuild loop below measures actual video seconds.
         ar_long_id   = f"{today}_{uuid.uuid4().hex[:8]}_arabic_long"
         ar_long_path = _make_video(ar_long, ar_long_id, stats, user_images=user_images, user_videos=user_videos)
+
+        # OUTPUT 2 — English long-form
+        en_long_id   = f"{today}_{uuid.uuid4().hex[:8]}_english_long"
+        en_long_path = _make_video(en_long, en_long_id, stats, user_images=user_images, user_videos=user_videos)
 
     # ── Arabic runtime auto-rebuild ───────────────────────────────────────────
     # Measure ACTUAL rendered video length. If < 10 min, expand script + re-render.
@@ -686,61 +686,7 @@ def run_pipeline():
         ar_long_id   = f"{today}_{uuid.uuid4().hex[:8]}_arabic_long"
         ar_long_path = _make_video(ar_long, ar_long_id, stats, user_images=user_images, user_videos=user_videos)
 
-    # Output 3: English short  ── script path or cut fallback
-    en_chapter_shorts: list[dict] = []
-    _en_short_script = en_long.get("short_script_en", "")
-    _en_short_via_script = False
-    if SHORT_MODE == "script" and _en_short_script:
-        print("[Pipeline] Generating English short from short script (TTS → video)...")
-        _en_short_data = {**en_long, "script": _en_short_script}
-        _en_short_id   = f"{today}_{uuid.uuid4().hex[:8]}_english_short"
-        _en_short_path = _make_video(_en_short_data, _en_short_id, stats,
-                                     user_images=_short_user_images, user_videos=_short_user_videos)
-        _en_short_via_script = bool(_en_short_path)
-        # Auto-expansion: up to 2 attempts if rendered < 60s
-        if _en_short_via_script:
-            for _en_s_rb in range(1, 3):
-                _en_s_secs = _video_secs(_en_short_path)
-                print(f"[SHORT RUNTIME] EN short: {_en_s_secs:.1f}s")
-                if _en_s_secs >= 60:
-                    _log("Shorts", f"[SHORT PASSED] EN short: {_en_s_secs:.1f}s", "OK")
-                    break
-                _log("Shorts", f"[SHORT EXPANSION] EN short {_en_s_secs:.1f}s < 60s — expanding (attempt {_en_s_rb}/2)", "WARN")
-                from agent.script_agent import expand_short_script as _ess
-                _en_short_script = _ess(_en_short_script, "english", en_long.get("topic", ""), 200)
-                en_long["short_script_en"] = _en_short_script
-                _new_path = _make_video(
-                    {**en_long, "script": _en_short_script},
-                    f"{today}_{uuid.uuid4().hex[:8]}_english_short",
-                    stats, user_images=_short_user_images, user_videos=_short_user_videos,
-                )
-                _en_short_path = _new_path or _en_short_path
-            else:
-                _en_s_secs = _video_secs(_en_short_path)
-                if _en_s_secs < 60:
-                    _log("Shorts", f"[SHORT BLOCKED] EN short {_en_s_secs:.1f}s < 60s after 2 expansions — will not send", "ERROR")
-                    _en_short_path = ""
-        if _en_short_path:
-            en_chapter_shorts = [{
-                "path":        _en_short_path,
-                "title":       en_long.get("title", ""),
-                "label":       "Best Short — TikTok + Instagram + YouTube Shorts",
-                "chapter_idx": 1,
-            }]
-    else:
-        _reason = "SHORT_MODE=cut" if _en_short_script else "short_script_en missing"
-        print(f"[Pipeline] Cutting best English short from long video ({_reason})...")
-        if en_long_path and os.path.exists(en_long_path):
-            _raw_cuts = cut_best_short(en_long_path, en_long)
-            for _cut in _raw_cuts:
-                _cut_secs = _video_secs(_cut.get("path", ""))
-                print(f"[SHORT RUNTIME] EN short (cut): {_cut_secs:.1f}s")
-                if _cut_secs >= 60:
-                    en_chapter_shorts.append(_cut)
-                else:
-                    _log("Shorts", f"[SHORT BLOCKED] EN cut short {_cut_secs:.1f}s < 60s — skipped", "ERROR")
-
-    # Output 4: Arabic short  ── script path or cut fallback
+    # Output 3: Arabic short  ── script path or cut fallback (Arabic first)
     ar_chapter_shorts: list[dict] = []
     _ar_short_script = ar_long.get("short_script_ar", "")
     _ar_short_via_script = False
@@ -793,6 +739,60 @@ def run_pipeline():
                     ar_chapter_shorts.append(_cut)
                 else:
                     _log("Shorts", f"[SHORT BLOCKED] AR cut short {_cut_secs:.1f}s < 60s — skipped", "ERROR")
+
+    # Output 4: English short  ── script path or cut fallback
+    en_chapter_shorts: list[dict] = []
+    _en_short_script = en_long.get("short_script_en", "")
+    _en_short_via_script = False
+    if SHORT_MODE == "script" and _en_short_script:
+        print("[Pipeline] Generating English short from short script (TTS → video)...")
+        _en_short_data = {**en_long, "script": _en_short_script}
+        _en_short_id   = f"{today}_{uuid.uuid4().hex[:8]}_english_short"
+        _en_short_path = _make_video(_en_short_data, _en_short_id, stats,
+                                     user_images=_short_user_images, user_videos=_short_user_videos)
+        _en_short_via_script = bool(_en_short_path)
+        # Auto-expansion: up to 2 attempts if rendered < 60s
+        if _en_short_via_script:
+            for _en_s_rb in range(1, 3):
+                _en_s_secs = _video_secs(_en_short_path)
+                print(f"[SHORT RUNTIME] EN short: {_en_s_secs:.1f}s")
+                if _en_s_secs >= 60:
+                    _log("Shorts", f"[SHORT PASSED] EN short: {_en_s_secs:.1f}s", "OK")
+                    break
+                _log("Shorts", f"[SHORT EXPANSION] EN short {_en_s_secs:.1f}s < 60s — expanding (attempt {_en_s_rb}/2)", "WARN")
+                from agent.script_agent import expand_short_script as _ess
+                _en_short_script = _ess(_en_short_script, "english", en_long.get("topic", ""), 200)
+                en_long["short_script_en"] = _en_short_script
+                _new_path = _make_video(
+                    {**en_long, "script": _en_short_script},
+                    f"{today}_{uuid.uuid4().hex[:8]}_english_short",
+                    stats, user_images=_short_user_images, user_videos=_short_user_videos,
+                )
+                _en_short_path = _new_path or _en_short_path
+            else:
+                _en_s_secs = _video_secs(_en_short_path)
+                if _en_s_secs < 60:
+                    _log("Shorts", f"[SHORT BLOCKED] EN short {_en_s_secs:.1f}s < 60s after 2 expansions — will not send", "ERROR")
+                    _en_short_path = ""
+        if _en_short_path:
+            en_chapter_shorts = [{
+                "path":        _en_short_path,
+                "title":       en_long.get("title", ""),
+                "label":       "Best Short — TikTok + Instagram + YouTube Shorts",
+                "chapter_idx": 1,
+            }]
+    else:
+        _reason = "SHORT_MODE=cut" if _en_short_script else "short_script_en missing"
+        print(f"[Pipeline] Cutting best English short from long video ({_reason})...")
+        if en_long_path and os.path.exists(en_long_path):
+            _raw_cuts = cut_best_short(en_long_path, en_long)
+            for _cut in _raw_cuts:
+                _cut_secs = _video_secs(_cut.get("path", ""))
+                print(f"[SHORT RUNTIME] EN short (cut): {_cut_secs:.1f}s")
+                if _cut_secs >= 60:
+                    en_chapter_shorts.append(_cut)
+                else:
+                    _log("Shorts", f"[SHORT BLOCKED] EN cut short {_cut_secs:.1f}s < 60s — skipped", "ERROR")
 
     _stage("Videos + shorts done")
 
@@ -1142,9 +1142,25 @@ def get_duration(video_path: str) -> str:
 
 
 def _video_secs(path: str) -> float:
-    """Return actual video duration in seconds (0 on error)."""
+    """Return actual video duration in seconds (0 on error). ffprobe-first to avoid file locks."""
+    import subprocess
     try:
-        from moviepy import VideoFileClip
+        result = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", path],
+            capture_output=True, text=True, timeout=15,
+        )
+        if result.returncode == 0:
+            val = result.stdout.strip()
+            if val and val != "N/A":
+                return float(val)
+    except Exception:
+        pass
+    try:
+        try:
+            from moviepy.editor import VideoFileClip
+        except ImportError:
+            from moviepy import VideoFileClip
         c = VideoFileClip(path)
         d = c.duration
         c.close()

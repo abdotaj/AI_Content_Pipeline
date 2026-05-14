@@ -1633,7 +1633,7 @@ def build_scene_image_pool(
             img = _pollinations_fetch_scene(tmpl, img_out, era=era, style=style)
             return (stype, i, img_out, img)
 
-        results = parallel_map_safe(_fetch_task, tasks, max_workers=10, timeout=120, label="scene img")
+        results = parallel_map_safe(_fetch_task, tasks, max_workers=20, timeout=120, label="scene img")
         for r in results:
             if r and r[3]:
                 stype, i, img_out, img = r

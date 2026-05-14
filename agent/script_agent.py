@@ -529,6 +529,17 @@ def _ai_script_call(prompt: str, max_tokens: int = 1000,
     import requests as _req
     global _OPENAI_QUOTA_EXCEEDED
 
+    def _is_refusal(text: str) -> bool:
+        """Detect OpenAI content policy refusals (Arabic + English)."""
+        _REFUSAL_PHRASES = (
+            "آسف، لا أستطيع", "لا يمكنني المساعدة", "لا أستطيع مساعدتك",
+            "أنا آسف", "لا يمكنني كتابة", "i'm sorry, i can't",
+            "i cannot help", "i can't help", "i'm unable to",
+            "i cannot assist", "i'm not able to",
+        )
+        t = (text or "").strip().lower()
+        return any(p in t for p in _REFUSAL_PHRASES) and len(text.split()) < 50
+
     if premium:
         # ── Premium path: OpenAI gpt-4o → Groq fallback ─────────────────────
         api_key = os.getenv('OPENAI_API_KEY', '').strip()
@@ -547,9 +558,13 @@ def _ai_script_call(prompt: str, max_tokens: int = 1000,
                     timeout=120,
                 )
                 if r.status_code == 200:
-                    print('[Script] OpenAI gpt-4o ✅')
-                    return r.json()['choices'][0]['message']['content'].strip()
-                if r.status_code == 429:
+                    _content = r.json()['choices'][0]['message']['content'].strip()
+                    if _is_refusal(_content):
+                        print('[Script] OpenAI gpt-4o refused — falling back to Groq')
+                    else:
+                        print('[Script] OpenAI gpt-4o ✅')
+                        return _content
+                elif r.status_code == 429:
                     _OPENAI_QUOTA_EXCEEDED = True
                     print('[Script] OpenAI quota exceeded — falling back to Groq')
                 else:

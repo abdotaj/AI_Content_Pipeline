@@ -498,7 +498,7 @@ def enhance_folder(folder_path: str) -> list[str]:
     log.info("[Enhancer] Enhancing %d image(s) in %s", len(files), folder_path)
 
     results: list[str] = [""] * len(files)
-    with ThreadPoolExecutor(max_workers=min(4, len(files))) as pool:
+    with ThreadPoolExecutor(max_workers=min(20, len(files))) as pool:
         future_to_idx = {
             pool.submit(enhance_image, str(f)): i
             for i, f in enumerate(files)
