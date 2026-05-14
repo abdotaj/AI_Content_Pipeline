@@ -2469,21 +2469,13 @@ def build_documentary_visual_pool(
         )
 
     seed   = random.randint(1, 99999)
-    paths: list[str] = []
-    _type_counts: dict[str, int] = {}
 
-    for ev in events:
-        idx      = ev["idx"]
-        out_path = os.path.join(_img_dir, f"{video_id}_ev_{idx:04d}.png")
-
+    def _gen_event(args):
+        ev, out_path, _seed = args
+        idx = ev["idx"]
         if os.path.exists(out_path) and os.path.getsize(out_path) > 5_000:
-            paths.append(out_path)
-            _type_counts[ev["type"]] = _type_counts.get(ev["type"], 0) + 1
-            continue
-
+            return (ev["type"], out_path)
         saved = None
-
-        # Portrait: try Wikimedia real photo first
         if ev["type"] == "portrait":
             person = _detect_person_in_chunk(ev["chunk"])
             if person:
@@ -2491,18 +2483,24 @@ def build_documentary_visual_pool(
                 photo_url = _search_wikimedia_person_photo(resolved)
                 if photo_url:
                     saved = _download_first_valid([photo_url], out_path)
-
-        # All types (incl. portrait fallback): Pollinations AI
         if not saved:
-            saved = generate_ai_image(ev["prompt"], out_path, seed=seed + idx)
+            saved = generate_ai_image(ev["prompt"], out_path, seed=_seed + idx)
+        return (ev["type"], saved) if saved else (ev["type"], None)
 
-        if saved:
-            paths.append(saved)
-            _type_counts[ev["type"]] = _type_counts.get(ev["type"], 0) + 1
+    tasks = [
+        (ev, os.path.join(_img_dir, f"{video_id}_ev_{ev['idx']:04d}.png"), seed)
+        for ev in events
+    ]
+    raw_results = parallel_map_safe(
+        _gen_event, tasks, max_workers=10, timeout=120, label="doc visual",
+    )
 
-        # Throttle every 10 images to avoid Pollinations 429s
-        if idx > 0 and idx % 10 == 0:
-            time.sleep(2)
+    paths: list[str] = []
+    _type_counts: dict[str, int] = {}
+    for r in raw_results:
+        if r and r[1]:
+            paths.append(r[1])
+            _type_counts[r[0]] = _type_counts.get(r[0], 0) + 1
 
     print(f"[VisualPlan] Pool complete: {len(paths)}/{len(events)} unique visuals — " +
           " | ".join(f"{t}:{c}" for t, c in sorted(_type_counts.items())))
