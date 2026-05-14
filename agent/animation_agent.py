@@ -1597,6 +1597,8 @@ def build_scene_image_pool(
     All other types use scene-type-specific Pollinations prompts.
     Returns {scene_type: [image_path, ...]} mapping.
     """
+    from agent.video_agent import parallel_map_safe
+
     os.makedirs(clips_dir, exist_ok=True)
     unique_types = list({s["scene_type"] for s in scenes})
     era   = identity.get("era", "")
@@ -1604,6 +1606,8 @@ def build_scene_image_pool(
     pool: dict[str, list[str]] = {}
     _PORTRAIT_TYPES = {"talking_portrait", "memorial_scene"}
 
+    # Pass 1: handle portrait types + collect tasks for parallel fetch
+    tasks: list[tuple] = []   # (stype, i, tmpl, img_out)
     for stype in unique_types:
         pool[stype] = []
         if stype in _PORTRAIT_TYPES:
@@ -1617,9 +1621,22 @@ def build_scene_image_pool(
             if os.path.exists(img_out) and os.path.getsize(img_out) > 15_000:
                 pool[stype].append(img_out)
                 print(f"[SHOT ENGINE] Reusing cached image: {stype} [{i}]")
-                continue
+            else:
+                tasks.append((stype, i, tmpl, img_out))
+
+    # Pass 2: fetch all pending images in parallel
+    if tasks:
+        print(f"[SHOT ENGINE] Fetching {len(tasks)} images in parallel (workers=10)...")
+
+        def _fetch_task(t):
+            stype, i, tmpl, img_out = t
             img = _pollinations_fetch_scene(tmpl, img_out, era=era, style=style)
-            if img:
+            return (stype, i, img_out, img)
+
+        results = parallel_map_safe(_fetch_task, tasks, max_workers=10, timeout=120, label="scene img")
+        for r in results:
+            if r and r[3]:
+                stype, i, img_out, img = r
                 pool[stype].append(img)
                 print(f"[SHOT ENGINE] Scene image fetched: {stype} [{i}]")
 
