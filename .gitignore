@@ -24,8 +24,11 @@ speech.js
 *.js
 # Binary audio assets — downloaded at runtime, not committed
 assets/music/*.mp3
-# Quality-processed video outputs — generated at runtime
+# Video files — never commit, generated at runtime or too large for git
+*.mp4
+*.mov
+*.avi
 output_videos/
-content/*/videos/*_processed.mp4
-content/*/videos/*_short.mp4
+content/*/videos/
 temp_clips/
+*TEMP_MPY_wvf_snd*

@@ -17,8 +17,6 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4.2.2
-        with:
-          lfs: true
 
       - name: Set up Python
         uses: actions/setup-python@v5.4.0
@@ -28,8 +26,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y ffmpeg fonts-dejavu-core git-lfs
-          git lfs install
+          sudo apt-get install -y ffmpeg fonts-dejavu-core
 
       - name: Cache pip packages
         uses: actions/cache@v4.2.3
