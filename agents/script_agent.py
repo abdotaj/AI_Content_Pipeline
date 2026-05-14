@@ -1097,6 +1097,8 @@ def upgrade_script_for_retention(script: str) -> str:
 
 
 def upgrade_arabic_script(script: str) -> str:
+    _orig_wc  = clean_word_count(script)
+    _orig_min = _orig_wc / _TTS_WPM["arabic"]
     try:
         prompt = _UPGRADE_ARABIC_PROMPT.replace("{script}", script)
         improved = _ai_script_call(prompt, max_tokens=4000, temperature=0.7, premium=True)
@@ -1109,7 +1111,22 @@ def upgrade_arabic_script(script: str) -> str:
         if orig_sections and not new_sections:
             print("[Upgrade] Arabic section markers lost — keeping original")
             return script
-        print(f"[Upgrade] Arabic script upgraded ({len(improved.split())} words)")
+        _new_wc       = clean_word_count(improved)
+        _new_min      = _new_wc / _TTS_WPM["arabic"]
+        _contract_min = get_runtime_contract("fast")["min_minutes"]
+        if _new_wc < _orig_wc * 0.90:
+            print(
+                f"[RUNTIME GUARD] Arabic upgrade rejected: {_new_wc}w < {_orig_wc}w×90% "
+                f"({_new_min:.1f}min vs {_orig_min:.1f}min) — keeping original"
+            )
+            return script
+        if _new_min < _contract_min:
+            print(
+                f"[RUNTIME GUARD] Arabic upgrade rejected: estimated {_new_min:.1f}min < "
+                f"{_contract_min:.0f}min contract minimum — keeping original"
+            )
+            return script
+        print(f"[Upgrade] Arabic script upgraded ({_orig_wc}w → {_new_wc}w | {_orig_min:.1f}min → {_new_min:.1f}min)")
         return improved
     except Exception as e:
         print(f"[Upgrade] Arabic failed: {e}")
@@ -5271,7 +5288,22 @@ def _write_arabic_from_research(en_script: dict, ar_research: dict) -> str:
                 system_prompt=_AR_SCRIPT_SYSTEM_PROMPT if attempt < 3 else None,
                 premium=True,
             )
-            raw_wc = clean_word_count(raw) if raw else 0
+            raw_wc      = clean_word_count(raw) if raw else 0
+            _raw_chars  = len(raw) if raw else 0
+            _raw_lines  = (raw or "").count("\n")
+            print(
+                f"[AR RAW] {label} attempt {attempt}: "
+                f"raw_len={_raw_chars}chars raw_wc={raw_wc}w raw_lines={_raw_lines} "
+                f"(min={min_wc}w max_tok={max_tok})"
+            )
+            if raw and raw_wc < min_wc:
+                _stripped = raw.strip()
+                print(
+                    f"[AR PARSER DAMAGE CHECK] {label}: "
+                    f"stripped_len={len(_stripped)}chars "
+                    f"starts_with={repr(_stripped[:60])} "
+                    f"ends_with={repr(_stripped[-60:])}"
+                )
 
             if raw and raw_wc >= min_wc:
                 section = raw.strip()
@@ -5487,13 +5519,17 @@ def translate_script(en_script: dict, research: dict | None = None) -> dict:
         ar_data["script"] = _expand_arabic_script_to_min(ar_data["script"], target_min=_AR_WORD_TARGET)
 
     # ── Runtime target check ──────────────────────────────────────────────────
-    # Arabic TTS (OpenAI nova/0.9) runs ~250 WPM — 2× faster than old 130 WPM estimate.
-    # Absolute minimum: 15 min (global longform floor), or 90% of English runtime.
+    # Target = max(contract_min, EN_runtime × 0.95), capped at EN × 1.10.
+    # Never use word-floor / WPM — that produced a 135% English target (28.6min).
     _en_wc     = clean_word_count(en_script.get("script", ""))
     _en_min    = _en_wc / 145.0
     _ar_min    = estimate_arabic_duration(ar_data.get("script", ""))
     _ar_wc_now = clean_word_count(ar_data.get("script", ""))
-    _ar_target = max(15.0, _en_min * 0.90, _AR_WORD_FLOOR / _TTS_WPM["arabic"])
+    _ar_contract_ref = get_runtime_contract("fast")
+    _ar_target = min(
+        max(_ar_contract_ref["min_minutes"], _en_min * 0.95),
+        _en_min * 1.10,
+    )
     print(
         f"[AR RUNTIME] Script words: {_ar_wc_now}\n"
         f"[AR RUNTIME] OpenAI TTS estimated duration: ~{_ar_min:.1f}min "
@@ -5505,9 +5541,26 @@ def translate_script(en_script: dict, research: dict | None = None) -> dict:
         ar_data["script"] = expand_arabic_runtime(
             ar_data["script"], target_min=_ar_target, topic=_topic
         )
+    _stage_wc_expand  = clean_word_count(ar_data.get("script", ""))
+    _stage_min_expand = _stage_wc_expand / _TTS_WPM["arabic"]
+    print(f"[AR STAGE] name=expand_runtime | words={_stage_wc_expand} | runtime={_stage_min_expand:.1f}min")
 
     if ar_data.get("script"):
-        ar_data["script"] = upgrade_arabic_script(ar_data["script"])
+        # ── FINAL LOCK: baseline snapshot after all expansion ─────────────────
+        # Nothing after this point may reduce word count below 90% of this value.
+        _locked_script = ar_data["script"]
+        _locked_wc     = clean_word_count(_locked_script)
+        _locked_min    = _locked_wc / _TTS_WPM["arabic"]
+        print(f"[AR STAGE] name=final_lock | words={_locked_wc} | runtime={_locked_min:.1f}min")
+
+        # ── Upgrade (guarded — rejects if shorter than 90% of locked baseline) ─
+        ar_data["script"]  = upgrade_arabic_script(ar_data["script"])
+        _post_upgrade_wc   = clean_word_count(ar_data.get("script", ""))
+        _post_upgrade_min  = _post_upgrade_wc / _TTS_WPM["arabic"]
+        _regress_warn      = " WARNING=RUNTIME_REGRESSION" if _post_upgrade_wc < _locked_wc * 0.90 else ""
+        print(f"[AR STAGE] name=upgrade_script | words={_post_upgrade_wc} | runtime={_post_upgrade_min:.1f}min{_regress_warn}")
+
+        # ── TTS-only cleanup (punctuation / normalization — no content rewriting) ─
         ar_data["script"] = evaluate_and_fix_script(ar_data["script"])
         from agents.script_quality import (
             normalize_arabic_documentary_text, normalize_arabic_tts, enforce_arabic_purity,
@@ -5518,9 +5571,27 @@ def translate_script(en_script: dict, research: dict | None = None) -> dict:
         ar_data["script"] = tts_readability_pass(ar_data["script"])
         ar_data["script"] = enforce_arabic_purity(ar_data["script"])
         ar_data["script"] = remove_arabic_filler_phrases(ar_data["script"])
+
+        # ── RUNTIME PRESERVATION GUARD — restore locked version if cleanup regressed ─
+        _post_cleanup_wc  = clean_word_count(ar_data.get("script", ""))
+        _post_cleanup_min = _post_cleanup_wc / _TTS_WPM["arabic"]
+        _contract_floor   = _ar_contract_ref["min_minutes"]
+        if _post_cleanup_wc < _locked_wc * 0.90:
+            print(
+                f"[RUNTIME GUARD] Post-cleanup regression: {_post_cleanup_wc}w < {_locked_wc}w×90% "
+                f"— restoring locked pre-upgrade version ({_locked_wc}w | {_locked_min:.1f}min)"
+            )
+            ar_data["script"] = _locked_script
+        elif _post_cleanup_min < _contract_floor:
+            print(
+                f"[RUNTIME GUARD] Post-cleanup below contract: {_post_cleanup_min:.1f}min < "
+                f"{_contract_floor:.0f}min — restoring locked version ({_locked_min:.1f}min)"
+            )
+            ar_data["script"] = _locked_script
+
         _ar_final_density = validate_information_density(ar_data["script"], language="arabic")
         print(
-            f"[AR Narration] Documentary pacing validated | "
+            f"[AR Narration] Cinematic narrative pacing validated | "
             f"density: {_ar_final_density.get('density_pct',0):.0f}% [{_ar_final_density.get('verdict','?')}] | "
             f"filler_removed={_ar_final_density.get('filler_count',0)}"
         )
