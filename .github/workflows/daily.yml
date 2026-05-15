@@ -1,9 +1,6 @@
 name: Daily Content Pipeline
 
 on:
-  schedule:
-    - cron: '0 4 1-31/3 * *'   # full mode    — days 1,4,7,10,13,16,19,22,25,28,31 (7 AM Riyadh)
-    - cron: '0 4 2-31/3 * *'   # animation mode — days 2,5,8,11,14,17,20,23,26,29  (never same day as full)
   workflow_dispatch:
     inputs:
       channel:
