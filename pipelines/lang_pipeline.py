@@ -204,16 +204,14 @@ def run_lang_pipeline(language: str, mode: str) -> None:
             _log("Research", f"topic_inject.json error (ignored): {_ie}", "WARN")
 
     if topic is None:
-        _log("Research", "Auto-selecting topic (no Telegram wait)")
-        try:
-            topics = research_topics(count=1)
-            if not topics:
-                raise RuntimeError("research_topics returned empty list")
-            topic = topics[0]
-        except Exception as exc:
-            send_message(f"{_label} Research failed: {exc}")
-            _log("Research", str(exc), "ERROR")
-            return
+        # Strict manual-only policy: no auto-selection allowed
+        _log("Research", "No topic provided — aborting (manual topic required)", "ERROR")
+        send_message(
+            f"{_label} ⛔ No topic selected.\n\n"
+            "Set a topic via topic_inject.json before starting the pipeline.\n"
+            "Pipeline stopped."
+        )
+        return
 
     topic_text  = topic.get("topic", "")
     topic_niche = topic.get("niche", "")

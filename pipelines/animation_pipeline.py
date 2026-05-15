@@ -287,16 +287,16 @@ def _wait_for_topic_selection(
     Send numbered topic candidates to Telegram and wait for user selection.
 
     Returns:
-      - topic dict  if user selects a number, /auto, or sends free-text topic
-      - "CANCEL"    if user sends /cancel
-      - None        if timeout expires (caller should auto-select)
+      - topic dict  if user selects a number or sends free-text topic
+      - "CANCEL"    if user sends /cancel or selects the Cancel option
+      - "CANCEL"    if timeout expires (no auto-selection — pipeline aborts)
 
     Supported replies:
-      1 / 2 / 3 / 4  — pick from candidate menu
-      /auto          — let pipeline choose best candidate
-      /cancel        — abort pipeline
-      /refresh       — re-send candidate menu
-      <free text>    — manual topic override (validated before accepting)
+      1 / 2 / 3  — pick from candidate menu
+      N          — numbered Cancel option aborts
+      /cancel    — abort pipeline
+      /refresh   — re-send candidate menu
+      <free text> — manual topic override (validated before accepting)
     """
     try:
         from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
@@ -325,10 +325,11 @@ def _wait_for_topic_selection(
         _show   = f"  ↳ {c['show']}" if c.get("show") else ""
         _htags  = f"\n   {c['hashtags']}" if c.get("hashtags") else ""
         lines.append(f"{i}. {c['topic']}{_src}{_show}{_htags}")
-    lines.append(f"\n{len(valid) + 1}. Auto-select best topic")
-    reply_hint = " / ".join(str(i) for i in range(1, len(valid) + 2))
+    cancel_n = len(valid) + 1
+    lines.append(f"\n{cancel_n}. Cancel")
+    reply_hint = " / ".join(str(i) for i in range(1, cancel_n + 1))
     lines.append(f"\nReply with: {reply_hint}")
-    lines.append("Or: /auto · /cancel · /refresh")
+    lines.append("Or: /cancel · /refresh")
     lines.append("Or type any topic directly to override.")
     menu_text = "\n".join(lines)
 
@@ -378,19 +379,11 @@ def _wait_for_topic_selection(
             text = (msg_obj.get("text") or "").strip()
             cmd  = text.lower()
 
-            # Cancel
-            if cmd in ("/cancel", "cancel"):
+            # Cancel (command or numbered cancel option)
+            if cmd in ("/cancel", "cancel", str(cancel_n)):
                 print("[TOPIC] User cancelled via Telegram")
                 _tg_send(base, chat_id, "[ANIMATION PIPELINE] Cancelled.")
                 return "CANCEL"
-
-            # Auto-select
-            if cmd in ("/auto", "auto", str(len(valid) + 1)):
-                selected = valid[0]
-                print(f"[TOPIC] User requested auto-select → {selected['topic'][:60]}")
-                _tg_send(base, chat_id,
-                    f"[ANIMATION PIPELINE] Auto-selecting:\n{selected['topic']}\n\nStarting...")
-                return selected
 
             # Re-send menu
             if cmd == "/refresh":
@@ -464,9 +457,12 @@ def _wait_for_topic_selection(
                 print(f"[TOPIC] Starting generation from manual topic: '{_norm[:60]}'")
                 return {"topic": _norm, "niche": _norm}
 
-    # Timeout — let caller decide
-    print(f"[TOPIC] No Telegram reply in {timeout_sec}s — timeout")
-    return None
+    # Timeout — no auto-selection; caller must abort
+    print(f"[TOPIC] No Telegram reply in {timeout_sec}s — aborting (no auto-select)")
+    _tg_send(base, chat_id,
+        "[ANIMATION PIPELINE] ⛔ No topic selected within time limit.\n"
+        "Pipeline stopped. Run again and select a topic from the menu.")
+    return "CANCEL"
 
 
 # ── Main entry point ─────────────────────────────────────────────────────────
@@ -642,22 +638,12 @@ def run_pipeline() -> None:
         # Wait for user selection (blocking — up to _topic_wait_sec seconds)
         _selection = _wait_for_topic_selection(_candidates, timeout_sec=_topic_wait_sec)
 
-        if _selection == "CANCEL":
-            _log("Research", "Pipeline cancelled via Telegram topic selection", "WARN")
+        # CANCEL covers both explicit cancel and timeout (timeout now returns "CANCEL")
+        if _selection == "CANCEL" or _selection is None:
+            _log("Research", "Pipeline cancelled — no topic selected", "WARN")
             return
 
-        if _selection is None:
-            # Timeout — auto-select best candidate and notify
-            topic = _candidates[0]
-            _auto_title = topic.get("topic", "")
-            print(f"[TOPIC] Auto-selected after timeout: {_auto_title[:60]}")
-            send_message(
-                f"[ANIMATION PIPELINE]\nNo selection received.\n"
-                f"Auto-selecting topic:\n{_auto_title}"
-            )
-            _log("Research", f"Auto-selected after timeout: '{_auto_title}'", "OK")
-        else:
-            topic = _selection
+        topic = _selection
 
         _manual_selection = not any(
             topic is candidate or topic.get("series") == candidate.get("series")

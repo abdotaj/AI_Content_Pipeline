@@ -7,7 +7,7 @@
 # The difference is processing depth, not storytelling or script standards.
 #
 # What FAST skips (redundant overhead, not quality):
-#   ✗  60-second Telegram topic-wait (auto-selects instead)
+#   ✗  60-second Telegram topic-wait (requires topic_inject.json instead)
 #   ✗  3-minute photo-wait (images ready immediately)
 #   ✗  Part-2 image loading (single pass)
 #   ✗  Content-library retry loop (single attempt only)
@@ -217,16 +217,14 @@ def run_pipeline() -> None:
             print(f"[FAST] topic_inject.json read error (ignored): {_ie}")
 
     if topic is None:
-        _log("Research", "Auto-selecting topic (no Telegram wait)")
-        try:
-            topics = research_topics(count=1)
-            if not topics:
-                raise RuntimeError("research_topics returned empty list")
-            topic = topics[0]
-        except Exception as e:
-            send_message(f"[FAST] Research failed: {e}")
-            _log("Research", str(e), "ERROR")
-            return
+        # Strict manual-only policy: no auto-selection allowed
+        _log("Research", "No topic provided — aborting (manual topic required)", "ERROR")
+        send_message(
+            "[FAST PIPELINE] ⛔ No topic selected.\n\n"
+            "Set a topic via topic_inject.json before starting the pipeline.\n"
+            "Pipeline stopped."
+        )
+        return
 
     topic_text  = topic.get("topic", "")
     topic_niche = topic.get("niche", "")

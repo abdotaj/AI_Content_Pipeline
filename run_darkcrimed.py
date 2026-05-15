@@ -454,21 +454,16 @@ def run_pipeline():
                 topic["risk_info"] = {}
 
         else:
-            # ── No topic sent — auto-discover ─────────────────────────────────
-            print("[Pipeline] No topic received — auto-researching...")
+            # No topic sent — strict manual-only policy: abort instead of auto-select
+            print("[Pipeline] No topic received — aborting (manual topic required)")
             send_message(
-                f"No topic received — auto-selecting today's story.\n"
-                f"Send a name next time to choose the topic."
+                "⛔ No topic received.\n\n"
+                "Send your topic name (e.g. 'Jeffrey Epstein') within 60 seconds of starting.\n"
+                "Or use topic_inject.json to pre-set a topic.\n\n"
+                "Pipeline stopped."
             )
-
-            try:
-                auto_topics = _with_retry(research_topics, count=1,
-                                          retries=3, delay=12, label="research_topics")
-            except Exception as e:
-                send_message(f"Research failed: {e}")
-                _log("Research", f"research_topics failed: {e}", "ERROR")
-                return
-            topic = auto_topics[0]
+            _log("Research", "No topic received — pipeline aborted (manual required)", "WARN")
+            return
             topic_text  = topic.get("topic", "")
             topic_niche = topic.get("niche", "")
 
