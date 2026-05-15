@@ -5429,18 +5429,14 @@ def _write_arabic_from_research(en_script: dict, ar_research: dict, target_minut
     # Standard mode keeps moderate minimums to handle Groq rate-limit fallback paths.
     # Minimum word counts for ACCEPTANCE of each section call.
     # Main story minimum is the first-chunk floor — chunking extends it after.
-    if _anim_mode:
-        _SECTION_MIN_WC: dict[str, int] = {
-            "AR-Hook+Background": 1200,
-            "AR-MainStory+Ch4":    700,   # first chunk only; extended by _write_ar_section_chunked
-            "AR-Conclusion":       900,
-        }
-    else:
-        _SECTION_MIN_WC: dict[str, int] = {
-            "AR-Hook+Background":  800,
-            "AR-MainStory+Ch4":    500,   # first chunk only; extended by _write_ar_section_chunked
-            "AR-Conclusion":       600,
-        }
+    # Acceptance floor is intentionally low — any real content (100w) passes,
+    # then _write_ar_section_chunked extends ALL sections to their full targets.
+    # High minimums caused every section to fail all 3 retries; chunking never ran.
+    _SECTION_MIN_WC: dict[str, int] = {
+        "AR-Hook+Background": 100,
+        "AR-MainStory+Ch4":   100,
+        "AR-Conclusion":      100,
+    }
     # Core sections: missing any of these = pipeline must not continue
     _CORE_SECTIONS: frozenset = frozenset({"AR-MainStory+Ch4"})
 
@@ -5592,18 +5588,24 @@ def _write_arabic_from_research(en_script: dict, ar_research: dict, target_minut
                     print(f"[AR RETRY] Attempt {attempt + 1} scheduled")
 
         if section:
-            # Main story: extend with continuation chunks until _main_target reached
-            if label == "AR-MainStory+Ch4" and clean_word_count(section) < _main_target:
-                _ms_pre = clean_word_count(section)
-                print(f"[AR Chunk] Main story {_ms_pre}w < target {_main_target}w — extending")
+            # All sections: extend with continuation chunks until per-section target reached.
+            # Low minimums above ensure any real output enters chunking here.
+            _sec_target = {
+                "AR-Hook+Background": _intro_target,
+                "AR-MainStory+Ch4":   _main_target,
+                "AR-Conclusion":      _conc_target,
+            }.get(label, _main_target)
+            if clean_word_count(section) < _sec_target:
+                _sec_pre = clean_word_count(section)
+                print(f"[AR Chunk] {label} {_sec_pre}w < target {_sec_target}w — extending")
                 section = _write_ar_section_chunked(
-                    label        = label,
-                    topic_str    = topic_str,
-                    entity_lock  = entity_lock,
-                    target_words = _main_target,
+                    label         = label,
+                    topic_str     = topic_str,
+                    entity_lock   = entity_lock,
+                    target_words  = _sec_target,
                     existing_text = section,
-                    tts_reminder = _tts_reminder,
-                    is_anim      = _anim_mode,
+                    tts_reminder  = _tts_reminder,
+                    is_anim       = _anim_mode,
                 )
             parts.append(section)
         else:
