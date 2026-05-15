@@ -3649,89 +3649,18 @@ def _apply_intro_outro_overlay(
     filters = [f"scale={norm_w}:{norm_h},format=yuv420p"]
 
     if is_short:
-        # Shorts: persistent top bar (channel name) + bottom bar (CTA)
-        bar_h = 80
-        filters += [
-            # Top bar
-            f"drawbox=x=0:y=0:w={w}:h={bar_h}:color=black@0.75:t=fill",
-            f"drawtext=fontfile='{font_esc}':text='{channel_name}':fontsize=32:fontcolor=white"
-            f":x=(w-text_w)/2:y={bar_h//2 - 16}",
-            # Bottom bar
-            f"drawbox=x=0:y=ih-{bar_h}:w={w}:h={bar_h}:color=black@0.75:t=fill",
-            f"drawtext=fontfile='{font_esc}':text='{cta_text}':fontsize=28:fontcolor=white"
-            f":x=(w-text_w)/2:y=ih-{bar_h//2 + 14}",
-        ]
+        # Shorts: no text overlays — clean video
+        pass
     else:
-        hook_end    = 2.5
-        outro_start = 9999.0
-        crimson     = "0xDC143C"
-
-        # Cold open: soft glitch pulse at t=0
-        filters += [
-            f"drawbox=x=0:y=0:w={w}:h={h}:color=white@0.20:t=fill:enable='lt(t,0.08)'",
-        ]
-
-        # Brand watermark — small, crimson, fades in over 0.25s, visible for 2.5s
-        filters += [
-            f"drawtext=fontfile='{font_esc}':text='{channel_name}':fontsize=18:fontcolor={crimson}"
-            f":shadowcolor=black@0.80:shadowx=1:shadowy=1"
-            f":x=(w-text_w)/2:y=ih-24"
-            f":alpha='if(lt(t,0.25),t/0.25,1)'"
-            f":enable='between(t,0,{hook_end})'",
-        ]
-
-        # Get video duration before chapter loop for timestamp validation
+        # Long video: fade-out only — no text overlays
         try:
             _vid_dur = _ffprobe_duration(video_path) or 0.0
         except Exception:
             _vid_dur = 0.0
 
-        # Chapter transition flashes (0.5s white flash text overlay)
-        chapters = _parse_chapter_timestamps(chapters_str)
-        for ch_time, ch_label in chapters:
-            # Guard: ensure ch_time is a valid float in range
-            try:
-                ch_time = float(ch_time)
-            except (TypeError, ValueError):
-                print(f"[Overlay] Invalid chapter timestamp ({ch_time!r}) — skipping")
-                continue
-            if ch_time < 6.0:
-                continue
-            if _vid_dur > 0 and ch_time >= _vid_dur - 1.0:
-                print(f"[Overlay] Chapter timestamp {ch_time:.1f}s out of range "
-                      f"(video={_vid_dur:.1f}s) — skipping")
-                continue
-            ch_esc    = _escape_drawtext((ch_label or "")[:40])
-            flash_end = ch_time + 0.5
-            filters += [
-                f"drawbox=x=0:y=0:w={w}:h={h}:color=white@0.25:t=fill"
-                f":enable='between(t,{ch_time:.3f},{flash_end:.3f})'",
-                f"drawtext=fontfile='{font_esc}':text='{ch_esc}':fontsize=52:fontcolor=white"
-                f":x=(w-text_w)/2:y=(h/2 - 30)"
-                f":enable='between(t,{ch_time:.3f},{flash_end:.3f})'",
-            ]
-
-        # Outro: use already-fetched duration
-        try:
-            if _vid_dur > 10:
-                outro_start = _vid_dur - 4.5
-            else:
-                outro_start = 9999.0
-        except Exception:
-            outro_start = 9999.0
-
-        if outro_start < 9999.0:
-            filters += [
-                f"fade=t=out:st={outro_start}:d=4.5",
-                f"drawbox=x=0:y=0:w={w}:h={h}:color=black@1.0:t=fill"
-                f":enable='gte(t,{outro_start + 3.5})'",
-                f"drawtext=fontfile='{font_esc}':text='{channel_name}':fontsize=56:fontcolor=white"
-                f":x=(w-text_w)/2:y=(h/2 - 60)"
-                f":enable='gte(t,{outro_start + 3.5})'",
-                f"drawtext=fontfile='{font_esc}':text='{cta_text}':fontsize=36:fontcolor=yellow"
-                f":x=(w-text_w)/2:y=(h/2 + 20)"
-                f":enable='gte(t,{outro_start + 3.5})'",
-            ]
+        if _vid_dur > 10:
+            outro_start = _vid_dur - 4.5
+            filters += [f"fade=t=out:st={outro_start}:d=4.5"]
 
     vf = ",".join(filters)
     out_path = video_path.replace(".mp4", "_overlay.mp4")
@@ -5854,22 +5783,11 @@ def cut_chapter_shorts(
 
         out_path = os.path.join(output_dir, f"{safe_id}_ch{idx + 1}_{lang}.mp4")
 
-        # Escape text for ffmpeg drawtext
-        clean_title = _re.sub(r'[^\w\s\-]', '', chapter_title)[:50]
-        clean_title = clean_title.replace("'", "\\'")
-
         cmd = [
             ffmpeg_bin, "-y",
             "-i", long_video_path,
             "-ss", str(int(cut_start)),
             "-t",  str(int(cut_dur)),
-            "-vf",
-            (
-                f"drawtext=text='{clean_title}':"
-                "fontsize=40:fontcolor=white:"
-                "x=(w-text_w)/2:y=50:"
-                "box=1:boxcolor=black@0.5:boxborderw=10"
-            ),
             "-c:v", "libx264",
             "-c:a", "aac",
             "-pix_fmt", "yuv420p",
@@ -5960,21 +5878,13 @@ def cut_best_short(
         print(f"[Short] Best chapter too short ({cut_dur:.0f}s) -- skipping")
         return []
 
-    out_path    = os.path.join(output_dir, f"{safe_id}_best_{lang}.mp4")
-    clean_title = _re.sub(r'[^\w\s\-]', '', chapter_title)[:50].replace("'", "\'")
+    out_path = os.path.join(output_dir, f"{safe_id}_best_{lang}.mp4")
 
     cmd = [
         ffmpeg_bin, "-y",
         "-i", long_video_path,
         "-ss", str(int(cut_start)),
         "-t",  str(int(cut_dur)),
-        "-vf",
-        (
-            f"drawtext=text='{clean_title}':"
-            "fontsize=40:fontcolor=white:"
-            "x=(w-text_w)/2:y=50:"
-            "box=1:boxcolor=black@0.5:boxborderw=10"
-        ),
         "-c:v", "libx264",
         "-c:a", "aac",
         "-pix_fmt", "yuv420p",
