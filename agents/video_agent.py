@@ -1993,6 +1993,11 @@ def generate_ai_image(prompt: str, output_path: str, seed: int = None) -> str:
                     print(f"[Image] PIL parse failed attempt {attempt + 1}/3: {_pil_e} — retrying")
                     time.sleep(20)
                     continue
+            elif response.status_code in (402, 403):
+                # Payment required / forbidden — permanent for this session, skip immediately
+                _record_pollinations_result(False)
+                print(f"[Image] Pollinations {response.status_code} — skipping (no retry): {prompt[:60]}")
+                return None
             elif response.status_code == 429:
                 _record_pollinations_result(False)
                 print(f"[Image] Rate limited, waiting 45s... (attempt {attempt + 1}/3)")
@@ -2011,11 +2016,9 @@ def generate_ai_image(prompt: str, output_path: str, seed: int = None) -> str:
             print(f"[Image] Attempt {attempt + 1} failed: {e}")
             time.sleep(15)
 
-    # Fallback: solid dark background so assembly never crashes
-    img = PILImage.new("RGB", (1080, 1920), color=(13, 13, 26))
-    img.save(output_path, "PNG")
-    print(f"[Image] Using dark background fallback for: {prompt[:60]}")
-    return output_path
+    # All attempts failed — return None so callers skip gracefully (no dark placeholder)
+    print(f"[Image] Pollinations failed after all attempts — skipping: {prompt[:60]}")
+    return None
 
 
 def _is_dark_placeholder(path: str, threshold: int = 30) -> bool:
@@ -5512,7 +5515,7 @@ def assemble_video(
     _clips_to_close = [audio, final] + list(before_clips or []) + list(after_clips or [])
     _ok = _write_video_safe(
         final, output_path, _clips_to_close,
-        timeout_seconds=3600,
+        timeout_seconds=7200,
         fps=30, codec="libx264", audio_codec="aac", preset="ultrafast",
         ffmpeg_params=["-pix_fmt", "yuv420p", "-movflags", "+faststart"],
         temp_audiofile=temp_audio, logger=None,
@@ -6815,7 +6818,7 @@ def assemble_video_with_hook(
     _clips_to_close = [audio, final] + hook_clips + final_main
     _ok = _write_video_safe(
         final, output_path, _clips_to_close,
-        timeout_seconds=3600,
+        timeout_seconds=7200,
         fps=24, codec="libx264", audio_codec="aac", preset="ultrafast",
         ffmpeg_params=["-pix_fmt", "yuv420p", "-movflags", "+faststart"],
         temp_audiofile=temp_audio, remove_temp=True, logger=None,
@@ -7926,7 +7929,7 @@ _WORKERS: dict[str, int] = {
     "pollinations":  4 if _IS_CI else  6,   # Pollinations free API — strict rate limit, keep low
     "doc_visual":    4 if _IS_CI else  6,   # documentary visual pool — same Pollinations limit
     "enhance":      30 if _IS_CI else 40,   # image post-processing (IO-bound)
-    "tts":           5,                      # TTS sections — API rate-limit aware
+    "tts":           8 if _IS_CI else 10,    # TTS sections — API rate-limit aware
     "ffmpeg":        1,                      # CPU-bound — never increase
     "render":        1,                      # CPU-bound — never increase
     "script":        2,                      # LLM script generation — API rate-limited
