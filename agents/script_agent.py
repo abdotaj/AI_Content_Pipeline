@@ -1473,22 +1473,22 @@ def generate_chapters(total_words: int, language: str = "english",
     total_seconds = (total_words / words_per_minute) * 60
 
     if language == "arabic":
-        angle_label = angle_title or "الحقيقة الخفية"
+        angle_label = angle_title or "الحقيقة المخفية"
         labels = [
-            "🎬 مقدمة",
-            f"🔍 {angle_label}",
-            "📖 القصة الحقيقية",
-            "⚡ التفاصيل الخفية",
-            "🎯 الخاتمة",
+            "البداية",
+            angle_label,
+            "القصة كاملة",
+            "الكشف",
+            "الخاتمة",
         ]
     else:
         angle_label = angle_title or "The Hidden Truth"
         labels = [
-            "Introduction",
+            "The Beginning",
             angle_label,
             "The Real Story",
-            "Hidden Details",
-            "The Truth Revealed",
+            "The Revelation",
+            "The Aftermath",
         ]
 
     chapters = []
@@ -1496,7 +1496,123 @@ def generate_chapters(total_words: int, language: str = "english",
         seconds = int(total_seconds * ratio)
         mins = seconds // 60
         secs = seconds % 60
-        chapters.append(f"{mins:02d}:{secs:02d} {title}")
+        chapters.append(f"{mins:02d}:{secs:02d} {_sanitize_chapter_title(title)}")
+
+    return "\n".join(chapters)
+
+
+def _sanitize_chapter_title(text: str) -> str:
+    """Strip supplementary-plane emoji (4-byte sequences) that corrupt in non-UTF-8 contexts.
+
+    Keeps Arabic, Latin, and BMP punctuation. Prevents garbled output like â±ï¸ or ðŸŽ¬.
+    """
+    import unicodedata as _ud
+    nfc = _ud.normalize("NFC", text)
+    # Drop codepoints above U+FFFF (supplementary plane — 4-byte emoji like 🎬 😱 📖)
+    clean = "".join(c for c in nfc if ord(c) < 0x10000)
+    return clean.strip(" \t\n-–—|")
+
+
+def _generate_chapter_titles_llm(
+    script_text: str,
+    topic: str,
+    language: str = "english",
+    n: int = 5,
+) -> list | None:
+    """Ask LLM to generate n cinematic chapter titles from actual script content.
+
+    Returns list of n clean strings, or None on failure.
+    """
+    words  = script_text.split()
+    # Use first 600 words to keep token cost low
+    excerpt = " ".join(words[:600]) if len(words) > 600 else script_text
+
+    if language == "arabic":
+        examples = (
+            "البداية التي لم يفهمها أحد | أول الضحايا | داخل شبكة النفوذ | "
+            "الليلة الأخيرة | ما كشفته الملفات | بداية التحقيق | "
+            "الحقيقة التي حاولوا إخفاءها | سقوط الإمبراطورية"
+        )
+        lang_note = "Arabic (فصحى). 3-5 Arabic words each. No emoji."
+    else:
+        examples = (
+            "The Night Everything Changed | First Victim | Inside the Network | "
+            "What the Files Revealed | The Fall | Before the Evidence | The Last Move"
+        )
+        lang_note = "English. 3-5 words each. No emoji."
+
+    prompt = (
+        f"You are a documentary editor. Based on this script about \"{topic}\", "
+        f"generate exactly {n} cinematic chapter titles.\n\n"
+        f"Script excerpt:\n{excerpt}\n\n"
+        f"Requirements:\n"
+        f"- Titles must reflect actual story beats from THIS script\n"
+        f"- Feel like Netflix documentary chapter names\n"
+        f"- Language: {lang_note}\n"
+        f"- NO generic titles like Introduction / Conclusion / Background\n"
+        f"- NO emoji — plain text only\n"
+        f"- Max 6 words per title\n\n"
+        f"Good style examples: {examples}\n\n"
+        f"Return ONLY this JSON:\n"
+        f'{{"chapters": ["Title1", "Title2", "Title3", "Title4", "Title5"]}}'
+    )
+    try:
+        raw = _ai_script_call(prompt, max_tokens=200, temperature=0.5, json_mode=True)
+        parsed = normalize_ai_json_response(
+            raw, required_keys=["chapters"], list_keys=["chapters"],
+        )
+        titles = parsed.get("chapters", [])
+        if (
+            isinstance(titles, list)
+            and len(titles) == n
+            and all(isinstance(t, str) and t.strip() for t in titles)
+        ):
+            return [_sanitize_chapter_title(t) for t in titles]
+    except Exception as _e:
+        print(f"[Chapters] LLM title generation failed ({_e})")
+    return None
+
+
+def generate_chapters_from_script(
+    script_text: str,
+    topic: str,
+    language: str = "english",
+    angle_title: str = "",
+) -> str:
+    """Generate YouTube chapter timestamps with cinematic titles from actual script content.
+
+    Calls LLM to extract real story beats. Falls back to improved generic labels.
+    Timestamps computed from word count using _CHAPTER_PROPORTIONS_5.
+    """
+    total_words = clean_word_count(script_text)
+    wpm = 250 if language == "arabic" else 156
+    total_seconds = (total_words / max(wpm, 1)) * 60
+
+    llm_titles = None
+    if script_text.strip():
+        llm_titles = _generate_chapter_titles_llm(script_text, topic, language)
+
+    if llm_titles and len(llm_titles) == 5:
+        labels = llm_titles
+    else:
+        # Improved fallback — more descriptive than pure placeholders
+        if language == "arabic":
+            _angle = _sanitize_chapter_title(angle_title) or "الحقيقة المخفية"
+            labels = ["البداية", _angle, "القصة كاملة", "الكشف", "الخاتمة"]
+        else:
+            _angle = _sanitize_chapter_title(angle_title) or "The Hidden Truth"
+            labels = ["The Beginning", _angle, "The Real Story", "The Revelation", "The Aftermath"]
+
+    # Guard: ensure no empty title slips through
+    labels = [
+        _sanitize_chapter_title(l) or f"Part {i + 1}"
+        for i, l in enumerate(labels)
+    ]
+
+    chapters = []
+    for ratio, title in zip(_CHAPTER_PROPORTIONS_5, labels):
+        seconds = int(total_seconds * ratio)
+        chapters.append(f"{seconds // 60:02d}:{seconds % 60:02d} {title}")
 
     return "\n".join(chapters)
 
@@ -3542,7 +3658,7 @@ def _write_darkcrimed_script(topic: dict) -> dict:
             ) + f"The real untold story of {topic['topic']}. Follow Dark Crime Decoded.",
             "hashtags":        _build_darkcrimed_hashtags("", None),
             "thumbnail_text":  topic["topic"][:30],
-            "chapters":        generate_chapters(clean_word_count(script_text)),
+            "chapters":        generate_chapters_from_script(script_text, topic["topic"], "english"),
             "topic":           topic["topic"],
             "niche":           topic["niche"],
             "search_query":    topic.get("search_query", ""),
@@ -3893,8 +4009,10 @@ Return ONLY this JSON with no extra text:
         "caption":        meta.get("caption", ""),
         "hashtags":       _build_darkcrimed_hashtags(meta.get("hashtags", ""), _series_info),
         "thumbnail_text": meta.get("thumbnail_text", ""),
-        "chapters":       generate_chapters(
-            clean_word_count(script_text),
+        "chapters":       generate_chapters_from_script(
+            script_text,
+            topic["topic"],
+            "english",
             angle_title=_angle_data.get("angle_title", ""),
         ),
     }
@@ -5962,7 +6080,10 @@ def translate_script(en_script: dict, research: dict | None = None) -> dict:
         "caption":         translate_to_arabic(en_script["caption"]),
         "hashtags":        translate_to_arabic(en_script["hashtags"]),
         "thumbnail_text":  translate_to_arabic(en_script["thumbnail_text"]),
-        "chapters":        en_script.get("chapters", ""),  # keep English timestamps
+        "chapters":        (
+            generate_chapters_from_script(_ar_script_body, en_script.get("topic", ""), "arabic")
+            if _ar_script_body else en_script.get("chapters", "")
+        ),
     }
     _topic_name = en_script.get("topic", "")
     ar_data["topic"]           = _topic_name
@@ -6817,9 +6938,11 @@ def write_arabic_script(topic: dict, research: dict | None = None) -> dict:
 
     ar_data["estimated_runtime_min"] = round(_final_min, 1)
 
-    # Arabic chapters
-    if _final_wc > 0:
-        ar_data["chapters"] = generate_chapters(_final_wc, language="arabic")
+    # Arabic chapters — generated from actual script content for cinematic titles
+    if _final_wc > 0 and ar_data.get("script"):
+        ar_data["chapters"] = generate_chapters_from_script(
+            ar_data["script"], topic_str, "arabic",
+        )
 
     print(
         f"[Script] Arabic (independent): '{ar_title}' | "
