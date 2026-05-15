@@ -3957,12 +3957,17 @@ def _is_blacklisted_source(url_or_title: str) -> bool:
 
 
 def _validate_clip(path: str) -> bool:
-    """Return True if path is a valid video file with duration 3-60 s."""
+    """Return True if path is a non-corrupt video file with any usable duration (>0.5s).
+
+    Duration limits (3s min / 60s max) are NOT enforced here — short clips are
+    looped during assembly and long clips are trimmed by _trim_long_clip before
+    this function is called.
+    """
     if not path or not os.path.exists(path):
         return False
     try:
-        import subprocess
-        result = subprocess.run(
+        import subprocess as _sp
+        result = _sp.run(
             ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_streams", path],
             capture_output=True, text=True, timeout=15,
         )
@@ -3972,19 +3977,56 @@ def _validate_clip(path: str) -> bool:
             for stream in data.get("streams", []):
                 if stream.get("codec_type") == "video":
                     dur = float(stream.get("duration", 0) or 0)
-                    return 3.0 <= dur <= 60.0
+                    return dur > 0.5
     except Exception:
         pass
-    # MoviePy fallback
     try:
         try:
             from moviepy.editor import VideoFileClip as _VFC
         except ImportError:
             from moviepy import VideoFileClip as _VFC
         with _VFC(path) as c:
-            return 3.0 <= c.duration <= 60.0
+            return c.duration > 0.5
     except Exception:
         return False
+
+
+def _trim_long_clip(path: str, max_dur: float = 15.0) -> bool:
+    """Trim a video longer than max_dur seconds to a documentary-safe subclip.
+
+    Picks a random start at 10–50% into the clip to skip intros and credits.
+    Replaces the file in-place using ffmpeg stream-copy (fast, no re-encode).
+    Returns True on success, False if the clip is already short enough or if
+    trimming fails (caller should still use the original).
+    """
+    import subprocess as _sp
+    dur = _ffprobe_duration(path)
+    if dur <= max_dur:
+        return True  # nothing to do
+    # Stay at least max_dur seconds from the end
+    latest_start = max(0.0, dur - max_dur - 1.0)
+    earliest_start = dur * 0.10
+    start = random.uniform(min(earliest_start, latest_start), latest_start)
+    tmp = path + "._trim.mp4"
+    try:
+        res = _sp.run(
+            ["ffmpeg", "-y", "-ss", f"{start:.1f}", "-i", path,
+             "-t", f"{max_dur:.1f}", "-c", "copy", tmp],
+            capture_output=True, timeout=30,
+        )
+        if res.returncode == 0 and os.path.exists(tmp) and os.path.getsize(tmp) > 1000:
+            os.replace(tmp, path)
+            print(f"[Stock] Trimmed long clip {dur:.0f}s → {max_dur:.0f}s (start={start:.0f}s)")
+            return True
+        print(f"[Stock] Trim ffmpeg failed (rc={res.returncode}) — keeping original")
+    except Exception as e:
+        print(f"[Stock] Trim error: {e} — keeping original")
+    finally:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+    return False
 
 
 def _ffprobe_duration(path: str) -> float:
@@ -4012,17 +4054,22 @@ def _download_first_valid_video(urls: list[str], output_path: str,
         saved = _download_video_url(url, output_path, max_bytes=max_bytes)
         if not saved:
             continue
-        # ffprobe duration check
         dur = _ffprobe_duration(saved)
-        if dur < 2.0:
-            print(f"[Stock] Rejected invalid video (ffprobe duration={dur:.1f}s): {url[:60]}")
+        if dur < 0.5:
+            # Truly corrupt or empty — discard
+            print(f"[Stock] Rejected corrupt video (duration={dur:.2f}s): {url[:60]}")
             try:
                 os.remove(saved)
             except OSError:
                 pass
             continue
+        if dur > 60.0:
+            # Long archive footage — trim to a 15s documentary subclip
+            _trim_long_clip(saved, max_dur=15.0)
+        elif dur < 3.0:
+            print(f"[Stock] Short clip ({dur:.1f}s) accepted — will loop during assembly")
         if not _validate_clip(saved):
-            print(f"[Stock] Clip failed validation (duration out of 3-60s range): {url[:60]}")
+            print(f"[Stock] Clip failed structural validation: {url[:60]}")
             try:
                 os.remove(saved)
             except OSError:
