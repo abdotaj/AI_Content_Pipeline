@@ -1343,8 +1343,29 @@ def _clean_arabic_title(raw: str) -> str:
     return f"{raw} | Dark Crime Decoded" if raw else "Dark Crime Decoded"
 
 
+# Keywords that signal a historical/biblical/archaeological topic — bypass series framing
+_HISTORICAL_TOPIC_SIGNALS: frozenset = frozenset({
+    "archaeological", "archaeology", "ancient city", "ancient history",
+    "biblical", "bible", "old testament", "new testament", "scripture",
+    "excavation", "ruins of", "destruction of", "dead sea", "holy land",
+    "bronze age", "iron age", "antiquity", "sodom", "mesopotamia",
+    "historical evidence", "historical truth", "historical record",
+    "genesis ", "exodus ", "revelation ", "artifact", "ancient civilization",
+})
+
+
+def _is_historical_topic(text: str) -> bool:
+    """Return True if text signals a historical/biblical/archaeological topic, not a series."""
+    t = text.lower()
+    return any(sig in t for sig in _HISTORICAL_TOPIC_SIGNALS)
+
+
 def _build_arabic_title(en_title: str, series_name: str | None, series_type: str | None) -> str:
     """Return clean Arabic title."""
+    # Historical/biblical/archaeological topics bypass series lookup entirely
+    if _is_historical_topic(en_title) or _is_historical_topic(series_name or ""):
+        series_name = None
+
     # Series-based topics: "القصة الحقيقية وراء فيلم/مسلسل {series}"
     ar_entry = SERIES_ARABIC.get(series_name or "")
     if ar_entry:
@@ -1358,15 +1379,17 @@ def _build_arabic_title(en_title: str, series_name: str | None, series_type: str
             _ar_series = re.sub(r'\s+', ' ', _ar_series).strip()
             if _ar_series:
                 return f"القصة الحقيقية وراء {ar_type} {_ar_series} | Dark Crime Decoded"
-    # Pure documentary: translate only the topic/person name (before colon or dash)
-    # to avoid Google Translate misinterpreting a full sentence into "وراء فيلم"
+
+    # Historical topic: use "الحقيقة التاريخية لـ..." for better search relevance
+    _historical = _is_historical_topic(en_title)
     topic_part = re.split(r'[:—–\-]', en_title, maxsplit=1)[0].strip()
     ar_topic = translate_to_arabic(topic_part) if topic_part else ""
     ar_topic = re.sub(r'[A-Za-z]+', '', ar_topic or "").strip()
     ar_topic = re.sub(r'\s+', ' ', ar_topic).strip()
     if not ar_topic:
         return "Dark Crime Decoded"
-    return f"القصة الحقيقية لـ{ar_topic} | Dark Crime Decoded"
+    prefix = "الحقيقة التاريخية لـ" if _historical else "القصة الحقيقية لـ"
+    return f"{prefix}{ar_topic} | Dark Crime Decoded"
 
 
 # 5-chapter proportions for new structure
@@ -5250,6 +5273,10 @@ def _write_arabic_from_research(en_script: dict, ar_research: dict, target_minut
     )
 
     is_doc = (angle or "").lower() not in ("movie", "series", "mini-series")
+    # Historical/biblical topics are always pure documentary — no series framing
+    if _is_historical_topic(topic_str) or _is_historical_topic(series_name):
+        series_name = ""
+        is_doc = True
 
     # ── Call 1: Hook + Background ─────────────────────────────────────────────
     series_line = f"السلسلة أو الفيلم: {series_name}\n" if series_name and not is_doc else ""
