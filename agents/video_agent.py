@@ -3441,7 +3441,7 @@ def check_content_sufficiency(
     return ratio >= 0.80, ratio
 
 
-def parallel_map_safe(fn, items: list, max_workers: int = 3,
+def parallel_map_safe(fn, items: list, max_workers: int = 10,
                       timeout: int = 60, label: str = "task") -> list:
     """
     Apply fn to each item concurrently using ThreadPoolExecutor.
@@ -3453,7 +3453,7 @@ def parallel_map_safe(fn, items: list, max_workers: int = 3,
     Args:
         fn:          Callable(item) -> result
         items:       List of inputs
-        max_workers: Max parallel threads (keep <= 5 to avoid API rate limits)
+        max_workers: Max parallel threads (20-40 for image/TTS, 4-8 for API calls)
         timeout:     Per-task timeout in seconds
         label:       Log label for progress messages
     """
@@ -3533,7 +3533,7 @@ def _fetch_gap_images(
         ]
         gen_results = parallel_map_safe(
             lambda args: generate_ai_image(args[0], args[1]),
-            _tasks, max_workers=20, timeout=120, label="AI image",
+            _tasks, max_workers=40, timeout=120, label="AI image",
         )
         for r in gen_results:
             if r and os.path.exists(r):
@@ -4454,7 +4454,7 @@ def search_real_image(query: str, output_path: str) -> str | None:
 
     all_urls: list[str] = []
     try:
-        with ThreadPoolExecutor(max_workers=3) as pool:
+        with ThreadPoolExecutor(max_workers=8) as pool:
             futures = {
                 pool.submit(_fetch_ddgs):    "DDG",
                 pool.submit(_fetch_wiki):    "Wikimedia",
@@ -7319,22 +7319,38 @@ def generate_tts_sections(script_text: str, video_id: str, language: str) -> tup
         audio_path = generate_voiceover(script_text, video_id, language)
         return audio_path, ""
 
-    print(f"[Video] Generating TTS for {len(sections)} sections")
+    print(f"[Video] Generating TTS for {len(sections)} sections (parallel, max 4 workers)")
 
-    section_paths: list[str]   = []
-    section_durations: list[float] = []
+    section_paths: list[str]   = [None] * len(sections)
+    section_durations: list[float] = [0.0] * len(sections)
 
-    for i, (name, content) in enumerate(sections):
+    import concurrent.futures as _cf
+
+    def _tts_section(args):
+        i, name, content = args
         sec_id   = f"{video_id}_sec{i}"
         sec_path = generate_voiceover(content, sec_id, language)
         if not sec_path or not os.path.exists(sec_path):
-            print(f"[Video] Section {i + 1} TTS failed — falling back to full-script TTS")
-            audio_path = generate_voiceover(script_text, video_id, language)
-            return audio_path, ""
+            return i, None, 0.0
         dur = get_audio_duration(sec_path)
-        section_durations.append(dur)
-        section_paths.append(sec_path)
         print(f"[Video] Section {i + 1} '{name}': {dur:.1f}s ({format_time(dur)})")
+        return i, sec_path, dur
+
+    _n_workers = min(len(sections), 4)
+    with _cf.ThreadPoolExecutor(max_workers=_n_workers) as _ex:
+        _futures = [_ex.submit(_tts_section, (i, name, content)) for i, (name, content) in enumerate(sections)]
+        for _fut in _cf.as_completed(_futures):
+            try:
+                _i, _path, _dur = _fut.result()
+                section_paths[_i]     = _path
+                section_durations[_i] = _dur
+            except Exception as _te:
+                print(f"[Video] TTS section error: {_te}")
+
+    if any(p is None for p in section_paths):
+        print("[Video] One or more sections failed TTS — falling back to full-script TTS")
+        audio_path = generate_voiceover(script_text, video_id, language)
+        return audio_path, ""
 
     # Concatenate section audio files
     if len(section_paths) == 1:
@@ -8333,8 +8349,14 @@ def run_full_pipeline(
                     except ImportError:
                         def _grc(m): return {"min_seconds": 900.0, "max_seconds": 5400.0}  # type: ignore
                 _rc = _grc("full")
+                _est_min = len(script_data.get("script", "").split()) / (175.0 if language == "arabic" else 145.0)
+                print(f"[AR AUDIO] Estimated: {_est_min:.1f}min")
+                print(f"[AR AUDIO] Rendered:  {_min:.1f}min")
+                _delta = _min - _est_min
+                if abs(_delta) > 2.0:
+                    print(f"[AR AUDIO] Runtime mismatch: {_delta:+.1f}min")
                 if _dur < _rc["min_seconds"]:
-                    print(f"[FULL] WARNING: Long audio too short: {_min:.1f} min (contract: {_rc['min_seconds']/60:.0f}-{_rc['max_seconds']/60:.0f} min)")
+                    print(f"[AR AUDIO] Rebuild triggered — {_min:.1f}min < {_rc['min_seconds']/60:.0f}min contract minimum")
                 elif _dur > _rc["max_seconds"]:
                     print(f"[FULL] WARNING: Long audio too long: {_min:.1f} min (contract: {_rc['min_seconds']/60:.0f}-{_rc['max_seconds']/60:.0f} min)")
                 else:
@@ -8559,7 +8581,7 @@ def run_full_pipeline(
         if _to_enhance:
             print(f"[FULL] Enhancing {len(_to_enhance)} image(s)...")
             from concurrent.futures import ThreadPoolExecutor as _TPE
-            with _TPE(max_workers=min(20, len(_to_enhance))) as _pool:
+            with _TPE(max_workers=min(40, len(_to_enhance))) as _pool:
                 _enh_results = list(_pool.map(_enhance_image, _to_enhance))
             _enh_map        = dict(zip(_to_enhance, _enh_results))
             all_image_paths = [_enh_map.get(p) or p for p in all_image_paths]

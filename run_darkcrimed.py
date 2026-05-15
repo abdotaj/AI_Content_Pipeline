@@ -653,36 +653,51 @@ def run_pipeline():
         _log("VideoGen", "Reusing existing video files — skipping generation", "OK")
     else:
         # OUTPUT 1 — Arabic long-form (first: catches runtime issues early)
-        # Word-count pre-render check removed. Real audio duration is the only truth:
-        # the post-render auto-rebuild loop below measures actual video seconds.
-        ar_long_id   = f"{today}_{uuid.uuid4().hex[:8]}_arabic_long"
-        ar_long_path = _make_video(ar_long, ar_long_id, stats, user_images=user_images, user_videos=user_videos)
+        _ar_wc_pre = len(ar_long.get("script", "").split())
+        _AR_WORD_MIN = 4200
+        if ar_long.get("script_too_short") or _ar_wc_pre < _AR_WORD_MIN:
+            _block_msg = (
+                f"[AR BLOCKED] Script below hard minimum: {_ar_wc_pre}w < {_AR_WORD_MIN}w "
+                f"— blocking Arabic render to prevent invalid upload"
+            )
+            _log("VideoGen", _block_msg, "ERROR")
+            send_message(_block_msg)
+            ar_long_path = ""
+        else:
+            _log("VideoGen", f"[AR AUDIO] Script: {_ar_wc_pre}w | est. ~{_ar_wc_pre/175:.1f}min")
+            ar_long_id   = f"{today}_{uuid.uuid4().hex[:8]}_arabic_long"
+            ar_long_path = _make_video(ar_long, ar_long_id, stats, user_images=user_images, user_videos=user_videos)
 
         # OUTPUT 2 — English long-form
         en_long_id   = f"{today}_{uuid.uuid4().hex[:8]}_english_long"
         en_long_path = _make_video(en_long, en_long_id, stats, user_images=user_images, user_videos=user_videos)
 
     # ── Arabic runtime auto-rebuild ───────────────────────────────────────────
-    # Measure ACTUAL rendered video length. If < 10 min, expand script + re-render.
-    _AR_MIN_SECS  = 600
+    # Validate REAL rendered video duration via ffprobe. If < 15 min, expand + re-render.
+    # Repeats up to 3 times. Skips if ar_long_path is empty (render already failed).
+    _AR_MIN_SECS  = 900   # 15 minutes — real rendered video floor
     _ar_rebuild   = 0
     _ar_max_rb    = 3
     while ar_long_path and os.path.exists(ar_long_path):
         _ar_secs = _video_secs(ar_long_path)
-        _log("VideoGen", f"[AR RUNTIME] Final render duration: {_ar_secs/60:.1f}min ({_ar_secs:.0f}s)")
+        _log("VideoGen", f"[AR AUDIO] Rendered: {_ar_secs/60:.1f}min ({_ar_secs:.0f}s)")
+        _ar_est_min = len(ar_long.get("script", "").split()) / 175.0
+        if abs(_ar_est_min - _ar_secs / 60) > 3.0:
+            _log("VideoGen", f"[AR AUDIO] Runtime mismatch: est={_ar_est_min:.1f}min actual={_ar_secs/60:.1f}min "
+                 f"(delta={_ar_secs/60-_ar_est_min:+.1f}min)", "WARN")
         if _ar_secs >= _AR_MIN_SECS:
-            _log("VideoGen", f"[AR PASSED] Runtime valid: {_ar_secs/60:.1f}min >= 10min", "OK")
+            _log("VideoGen", f"[AR PASSED] Runtime valid: {_ar_secs/60:.1f}min >= 15min", "OK")
             break
         _ar_rebuild += 1
         if _ar_rebuild > _ar_max_rb:
             _log("VideoGen", f"[AR EXPANSION] Rebuild limit reached — continuing with {_ar_secs/60:.1f}min video", "WARN")
             send_message(f"[Pipeline] Arabic runtime {_ar_secs/60:.1f}min after {_ar_max_rb} rebuilds — proceeding")
             break
-        _log("VideoGen", f"[AR EXPANSION] Runtime {_ar_secs/60:.1f}min < 10min — auto-rebuilding (attempt {_ar_rebuild}/{_ar_max_rb})", "WARN")
-        send_message(f"[Pipeline] Arabic runtime {_ar_secs/60:.1f}min < 10min — auto-rebuilding (attempt {_ar_rebuild}/{_ar_max_rb})...")
+        _log("VideoGen", f"[AR AUDIO] Rebuild triggered — {_ar_secs/60:.1f}min < 15min (attempt {_ar_rebuild}/{_ar_max_rb})", "WARN")
+        send_message(f"[Pipeline] Arabic runtime {_ar_secs/60:.1f}min < 15min — auto-rebuilding (attempt {_ar_rebuild}/{_ar_max_rb})...")
         from agent.script_agent import expand_arabic_runtime as _ear
         _topic_text_ar = topic.get("topic", "") if topic else en_long.get("topic", "")
-        ar_long["script"] = _ear(ar_long["script"], target_min=11.0, topic=_topic_text_ar)
+        ar_long["script"] = _ear(ar_long["script"], target_min=24.0, topic=_topic_text_ar)
         ar_long_id   = f"{today}_{uuid.uuid4().hex[:8]}_arabic_long"
         ar_long_path = _make_video(ar_long, ar_long_id, stats, user_images=user_images, user_videos=user_videos)
 
