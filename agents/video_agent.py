@@ -2435,6 +2435,129 @@ _VE_ATMOSPHERE_POOL = [
 ]
 
 
+def _clean_topic_name(topic: str) -> str:
+    """Strip subtitle from a full video title so prompts don't embed the whole title.
+    'Jeffrey Epstein: Secret Network' → 'Jeffrey Epstein'
+    'Pablo Escobar — Rise of a Cartel' → 'Pablo Escobar'
+    """
+    return re.split(r'[:—–|]', (topic or ""), maxsplit=1)[0].strip()
+
+
+# Concrete visual queries per event type — short, literal, archive-searchable
+_SCENE_BASE_QUERIES: dict[str, str] = {
+    "courtroom":     "courtroom empty wooden benches judge",
+    "evidence":      "forensic evidence table crime lab",
+    "newspaper":     "newspaper front page headline close-up",
+    "cctv":          "surveillance camera footage grainy timestamp",
+    "prison":        "prison cell corridor iron bars",
+    "location":      "building exterior street daytime",
+    "map":           "city map overhead aerial view",
+    "interrogation": "interrogation room table chair overhead light",
+    "childhood":     "vintage family photograph portrait",
+    "atmosphere":    "city street night empty",
+}
+
+# Location phrases detectable in chunk text → concrete archive search query
+_CHUNK_LOCATION_HINTS: dict[str, str] = {
+    "palm beach":  "Palm Beach Florida mansion exterior",
+    "manhattan":   "Manhattan New York City aerial",
+    "new york":    "New York City street",
+    "washington":  "Washington DC Capitol building",
+    "miami":       "Miami Florida beach aerial",
+    "los angeles": "Los Angeles California street",
+    "chicago":     "Chicago downtown skyline",
+    "london":      "London street United Kingdom",
+    "paris":       "Paris France street",
+    "wall street": "Wall Street New York financial",
+    "white house": "White House Washington DC exterior",
+    "fbi":         "FBI headquarters building Washington",
+    "cia":         "CIA headquarters Langley Virginia",
+    "pentagon":    "Pentagon building Arlington aerial",
+    "prison":      "prison corridor bars cell",
+    "courthouse":  "courthouse exterior steps stone",
+    "airport":     "airport terminal interior",
+}
+
+# Noise patterns that make AI prompts useless for documentary realism
+_AI_PROMPT_NOISE_RE = re.compile(
+    r'\b(cinematic|documentary|dark|dramatic|moody|epic|atmospheric|noir|'
+    r'artistic|professional|4k|high[\s\-]detail|no[\s\-]text|'
+    r'no[\s\-]watermarks|photorealistic)\b',
+    re.IGNORECASE,
+)
+_AI_PROMPT_SUFFIX_CLEAN = ", photorealistic, vertical 9:16"
+
+# Cache: query string → list of Wikimedia URLs (per pipeline run, not persistent)
+_wikimedia_query_cache: dict[str, list[str]] = {}
+
+
+def _build_scene_search_query(chunk: str, topic: str, event_type: str) -> str:
+    """Build a concrete 3-6 word archive/stock search query from a script chunk.
+
+    Extracts real subjects (people, places, objects) from the chunk text
+    instead of embedding the full video title in the search string.
+    """
+    person = _clean_topic_name(topic)
+    chunk_lower = chunk.lower()
+    years = re.findall(r'\b(19[4-9]\d|20[0-2]\d)\b', chunk)
+    year = years[0] if years else ""
+
+    # Specific geographic location → concrete query (beats generic type base)
+    for loc_phrase, loc_query in _CHUNK_LOCATION_HINTS.items():
+        if loc_phrase in chunk_lower:
+            return f"{loc_query} {year}".strip() if year else loc_query
+
+    # Portrait → person name + year for archive search
+    if event_type == "portrait":
+        return f"{person} {year}".strip() if year else person
+
+    # Named person + year is more specific than a generic type base
+    if year:
+        return f"{person} {year}"
+
+    # Fall back to the first 3 words of the event-type base query
+    base = _SCENE_BASE_QUERIES.get(event_type, "documentary archival")
+    return " ".join(base.split()[:3])
+
+
+def _sanitize_ai_prompt(prompt: str, topic: str) -> str:
+    """Strip title-based content and cinematic noise from AI image prompts.
+
+    Pollinations prompts should describe WHAT to show (specific, literal,
+    visual) rather than HOW it should feel (cinematic, dark, dramatic).
+    """
+    if not prompt:
+        return "archival documentary scene" + _AI_PROMPT_SUFFIX_CLEAN
+    # Remove the appended _IMAGE_PROMPT_SUFFIX block entirely
+    prompt = re.sub(r',?\s*dark cinematic documentary style.*$', '', prompt,
+                    flags=re.IGNORECASE)
+    prompt = re.sub(r',?\s*no\s+(text|watermarks)[^,]*', '', prompt,
+                    flags=re.IGNORECASE)
+    # Strip full video title if it leaked in (title > 15 chars)
+    if len(topic) > 15 and topic.lower() in prompt.lower():
+        prompt = re.sub(re.escape(topic), _clean_topic_name(topic), prompt,
+                        flags=re.IGNORECASE)
+    # Remove noise words
+    prompt = _AI_PROMPT_NOISE_RE.sub('', prompt)
+    prompt = re.sub(r',\s*,', ',', prompt)
+    prompt = re.sub(r'\s+', ' ', prompt).strip().strip(',').strip()
+    # Cap at 15 words so Pollinations stays focused
+    words = prompt.split()
+    if len(words) > 15:
+        prompt = ' '.join(words[:15])
+    return (prompt + _AI_PROMPT_SUFFIX_CLEAN) if prompt else \
+           ("archival documentary scene" + _AI_PROMPT_SUFFIX_CLEAN)
+
+
+def _wikimedia_cached(query: str, max_results: int = 4) -> list[str]:
+    """Wikimedia search with per-run cache — avoids duplicate API calls."""
+    if query in _wikimedia_query_cache:
+        return _wikimedia_query_cache[query]
+    urls = _wikimedia_image_results(query, max_results=max_results)
+    _wikimedia_query_cache[query] = urls
+    return urls
+
+
 def _classify_visual_event(
     chunk_lower: str, position: float, topic: str
 ) -> tuple[str, str]:
@@ -2453,7 +2576,8 @@ def _classify_visual_event(
       location keyword → location
       default → atmosphere (rotated by position)
     """
-    _t = (topic or "").strip()
+    # Use only the person/topic name — never the full video title as a prompt prefix
+    _t = _clean_topic_name((topic or "").strip())
     _pfx = f"{_t} " if _t else ""
 
     for person in _KNOWN_CRIME_PERSONS:
@@ -2583,21 +2707,24 @@ _TYPE_SEARCH_QUERIES: dict[str, str] = {
 def _prefetch_real_urls(events: list[dict], topic: str) -> dict[str, list[str]]:
     """Fetch Wikimedia Commons + Internet Archive URLs once per event type.
 
-    Called once before the parallel map so each type makes at most 2 API calls
-    (Wikimedia + IA fallback) regardless of how many events share that type.
+    Uses the clean person/topic name (not the full video title) in search queries
+    so results stay relevant. Called once before the parallel map — each type
+    makes at most 2 API calls regardless of how many events share that type.
     Returns dict[type → [url, ...]] used as a cycling real-image pool.
     """
+    person = _clean_topic_name(topic)
     needed = {ev["type"] for ev in events if ev["type"] != "portrait"}
     pool: dict[str, list[str]] = {}
     for t in needed:
-        tmpl = _TYPE_SEARCH_QUERIES.get(t, "{topic} documentary")
-        q = tmpl.replace("{topic}", topic.strip())
+        # Build a concrete searchable query using the clean person name
+        base = _SCENE_BASE_QUERIES.get(t, "documentary archival")
+        q = f"{person} {' '.join(base.split()[:2])}"
         urls = _wikimedia_image_results(q, max_results=6)
         if not urls:
             urls = _internet_archive_image_results(q, max_results=4)
         pool[t] = urls
         tag = "real" if urls else "none"
-        print(f"[RealImages] {t}: {len(urls)} {tag} URLs ('{q}')")
+        print(f"[RealImages] prefetch {t}: {len(urls)} {tag} URLs ('{q}')")
     return pool
 
 
@@ -2638,34 +2765,64 @@ def build_documentary_visual_pool(
 
     def _gen_event(args):
         ev, out_path, _seed, _pool = args
-        idx = ev["idx"]
-        if os.path.exists(out_path) and os.path.getsize(out_path) > 5_000:
-            return (ev["type"], out_path)
-        saved = None
+        idx   = ev["idx"]
         ev_type = ev["type"]
+        chunk   = ev.get("chunk", "")
 
+        if os.path.exists(out_path) and os.path.getsize(out_path) > 5_000:
+            return (ev_type, out_path)
+
+        # ── Scene analysis ──────────────────────────────────────────────
+        scene_q = _build_scene_search_query(chunk, topic, ev_type)
+        print(f"[ScenePlanner] idx={idx} type={ev_type} query='{scene_q}'")
+
+        saved = None
+
+        # ── Step 1: portrait — Wikipedia person photo ───────────────────
         if ev_type == "portrait":
-            person = _detect_person_in_chunk(ev["chunk"])
+            person = _detect_person_in_chunk(chunk)
             if person:
                 resolved = _PERSON_ALIASES.get(person.lower(), person)
+                print(f"[VisualSearch] Wikimedia person: '{resolved}'")
                 photo_url = _search_wikimedia_person_photo(resolved)
                 if photo_url:
                     saved = _download_first_valid([photo_url], out_path)
                 if not saved:
-                    fallback_urls = _wikimedia_image_results(resolved, max_results=3)
+                    print(f"[VisualSearch] Wikimedia Commons: '{resolved}'")
+                    fallback_urls = _wikimedia_cached(resolved, max_results=3)
                     if fallback_urls:
                         saved = _download_first_valid(fallback_urls, out_path)
-        else:
-            # Try pre-fetched real archive images first; cycle through the pool
-            # so consecutive events of the same type use different photos.
-            type_urls = _pool.get(ev_type, [])
-            if type_urls:
-                url = type_urls[idx % len(type_urls)]
-                saved = _download_first_valid([url], out_path)
+            if saved:
+                print(f"[VisualSearch] found real portrait image")
 
-        # AI generation only when no real image was found
+        # ── Step 2: non-portrait — scene-specific archive search ────────
+        else:
+            # Try the scene-specific query first (chunk-derived, not title-based)
+            print(f"[VisualSearch] Wikimedia scene query: '{scene_q}'")
+            scene_urls = _wikimedia_cached(scene_q, max_results=4)
+            if scene_urls:
+                saved = _download_first_valid(scene_urls, out_path)
+                if saved:
+                    print(f"[VisualSearch] found real archive image for '{scene_q}'")
+
+            # Pre-fetched type pool as secondary fallback (cycles through photos)
+            if not saved:
+                type_urls = _pool.get(ev_type, [])
+                if type_urls:
+                    url = type_urls[idx % len(type_urls)]
+                    print(f"[VisualSearch] pool fallback: type={ev_type}")
+                    saved = _download_first_valid([url], out_path)
+                    if saved:
+                        print(f"[VisualSearch] found real archive image from pool")
+
+        # ── Step 3: AI generation with sanitized prompt ─────────────────
         if not saved:
-            saved = generate_ai_image(ev["prompt"], out_path, seed=_seed + idx)
+            clean_prompt = _sanitize_ai_prompt(ev["prompt"], topic)
+            print(f"[AIGeneration] Pollinations: '{clean_prompt[:80]}'")
+            saved = generate_ai_image(clean_prompt, out_path, seed=_seed + idx)
+            if not saved:
+                print(f"[FallbackReason] all sources failed for idx={idx} type={ev_type}")
+
         return (ev_type, saved) if saved else (ev_type, None)
 
     tasks = [
