@@ -60,6 +60,13 @@ for d in [AUDIO_DIR, VIDEO_DIR, FINAL_DIR, IMAGES_DIR, STOCK_VIDEOS_DIR]:
 # ── Active topic content paths (set by set_active_topic_content) ─────────────
 _ACTIVE_TOPIC_CONTENT: dict = {}
 
+# ── Real-archive image tracker ────────────────────────────────────────────────
+# Paths that came from Wikimedia / real archive (not AI-generated).
+# Populated by build_documentary_visual_pool() and get_person_images().
+# Used by match_images_to_moments() to enforce documentary rhythm:
+#   REAL → REAL → REAL → GENERATED ATMOSPHERE → REAL
+_REAL_IMAGE_PATHS: set[str] = set()
+
 
 def set_active_topic_content(paths: dict) -> None:
     """Register per-topic content paths so image generation persists there."""
@@ -1466,6 +1473,7 @@ def get_person_images(
             wiki_path = os.path.join(IMAGES_DIR, f"{video_id}_wiki_real.png")
             downloaded = download_wikipedia_image(wiki_url, wiki_path)
             if downloaded:
+                _REAL_IMAGE_PATHS.add(downloaded)   # mark as real/documentary source
                 images.append({
                     "path": downloaded,
                     "tags": ["real", "photo", "portrait", *person_name.lower().split()],
@@ -2824,9 +2832,11 @@ def build_documentary_visual_pool(
         idx   = ev["idx"]
         ev_type = ev["type"]
         chunk   = ev.get("chunk", "")
+        _from_real = False  # True when image came from real archive, not AI
 
         if os.path.exists(out_path) and os.path.getsize(out_path) > 5_000:
-            return (ev_type, out_path)
+            # Cached image — we don't know its source; assume real if it predates AI run
+            return (ev_type, out_path, True)
 
         # ── Scene analysis — build ordered query list ───────────────────
         scene_queries = _build_scene_search_queries(chunk, topic, ev_type)
@@ -2854,6 +2864,7 @@ def build_documentary_visual_pool(
                                 print(f"[VisualSearch] portrait found via '{q}'")
                                 break
             if saved:
+                _from_real = True
                 print(f"[VisualSearch] found real portrait image")
 
         # ── Step 2: non-portrait — iterate query list until hit ─────────
@@ -2863,6 +2874,7 @@ def build_documentary_visual_pool(
                 if urls:
                     saved = _download_first_valid(urls, out_path)
                     if saved:
+                        _from_real = True
                         print(f"[VisualSearch] found real archive image: '{q}'")
                         break
 
@@ -2874,6 +2886,7 @@ def build_documentary_visual_pool(
                     print(f"[VisualSearch] pool fallback: type={ev_type}")
                     saved = _download_first_valid([url], out_path)
                     if saved:
+                        _from_real = True
                         print(f"[VisualSearch] found pool image: type={ev_type}")
 
         # ── Step 3: AI generation with sanitized prompt ─────────────────
@@ -2884,7 +2897,7 @@ def build_documentary_visual_pool(
             if not saved:
                 print(f"[FallbackReason] all sources failed for idx={idx} type={ev_type}")
 
-        return (ev_type, saved) if saved else (ev_type, None)
+        return (ev_type, saved, _from_real) if saved else (ev_type, None, False)
 
     tasks = [
         (ev, os.path.join(_img_dir, f"{video_id}_ev_{ev['idx']:04d}.png"), seed, real_url_pool)
@@ -2897,6 +2910,9 @@ def build_documentary_visual_pool(
         _gen_event, tasks, max_workers=_WORKERS["doc_visual"], timeout=120, label="doc visual",
     )
 
+    global _REAL_IMAGE_PATHS
+    _REAL_IMAGE_PATHS.clear()   # reset for this pipeline run
+
     paths: list[str] = []
     _type_counts: dict[str, int] = {}
     _real_count = 0
@@ -2905,7 +2921,9 @@ def build_documentary_visual_pool(
         if r and r[1]:
             paths.append(r[1])
             _type_counts[r[0]] = _type_counts.get(r[0], 0) + 1
-            if r[0] in real_types or r[0] == "portrait":
+            is_real = r[2] if len(r) > 2 else False
+            if is_real:
+                _REAL_IMAGE_PATHS.add(r[1])
                 _real_count += 1
             else:
                 _ai_count += 1
@@ -2913,6 +2931,7 @@ def build_documentary_visual_pool(
     print(f"[VisualPlan] Pool complete: {len(paths)}/{len(events)} visuals — "
           f"real:{_real_count} AI:{_ai_count} | " +
           " | ".join(f"{t}:{c}" for t, c in sorted(_type_counts.items())))
+    print(f"[VisualPlan] Real-archive images tracked: {len(_REAL_IMAGE_PATHS)}")
 
     # Emergency fallback: never return fewer than 8 images
     if len(paths) < 8:
@@ -6140,14 +6159,18 @@ def match_images_to_moments(
     ai_image_paths: list[str],
 ) -> list[str]:
     """
-    Contextually assign an image to each script moment.
+    Assign an image to each script moment using documentary rhythm:
+      REAL → REAL → REAL → GENERATED ATMOSPHERE → REAL
 
-    Rules:
-    - User images matched to their best-fit moment by tag overlap
-    - FORBIDDEN: law-enforcement-tagged image on a pure crime/killer moment
-    - Image rotation window: no repeat within last 5 placements
-    - Alternates user/stock where possible
-    - Logs every decision with reason
+    Priority tiers:
+      Tier 1 (PRIMARY): user uploads + wiki photos + real archive images
+      Tier 2 (SECONDARY): AI-generated images — atmosphere / transitions only
+
+    Safeguards:
+      - Max 1 consecutive AI-generated image
+      - Max 30% of total slots may be AI-generated
+      - When Tier-1 pool is exhausted, cycle real images (never switch to all-AI)
+      - FORBIDDEN: law-enforcement images on pure crime/killer moments
     """
     if not moments:
         all_paths = [img.get("path", "") if isinstance(img, dict) else img
@@ -6156,65 +6179,105 @@ def match_images_to_moments(
 
     user_pool = [img for img in (user_images or [])
                  if isinstance(img, dict) and img.get("path") and os.path.exists(img["path"])]
-    ai_pool   = [p for p in (ai_image_paths or []) if p and os.path.exists(p)]
+    ai_pool_all = [p for p in (ai_image_paths or []) if p and os.path.exists(p)]
 
-    print(f"[Visual] match_images_to_moments: {len(user_pool)} user images, {len(ai_pool)} stock/AI images, {len(moments)} moments")
+    # Split ai_pool into real-archive (Tier 1) and AI-generated (Tier 2)
+    real_archive = [p for p in ai_pool_all if p in _REAL_IMAGE_PATHS]
+    gen_pool     = [p for p in ai_pool_all if p not in _REAL_IMAGE_PATHS]
 
-    def _score(img_tags: list[str], m_tags: list[str]) -> int:
-        img_lower = {t.lower() for t in img_tags}
-        return sum(1 for t in m_tags if t.lower() in img_lower)
+    # Tier-1 pool: user uploads/wiki + real archive images
+    real_pool = [img["path"] for img in user_pool] + real_archive
 
-    def _is_forbidden(img_tags: list[str], moment: dict) -> bool:
-        img_lower = {t.lower() for t in img_tags}
-        has_law = any(t in img_lower for t in {"fbi", "police", "detective", "law_enforcement", "dea", "cop", "officer"})
+    print(f"[Visual] match_images_to_moments: {len(user_pool)} user/wiki, "
+          f"{len(real_archive)} real-archive, {len(gen_pool)} generated, "
+          f"{len(moments)} moments")
+
+    def _is_forbidden(img: dict, moment: dict) -> bool:
+        img_lower = {t.lower() for t in img.get("tags", [])}
+        has_law = any(t in img_lower for t in
+                      {"fbi", "police", "detective", "law_enforcement", "dea", "cop", "officer"})
         cats = moment.get("categories", [])
         return has_law and "crime" in cats and "law_enforcement" not in cats
 
+    # Constants: documentary rhythm policy
+    MAX_CONSECUTIVE_GEN = 1     # never 2+ AI images in a row
+    MAX_GEN_DENSITY     = 0.30  # at most 30% of total slots may be AI-generated
+    GEN_BEAT_INTERVAL   = 4     # insert one AI atmosphere beat every N real slots
+
+    total_slots   = len(moments)
+    max_gen_slots = max(1, int(total_slots * MAX_GEN_DENSITY))
+
     result: list[str] = []
-    ai_idx = 0
+    real_idx        = 0
+    gen_idx         = 0
+    consecutive_gen = 0
+    gen_count       = 0
+    real_since_gen  = 0   # count real slots placed since last generated slot
 
-    # PHASE 1: Fill ALL user images into their best-matching moments first.
-    # User images are NEVER interleaved with stock — they fill first N slots.
-    remaining_user = list(user_pool)
-    user_slots = min(len(remaining_user), len(moments))
+    for m_idx, moment in enumerate(moments):
+        # Decide whether this slot gets a real or generated image
+        # Insert generated image as atmosphere beat every GEN_BEAT_INTERVAL real images
+        # (but only if we haven't hit the consecutive or density caps)
+        use_gen = (
+            gen_pool                                  # have generated images
+            and gen_count < max_gen_slots             # density cap not hit
+            and consecutive_gen < MAX_CONSECUTIVE_GEN # consecutive cap not hit
+            and real_pool                             # at least 1 real was placed
+            and real_since_gen >= GEN_BEAT_INTERVAL   # waited enough real slots
+        )
 
-    for m_idx in range(user_slots):
-        moment = moments[m_idx]
-        best_score = -1
-        best_img = None
-        for img in remaining_user:
-            img_tags = img.get("tags", [])
-            if _is_forbidden(img_tags, moment):
-                continue
-            score = _score(img_tags, moment.get("tags", []))
-            if score > best_score:
-                best_score = score
-                best_img = img
-        if not best_img and remaining_user:
-            best_img = remaining_user[0]
-            best_score = 0
-        if best_img:
-            remaining_user.remove(best_img)
-            preview = moment["text"][:50].replace("\n", " ")
-            print(f"[Visual] Slot {m_idx}: '{preview}...' → {os.path.basename(best_img['path'])} [user_image score={best_score}]")
-            result.append(best_img["path"])
+        chosen = None
+        label  = ""
 
-    # PHASE 2: Fill remaining moment slots with stock/AI images
-    for m_idx in range(user_slots, len(moments)):
-        if ai_pool:
-            chosen = ai_pool[ai_idx % len(ai_pool)]
-            ai_idx += 1
-            preview = moments[m_idx]["text"][:50].replace("\n", " ")
-            print(f"[Visual] Slot {m_idx}: '{preview}...' → {os.path.basename(chosen)} [stock/AI]")
-            result.append(chosen)
+        if use_gen:
+            chosen = gen_pool[gen_idx % len(gen_pool)]
+            gen_idx        += 1
+            consecutive_gen += 1
+            gen_count       += 1
+            real_since_gen   = 0
+            label = "generated/atmosphere"
+        elif real_pool:
+            src_path = real_pool[real_idx % len(real_pool)]
+            # Find matching user image dict for forbidden-check (only for user_pool items)
+            user_img = next(
+                (img for img in user_pool if img.get("path") == src_path), None
+            )
+            if user_img and _is_forbidden(user_img, moment):
+                # Try another user image
+                alt = next(
+                    (img for img in user_pool
+                     if img.get("path") != src_path and not _is_forbidden(img, moment)),
+                    None
+                )
+                if alt:
+                    src_path = alt["path"]
+            chosen          = src_path
+            real_idx       += 1
+            consecutive_gen = 0
+            real_since_gen += 1
+            label = "real/archive"
+        elif gen_pool:
+            # All real images exhausted — must use generated (best effort)
+            chosen = gen_pool[gen_idx % len(gen_pool)]
+            gen_idx        += 1
+            consecutive_gen += 1
+            gen_count       += 1
+            label = "generated/fallback"
+        else:
+            break
 
-    # Pad if still short
-    if ai_pool:
-        while len(result) < len(moments):
-            result.append(ai_pool[ai_idx % len(ai_pool)])
-            ai_idx += 1
+        preview = moment["text"][:50].replace("\n", " ")
+        print(f"[Visual] Slot {m_idx}: '{preview}...' → {os.path.basename(chosen)} [{label}]")
+        result.append(chosen)
 
-    print(f"[Visual] Final slot assignment: {len([r for r in result if 'user_' in r or 'transformed' in r])} user, {len(result)} total")
+    # Pad any remaining slots (edge case: more moments than images)
+    all_real = real_pool if real_pool else gen_pool
+    while len(result) < len(moments) and all_real:
+        result.append(all_real[len(result) % len(all_real)])
+
+    gen_in_result  = sum(1 for r in result if r in set(gen_pool))
+    real_in_result = len(result) - gen_in_result
+    print(f"[Visual] Final: {real_in_result} real/archive + {gen_in_result} generated = {len(result)} slots")
     return result
 
 
@@ -7048,16 +7111,28 @@ def _score_visual_asset(path: str, query: str = "", topic: str = "") -> float:
     """
     Score a media asset for quality and relevance.
 
-    +3  video clip          +2  dark/cinematic tones (brightness < 100)
-    +1  image file          -2  overexposed (brightness > 200)
-    +3  face detected       +2  query/topic keyword in filename
+    +5  real archive / documentary source (Wikimedia, stock video from _REAL_IMAGE_PATHS)
+    +3  video clip
+    +3  wiki_real in filename
+    +1  image file
+    +2  dark/cinematic tones (brightness < 100)  [images only]
+    -2  overexposed (brightness > 200)
+    +3  face detected (OpenCV)
+    +2  query/topic keyword in filename
     -5  irrelevant category (animals, nature, fashion…)
+
+    Real/documentary assets always outscore AI-generated images so they
+    appear first when the pool is ranked and fill primary timeline slots.
     """
     score = 0.0
     is_video = _is_video_file(path)
     score += 3.0 if is_video else 1.0
 
     base = os.path.basename(path).lower()
+
+    # Documentary-source bonus — ensures real assets outrank dark AI images
+    if path in _REAL_IMAGE_PATHS or "_wiki_real" in base:
+        score += 5.0
 
     # Hard reject: irrelevant category in filename
     if any(t in base for t in _IRRELEVANT_QUERY_TERMS):
@@ -8996,9 +9071,17 @@ def run_full_pipeline(
                     script_text, min(6, max(2, len(_doc_pool) // 20)),
                     video_id, topic=topic_str,
                 )
+                if _broll:
+                    # Rank B-roll clips by quality, but do NOT re-rank the full pool.
+                    # build_documentary_visual_pool() already orders images by narrative
+                    # event — re-ranking destroys that order and clusters dark AI images
+                    # at the front, causing consecutive AI-generated runs.
+                    _broll = _rank_visual_pool(_broll, topic=topic_str)
+                    # Mark B-roll stock videos as real source assets
+                    for _bv in _broll:
+                        if _bv and _is_video_file(_bv):
+                            _REAL_IMAGE_PATHS.add(_bv)
                 image_paths.extend(_broll)
-            if image_paths:
-                image_paths = _rank_visual_pool(image_paths, topic=topic_str)
     except Exception as e:
         print(f"[FULL] CRASH at visual generation: {e}")
         traceback.print_exc()
