@@ -1597,7 +1597,7 @@ def build_scene_image_pool(
     All other types use scene-type-specific Pollinations prompts.
     Returns {scene_type: [image_path, ...]} mapping.
     """
-    from agent.video_agent import parallel_map_safe
+    from agent.video_agent import parallel_map_safe, _WORKERS
 
     os.makedirs(clips_dir, exist_ok=True)
     unique_types = list({s["scene_type"] for s in scenes})
@@ -1626,14 +1626,15 @@ def build_scene_image_pool(
 
     # Pass 2: fetch all pending images in parallel
     if tasks:
-        print(f"[SHOT ENGINE] Fetching {len(tasks)} images in parallel (workers=10)...")
+        _scene_workers = min(len(tasks), _WORKERS["search"])
+        print(f"[SHOT ENGINE] Fetching {len(tasks)} images in parallel (workers={_scene_workers})...")
 
         def _fetch_task(t):
             stype, i, tmpl, img_out = t
             img = _pollinations_fetch_scene(tmpl, img_out, era=era, style=style)
             return (stype, i, img_out, img)
 
-        results = parallel_map_safe(_fetch_task, tasks, max_workers=20, timeout=120, label="scene img")
+        results = parallel_map_safe(_fetch_task, tasks, max_workers=_scene_workers, timeout=120, label="scene img")
         for r in results:
             if r and r[3]:
                 stype, i, img_out, img = r
