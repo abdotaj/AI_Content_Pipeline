@@ -6503,3 +6503,288 @@ def write_scripts(topics: list[dict]) -> list[dict]:
         scripts.append(ar_script)
         scripts.append(en_script)
     return scripts
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  Language-isolated Arabic pipeline
+#  These functions generate Arabic output WITHOUT a finished English script,
+#  enabling full failure isolation between the two language pipelines.
+# ══════════════════════════════════════════════════════════════════════════════
+
+def write_arabic_script(topic: dict, research: dict | None = None) -> dict:
+    """
+    Generate a full Arabic documentary script INDEPENDENTLY.
+
+    Does not require a finished English script as input.  Drives from
+    topic metadata + research directly, applying identical post-processing
+    (expansion, runtime validation, cleanup) as translate_script().
+
+    Fallback chain:
+      1. Native research path (_write_arabic_from_research + Arabic research)
+      2. Groq direct (same function, empty research facts)
+      3. script_too_short=True flagged → render blocked
+    """
+    topic_str   = topic.get("topic", "")
+    series_name = topic.get("series_name", "")
+    series_type = topic.get("series_type", "") or (
+        topic.get("niche", "").split("behind")[-1].strip()
+        if "behind" in topic.get("niche", "") else ""
+    )
+    part_number = topic.get("part_number")
+
+    # ── Arabic title ──────────────────────────────────────────────────────────
+    _is_hemedti = any(k in topic_str.lower() for k in ["hemedti", "حميدتي", "dagalo"])
+    if _is_hemedti:
+        ar_title = _build_hemedti_arabic_title(part_number)
+    else:
+        ar_title = _build_arabic_title(topic_str, series_name, series_type)
+
+    # ── Runtime target ────────────────────────────────────────────────────────
+    _ar_target_minutes = float(os.getenv("AR_TARGET_MINUTES", "0") or "0")
+    if _ar_target_minutes <= 0:
+        _ar_target_minutes = (
+            30.0 if os.getenv("PIPELINE_MODE", "").lower() == "animation" else 22.0
+        )
+    print(f"[AR] Independent pipeline | topic='{topic_str}' | target={_ar_target_minutes}min")
+
+    # Minimal metadata dict for _write_arabic_from_research (no English body needed)
+    _meta = {
+        "topic":       topic_str,
+        "series_name": series_name,
+        "series_type": series_type,
+        "script":      "",
+    }
+
+    # ── Generate Arabic body ──────────────────────────────────────────────────
+    _ar_script_body = ""
+    _used_path      = "groq_direct"
+
+    # Path A: native research
+    if research:
+        print("[AR] Writing from research (independent path)...")
+        try:
+            ar_research     = translate_research_to_arabic(research)
+            _ar_script_body = _write_arabic_from_research(
+                _meta, ar_research, target_minutes=_ar_target_minutes,
+            )
+            if _ar_script_body and clean_word_count(_ar_script_body) >= 300:
+                _core_present = any(
+                    m in _ar_script_body
+                    for m in ["القصة الحقيقية", "الرواية مقابل الواقع", "حقائق صادمة"]
+                )
+                if _core_present:
+                    _ar_script_body = fix_first_mention(_ar_script_body, is_arabic=True)
+                    _used_path      = "research"
+                    print(f"[AR] Research path: {clean_word_count(_ar_script_body)}w ✅")
+                else:
+                    print("[AR] Missing mandatory section — Groq direct fallback")
+                    _ar_script_body = ""
+            else:
+                print("[AR] Research path short/empty — Groq direct fallback")
+                _ar_script_body = ""
+        except Exception as _e:
+            print(f"[AR] Research path failed ({_e}) — Groq direct fallback")
+            _ar_script_body = ""
+
+    # Path B: Groq direct (same LLM path, empty research facts)
+    if not _ar_script_body:
+        print("[AR] Groq direct generation...")
+        try:
+            _empty_ar_research = {
+                "ar_research_facts": [], "ar_research_inaccuracies": [],
+                "ar_research_shocking": [], "ar_user_discovery": "",
+            }
+            _ar_script_body = _write_arabic_from_research(
+                _meta, _empty_ar_research, target_minutes=_ar_target_minutes,
+            )
+            if _ar_script_body:
+                _ar_script_body = fix_first_mention(_ar_script_body, is_arabic=True)
+                _used_path = "groq_direct"
+                print(f"[AR] Groq direct: {clean_word_count(_ar_script_body)}w")
+        except Exception as _e2:
+            print(f"[AR] Groq direct failed ({_e2}) — script empty")
+            _ar_script_body = ""
+
+    # ── Build ar_data ─────────────────────────────────────────────────────────
+    ar_data = {
+        "title":           ar_title,
+        "hook":            "",
+        "script":          _ar_script_body,
+        "on_screen_texts": [],
+        "caption":         "",
+        "hashtags":        "",
+        "thumbnail_text":  "",
+        "chapters":        "",
+        "topic":           topic_str,
+        "niche":           topic.get("niche", topic_str),
+        "search_query":    topic.get("search_query", topic_str),
+        "keywords":        topic.get("keywords", [topic_str] if topic_str else []),
+        "language":        "arabic",
+        "manual_topic":    bool(topic.get("manual_topic")),
+        "series_name":     series_name,
+        "series_type":     series_type,
+        "arabic_path":     _used_path,
+    }
+
+    # ── Post-processing (mirrors translate_script exactly) ────────────────────
+    _ar_wc         = clean_word_count(ar_data.get("script", ""))
+    _is_anim       = os.getenv("PIPELINE_MODE", "").lower() == "animation"
+    _AR_WORD_FLOOR = _WORD_FLOORS["animation"]["arabic"] if _is_anim else _WORD_FLOORS["fast"]["arabic"]
+    _AR_WORD_TGT   = int(_AR_WORD_FLOOR * 1.1)
+    if _ar_wc < _AR_WORD_TGT:
+        print(f"[AR RUNTIME] {_ar_wc}w below target {_AR_WORD_TGT}w — expanding...")
+        ar_data["script"] = _expand_arabic_script_to_min(ar_data["script"], target_min=_AR_WORD_TGT)
+
+    _ar_contract_ref = get_runtime_contract("fast")
+    _ar_min  = estimate_arabic_duration(ar_data.get("script", ""))
+    _ar_wc_n = clean_word_count(ar_data.get("script", ""))
+    _ar_tgt  = max(_ar_contract_ref["min_minutes"], _ar_target_minutes)
+    print(f"[AR RUNTIME] {_ar_wc_n}w | ~{_ar_min:.1f}min | target={_ar_tgt:.1f}min")
+    if _ar_min < _ar_tgt:
+        print(f"[AR EXPANSION] {_ar_min:.1f}min < {_ar_tgt:.1f}min — expanding...")
+        ar_data["script"] = expand_arabic_runtime(ar_data["script"], target_min=_ar_tgt, topic=topic_str)
+
+    if ar_data.get("script"):
+        _locked_script = ar_data["script"]
+        _locked_wc     = clean_word_count(_locked_script)
+        _locked_min    = _locked_wc / _TTS_WPM["arabic"]
+        print(f"[AR] Locked baseline: {_locked_wc}w | {_locked_min:.1f}min")
+
+        ar_data["script"] = upgrade_arabic_script(ar_data["script"])
+        _post_up_wc = clean_word_count(ar_data.get("script", ""))
+        _regress    = " WARNING=REGRESSION" if _post_up_wc < _locked_wc * 0.90 else ""
+        print(f"[AR] Post-upgrade: {_post_up_wc}w{_regress}")
+
+        ar_data["script"] = evaluate_and_fix_script(ar_data["script"])
+        from agents.script_quality import (
+            normalize_arabic_documentary_text, normalize_arabic_tts,
+            enforce_arabic_purity, remove_arabic_filler_phrases,
+            validate_information_density,
+        )
+        ar_data["script"] = normalize_arabic_documentary_text(ar_data["script"])
+        ar_data["script"] = normalize_arabic_tts(ar_data["script"])
+        ar_data["script"] = tts_readability_pass(ar_data["script"])
+        ar_data["script"] = enforce_arabic_purity(ar_data["script"])
+        ar_data["script"] = remove_arabic_filler_phrases(ar_data["script"])
+
+        # Section-marker guard
+        import re as _re_ar
+        _body = ar_data.get("script", "")
+        if _body and not _re_ar.search(r'\[SECTION:\s*المقدمة', _body):
+            ar_data["script"] = f"[SECTION: المقدمة]\n{_body.lstrip()}"
+            print("[AR] Marker guard: prepended [SECTION: المقدمة]")
+
+        # Runtime preservation guard
+        _post_cl_wc  = clean_word_count(ar_data.get("script", ""))
+        _post_cl_min = _post_cl_wc / _TTS_WPM["arabic"]
+        _floor_min   = _ar_contract_ref["min_minutes"]
+        if _post_cl_wc < _locked_wc * 0.90:
+            ar_data["script"] = _locked_script
+            print(f"[RUNTIME GUARD] Post-cleanup regression — restoring locked ({_locked_wc}w)")
+        elif _post_cl_min < _floor_min:
+            ar_data["script"] = _locked_script
+            print(f"[RUNTIME GUARD] Below contract floor — restoring locked ({_locked_min:.1f}min)")
+
+        _density = validate_information_density(ar_data["script"], language="arabic")
+        print(f"[AR] density={_density.get('density_pct',0):.0f}% [{_density.get('verdict','?')}]")
+
+    # ── Runtime & word-count gates (block render if below floor) ─────────────
+    _final_wc  = clean_word_count(ar_data.get("script", ""))
+    _final_min = estimate_arabic_duration(ar_data.get("script", ""))
+
+    _ar_contract      = get_runtime_contract("fast")
+    _AR_FLOOR_MIN     = _ar_contract["min_minutes"]
+    _AR_HARD_WC_FLOOR = 4200
+
+    if _final_min < _AR_FLOOR_MIN:
+        ar_data["script_too_short"] = True
+        print(f"[AR BLOCKED] {_final_min:.1f}min < {_AR_FLOOR_MIN:.0f}min floor")
+    elif _final_wc < _AR_HARD_WC_FLOOR:
+        ar_data["script_too_short"] = True
+        print(f"[AR BLOCKED] {_final_wc}w < {_AR_HARD_WC_FLOOR}w hard floor")
+    else:
+        ar_data.pop("script_too_short", None)
+
+    ar_data["estimated_runtime_min"] = round(_final_min, 1)
+
+    # Arabic chapters
+    if _final_wc > 0:
+        ar_data["chapters"] = generate_chapters(_final_wc, language="arabic")
+
+    print(
+        f"[Script] Arabic (independent): '{ar_title}' | "
+        f"{_final_wc}w | ~{_final_min:.1f}min | path={_used_path}"
+    )
+    return ar_data
+
+
+def write_arabic_short(ar_long_script: dict) -> dict:
+    """
+    Generate an Arabic short script (60-90 s) directly from the Arabic long script.
+
+    Independent of the English pipeline — no translation from English short.
+    Picks the strongest moment from the Arabic long script and rewrites it
+    as a standalone viral voiceover in native Arabic.
+    """
+    topic       = ar_long_script.get("topic", "")
+    long_script = ar_long_script.get("script", "")
+    series_name = ar_long_script.get("series_name", "")
+
+    if not long_script:
+        print("[AR Short] No Arabic long script — returning empty")
+        return {"short_script_ar": ""}
+
+    prompt = f"""أنت تكتب تعليقاً صوتياً لفيديو جريمة حقيقية قصير مدته 60-90 ثانية.
+
+المهمة: اقرأ النص المصدر أدناه. اعثر على أقوى لحظة — صدمة، اعتراف، انقلاب، أو حقيقة مخفية. أعد كتابتها كتعليق صوتي مستقل وفيروسي. لا تلخّص القصة كلها. أخبر لحظة واحدة، بسرعة وقوة.
+
+الموضوع: {topic}
+{f"المسلسل/الفيلم: {series_name}" if series_name else ""}
+
+قواعد صارمة:
+- افتح مباشرة بالفعل أو الحقيقة. لا مقدمات. لا "في عام..."
+- كل جملة: 10-15 كلمة كحد أقصى
+- لا تقرير، لا تحليل نفسي، لا لغة أكاديمية
+- اسرد المشهد، لا تلخّصه
+- أنهِ بجملة تبقى في الذهن. اختم بـ: "تابع Dark Crime Decoded لمزيد."
+- الطول المستهدف: 260-300 كلمة. الحد الأدنى المطلق: 240 كلمة.
+
+النص المصدر (استخرج منه أفضل لحظة):
+{long_script[:2000]}
+
+اكتب التعليق الصوتي فقط. لا عناوين. لا تسميات. لا شرح."""
+
+    ar_text = ""
+    for attempt in range(3):
+        try:
+            _r = _groq_call(
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=700,
+                temperature=0.85,
+            )
+            _result = _r.choices[0].message.content.strip()
+            _wc     = clean_word_count(_result)
+            print(f"[AR Short] attempt {attempt + 1}: {_wc}w")
+            if _wc > clean_word_count(ar_text):
+                ar_text = _result
+            if _wc >= 240:
+                break
+        except Exception as _e:
+            print(f"[AR Short] Groq error (attempt {attempt + 1}): {_e}")
+            import time as _time; _time.sleep(8)
+
+    # Enforce minimum via expand_short_script
+    if ar_text and clean_word_count(ar_text) < 240:
+        ar_text = expand_short_script(ar_text, "arabic", topic, 270)
+
+    _final_wc   = clean_word_count(ar_text)
+    _final_secs = estimate_short_duration_secs(ar_text, "arabic") if ar_text else 0.0
+    print(f"[AR Short] Final: {_final_wc}w → ~{_final_secs:.0f}s")
+
+    return {
+        "short_script_ar":  ar_text,
+        "ar_duration_secs": _final_secs,
+        "topic":            topic,
+        "series_name":      series_name,
+        "language":         "arabic",
+    }

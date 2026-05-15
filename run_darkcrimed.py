@@ -48,7 +48,11 @@ from config_darkcrimed import (
 # Local: use existing youtube_token_darkcrimed_en/ar.json files
 
 from agent.research_agent import research_topics, research_series, mark_covered, is_fictional, _detect_show_topic, _fetch_show_cast_from_wikipedia
-from agent.script_agent   import write_script, translate_script, detect_part_number, generate_chapters, write_short_script, generate_cinematic_shorts
+from agent.script_agent   import (
+    write_script, translate_script, detect_part_number, generate_chapters,
+    write_short_script, generate_cinematic_shorts,
+    write_arabic_script, write_arabic_short,   # language-isolated Arabic pipeline
+)
 from agent.video_agent    import create_video, process_user_images_smart, load_part2_images, ensure_music_assets, cut_chapter_shorts, cut_best_short, load_all_content, find_content_folder
 from agent.notify_agent   import (
     send_message, send_for_manual_posting, send_daily_report,
@@ -522,51 +526,99 @@ def run_pipeline():
         print(f"[Pipeline] FINAL TOPIC: {topic.get('topic', '?')}")
         print(f"[Pipeline] Starting pipeline for: {topic.get('topic', '?')}")
 
-        # ── STEP 2: Generate 4 scripts ─────────────────────────
-        print("\n[2/5] Writing scripts...")
+        # ══════════════════════════════════════════════════════════════════════
+        # STEP 2: Language-isolated script generation
+        #
+        # English and Arabic pipelines run INDEPENDENTLY.
+        # Failure of one language does NOT abort the other.
+        #   • English: write_script(topic, "english") — standard path
+        #   • Arabic:  write_arabic_script(topic, research) — native, no EN dependency
+        # ══════════════════════════════════════════════════════════════════════
+        print("\n[2/5] Writing scripts (EN + AR independently)...")
+
+        # ── 2A: English pipeline ───────────────────────────────────────────────
+        en_long = None
         try:
             en_long = write_script(topic, language="english")
-            print("  [2/5] English long script done")
-        except Exception as e:
-            send_message(f"Script writing failed: {e}")
-            print(f"[ERROR] Script: {e}")
-            return
+            _log("Scripts", f"EN done: '{en_long.get('title','?')}' | "
+                 f"{len(en_long.get('script','').split())}w", "OK")
+        except Exception as _en_e:
+            _log("Scripts", f"EN script failed: {_en_e}", "ERROR")
+            send_message(f"[Pipeline] English script failed: {_en_e}")
+            # Create minimal fallback so Arabic can still proceed
+            en_long = {
+                "topic":           topic.get("topic", ""),
+                "title":           topic.get("topic", ""),
+                "script":          "",
+                "language":        "english",
+                "series_name":     topic.get("series_name", ""),
+                "series_type":     topic.get("series_type", ""),
+                "on_screen_texts": [],
+                "caption":         "",
+                "hashtags":        "",
+                "chapters":        "",
+                "hook":            "",
+                "keywords":        topic.get("keywords", []),
+                "short_script_en": "",
+                "script_failed":   True,
+            }
 
     _stage("Scripts EN done")
 
+    # ── 2B: Arabic pipeline (independent — no en_long dependency) ─────────────
+    ar_long = None
+    _research = topic.get("research", {}) if topic else {}
     try:
-        ar_long = translate_script(en_long, research=topic.get("research", {}))
-        # Replace English chapter labels with Arabic equivalents, preserving angle_title
-        ar_word_count = len(ar_long.get("script", "").split())
-        if ar_word_count > 0:
+        ar_long = write_arabic_script(topic, _research)
+        # Regenerate chapters using actual Arabic word count
+        _ar_wc = len(ar_long.get("script", "").split())
+        if _ar_wc > 0:
             ar_long["chapters"] = generate_chapters(
-                ar_word_count,
-                language="arabic",
-                angle_title=en_long.get("angle_title", ""),
+                _ar_wc, language="arabic",
+                angle_title=en_long.get("angle_title", "") if en_long else "",
             )
-        # Carry angle fields through to Arabic
-        ar_long["angle_title"] = en_long.get("angle_title", "")
-        ar_long["angle_hook"]  = en_long.get("angle_hook", "")
-        _log("Scripts", "Arabic script done", "OK")
-    except Exception as e:
-        send_message(f"Arabic translation failed: {e}")
-        _log("Scripts", f"Arabic translation failed: {e}", "ERROR")
-        return
+        # Forward angle fields from English if available (best-effort)
+        if en_long:
+            ar_long.setdefault("angle_title", en_long.get("angle_title", ""))
+            ar_long.setdefault("angle_hook",  en_long.get("angle_hook",  ""))
+        _log("Scripts", f"AR done: '{ar_long.get('title','?')}' | "
+             f"{_ar_wc}w | path={ar_long.get('arabic_path','?')}", "OK")
+    except Exception as _ar_e:
+        _log("Scripts", f"AR script failed: {_ar_e}", "ERROR")
+        send_message(f"[Pipeline] Arabic script failed (non-fatal — EN will still run): {_ar_e}")
+        ar_long = None   # Arabic render will be skipped below
 
-    # Generate short scripts (skip in animation mode — cinematic shorts run separately)
+    # ── 2C: Short scripts (independent per language) ───────────────────────────
     _anim_mode_dc = os.getenv("PIPELINE_MODE", "").lower() == "animation"
     if not _anim_mode_dc:
-        try:
-            _short_data = write_short_script(en_long)
-            en_long["short_script_en"] = _short_data.get("short_script_en", "")
-            ar_long["short_script_ar"] = _short_data.get("short_script_ar", "")
-            _log("Scripts", "Short scripts done", "OK")
-        except Exception as e:
-            _log("Scripts", f"Short script generation failed (non-fatal): {e}", "WARN")
+        # English short — from English long script only
+        if en_long and not en_long.get("script_failed"):
+            try:
+                _en_short_data = write_short_script(en_long)
+                en_long["short_script_en"] = _en_short_data.get("short_script_en", "")
+                _log("Scripts", "EN short done", "OK")
+            except Exception as _es_e:
+                _log("Scripts", f"EN short failed (non-fatal): {_es_e}", "WARN")
+                en_long.setdefault("short_script_en", "")
+        else:
+            en_long.setdefault("short_script_en", "")
+
+        # Arabic short — from Arabic long script INDEPENDENTLY
+        if ar_long and not ar_long.get("script_too_short"):
+            try:
+                _ar_short_data = write_arabic_short(ar_long)
+                ar_long["short_script_ar"] = _ar_short_data.get("short_script_ar", "")
+                _log("Scripts", "AR short done (independent)", "OK")
+            except Exception as _as_e:
+                _log("Scripts", f"AR short failed (non-fatal): {_as_e}", "WARN")
+                ar_long.setdefault("short_script_ar", "")
+        elif ar_long:
+            ar_long.setdefault("short_script_ar", "")
     else:
         _log("Scripts", "Animation mode — short script generation skipped", "INFO")
         en_long.setdefault("short_script_en", "")
-        ar_long.setdefault("short_script_ar", "")
+        if ar_long:
+            ar_long.setdefault("short_script_ar", "")
 
     _stage("Scripts AR done")
 
@@ -702,41 +754,49 @@ def run_pipeline():
 
     # Skip regeneration if today's manifest already has valid files for this topic
     en_long_id, ar_long_id = "", ""
-    _ex_en, _ex_ar = _load_existing_outputs(today, en_long.get("topic", ""))
+    _topic_for_dedup = en_long.get("topic", "") if en_long else (ar_long.get("topic", "") if ar_long else "")
+    _ex_en, _ex_ar = _load_existing_outputs(today, _topic_for_dedup)
     if _ex_en and _ex_ar:
         en_long_path, ar_long_path = _ex_en, _ex_ar
         stats["skipped"] += 2
         _log("VideoGen", "Reusing existing video files — skipping generation", "OK")
     else:
-        # OUTPUT 1 — Arabic long-form (first: catches runtime issues early)
-        _ar_wc_pre = len(ar_long.get("script", "").split())
-        _AR_WORD_MIN = 4200
-        if ar_long.get("script_too_short") or _ar_wc_pre < _AR_WORD_MIN:
-            _block_msg = (
-                f"[AR BLOCKED] Script below hard minimum: {_ar_wc_pre}w < {_AR_WORD_MIN}w "
-                f"— blocking Arabic render to prevent invalid upload"
-            )
-            _log("VideoGen", _block_msg, "ERROR")
-            send_message(_block_msg)
-            ar_long_path = ""
-        else:
-            _log("VideoGen", f"[AR AUDIO] Script: {_ar_wc_pre}w | est. ~{_ar_wc_pre/175:.1f}min")
-            _slug        = _topic_slug(en_long.get("topic", ""))
-            ar_long_id   = f"{today}_{_slug}_arabic_long"
-            ar_long_path = _make_video(ar_long, ar_long_id, stats, user_images=user_images, user_videos=user_videos)
+        _slug = _topic_slug(_topic_for_dedup)
 
-        # OUTPUT 2 — English long-form
-        _slug        = _topic_slug(en_long.get("topic", ""))
-        en_long_id   = f"{today}_{_slug}_english_long"
-        en_long_path = _make_video(en_long, en_long_id, stats, user_images=user_images, user_videos=user_videos)
+        # ── OUTPUT 1 — Arabic long-form (isolated — EN failure does not skip this) ──
+        ar_long_path = ""
+        if ar_long:
+            _ar_wc_pre = len(ar_long.get("script", "").split())
+            _AR_WORD_MIN = 4200
+            if ar_long.get("script_too_short") or _ar_wc_pre < _AR_WORD_MIN:
+                _block_msg = (
+                    f"[AR BLOCKED] Script below hard minimum: {_ar_wc_pre}w < {_AR_WORD_MIN}w "
+                    f"— blocking Arabic render to prevent invalid upload"
+                )
+                _log("VideoGen", _block_msg, "ERROR")
+                send_message(_block_msg)
+            else:
+                _log("VideoGen", f"[AR AUDIO] Script: {_ar_wc_pre}w | est. ~{_ar_wc_pre/175:.1f}min")
+                ar_long_id   = f"{today}_{_slug}_arabic_long"
+                ar_long_path = _make_video(ar_long, ar_long_id, stats, user_images=user_images, user_videos=user_videos)
+        else:
+            _log("VideoGen", "[AR SKIPPED] Arabic script generation failed — no AR video", "WARN")
+
+        # ── OUTPUT 2 — English long-form (isolated — AR failure does not skip this) ──
+        en_long_path = ""
+        if en_long and not en_long.get("script_failed"):
+            en_long_id   = f"{today}_{_slug}_english_long"
+            en_long_path = _make_video(en_long, en_long_id, stats, user_images=user_images, user_videos=user_videos)
+        else:
+            _log("VideoGen", "[EN SKIPPED] English script generation failed — no EN video", "WARN")
 
     # ── Arabic runtime auto-rebuild ───────────────────────────────────────────
     # Validate REAL rendered video duration via ffprobe. If < 15 min, expand + re-render.
-    # Repeats up to 3 times. Skips if ar_long_path is empty (render already failed).
+    # Repeats up to 3 times. Skips if ar_long_path is empty or ar_long is None.
     _AR_MIN_SECS  = 900   # 15 minutes — real rendered video floor
     _ar_rebuild   = 0
     _ar_max_rb    = 3
-    while ar_long_path and os.path.exists(ar_long_path):
+    while ar_long and ar_long_path and os.path.exists(ar_long_path):
         _ar_secs = _video_secs(ar_long_path)
         _log("VideoGen", f"[AR AUDIO] Rendered: {_ar_secs/60:.1f}min ({_ar_secs:.0f}s)")
         _ar_est_min = len(ar_long.get("script", "").split()) / 175.0
@@ -754,20 +814,21 @@ def run_pipeline():
         _log("VideoGen", f"[AR AUDIO] Rebuild triggered — {_ar_secs/60:.1f}min < 15min (attempt {_ar_rebuild}/{_ar_max_rb})", "WARN")
         send_message(f"[Pipeline] Arabic runtime {_ar_secs/60:.1f}min < 15min — auto-rebuilding (attempt {_ar_rebuild}/{_ar_max_rb})...")
         from agent.script_agent import expand_arabic_runtime as _ear
-        _topic_text_ar = topic.get("topic", "") if topic else en_long.get("topic", "")
+        _topic_text_ar = topic.get("topic", "") if topic else (ar_long.get("topic", "") if ar_long else "")
         ar_long["script"] = _ear(ar_long["script"], target_min=24.0, topic=_topic_text_ar)
-        ar_long_id   = f"{today}_{_topic_slug(en_long.get('topic', ''))}_arabic_long_rb{_ar_rebuild}"
+        _slug_rb     = _topic_slug(_topic_for_dedup)
+        ar_long_id   = f"{today}_{_slug_rb}_arabic_long_rb{_ar_rebuild}"
         ar_long_path = _make_video(ar_long, ar_long_id, stats, user_images=user_images, user_videos=user_videos)
 
     # Output 3: Arabic short  ── script path or cut fallback (Arabic first)
     ar_chapter_shorts: list[dict] = []
-    _ar_short_script = ar_long.get("short_script_ar", "")
+    _ar_short_script = ar_long.get("short_script_ar", "") if ar_long else ""
     _ar_short_via_script = False
-    if SHORT_MODE == "script" and _ar_short_script:
+    _ar_slug = _topic_slug(_topic_for_dedup)
+    if SHORT_MODE == "script" and _ar_short_script and ar_long:
         print("[Pipeline] Generating Arabic short from short script (TTS → video)...")
         _ar_short_data = {**ar_long, "script": _ar_short_script}
-        _slug          = _topic_slug(en_long.get("topic", ""))
-        _ar_short_id   = f"{today}_{_slug}_arabic_short"
+        _ar_short_id   = f"{today}_{_ar_slug}_arabic_short"
         _ar_short_path = _make_video(_ar_short_data, _ar_short_id, stats,
                                      user_images=_short_user_images, user_videos=_short_user_videos)
         _ar_short_via_script = bool(_ar_short_path)
@@ -785,7 +846,7 @@ def run_pipeline():
                 ar_long["short_script_ar"] = _ar_short_script
                 _new_path = _make_video(
                     {**ar_long, "script": _ar_short_script},
-                    f"{today}_{_slug}_arabic_short_exp{_ar_s_rb}",
+                    f"{today}_{_ar_slug}_arabic_short_exp{_ar_s_rb}",
                     stats, user_images=_short_user_images, user_videos=_short_user_videos,
                 )
                 _ar_short_path = _new_path or _ar_short_path
@@ -797,14 +858,14 @@ def run_pipeline():
         if _ar_short_path:
             ar_chapter_shorts = [{
                 "path":        _ar_short_path,
-                "title":       ar_long.get("title", ""),
+                "title":       ar_long.get("title", "") if ar_long else "",
                 "label":       "Best Short — TikTok + Instagram + YouTube Shorts",
                 "chapter_idx": 1,
             }]
     else:
-        _reason = "SHORT_MODE=cut" if _ar_short_script else "short_script_ar missing"
+        _reason = "SHORT_MODE=cut" if _ar_short_script else ("AR script failed" if not ar_long else "short_script_ar missing")
         print(f"[Pipeline] Cutting best Arabic short from long video ({_reason})...")
-        if ar_long_path and os.path.exists(ar_long_path):
+        if ar_long and ar_long_path and os.path.exists(ar_long_path):
             _raw_cuts = cut_best_short(ar_long_path, ar_long)
             for _cut in _raw_cuts:
                 _cut_secs = _video_secs(_cut.get("path", ""))
@@ -900,11 +961,12 @@ def run_pipeline():
             # Clear stale short paths before rerender to prevent duplicate outputs
             en_chapter_shorts = []
             ar_chapter_shorts = []
-            _slug        = _topic_slug(en_long.get("topic", ""))
+            _slug        = _topic_slug(_topic_for_dedup)
             en_long_id   = f"{today}_{_slug}_english_long"
             en_long_path = _make_video(en_long, en_long_id, stats, user_images=user_images, user_videos=user_videos)
-            ar_long_id   = f"{today}_{_slug}_arabic_long"
-            ar_long_path = _make_video(ar_long, ar_long_id, stats, user_images=user_images, user_videos=user_videos)
+            if ar_long:
+                ar_long_id   = f"{today}_{_slug}_arabic_long"
+                ar_long_path = _make_video(ar_long, ar_long_id, stats, user_images=user_images, user_videos=user_videos)
             if en_long_path and os.path.exists(en_long_path):
                 _en_ss = en_long.get("short_script_en", "")
                 if _en_ss:
@@ -918,7 +980,7 @@ def run_pipeline():
                 else:
                     en_chapter_shorts = cut_best_short(en_long_path, en_long)
                 en_chapter_shorts = [c for c in en_chapter_shorts if _video_secs(c.get("path", "")) >= 60]
-            if ar_long_path and os.path.exists(ar_long_path):
+            if ar_long and ar_long_path and os.path.exists(ar_long_path):
                 _ar_ss = ar_long.get("short_script_ar", "")
                 if _ar_ss:
                     _p = _make_video({**ar_long, "script": _ar_ss},
@@ -1352,11 +1414,11 @@ def _save_manifest(today, en_long, ar_long,
         },
         "scripts": {
             "en_long_title": en_long.get("title", ""),
-            "ar_long_title": ar_long.get("title", ""),
+            "ar_long_title": ar_long.get("title", "") if ar_long else "",
         },
         "script_data": {
             "en_long": {k: en_long.get(k, "") for k in ("title", "description", "tags", "language", "niche")},
-            "ar_long": {k: ar_long.get(k, "") for k in ("title", "description", "tags", "language", "niche")},
+            "ar_long": {k: ar_long.get(k, "") for k in ("title", "description", "tags", "language", "niche")} if ar_long else {},
         },
         "youtube_urls": {
             "en": yt_en_url or "",
