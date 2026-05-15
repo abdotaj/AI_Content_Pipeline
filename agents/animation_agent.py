@@ -1569,6 +1569,12 @@ def _pollinations_fetch_scene(prompt: str, output_path: str, era: str = "", styl
             try:
                 r = requests.get(url, timeout=90)
                 if r.status_code == 200 and len(r.content) > 15_000:
+                    # Reject non-image responses (Azure BlobNotFound XML, HTML error pages)
+                    _ct = r.headers.get("Content-Type", "image/")
+                    if not _ct.startswith("image/"):
+                        if attempt == 0:
+                            time.sleep(15)
+                        continue
                     from PIL import Image as _PIL
                     import io
                     img = _PIL.open(io.BytesIO(r.content)).convert("RGB").resize((1080, 1920), _PIL.LANCZOS)
@@ -1917,96 +1923,86 @@ def assemble_animation_video(
     output_path: str,
 ) -> str:
     """
-    Assemble motion clips with narration audio into a continuous documentary.
-    Clips are concatenated (not looped like the slideshow pipeline).
-    If clips fall short of audio duration, last clip is extended via looping.
+    Assemble motion clips with narration audio via ffmpeg concat demuxer.
+    Clips cycle to fill audio duration. Direct ffmpeg — no MoviePy overhead.
     """
-    try:
-        from moviepy.editor import (
-            VideoFileClip, AudioFileClip, concatenate_videoclips,
-        )
-    except ImportError:
-        from moviepy import VideoFileClip, AudioFileClip, concatenate_videoclips
-
+    import subprocess
     import traceback
 
     print(f"[VISUAL] Consistent style mode active — assembling {len(clip_paths)} motion clips")
 
-    try:
-        audio      = AudioFileClip(audio_path)
-        total_secs = audio.duration
-    except Exception as e:
-        print(f"[Anim] Audio load failed: {e}")
-        return ""
-
-    # Load valid clips
-    loaded: list = []
-    for p in clip_paths:
-        if p and os.path.exists(p):
-            try:
-                vc = VideoFileClip(p).resize((1080, 1920))
-                loaded.append(vc)
-            except Exception as e:
-                print(f"[Anim] Clip load failed ({p}): {e}")
-
-    if not loaded:
+    valid_clips = [p for p in clip_paths if p and os.path.exists(p) and os.path.getsize(p) > 5_000]
+    if not valid_clips:
         print("[Anim] No valid clips — aborting assembly")
         return ""
 
-    # Extend to cover full audio duration
-    accumulated = 0.0
-    ordered: list = []
-    idx = 0
-    while accumulated < total_secs:
-        clip = loaded[idx % len(loaded)]
-        remaining = total_secs - accumulated
-        if clip.duration > remaining:
-            clip = clip.subclip(0, remaining)
-        ordered.append(clip)
-        accumulated += clip.duration
-        idx += 1
-
-    print(f"[Anim] {len(ordered)} clips cover {accumulated:.1f}s / {total_secs:.1f}s audio")
-
-    # Apply cinematic crossfade between clips (0.4s overlap)
-    _XFADE = 0.4
+    # Get audio duration via ffprobe
     try:
-        _xfade_clips = []
-        for _xi, _xc in enumerate(ordered):
-            if _xi > 0 and _xc.duration > _XFADE + 0.2:
-                _xc = _xc.crossfadein(_XFADE)
-            _xfade_clips.append(_xc)
-        _concat_method = "compose"
-        _concat_padding = -_XFADE
-    except Exception:
-        _xfade_clips = ordered
-        _concat_method = "chain"
-        _concat_padding = 0
-
-    try:
-        final = concatenate_videoclips(
-            _xfade_clips, method=_concat_method, padding=_concat_padding
-        ).set_audio(audio)
-        os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-        final.write_videofile(
-            output_path,
-            fps=24,
-            codec="libx264",
-            audio_codec="aac",
-            preset="ultrafast",
-            logger=None,
+        _dur_r = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
+             "-of", "csv=p=0", audio_path],
+            capture_output=True, text=True, timeout=30,
         )
-        for c in loaded:
-            try:
-                c.close()
-            except Exception:
-                pass
-        if os.path.exists(output_path) and os.path.getsize(output_path) > 50_000:
+        total_secs = float(_dur_r.stdout.strip())
+    except Exception as e:
+        print(f"[Anim] Audio duration probe failed: {e}")
+        return ""
+
+    # Cycle clips using avg 3.0s duration to fill audio length
+    _AVG_DUR = 3.0
+    ordered_paths: list[str] = []
+    accumulated = 0.0
+    idx = 0
+    while accumulated < total_secs + _AVG_DUR:
+        ordered_paths.append(valid_clips[idx % len(valid_clips)])
+        accumulated += _AVG_DUR
+        idx += 1
+        if idx > len(valid_clips) * 50:
+            break
+
+    print(f"[Anim] {len(ordered_paths)} clips cover {accumulated:.0f}s / {total_secs:.0f}s audio")
+
+    concat_file = output_path + ".concat.txt"
+    try:
+        with open(concat_file, "w", encoding="utf-8") as _cf:
+            for p in ordered_paths:
+                _cf.write(f"file '{os.path.abspath(p).replace(chr(92), '/')}'\n")
+
+        os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+
+        cmd = [
+            "ffmpeg", "-y",
+            "-f", "concat", "-safe", "0", "-i", concat_file,
+            "-i", audio_path,
+            "-map", "0:v:0", "-map", "1:a:0",
+            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
+            "-r", "24",
+            "-c:a", "aac", "-b:a", "128k",
+            "-shortest",
+            "-movflags", "+faststart",
+            output_path,
+        ]
+
+        _res = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
+
+        if _res.returncode == 0 and os.path.exists(output_path) and os.path.getsize(output_path) > 50_000:
             print(f"[Anim] Assembly complete: {output_path}")
             return output_path
+
+        print(f"[Anim] Assembly failed (rc={_res.returncode})")
+        if _res.stderr:
+            print(f"[Anim] ffmpeg stderr: {_res.stderr[-500:]}")
+
+    except subprocess.TimeoutExpired:
+        print("[Anim] Assembly timed out after 30min")
     except Exception as e:
         print(f"[Anim] Assembly failed: {e}")
         traceback.print_exc()
+    finally:
+        try:
+            os.remove(concat_file)
+        except Exception:
+            pass
 
     return ""
 
@@ -2186,6 +2182,32 @@ def create_animation_video(
     _portrait_shots = 0
     _total_shots    = 0
 
+    # Generate shot sequences in parallel — each scene is independent (unique file paths)
+    _regular_idxs = [i for i in range(len(scenes)) if i not in portrait_clips]
+    _scene_workers = max(2, min(4, os.cpu_count() or 2))
+    print(f"[SHOT ENGINE] Processing {len(_regular_idxs)} scenes ({_scene_workers} workers)...")
+
+    _scene_results: dict[int, list[str]] = {}
+    if _regular_idxs:
+        from concurrent.futures import ThreadPoolExecutor, as_completed as _as_completed
+
+        def _gen_scene(idx: int) -> tuple[int, list[str]]:
+            return idx, generate_shot_sequence(
+                scenes[idx], identity, clips_dir, stable_id, idx, image_pool
+            )
+
+        with ThreadPoolExecutor(max_workers=_scene_workers) as _exec:
+            _futures = {_exec.submit(_gen_scene, i): i for i in _regular_idxs}
+            for _f in _as_completed(_futures):
+                _si = _futures[_f]
+                try:
+                    _si, _clips = _f.result()
+                    _scene_results[_si] = _clips
+                except Exception as _se:
+                    print(f"[SCENE] Scene {_si} generation failed: {_se}")
+                    _scene_results[_si] = []
+
+    # Reassemble in scene order
     for i, scene in enumerate(scenes):
         if i in portrait_clips:
             clip_paths.append(portrait_clips[i])
@@ -2194,7 +2216,7 @@ def create_animation_video(
             print(f"[SCENE] Narration-linked visual active (talking portrait): {scene['scene_type']}")
             continue
 
-        shot_clips = generate_shot_sequence(scene, identity, clips_dir, stable_id, i, image_pool)
+        shot_clips = _scene_results.get(i, [])
 
         if shot_clips:
             clip_paths.extend(shot_clips)
