@@ -405,22 +405,38 @@ _EVENT_TYPE_KEYWORDS: dict[str, list] = {
 }
 
 
+_SLUG_PATTERN = re.compile(r'^[a-z][a-z0-9]*(?:[_\-][a-z0-9]+)+$')
+
+
+def _slug_to_title(slug: str) -> str:
+    """'jeffrey_epstein' or 'jeffrey-epstein' → 'Jeffrey Epstein'"""
+    return " ".join(w.capitalize() for w in re.split(r"[_\-]+", slug))
+
+
 def normalize_topic_title(topic: str) -> str:
     """
     Clean and repair a topic title.
 
-    Strips trailing truncation fragments — a last word of ≤4 chars that is not
-    a known valid terminal indicates the title was cut mid-word.
+    Handles canonical slug inputs (jeffrey_epstein, ted-bundy) by converting
+    to Title Case before any validation — slugs are first-class topic identifiers.
 
-    Example:
-        "The 1978 Murders that Inspired the Creation of Trust Me: The Fals"
-        → "The 1978 Murders that Inspired the Creation of Trust Me"
+    For natural-language titles: strips trailing truncation fragments.
 
     Returns "" if the title is unrecoverable (too short or fully malformed).
     """
     if not topic:
         return ""
-    title = re.sub(r"[\s:—\-–,]+$", "", topic.strip()).strip()
+    raw = topic.strip()
+
+    # ── Canonical slug detection (BEFORE length check) ───────────────────────
+    # Slugs like jeffrey_epstein, ted-bundy, night_stalker are valid topic IDs.
+    if _SLUG_PATTERN.match(raw):
+        converted = _slug_to_title(raw)
+        print(f"[TOPIC] Canonical slug detected: '{raw}' -> '{converted}'")
+        return converted  # always accept — slugs are deterministic identifiers
+
+    # ── Natural-language title handling ───────────────────────────────────────
+    title = re.sub(r"[\s:—\-–,]+$", "", raw).strip()
     if len(title) < 15:
         return ""
 
@@ -760,6 +776,45 @@ def repair_research_payload(topic: str | dict, research: dict | None = None, *, 
     return build_canonical_research_payload(topic, current, manual=manual)
 
 
+def _is_known_documentary_subject(name: str) -> bool:
+    """
+    Return True if name is a known documentary subject:
+      1. Matched against entity_guard._KNOWN_CRIMINALS (curated list)
+      2. Found in any content/<topic>/characters/character_registry.json
+    """
+    name_l = name.strip().lower()
+    try:
+        from agent.entity_guard import _KNOWN_CRIMINALS
+        for known in _KNOWN_CRIMINALS:
+            if known.lower() == name_l or name_l == known.lower().split()[-1]:
+                return True
+    except ImportError:
+        pass
+
+    # Registry scan — catch identities locked in previous runs
+    try:
+        import glob as _glob
+        slug = re.sub(r'\s+', '_', name_l)
+        for reg_path in _glob.glob("content/*/characters/character_registry.json"):
+            try:
+                import json as _json
+                with open(reg_path, encoding="utf-8") as _f:
+                    reg = _json.load(_f)
+                if slug in reg:
+                    return True
+                for entry in reg.values():
+                    if entry.get("canonical_name", "").lower() == name_l:
+                        return True
+                    for alias in entry.get("aliases", []):
+                        if alias.lower() == name_l:
+                            return True
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return False
+
+
 def semantic_confidence_score(
     topic: str,
     entities: dict,
@@ -779,6 +834,28 @@ def semantic_confidence_score(
     score = 0.0
     t = topic.strip()
     words = t.split()
+
+    # ── 0. Registry-aware canonical identity boost ────────────────────────────
+    # Short Title Case names and slug-converted identities get an automatic
+    # boost when they match a known documentary subject. This prevents canonical
+    # IDs like "Jeffrey Epstein" (converted from jeffrey_epstein) from scoring
+    # too low due to brevity.
+    if 2 <= len(words) <= 5 and _is_known_documentary_subject(t):
+        score = 0.92
+        print(f"[TOPIC] Registry identity matched: '{t[:60]}' — confidence boosted to 0.92")
+        return score
+
+    # 2-4 word pure Title Case name that's not a known list entry still gets
+    # a head-start so "Jeffrey Epstein" (slug-converted) isn't penalized.
+    _slug_origin = (
+        2 <= len(words) <= 4 and
+        all(w[0].isupper() for w in words) and
+        not words[0].lower() in {"the", "a", "an"}
+    )
+    if _slug_origin and _is_known_documentary_subject(t):
+        score = 0.92
+        print(f"[TOPIC] Canonical ID auto-approved: '{t[:60]}'")
+        return score
     named_persons = entities.get("named_persons", [])
 
     # ── 1. Entity quality (primary signal, up to 0.45) ───────────────────────
@@ -850,7 +927,7 @@ def semantic_confidence_score(
 
     score = min(score, 1.0)
     label = "HIGH" if score >= 0.7 else ("MEDIUM" if score >= 0.4 else "LOW")
-    print(f"[CONFIDENCE] '{t[:60]}' → {score:.2f} ({label})")
+    print(f"[CONFIDENCE] '{t[:60]}' = {score:.2f} ({label})")
     return score
 
 
@@ -871,6 +948,13 @@ def entity_confidence_score(topic: str, entities: dict) -> float:
     t = topic.strip()
     words = t.split()
     named_persons = entities.get("named_persons", [])
+
+    # ── Registry-aware canonical boost ───────────────────────────────────────
+    # Known documentary subjects always pass the entity gate — regardless of
+    # brevity. This covers slug-converted names like "Ted Bundy" (9 chars).
+    if 2 <= len(words) <= 5 and _is_known_documentary_subject(t):
+        print(f"[TOPIC] Topic auto-approved from registry: '{t[:60]}'")
+        return 0.90
 
     _NON_ART = frozenset({"the", "a", "an"})
 

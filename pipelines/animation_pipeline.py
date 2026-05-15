@@ -201,21 +201,34 @@ def _video_secs(path: str) -> float:
 
 # ── Topic selection helpers ───────────────────────────────────────────────────
 
+import re as _re_pipeline
+_SLUG_PAT_PIPE = _re_pipeline.compile(r'^[a-z][a-z0-9]*(?:[_\-][a-z0-9]+)+$')
+
+
 def _normalize_topic_title(title: str) -> str:
     """
     Validate and clean a topic title before display.
+    Canonical slugs (jeffrey_epstein, ted-bundy) are converted to Title Case
+    and always accepted — they are deterministic topic identifiers.
     Returns "" if the title is truncated, too short, or malformed.
     """
     if not title:
         return ""
-    title = title.strip()
+    raw = title.strip()
+
+    # Canonical slug → Title Case (always accept; no length gate needed)
+    if _SLUG_PAT_PIPE.match(raw):
+        converted = " ".join(w.capitalize() for w in _re_pipeline.split(r"[_\-]+", raw))
+        print(f"[TOPIC] Canonical slug detected: '{raw}' → '{converted}'")
+        return converted
+
+    title = raw
     if len(title) < 15:
         return ""
     # Reject titles that end mid-word (truncated — no terminal punctuation
     # and last word is suspiciously short)
     if title[-1].isalnum():
         last_word = title.split()[-1]
-        # A final word of 1–3 chars that isn't a common short word = truncation
         short_ok = {"a", "an", "the", "of", "in", "at", "by", "on", "to", "up",
                     "bc", "ad", "ce", "ad"}
         if len(last_word) <= 4 and last_word.lower() not in short_ok:
