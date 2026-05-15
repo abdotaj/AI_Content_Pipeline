@@ -14,6 +14,14 @@ import json
 import uuid
 import time
 import glob
+
+
+def _topic_slug(topic: str, max_len: int = 35) -> str:
+    """Convert a topic string to a clean filename-safe slug."""
+    import re as _re
+    s = _re.sub(r'[^a-zA-Z0-9\s]', '', (topic or "video").lower()).strip()
+    s = _re.sub(r'\s+', '_', s)
+    return (s[:max_len].rstrip('_')) or "video"
 import datetime
 import traceback
 import requests
@@ -713,11 +721,13 @@ def run_pipeline():
             ar_long_path = ""
         else:
             _log("VideoGen", f"[AR AUDIO] Script: {_ar_wc_pre}w | est. ~{_ar_wc_pre/175:.1f}min")
-            ar_long_id   = f"{today}_{uuid.uuid4().hex[:8]}_arabic_long"
+            _slug        = _topic_slug(en_long.get("topic", ""))
+            ar_long_id   = f"{today}_{_slug}_arabic_long"
             ar_long_path = _make_video(ar_long, ar_long_id, stats, user_images=user_images, user_videos=user_videos)
 
         # OUTPUT 2 — English long-form
-        en_long_id   = f"{today}_{uuid.uuid4().hex[:8]}_english_long"
+        _slug        = _topic_slug(en_long.get("topic", ""))
+        en_long_id   = f"{today}_{_slug}_english_long"
         en_long_path = _make_video(en_long, en_long_id, stats, user_images=user_images, user_videos=user_videos)
 
     # ── Arabic runtime auto-rebuild ───────────────────────────────────────────
@@ -746,7 +756,7 @@ def run_pipeline():
         from agent.script_agent import expand_arabic_runtime as _ear
         _topic_text_ar = topic.get("topic", "") if topic else en_long.get("topic", "")
         ar_long["script"] = _ear(ar_long["script"], target_min=24.0, topic=_topic_text_ar)
-        ar_long_id   = f"{today}_{uuid.uuid4().hex[:8]}_arabic_long"
+        ar_long_id   = f"{today}_{_topic_slug(en_long.get('topic', ''))}_arabic_long_rb{_ar_rebuild}"
         ar_long_path = _make_video(ar_long, ar_long_id, stats, user_images=user_images, user_videos=user_videos)
 
     # Output 3: Arabic short  ── script path or cut fallback (Arabic first)
@@ -756,7 +766,8 @@ def run_pipeline():
     if SHORT_MODE == "script" and _ar_short_script:
         print("[Pipeline] Generating Arabic short from short script (TTS → video)...")
         _ar_short_data = {**ar_long, "script": _ar_short_script}
-        _ar_short_id   = f"{today}_{uuid.uuid4().hex[:8]}_arabic_short"
+        _slug          = _topic_slug(en_long.get("topic", ""))
+        _ar_short_id   = f"{today}_{_slug}_arabic_short"
         _ar_short_path = _make_video(_ar_short_data, _ar_short_id, stats,
                                      user_images=_short_user_images, user_videos=_short_user_videos)
         _ar_short_via_script = bool(_ar_short_path)
@@ -774,7 +785,7 @@ def run_pipeline():
                 ar_long["short_script_ar"] = _ar_short_script
                 _new_path = _make_video(
                     {**ar_long, "script": _ar_short_script},
-                    f"{today}_{uuid.uuid4().hex[:8]}_arabic_short",
+                    f"{today}_{_slug}_arabic_short_exp{_ar_s_rb}",
                     stats, user_images=_short_user_images, user_videos=_short_user_videos,
                 )
                 _ar_short_path = _new_path or _ar_short_path
@@ -810,7 +821,8 @@ def run_pipeline():
     if SHORT_MODE == "script" and _en_short_script:
         print("[Pipeline] Generating English short from short script (TTS → video)...")
         _en_short_data = {**en_long, "script": _en_short_script}
-        _en_short_id   = f"{today}_{uuid.uuid4().hex[:8]}_english_short"
+        _slug          = _topic_slug(en_long.get("topic", ""))
+        _en_short_id   = f"{today}_{_slug}_english_short"
         _en_short_path = _make_video(_en_short_data, _en_short_id, stats,
                                      user_images=_short_user_images, user_videos=_short_user_videos)
         _en_short_via_script = bool(_en_short_path)
@@ -828,7 +840,7 @@ def run_pipeline():
                 en_long["short_script_en"] = _en_short_script
                 _new_path = _make_video(
                     {**en_long, "script": _en_short_script},
-                    f"{today}_{uuid.uuid4().hex[:8]}_english_short",
+                    f"{today}_{_slug}_english_short_exp{_en_s_rb}",
                     stats, user_images=_short_user_images, user_videos=_short_user_videos,
                 )
                 _en_short_path = _new_path or _en_short_path
@@ -888,15 +900,16 @@ def run_pipeline():
             # Clear stale short paths before rerender to prevent duplicate outputs
             en_chapter_shorts = []
             ar_chapter_shorts = []
-            en_long_id   = f"{today}_{uuid.uuid4().hex[:8]}_english_long"
+            _slug        = _topic_slug(en_long.get("topic", ""))
+            en_long_id   = f"{today}_{_slug}_english_long"
             en_long_path = _make_video(en_long, en_long_id, stats, user_images=user_images, user_videos=user_videos)
-            ar_long_id   = f"{today}_{uuid.uuid4().hex[:8]}_arabic_long"
+            ar_long_id   = f"{today}_{_slug}_arabic_long"
             ar_long_path = _make_video(ar_long, ar_long_id, stats, user_images=user_images, user_videos=user_videos)
             if en_long_path and os.path.exists(en_long_path):
                 _en_ss = en_long.get("short_script_en", "")
                 if _en_ss:
                     _p = _make_video({**en_long, "script": _en_ss},
-                                     f"{today}_{uuid.uuid4().hex[:8]}_english_short",
+                                     f"{today}_{_slug}_english_short",
                                      stats, user_images=user_images, user_videos=user_videos)
                     if _p and _video_secs(_p) >= 60:
                         en_chapter_shorts = [{"path": _p, "title": en_long.get("title", ""), "label": "Best Short", "chapter_idx": 1}]
@@ -909,7 +922,7 @@ def run_pipeline():
                 _ar_ss = ar_long.get("short_script_ar", "")
                 if _ar_ss:
                     _p = _make_video({**ar_long, "script": _ar_ss},
-                                     f"{today}_{uuid.uuid4().hex[:8]}_arabic_short",
+                                     f"{today}_{_slug}_arabic_short",
                                      stats, user_images=user_images, user_videos=user_videos)
                     if _p and _video_secs(_p) >= 60:
                         ar_chapter_shorts = [{"path": _p, "title": ar_long.get("title", ""), "label": "Best Short", "chapter_idx": 1}]
