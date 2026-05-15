@@ -135,6 +135,109 @@ def _video_secs(path: str) -> float:
         return 0.0
 
 
+def _wait_for_topic_lang(label: str, candidates: list, timeout_sec: int = 300) -> dict | None:
+    """Show a numbered Telegram menu and wait for explicit topic selection.
+
+    Returns the selected topic dict, or None if the user cancels or the
+    timeout expires (no auto-selection — caller must abort).
+    """
+    import requests as _req
+
+    try:
+        from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+        base    = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
+        chat_id = str(TELEGRAM_CHAT_ID)
+    except Exception:
+        print("[TOPIC] Telegram config unavailable — cannot show menu")
+        return None
+
+    def _tg_send(text: str) -> None:
+        try:
+            _req.post(f"{base}/sendMessage",
+                      json={"chat_id": chat_id, "text": text},
+                      timeout=12)
+        except Exception as _e:
+            print(f"[TOPIC] Telegram send failed: {_e}")
+
+    if not candidates:
+        _tg_send(f"{label} ⛔ No topic candidates available. Pipeline stopped.")
+        return None
+
+    # Build menu
+    lines = [f"{label}\n\nSelect a topic:\n"]
+    for i, c in enumerate(candidates, 1):
+        lines.append(f"{i}. {c.get('topic', '?')}")
+    cancel_n = len(candidates) + 1
+    lines.append(f"\n{cancel_n}. Cancel")
+    lines.append(f"\nOr type any topic directly.")
+    lines.append(f"Timeout: {timeout_sec // 60} min → cancel")
+    menu_text = "\n".join(lines)
+
+    # Advance offset so we only read messages sent AFTER this menu
+    _offset: int | None = None
+    try:
+        r = _req.get(f"{base}/getUpdates", params={"timeout": 0, "limit": 1}, timeout=10)
+        updates = r.json().get("result", [])
+        if updates:
+            _offset = updates[-1]["update_id"] + 1
+    except Exception:
+        pass
+
+    _tg_send(menu_text)
+    print(f"[TOPIC] Menu sent — waiting up to {timeout_sec}s for selection")
+
+    deadline = time.time() + timeout_sec
+    while time.time() < deadline:
+        time.sleep(8)
+        try:
+            params: dict = {"timeout": 0, "limit": 10, "allowed_updates": ["message"]}
+            if _offset is not None:
+                params["offset"] = _offset
+            r = _req.get(f"{base}/getUpdates", params=params, timeout=15)
+            if not r.ok:
+                continue
+            updates = r.json().get("result", [])
+        except Exception:
+            continue
+
+        for upd in updates:
+            _offset = upd["update_id"] + 1
+            msg  = upd.get("message", {})
+            if str(msg.get("chat", {}).get("id", "")) != chat_id:
+                continue
+            text = (msg.get("text") or "").strip()
+            cmd  = text.lower()
+
+            # Cancel
+            if cmd in ("/cancel", "cancel", str(cancel_n)):
+                _tg_send(f"{label} Cancelled.")
+                print("[TOPIC] Cancelled via Telegram")
+                return None
+
+            # Numbered pick
+            try:
+                n = int(text)
+                if 1 <= n <= len(candidates):
+                    sel = candidates[n - 1]
+                    _tg_send(f"{label} Selected:\n{sel['topic']}\n\nStarting...")
+                    print(f"[TOPIC] Selected {n}: {sel['topic'][:60]}")
+                    return sel
+                continue
+            except ValueError:
+                pass
+
+            # Free-text topic (≥5 chars treated as manual override)
+            if len(text) >= 5:
+                sel = {"topic": text.strip(), "niche": text.strip(), "manual_topic": True}
+                _tg_send(f"{label} Manual topic:\n\"{text}\"\n\nStarting...")
+                print(f"[TOPIC] Free-text topic: '{text[:60]}'")
+                return sel
+
+    _tg_send(f"{label} ⛔ No selection received within time limit. Pipeline stopped.")
+    print(f"[TOPIC] Timeout ({timeout_sec}s) — aborting")
+    return None
+
+
 def _topic_slug(topic: str) -> str:
     import re
     s = re.sub(r"[^a-zA-Z0-9 ]", "", (topic or "video").lower()).strip()
@@ -204,14 +307,18 @@ def run_lang_pipeline(language: str, mode: str) -> None:
             _log("Research", f"topic_inject.json error (ignored): {_ie}", "WARN")
 
     if topic is None:
-        # Strict manual-only policy: no auto-selection allowed
-        _log("Research", "No topic provided — aborting (manual topic required)", "ERROR")
-        send_message(
-            f"{_label} ⛔ No topic selected.\n\n"
-            "Set a topic via topic_inject.json before starting the pipeline.\n"
-            "Pipeline stopped."
-        )
-        return
+        # No pre-set topic — show Telegram menu and wait for explicit selection
+        _log("Research", "No topic_inject.json — showing Telegram topic menu")
+        try:
+            _candidates = research_topics(count=4)
+        except Exception as _ce:
+            _candidates = []
+            print(f"[TOPIC] research_topics failed: {_ce}")
+        selected = _wait_for_topic_lang(_label, _candidates, timeout_sec=300)
+        if selected is None:
+            _log("Research", "Topic selection cancelled or timed out — pipeline aborted", "WARN")
+            return
+        topic = selected
 
     topic_text  = topic.get("topic", "")
     topic_niche = topic.get("niche", "")

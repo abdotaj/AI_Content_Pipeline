@@ -2,6 +2,11 @@ name: ANIMATION PIPELINE — ARABIC
 
 on:
   workflow_dispatch:
+    inputs:
+      topic:
+        description: 'Topic to generate (leave blank for Telegram menu)'
+        required: false
+        default: ''
 
 jobs:
   animation-pipeline-ar:
@@ -89,7 +94,12 @@ jobs:
           YOUTUBE_CLIENT_SECRET_AR:          ${{ secrets.YOUTUBE_CLIENT_SECRET_DARKCRIMED }}
           YOUTUBE_CLIENT_ID_EN:              ${{ secrets.YOUTUBE_CLIENT_ID }}
           YOUTUBE_CLIENT_SECRET_EN:          ${{ secrets.YOUTUBE_CLIENT_SECRET }}
-        run: python run_animation_ar.py
+        run: |
+          if [ -n "${{ github.event.inputs.topic }}" ]; then
+            echo '{"topic": "${{ github.event.inputs.topic }}"}' > topic_inject.json
+            echo "[TOPIC] Injected from workflow input: ${{ github.event.inputs.topic }}"
+          fi
+          python run_animation_ar.py
 
       - name: Upload animation videos as artifacts
         if: always()
