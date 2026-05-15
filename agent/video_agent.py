@@ -3299,30 +3299,13 @@ def _apply_intro_outro_overlay(
         outro_start = 9999.0
         crimson     = "0xDC143C"
 
-        _hook_raw = hook_text or title or "Dark Crime Decoded"
-        _hook_raw = (_hook_raw[:42] + "…") if len(_hook_raw) > 42 else _hook_raw
-        hook_esc  = _escape_drawtext(_hook_raw)
-
         # Cold open: soft glitch pulse at t=0
         filters += [
             f"drawbox=x=0:y=0:w={w}:h={h}:color=white@0.20:t=fill:enable='lt(t,0.08)'",
         ]
 
-        # Hook: slim scrim + text at bottom (0–2.5 s)
+        # Brand watermark — small, crimson, fades in over 0.25s, visible for 2.5s
         filters += [
-            # Thin scrim — non-blocking, just enough for legibility
-            f"drawbox=x=0:y=ih-110:w={w}:h=110:color=black@0.42:t=fill"
-            f":enable='between(t,0,{hook_end})'",
-            # Crimson accent line above scrim
-            f"drawbox=x=0:y=ih-113:w={w}:h=3:color={crimson}@1.0:t=fill"
-            f":enable='between(t,0,{hook_end})'",
-            # Hook text with shadow for depth
-            f"drawtext=fontfile='{font_esc}':text='{hook_esc}':fontsize=44:fontcolor=white"
-            f":shadowcolor=black@0.80:shadowx=2:shadowy=2"
-            f":x=(w-text_w)/2:y=ih-78"
-            f":alpha='if(lt(t,0.25),t/0.25,1)'"
-            f":enable='between(t,0,{hook_end})'",
-            # Brand watermark — small, crimson, bottom edge
             f"drawtext=fontfile='{font_esc}':text='{channel_name}':fontsize=18:fontcolor={crimson}"
             f":shadowcolor=black@0.80:shadowx=1:shadowy=1"
             f":x=(w-text_w)/2:y=ih-24"
@@ -8306,7 +8289,6 @@ def run_fast_pipeline(
         video_id=video_id,
         is_short=is_short,
         chapters_str=script_data.get("chapters", ""),
-        hook_text=script_data.get("angle_title", "") or topic_str,
     )
     if not is_short:
         short_out = os.path.join(SHORTS_DIR, f"{video_id}_short.mp4")
