@@ -363,7 +363,6 @@ def _cap_script_max_words(script_text: str, max_words: int = LONG_SCRIPT_MAX_WOR
 
 _TTS_WPM = {"english": 145, "arabic": 175}   # Arabic cinematic narrative pacing target: 160-190 effective WPM
 
-# Runtime floors (minutes) by mode — NO upper caps enforced.
 # Runtime floors (minutes) by mode — ABSOLUTE MINIMUMS.
 # Any long video below 15 minutes is an automatic failure.
 _RUNTIME_FLOORS = {
@@ -529,17 +528,6 @@ def _ai_script_call(prompt: str, max_tokens: int = 1000,
     import requests as _req
     global _OPENAI_QUOTA_EXCEEDED
 
-    def _is_refusal(text: str) -> bool:
-        """Detect OpenAI content policy refusals (Arabic + English)."""
-        _REFUSAL_PHRASES = (
-            "آسف، لا أستطيع", "لا يمكنني المساعدة", "لا أستطيع مساعدتك",
-            "أنا آسف", "لا يمكنني كتابة", "i'm sorry, i can't",
-            "i cannot help", "i can't help", "i'm unable to",
-            "i cannot assist", "i'm not able to",
-        )
-        t = (text or "").strip().lower()
-        return any(p in t for p in _REFUSAL_PHRASES) and len(text.split()) < 50
-
     if premium:
         # ── Premium path: OpenAI gpt-4o → Groq fallback ─────────────────────
         api_key = os.getenv('OPENAI_API_KEY', '').strip()
@@ -558,13 +546,9 @@ def _ai_script_call(prompt: str, max_tokens: int = 1000,
                     timeout=120,
                 )
                 if r.status_code == 200:
-                    _content = r.json()['choices'][0]['message']['content'].strip()
-                    if _is_refusal(_content):
-                        print('[Script] OpenAI gpt-4o refused — falling back to Groq')
-                    else:
-                        print('[Script] OpenAI gpt-4o ✅')
-                        return _content
-                elif r.status_code == 429:
+                    print('[Script] OpenAI gpt-4o ✅')
+                    return r.json()['choices'][0]['message']['content'].strip()
+                if r.status_code == 429:
                     _OPENAI_QUOTA_EXCEEDED = True
                     print('[Script] OpenAI quota exceeded — falling back to Groq')
                 else:
@@ -718,10 +702,11 @@ def expand_script_runtime(script_text: str, missing_words: int,
 
     topic_hint    = f"This is about: {topic}. " if topic else ""
     doc_sys_prompt = (
-        f"You are a documentary scriptwriter. {topic_hint}"
-        "Add new SPECIFIC FACTUAL content to the section — new names, dates, locations, evidence, or consequences. "
-        "Every added sentence must introduce verifiable new information. "
-        "Do NOT add atmospheric filler, mood language, or restate anything already written. "
+        f"You are a cinematic crime storyteller. {topic_hint}"
+        "Add NEW STORY MOVEMENT to the section — new scenes, investigation beats, or narrative turns. "
+        "Runtime must come from STORY PROGRESSION, not repeated facts or inflated descriptions. "
+        "Every added 50-80 words must contain a story beat: clue, twist, reveal, consequence, or turning point. "
+        "Do NOT repeat biographical facts, psychological analysis, or atmosphere already written. "
         "Do NOT write sentences like 'The fear grew' or 'Silence fell' — these are banned filler."
     )
 
@@ -1585,7 +1570,7 @@ def section_similarity_check(script_text: str) -> dict:
     pairs: list[tuple[str, str]] = []
     i = 0
     if parts and not _re.match(r'\[SECTION:', parts[0].strip()):
-        i = 1
+        i = 1   # skip preamble
     while i < len(parts) - 1:
         if _re.match(r'\[SECTION:[^\]]+\]', parts[i]):
             pairs.append((parts[i].strip(), parts[i + 1].strip() if i + 1 < len(parts) else ""))
@@ -1618,15 +1603,20 @@ def _animation_repetition_check(script_text: str) -> dict:
     Track overused atmospheric phrases, internal-monologue templates,
     and suspense sentence patterns in animation scripts.
     Returns {"overused_phrases": {pattern: count}, "has_repetition": bool}.
+    Limit: any pattern appearing >= 3 times is flagged.
     """
     import re as _re
 
     _WATCH_PATTERNS = [
+        # Arabic internal monologue — الإشكالية السابعة
         r"كان يعرف", r"كان يشعر", r"كان يدرك", r"كانت تعرف", r"كانت تشعر",
+        # English internal monologue
         r"\bhe knew\b", r"\bhe felt\b", r"\bhe realized\b",
         r"\bshe knew\b", r"\bshe felt\b", r"\bshe realized\b",
+        # Atmosphere loops
         r"\bthe silence\b", r"\bthe darkness\b", r"\bthe shadows\b",
         r"\bfear grew\b", r"\bdread\b", r"\bterror\b",
+        # Generic suspense wrappers
         r"\bnobody knew\b", r"\bno one knew\b", r"\bnothing was\b",
         r"الصمت", r"الظلام", r"الخوف يتصاعد",
     ]
@@ -1643,6 +1633,7 @@ def _animation_repetition_check(script_text: str) -> dict:
 def timeline_checkpoint_validation(script_text: str, research_facts: list) -> dict:
     """
     Validate that the script's years/dates stay within the documented range.
+    Flags years that appear in the script but are far outside the research window.
     Returns {"consistent": bool, "issues": list[str], "script_years": list, "fact_years": list}.
     """
     import re as _re
@@ -1770,6 +1761,8 @@ def write_animation_script(topic: dict) -> dict:
     facts       = research.get("research_facts") or []
     shocking    = research.get("research_shocking") or []
 
+    # Build the fact anchor map — injected into the prompt so every section
+    # stays connected to documented reality, not fictional reconstruction.
     fact_map = _build_fact_anchor_map(research)
 
     script_prompt = f"""You are writing a FACT-ANCHORED cinematic documentary script.
@@ -1805,8 +1798,9 @@ BANNED INVENTIONS — never write any of these:
 - Fake locations or actions not in any documented source
 
 INTERNAL MONOLOGUE LIMIT:
-Phrases like "he knew", "he felt", "he realized" are acceptable once per section maximum.
-Replace with: action, reaction, investigation move, documented dialogue, or physical evidence.
+Phrases like "he knew", "he felt", "he realized", "she knew", "she felt" are
+acceptable once per section maximum. Replace with: action, reaction, investigation move,
+documented dialogue, or physical evidence.
 
 SENTENCE STYLE:
 - Mix short punches (8-12 words) with medium narrative sentences (15-20 words)
@@ -1815,7 +1809,7 @@ SENTENCE STYLE:
 - Every paragraph ends with a documented progression hook
 
 ATMOSPHERE LIMIT: Maximum ONE atmospheric sentence per 300 words.
-BAD: "The apartment was quiet. Too quiet." (pure atmosphere, no fact)
+BAD: "The apartment was quiet. Too quiet." (pure atmosphere)
 GOOD: "The apartment was quiet. Officers found the second note under the kitchen table."
 
 BANNED PHRASES:
@@ -2568,8 +2562,6 @@ def write_long_script_split(topic: dict, research: dict, series_info: tuple | No
         except Exception:
             pass
 
-    # (label, min_words, max_words, is_final)
-    # Minimum totals: 700+750+950+700+400 = 3,500 words → ~24 min at 145 WPM (EN FAST floor)
     # ── 5-ACT NARRATIVE FLOW ENGINE — story progression phases, not documentary chapters ──
     # Each act = a distinct STORY STATE SHIFT. Viewer must feel: story is MOVING, not explained.
     # Act state chain: UNEASE → INVESTIGATION → ESCALATION → COLLAPSE → AFTERMATH
@@ -3544,11 +3536,19 @@ The host found something most viewers don't know — celebrate that discovery.
     _dc_active_entity = build_active_entity(topic["topic"]) if is_single_subject(topic["topic"]) else {}
     _dc_entity_lock   = entity_lock_instruction(_dc_active_entity)
 
-    part1_prompt = f"""You are a top true crime documentary writer for YouTube.
-Write a 1800-2500 word 12-16 minute documentary script about: {topic['topic']}
+    part1_prompt = f"""You are a cinematic longform crime storyteller for YouTube.
+Write a 2400-3200 word SCENE-DRIVEN CINEMATIC STORY about: {topic['topic']}
 The related series/movie is: {series_label}
+ABSOLUTE MINIMUM: 2,325 words (15 minutes at 155 WPM). Videos below 15 minutes are automatic failures.
 {_dc_entity_lock}
-NARRATION STYLE: Write like Morgan Freeman narrating a documentary. Flowing paragraphs, no lists, no bullet points. Minimum 3 sentences per paragraph. Make every transition carry a specific fact — name the date, the person, the amount, the place. Generic suspense phrases are forbidden (see BANNED PHRASES in the system prompt).
+THIS IS NOT A DOCUMENTARY SUMMARY — IT IS LONGFORM SOCIAL STORYTELLING.
+Viewer must feel: "I am trapped inside a cinematic crime story." NOT: "I am listening to a narrated article."
+
+NARRATIVE MOMENTUM ENGINE: Runtime comes from STORY MOVEMENT, not word inflation.
+Every 50-80 words must contain a story beat: clue, twist, reveal, turn, or consequence.
+Move through: event → reaction → investigation → discovery → escalation → setback → revelation → consequence
+
+NARRATION STYLE: Scene-driven cinematic narration. Flowing paragraphs, no lists, no bullet points. Minimum 3 sentences per paragraph. Each section must feel like a mini-thriller sequence, not a factual explanation block.
 
 COVER ALL CHARACTERS: Dedicate at least one full paragraph to EACH major character. Never focus on just one person.
 {_mandatory_fb}{_rvf_fb_block}
@@ -3573,39 +3573,36 @@ TONE: Celebrate BOTH the real story AND the show. The show is great entertainmen
 
 Use this EXACT structure (no section labels in the output — spoken words only):
 
-HOOK (100 words = ~46 seconds):
-- Lead with ONE specific shocking fact: a real number, a real date, a real decision that defies belief.
-- Something that makes the viewer want to know more — a contradiction, a hidden truth, or an open question.
-- NEVER use generic suspense openers. The fact itself must be the hook.
-- Strong example: "In 1989, Pablo Escobar offered to pay Colombia's entire national debt — $10 billion — if the government would stop extraditing traffickers. They said no."
+HOOK (150 words = ~60 seconds):
+Write as a CINEMATIC SCENE — put the viewer inside ONE specific documented moment.
+Short punching sentences. Then escalate. End with an open question that forces watching.
+Do NOT open with a summary or generic suspense. The SCENE is the hook.
+Strong style: "He sat across from the investigator. His hands were steady. He had done this before."
 
-SERIES INTRO (220 words = ~1.4 minutes):
-- Celebrate what {series_label} showed the world — it is great television
-- Why millions of people loved it and why it matters
-- Build excitement: the real story that inspired it is even more incredible
-- Name {series_label} directly and what made it famous
+SERIES INTRO (280 words = ~1.8 minutes):
+Celebrate what {series_label} showed the world — it is great television.
+Write what made it famous as a SCENE — the moment viewers will remember.
+Then pivot: the real story has dimensions the show never captured.
 
-REAL BACKGROUND (320 words = ~2.1 minutes):
-- Real person's early life with specific facts
-- Family, childhood, origins — real dates, real places, real names
-- The fascinating true events BEFORE the series timeline begins
+REAL BACKGROUND (450 words = ~2.9 minutes):
+Write the real person's origins as SCENES, not biography summaries.
+Each era of their life is a new scene with a turning point.
+Specific dates, real places, real decisions — each with a consequence.
 
-MAIN STORY (520 words = ~3.3 minutes):
-- Full chronological real story
-- Key events the series captured — what {series_label} got RIGHT with evidence
-- How history inspired {series_label} and why filmmakers made their creative choices
-- Real quotes from people involved
-- Specific dates and facts throughout
+MAIN STORY (700 words = ~4.5 minutes):
+Write the full story as a cinematic sequence of scenes.
+Every scene ends with a story beat: clue, turn, reveal, or consequence.
+Documented events reconstructed with scene-level specificity.
+Real victims, real locations, real consequences — named and human.
 
-SHOCKING REVELATIONS (220 words = ~1.4 minutes):
-- 3-4 fascinating real facts that make the true story even more incredible than {series_label}
-- Remarkable real details the show's runtime couldn't fully capture
-- Things that would amaze even the biggest fans of the show
-- Real impact on real people and real history
+INVESTIGATION AND REVELATIONS (400 words = ~2.6 minutes):
+Write as an investigation sequence: what investigators found, in what order, what it revealed.
+Each discovery is a scene. Each revelation escalates the stakes.
+3-4 documented facts that even the show's biggest fans do not know.
 
-REAL STORY VS SCREEN STORY (80 words = ~0.5 minutes):
+REAL STORY VS SCREEN STORY (120 words = ~0.8 minutes):
 ONLY write a comparison if you have a VERIFIED, SPECIFIC difference with different facts or numbers.
-Format: "In {series_label}, they showed X. In reality, Y happened."
+Write each comparison as a story beat: "The show depicted X. The documented record shows Y."
 NEVER write the same number or fact twice as if they are different.
 NEVER invent a difference that does not exist.
 
@@ -3670,7 +3667,7 @@ Start immediately with the HOOK. Write spoken words only — no labels, no heade
     # Generate untold angle first — used in script + title + short video
     _angle_data = generate_untold_angle(topic["topic"], series_label)
 
-    # Primary: 5-call split targeting 2,500–3,050 real words
+    # Primary: 5-call split targeting 2,600–3,350 real words (~17-22 min)
     script_text = write_long_script_split(topic, research, _si_long, angle=_angle_data)
     if script_text and clean_word_count(script_text) >= LONG_SCRIPT_MIN_WORDS:
         script_text = validate_script(script_text)
@@ -5184,12 +5181,13 @@ def _write_arabic_from_research(en_script: dict, ar_research: dict) -> str:
     )
 
     # ── Section minimum word counts ──────────────────────────────────────────
-    # Failing to meet these is a HARD failure — must retry, not skip.
-    # Targets raised: at 250 WPM, 3500+ Arabic words needed for 10+ min video.
+    # Per-section minimums are SOFT gates — total script floor (4200+ words) is
+    # enforced separately. Lower per-section values prevent cascading retry
+    # failures when OpenAI partially refuses or Groq rate-limits a single call.
     _SECTION_MIN_WC: dict[str, int] = {
-        "AR-Hook+Background": 500,
-        "AR-MainStory+Ch4":   900,   # CORE — missing this = 9-second video
-        "AR-Conclusion":      400,
+        "AR-Hook+Background": 380,
+        "AR-MainStory+Ch4":   700,   # CORE — missing this = 9-second video
+        "AR-Conclusion":      320,
     }
     # Core sections: missing any of these = pipeline must not continue
     _CORE_SECTIONS: frozenset = frozenset({"AR-MainStory+Ch4"})
@@ -5294,6 +5292,18 @@ def _write_arabic_from_research(en_script: dict, ar_research: dict) -> str:
             raw_wc      = clean_word_count(raw) if raw else 0
             _raw_chars  = len(raw) if raw else 0
             _raw_lines  = (raw or "").count("\n")
+
+            # OpenAI content-policy refusal detection — reject before word-count check.
+            # Refusals are short Arabic apologies that would otherwise pass a low floor.
+            _REFUSAL_SIGNALS = ("عذراً، لا يمكنني", "عذرًا، لا يمكنني", "لا يمكنني تلبية",
+                                "لا أستطيع المساعدة", "لا يمكنني المساعدة",
+                                "I'm sorry", "I cannot", "I can't")
+            _is_refusal = raw and raw_wc < 60 and any(sig in raw for sig in _REFUSAL_SIGNALS)
+            if _is_refusal:
+                print(f"[AR REFUSAL] {label} attempt {attempt}: OpenAI content refusal detected — forcing retry")
+                raw = None
+                raw_wc = 0
+
             print(
                 f"[AR RAW] {label} attempt {attempt}: "
                 f"raw_len={_raw_chars}chars raw_wc={raw_wc}w raw_lines={_raw_lines} "

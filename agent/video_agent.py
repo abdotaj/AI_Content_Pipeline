@@ -507,7 +507,7 @@ def generate_voiceover_openai(text: str, language: str, output_path: str,
     if language == "arabic":
         model = "tts-1"
         voice = voice_override or "nova"
-        speed = speed_override if speed_override is not None else 0.9
+        speed = speed_override if speed_override is not None else 1.1
         label = "Arabic"
     else:
         model = "tts-1"
@@ -778,7 +778,7 @@ def generate_voiceover(script_text: str, filename: str, language: str = "english
     if language == "arabic":
         script_text = _apply_arabic_pronunciation(script_text)
 
-    # Priority 1: OpenAI TTS (primary — Arabic: nova/0.9, English: alloy/1.0)
+    # Priority 1: OpenAI TTS (primary — Arabic: nova/1.1, English: alloy/1.0)
     openai_key = os.getenv("OPENAI_API_KEY", "").strip()
     if openai_key and not _OPENAI_QUOTA_EXCEEDED:
         print("[Voice] Trying OpenAI TTS (primary)...")
@@ -7865,14 +7865,12 @@ def _extract_dominant_phase(script_text: str) -> str:
     Looks for [SECTION: Act X ...] markers; falls back to full-script heuristics.
     """
     import re as _re
-    counts: dict[str, int] = {}
-    for m in _re.finditer(r'\[SECTION:\s*Act\s+(\d)', script_text, _re.IGNORECASE):
-        key = f"act {m.group(1)}"
-        counts[key] = counts.get(key, 0) + 1
-    if counts:
-        labels = [lbl.strip().lower() for lbl in _re.findall(r'\[SECTION:\s*(Act\s+\w[^\]]*)\]', script_text, _re.IGNORECASE)]
+
+    labels = _re.findall(r'\[SECTION:\s*Act\s*(\d+)', script_text, _re.IGNORECASE)
+    if labels:
+        counts: dict[str, int] = {}
         for lbl in labels:
-            key = f"act {lbl.split()[1]}" if len(lbl.split()) > 1 else lbl
+            key = f"act {lbl}"
             counts[key] = counts.get(key, 0) + 1
         dominant = max(counts, key=counts.get)
         return _STORY_PHASE_VISUAL_STYLE.get(dominant, _STORY_PHASE_VISUAL_STYLE["default"])
@@ -8027,6 +8025,7 @@ def run_fast_pipeline(
             _real_audio_secs = _AC(audio_path).duration
             _min = _real_audio_secs / 60
             print(f"[FAST] Audio duration: {_real_audio_secs:.1f}s ({_min:.1f} min)")
+            # Real audio contract enforcement — 15-min floor is ABSOLUTE
             if not is_short and _real_audio_secs > 0 and _real_audio_secs < 900:
                 print(f"[FAST] ⚠️ RUNTIME CONTRACT VIOLATION: {_min:.1f}min < 15min minimum. "
                       f"Script was too short — video assembly continues but runtime is below floor.")
@@ -8086,8 +8085,10 @@ def run_fast_pipeline(
                 _blend_style = _phase_style
                 print(f"[FAST] Visual phase: {_phase_style[:60]}…")
             image_paths.extend(
-                fetch_real_images(script_data["script"], needed, video_id,
-                                  topic=topic_str, style_profile=_blend_style)
+                fetch_real_images(
+                    script_data["script"], needed, video_id,
+                    topic=topic_str, style_profile=_blend_style,
+                )
             )
         except Exception as _ve:
             print(f"[FAST] Visual fetch failed (non-fatal): {_ve}")

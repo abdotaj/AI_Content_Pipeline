@@ -778,7 +778,7 @@ def generate_voiceover(script_text: str, filename: str, language: str = "english
     if language == "arabic":
         script_text = _apply_arabic_pronunciation(script_text)
 
-    # Priority 1: OpenAI TTS (primary — Arabic: nova/0.9, English: alloy/1.0)
+    # Priority 1: OpenAI TTS (primary — Arabic: nova/1.1, English: alloy/1.0)
     openai_key = os.getenv("OPENAI_API_KEY", "").strip()
     if openai_key and not _OPENAI_QUOTA_EXCEEDED:
         print("[Voice] Trying OpenAI TTS (primary)...")

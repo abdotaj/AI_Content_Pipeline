@@ -410,7 +410,9 @@ _AR_FILLER_PHRASES: List[str] = [
 ]
 
 # Maximum Arabic words per sentence for natural TTS flow.
-_AR_MAX_SENTENCE_WORDS: int = 22
+# Set to 30 — the model already targets ≤20 words via system prompt; post-processing
+# only intervenes on genuinely overlong sentences to avoid destroying cinematic phrasing.
+_AR_MAX_SENTENCE_WORDS: int = 30
 
 # Connectors where a long sentence can be cleanly split.
 # Two groups: contrastive (keep connector) vs continuative (drop و prefix).
@@ -488,7 +490,7 @@ def normalize_arabic_tts(ar_text: str) -> str:
 
     Transformations (in order):
     1. Remove Arabic YouTube-drama filler phrases (_AR_FILLER_PHRASES)
-    2. Split sentences longer than 22 words at natural Arabic connectors
+    2. Split sentences longer than 30 words at natural Arabic connectors
     3. Normalize punctuation for clean TTS pauses
     4. Validate sentence cadence (warn on monotone length runs)
     5. Collapse excess blank lines
@@ -1202,12 +1204,14 @@ def remove_arabic_filler_phrases(text: str) -> str:
             # Exact multi-word filler match
             is_filler = any(phrase in s_lower for phrase in ATMOSPHERIC_FILLER_AR)
 
-            # Short sentences dominated by filler words
+            # Very short sentences where most words are pure atmospheric filler
+            # Only flag sentences with 3-5 words where ≥75% are filler words.
+            # Larger sentences may legitimately mention these words in context.
             if not is_filler:
                 ar_words = re.findall(r"[؀-ۿ]{2,}", s)
-                if 2 <= len(ar_words) <= 8:
+                if 3 <= len(ar_words) <= 5:
                     filler_wc = sum(1 for w in ar_words if w in _AR_FILLER_WORDS)
-                    if filler_wc >= max(1, len(ar_words) // 2):
+                    if filler_wc >= max(2, int(len(ar_words) * 0.75)):
                         is_filler = True
 
             if is_filler:
@@ -1323,7 +1327,8 @@ def validate_information_density(text: str, language: str = "english") -> dict:
             informative += 1
 
     density = (informative / total * 100) if total > 0 else 0.0
-    verdict = "HIGH" if density >= 55 else ("MEDIUM" if density >= 30 else "LOW")
+    # Arabic documentary targets 75-82% density; ≥80 = HIGH, 45-80 = MEDIUM, <45 = LOW
+    verdict = "HIGH" if density >= 80 else ("MEDIUM" if density >= 45 else "LOW")
 
     return {
         "informative_count": informative,

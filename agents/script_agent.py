@@ -5181,12 +5181,13 @@ def _write_arabic_from_research(en_script: dict, ar_research: dict) -> str:
     )
 
     # ── Section minimum word counts ──────────────────────────────────────────
-    # Failing to meet these is a HARD failure — must retry, not skip.
-    # Targets raised: at 250 WPM, 3500+ Arabic words needed for 10+ min video.
+    # Per-section minimums are SOFT gates — total script floor (4200+ words) is
+    # enforced separately. Lower per-section values prevent cascading retry
+    # failures when OpenAI partially refuses or Groq rate-limits a single call.
     _SECTION_MIN_WC: dict[str, int] = {
-        "AR-Hook+Background": 500,
-        "AR-MainStory+Ch4":   900,   # CORE — missing this = 9-second video
-        "AR-Conclusion":      400,
+        "AR-Hook+Background": 380,
+        "AR-MainStory+Ch4":   700,   # CORE — missing this = 9-second video
+        "AR-Conclusion":      320,
     }
     # Core sections: missing any of these = pipeline must not continue
     _CORE_SECTIONS: frozenset = frozenset({"AR-MainStory+Ch4"})
@@ -5291,6 +5292,18 @@ def _write_arabic_from_research(en_script: dict, ar_research: dict) -> str:
             raw_wc      = clean_word_count(raw) if raw else 0
             _raw_chars  = len(raw) if raw else 0
             _raw_lines  = (raw or "").count("\n")
+
+            # OpenAI content-policy refusal detection — reject before word-count check.
+            # Refusals are short Arabic apologies that would otherwise pass a low floor.
+            _REFUSAL_SIGNALS = ("عذراً، لا يمكنني", "عذرًا، لا يمكنني", "لا يمكنني تلبية",
+                                "لا أستطيع المساعدة", "لا يمكنني المساعدة",
+                                "I'm sorry", "I cannot", "I can't")
+            _is_refusal = raw and raw_wc < 60 and any(sig in raw for sig in _REFUSAL_SIGNALS)
+            if _is_refusal:
+                print(f"[AR REFUSAL] {label} attempt {attempt}: OpenAI content refusal detected — forcing retry")
+                raw = None
+                raw_wc = 0
+
             print(
                 f"[AR RAW] {label} attempt {attempt}: "
                 f"raw_len={_raw_chars}chars raw_wc={raw_wc}w raw_lines={_raw_lines} "
