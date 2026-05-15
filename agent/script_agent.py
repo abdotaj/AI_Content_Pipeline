@@ -5642,7 +5642,31 @@ def _write_arabic_from_research(en_script: dict, ar_research: dict, target_minut
     if not parts:
         return ""
 
-    full_ar = "\n\n".join(parts)
+    # Guarantee each chunk has a TTS-visible section marker.
+    # Without explicit markers the TTS splitter only finds the markers
+    # embedded inside AR-MainStory+Ch4 (القصة الحقيقية / الرواية مقابل الواقع),
+    # leaving Hook+Background and Conclusion orphaned and unspoken.
+    import re as _re_label
+    _canonical_markers = {
+        "AR-Hook+Background": "المقدمة",
+        "AR-Conclusion":      "الخاتمة",
+    }
+    _labeled_parts: list[str] = []
+    for _chunk_label, _chunk_text in zip(
+        ["AR-Hook+Background", "AR-MainStory+Ch4", "AR-Conclusion"], parts
+    ):
+        if not _chunk_text:
+            continue
+        _has_any_marker = bool(_re_label.search(r'\[SECTION:', _chunk_text))
+        _default_marker = _canonical_markers.get(_chunk_label)
+        if _default_marker and not _has_any_marker:
+            _labeled_parts.append(f"[SECTION: {_default_marker}]\n{_chunk_text.strip()}")
+        elif _chunk_label == "AR-MainStory+Ch4" and not _has_any_marker:
+            _labeled_parts.append(f"[SECTION: القصة الرئيسية]\n{_chunk_text.strip()}")
+        else:
+            _labeled_parts.append(_chunk_text)
+
+    full_ar = "\n\n".join(_labeled_parts)
 
     # Post-process: remove atmospheric filler and log density
     try:

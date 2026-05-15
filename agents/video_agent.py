@@ -1962,24 +1962,36 @@ def generate_ai_image(prompt: str, output_path: str, seed: int = None) -> str:
         f"?width=1080&height=1920&nologo=true&seed={_seed}"
     )
 
-    for attempt in range(2):
+    for attempt in range(3):
         try:
             response = requests.get(url, timeout=90)
             if response.status_code == 200:
-                img = PILImage.open(io.BytesIO(response.content)).convert("RGB")
-                img = img.resize((1080, 1920), PILImage.LANCZOS)
-                img.save(output_path, "PNG")
-                print(f"[Image] Generated: {prompt[:60]}")
-                _record_pollinations_result(True)
-                time.sleep(5)
-                return output_path
+                # Reject non-image responses — Pollinations backend sometimes returns
+                # Azure BlobNotFound XML (200 OK but Content-Type: application/xml).
+                _ct = response.headers.get("Content-Type", "")
+                if _ct and not _ct.startswith("image/"):
+                    print(f"[Image] Non-image Content-Type '{_ct}' (attempt {attempt + 1}/3) — retrying")
+                    time.sleep(20)
+                    continue
+                try:
+                    img = PILImage.open(io.BytesIO(response.content)).convert("RGB")
+                    img = img.resize((1080, 1920), PILImage.LANCZOS)
+                    img.save(output_path, "PNG")
+                    print(f"[Image] Generated: {prompt[:60]}")
+                    _record_pollinations_result(True)
+                    time.sleep(5)
+                    return output_path
+                except Exception as _pil_e:
+                    print(f"[Image] PIL parse failed attempt {attempt + 1}/3: {_pil_e} — retrying")
+                    time.sleep(20)
+                    continue
             elif response.status_code == 429:
                 _record_pollinations_result(False)
-                print(f"[Image] Rate limited, waiting 30s... (attempt {attempt + 1}/2)")
-                time.sleep(30)
+                print(f"[Image] Rate limited, waiting 45s... (attempt {attempt + 1}/3)")
+                time.sleep(45)
             else:
-                print(f"[Image] Pollinations returned {response.status_code} (attempt {attempt + 1}/2)")
-                time.sleep(10)
+                print(f"[Image] Pollinations returned {response.status_code} (attempt {attempt + 1}/3)")
+                time.sleep(15)
         except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
             print(f"[Image] Network error attempt {attempt + 1}: {e} — switching to AI fallback")
             break
@@ -1989,7 +2001,7 @@ def generate_ai_image(prompt: str, output_path: str, seed: int = None) -> str:
                 print(f"[Image] Search cancelled — switching to AI fallback")
                 break
             print(f"[Image] Attempt {attempt + 1} failed: {e}")
-            time.sleep(10)
+            time.sleep(15)
 
     # Fallback: solid dark background so assembly never crashes
     img = PILImage.new("RGB", (1080, 1920), color=(13, 13, 26))
