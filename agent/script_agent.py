@@ -1344,19 +1344,29 @@ def _clean_arabic_title(raw: str) -> str:
 
 
 def _build_arabic_title(en_title: str, series_name: str | None, series_type: str | None) -> str:
-    """Return clean Arabic title, falling back to Google Translate + noise cleanup."""
+    """Return clean Arabic title."""
+    # Series-based topics: "القصة الحقيقية وراء فيلم/مسلسل {series}"
     ar_entry = SERIES_ARABIC.get(series_name or "")
     if ar_entry:
         ar_series, ar_type = ar_entry
         return f"القصة الحقيقية وراء {ar_type} {ar_series} | Dark Crime Decoded"
-    # No dict entry — use type word with original English series name
     if series_name:
         ar_type = "فيلم" if series_type == "Movie" else "مسلسل" if series_type == "Series" else ""
         if ar_type:
-            return f"القصة الحقيقية وراء {ar_type} {series_name} | Dark Crime Decoded"
-    # Fallback: translate the angle-based English title then clean noise
-    raw = translate_to_arabic(en_title)
-    return _clean_arabic_title(raw)
+            _ar_series = translate_to_arabic(series_name) or ""
+            _ar_series = re.sub(r'[A-Za-z]+', '', _ar_series).strip()
+            _ar_series = re.sub(r'\s+', ' ', _ar_series).strip()
+            if _ar_series:
+                return f"القصة الحقيقية وراء {ar_type} {_ar_series} | Dark Crime Decoded"
+    # Pure documentary: translate only the topic/person name (before colon or dash)
+    # to avoid Google Translate misinterpreting a full sentence into "وراء فيلم"
+    topic_part = re.split(r'[:—–\-]', en_title, maxsplit=1)[0].strip()
+    ar_topic = translate_to_arabic(topic_part) if topic_part else ""
+    ar_topic = re.sub(r'[A-Za-z]+', '', ar_topic or "").strip()
+    ar_topic = re.sub(r'\s+', ' ', ar_topic).strip()
+    if not ar_topic:
+        return "Dark Crime Decoded"
+    return f"القصة الحقيقية لـ{ar_topic} | Dark Crime Decoded"
 
 
 # 5-chapter proportions for new structure
