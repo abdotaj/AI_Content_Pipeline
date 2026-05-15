@@ -1089,7 +1089,12 @@ def upgrade_script_for_retention(script: str) -> str:
         if orig_sections and not new_sections:
             print("[Upgrade] Section markers lost — keeping original")
             return script
-        print(f"[Upgrade] English script upgraded ({len(improved.split())} words)")
+        _upgraded_wc = clean_word_count(improved)
+        _original_wc = clean_word_count(script)
+        if _upgraded_wc < _original_wc * 0.90:
+            print(f"[Upgrade] English rejected — compression: {_upgraded_wc}w < {_original_wc}w×90%")
+            return script
+        print(f"[Upgrade] English script upgraded ({_upgraded_wc} words)")
         return improved
     except Exception as e:
         print(f"[Upgrade] Failed: {e}")
@@ -4525,63 +4530,91 @@ def _translate_script_preserve_sections(english_script_text: str) -> str:
     return "\n\n".join(translated_parts).strip()
 
 
-def _expand_arabic_script_to_min(ar_script: str, target_min: int = 3500) -> str:
-    """Append additional Arabic content until the script meets target_min words."""
+def _expand_arabic_script_to_min(ar_script: str, target_min: int = 5000) -> str:
+    """
+    Append additional Arabic narration until the script meets target_min words.
+    Uses only the tail of the current script as context to preserve token budget.
+    """
+    import os as _os_exp
+    _anim = _os_exp.getenv("PIPELINE_MODE", "").lower() == "animation"
+
     current = clean_word_count(ar_script)
     if current >= target_min:
         return ar_script
 
     result = ar_script
 
-    _tok_budgets = [1800, 2400, 2000, 1600]
+    # Use only the last ~350 words as context — avoids exhausting token budget
+    def _tail(text: str, n: int = 350) -> str:
+        words = text.split()
+        return " ".join(words[-n:]) if len(words) > n else text
+
+    _tok_budgets = [2400, 3000, 2500, 2000]
     for _attempt in range(1, 5):
         cur_wc = clean_word_count(result)
         if cur_wc >= target_min:
             break
-        needed = target_min - cur_wc
-        max_tok = _tok_budgets[_attempt - 1]
-        if _attempt == 1:
-            instruction = (
-                f"أضف {needed + 100} كلمة على الأقل لهذا النص الوثائقي. "
-                f"الزيادة يجب أن تكون بحقائق موثقة فقط: "
-                f"تفاصيل تحقيق، شهادات محققين أو شهود، أدلة جنائية، "
-                f"تطورات قضائية، أسماء حقيقية وتواريخ محددة. "
-                f"لا تخترع أحداثاً أو مشاهد أو محادثات غير موثقة. "
-                f"لا تضف حياة يومية خيالية أو تجوالاً مخترعاً أو تأملات سينمائية. "
-                f"وسّع الحقائق الموجودة بعمق تحقيقي أكبر — لا تُضِف خيالاً. "
-                f"استمر بشكل طبيعي من الجملة الأخيرة. "
-                f"الأسلوب: تحقيق وثائقي — ليس رواية خيالية."
-            )
-        elif _attempt == 2:
-            instruction = (
-                f"أضف {needed + 80} كلمة جديدة على الأقل. "
-                f"وسّع تفاصيل التحقيق الموثق: اسم المحقق، طبيعة الأدلة، "
-                f"تطور المحاكمة، شهادات موثقة، قرارات قضائية. "
-                f"لا تكرر ما قيل. استمر مباشرة بعد النص الموجود. "
-                f"لا تخترع حوادث أو لقاءات أو مشاعر لم تُذكر في مصادر موثقة."
-            )
-        else:
-            instruction = (
-                f"أكمل النص بإضافة {needed + 50} كلمة جديدة. "
-                f"استخدم فقط ما هو موثق: أسماء، تواريخ، أدلة، شهادات، قرارات قضائية. "
-                f"لا تعيد ما قيل. استمر بعد آخر جملة مباشرة."
-            )
-        max_tok = _tok_budgets[_attempt - 1]
+        needed    = target_min - cur_wc
+        needed_min = round(needed / 250, 1)  # ~250 Arabic WPM TTS pace
+        max_tok   = _tok_budgets[_attempt - 1]
+        context   = _tail(result)
 
-        print(f"[Script] Arabic expansion attempt {_attempt}: {cur_wc}w, need +{needed}w")
+        if _anim:
+            if _attempt == 1:
+                instruction = (
+                    f"استمر في سرد الوثائقي المتحرك بعد النص أدناه. "
+                    f"أضف ما يعادل {needed_min} دقيقة على الأقل من السرد السينمائي (~{needed} كلمة). "
+                    f"البنية: مشهد بصري → نبضة عاطفية → كشف جديد → انتقال. "
+                    f"لا تكرر ما سبق. استمر طبيعياً من آخر جملة. "
+                    f"وسّع التفاصيل — أضف أجواء، مشاهد جديدة، تطورات في الحدث."
+                )
+            elif _attempt == 2:
+                instruction = (
+                    f"استمر في الوثائقي المتحرك. أضف {needed_min} دقيقة على الأقل من السرد "
+                    f"(~{needed} كلمة). ادخل في مشهد جديد لم يُذكر بعد — "
+                    f"شخصية فرعية، لحظة التحول، ردة فعل الضحايا أو المجتمع. "
+                    f"السرد السينمائي الكامل فقط."
+                )
+            else:
+                instruction = (
+                    f"أكمل الوثائقي بإضافة {needed_min} دقيقة من السرد (~{needed} كلمة). "
+                    f"قدّم زاوية جديدة: التداعيات، الإرث، الأثر الإنساني. "
+                    f"استمر مباشرة بعد النص الأخير."
+                )
+        else:
+            if _attempt == 1:
+                instruction = (
+                    f"استمر في النص الوثائقي. أضف ما يعادل {needed_min} دقيقة من السرد "
+                    f"(~{needed} كلمة). "
+                    f"وسّع تفاصيل التحقيق: أسماء، تواريخ، أدلة، شهادات، تطورات قضائية. "
+                    f"استمر بشكل طبيعي من الجملة الأخيرة."
+                )
+            elif _attempt == 2:
+                instruction = (
+                    f"أضف {needed_min} دقيقة جديدة من السرد الوثائقي (~{needed} كلمة). "
+                    f"قدّم زاوية لم تُذكر: شخصية فرعية، دليل إضافي، تطور في القضية. "
+                    f"لا تكرر ما قيل. استمر مباشرة."
+                )
+            else:
+                instruction = (
+                    f"أكمل النص بـ{needed_min} دقيقة من السرد (~{needed} كلمة). "
+                    f"استمر بعد آخر جملة مباشرة."
+                )
+
+        print(f"[Script] Arabic expansion attempt {_attempt}: {cur_wc}w, need +{needed}w (~{needed_min}min)")
         prompt = (
             f"{instruction}\n\n"
-            f"النص الحالي (لا تُعده — فقط استمر بعده):\n{result}\n\n"
-            f"اكتب الإضافة فقط — لا تعيد النص الأصلي. لا تكتب أي شرح."
+            f"نهاية النص الحالي (استمر بعده مباشرة):\n...\n{context}\n\n"
+            f"اكتب الاستمرار فقط — لا تعد النص الأصلي. لا شرح."
         )
-        continuation = _ai_script_call(prompt, max_tokens=max_tok, temperature=0.65, premium=True)
+        continuation = _ai_script_call(prompt, max_tokens=max_tok, temperature=0.70, premium=True)
         if not continuation:
             print(f"[Script] Arabic expansion attempt {_attempt} failed — no response")
             continue
 
         added_wc = clean_word_count(continuation)
-        if added_wc < 100:
-            print(f"[Script] Arabic expansion attempt {_attempt} rejected — only {added_wc}w added (need ≥100w)")
+        if added_wc < 120:
+            print(f"[Script] Arabic expansion attempt {_attempt} rejected — only {added_wc}w added (need ≥120w)")
             continue
 
         result = result.rstrip() + "\n\n" + continuation.strip()
@@ -5079,8 +5112,20 @@ def _write_arabic_from_research(en_script: dict, ar_research: dict) -> str:
     inaccs_block   = "\n".join(f"- {i}" for i in ar_inaccs[:6])    or "- (ابحث في التحريفات الدرامية)"
     shocking_block = "\n".join(f"- {s}" for s in ar_shocking[:8])  or "- (أضف تفاصيل حقيقية غير متوقعة)"
 
-    # Per-section word target: Arabic needs more words than English due to faster TTS pace
-    sec_wc = max(600, en_wc // 4)
+    import os as _os_sa
+    _anim_mode = _os_sa.getenv("PIPELINE_MODE", "").lower() == "animation"
+
+    # Cinematic section targets — animation mode uses larger targets for pacing room
+    if _anim_mode:
+        _intro_target = max(1400, int(en_wc * 0.44))   # ~1400-1700w
+        _main_target  = max(2400, int(en_wc * 0.76))   # ~2400-3200w
+        _conc_target  = max(1100, int(en_wc * 0.36))   # ~1100-1500w
+    else:
+        _intro_target = max(900,  int(en_wc * 0.30))
+        _main_target  = max(1400, int(en_wc * 0.50))
+        _conc_target  = max(700,  int(en_wc * 0.25))
+    # Keep sec_wc for simplified/emergency prompts
+    sec_wc = _intro_target
 
     entity_lock = (
         f"[قفل الموضوع] اكتب فقط عن: {topic_str}. "
@@ -5093,59 +5138,114 @@ def _write_arabic_from_research(en_script: dict, ar_research: dict) -> str:
     series_line = f"السلسلة أو الفيلم: {series_name}\n" if series_name and not is_doc else ""
     disc_line   = f"ملاحظة خاصة من البحث: {ar_disc}\n" if ar_disc else ""
 
-    _tts_reminder = (
-        "\n[قواعد الكثافة المعلوماتية — إلزامية]:\n"
-        "كل 50-75 كلمة يجب أن تتضمن واحداً على الأقل من: اسم شخص مع فعل محدد، "
-        "تاريخ أو سنة موثقة، دليل جنائي، اعتراف أو شهادة، تطور تحقيقي، "
-        "انعطافة في القصة، أو حقيقة نفسية موثقة.\n"
-        "محظور نهائياً: جمل مزاجية خالية من المعلومات مثل: "
-        "'كان الخوف يملأ المكان' / 'العالم كان يراقب' / 'الغموض يزداد' / "
-        "'الصمت يسود' / 'الظلال تتحرك'. هذه العبارات مقبولة مرة واحدة فقط "
-        "لكل 400 كلمة — وليس أكثر.\n"
-        "الجمل المنعزلة القصيرة (2-5 كلمات) من نوع 'الخوف يتصاعد.' أو 'الصمت يسود.' "
-        "ممنوعة تماماً — ادمج الأجواء دائماً مع حقيقة موثقة.\n"
-        "مثال سيء: 'كان الخوف يملأ المكان.'\n"
-        "مثال جيد: 'ازداد الخوف حين وجد المحققون الرسالة الثانية موقعة باسمه الحقيقي.'\n"
-        "[إيقاع TTS]: تناوب بين الجمل القصيرة (8-12 كلمة) والمتوسطة (15-20 كلمة). "
-        "لا جملة تتجاوز 22 كلمة. أسلوب وثائقي تحقيقي — ليس شعراً ظلامياً.\n"
-    )
+    if _anim_mode:
+        # Animation mode: scene-driven storytelling, 55-70% informative density
+        _tts_reminder = (
+            "\n[أسلوب الوثائقي المتحرك — السرد السينمائي]:\n"
+            "اكتب كما لو أن المشاهد يرى مشاهد متحركة أمامه — ليس تقريراً جافاً.\n"
+            "بنية كل وحدة سردية: [مشهد بصري] ← [نبضة عاطفية] ← [جو أو توتر] ← [تصعيد أو كشف] ← [انتقال]\n"
+            "الكثافة المعلوماتية المستهدفة: 55-70% (ليس 90%+). "
+            "ربع الكلمات يجب أن تكون جواً وإيقاعاً وتنفساً بصرياً.\n"
+            "أفعال بصرية مطلوبة: المحقق يقلّب الأوراق ببطء. الكاميرا تقترب من الوجه. "
+            "الغرفة تبدو فارغة لكن الساعة لا تزال تدق. "
+            "هذه ليست إضافات — هي ما يجعل السرد سينمائياً.\n"
+            "مساحات تنفس: كل 150-200 كلمة اترك لحظة توتر أو صمت مقصود "
+            "قبل الانتقال للمعلومة التالية.\n"
+            "[إيقاع TTS الرهيب]: تناوب بين الجمل القصيرة (6-10 كلمات لحظات التوتر) "
+            "والمتوسطة (14-18 كلمة للسرد العادي). لا جملة تتجاوز 22 كلمة.\n"
+        )
+    else:
+        _tts_reminder = (
+            "\n[قواعد الكثافة المعلوماتية]:\n"
+            "كل 100-150 كلمة يجب أن تتضمن واحداً على الأقل من: اسم شخص مع فعل محدد، "
+            "تاريخ أو سنة موثقة، دليل جنائي، اعتراف أو شهادة، تطور تحقيقي.\n"
+            "الجمل الجوية مقبولة بنسبة 30-45% من النص — ادمجها مع الحقائق بشكل طبيعي.\n"
+            "[إيقاع TTS]: تناوب بين الجمل القصيرة (8-12 كلمة) والمتوسطة (15-20 كلمة). "
+            "لا جملة تتجاوز 22 كلمة.\n"
+        )
 
-    prompt_1 = (
-        f"{entity_lock}"
-        f"اكتب بالعربية فصلين من وثائقي جريمة حقيقية عن: {topic_str}\n"
-        f"{series_line}"
-        f"\nالحقائق البحثية الحقيقية:\n{facts_block}\n"
-        f"{disc_line}"
-        f"{_tts_reminder}\n"
-        f"اكتب الفصلين التاليين بالعربية الفصحى بأسلوب وثائقي سينمائي:\n\n"
-        f"[SECTION: المقدمة]\n"
-        f"(خطاف قوي + تأسيس التوتر — حوالي {sec_wc} كلمة. "
-        f"الجملة الأولى يجب أن تكون صادمة وقصيرة. لا خلفية في البداية. ابدأ بالتوتر.)\n\n"
-        f"[SECTION: الخلفية]\n"
-        f"(السياق التاريخي والشخصيات — حوالي {sec_wc} كلمة. "
-        f"كل شخص مهم يأخذ فقرة كاملة. أسماء حقيقية وتواريخ فعلية.)\n\n"
-        f"اكتب الفصلين كاملين. لا تكتب عناوين أو ملاحظات. النص الوثائقي فقط."
-    )
-
-    # ── Call 2: Main Story + (Show vs Reality / Shocking Details) ─────────────
-    if is_doc:
-        prompt_2 = (
+    _intro_min_str = f"ما يعادل 4-6 دقائق من السرد (~{_intro_target} كلمة)"
+    if _anim_mode:
+        prompt_1 = (
             f"{entity_lock}"
-            f"استمر في كتابة وثائقي: {topic_str}\n"
-            f"\nالحقائق البحثية:\n{facts_block}\n"
-            f"\nالحقائق المفاجئة:\n{shocking_block}\n"
+            f"أنت راوٍ وثائقي متحرك. اكتب السرد الافتتاحي لوثائقي متحرك عن: {topic_str}\n"
+            f"{series_line}"
+            f"\nالحقائق الأساسية:\n{facts_block}\n"
             f"{disc_line}"
             f"{_tts_reminder}\n"
-            f"اكتب:\n\n"
-            f"[SECTION: القصة الحقيقية]\n"
-            f"(قلب الوثائقي — حوالي {sec_wc * 2} كلمة. "
-            f"أعمق تفاصيل الجريمة أو الحدث. كل قرار، كل عاقبة، كل شخص مهم. "
-            f"تناوب بين الجمل القصيرة والمتوسطة.)\n\n"
-            f"[SECTION: حقائق صادمة]\n"
-            f"(حوالي {sec_wc} كلمة. الحقائق الأقل معرفة، الأشد إثارة، التي لن يتوقعها المستمع. "
-            f"الحقائق نفسها تصنع الدراما — لا تضف عبارات إثارة.)\n\n"
-            f"النص الوثائقي الكامل فقط."
+            f"اكتب الفصلين التاليين بالعربية الفصحى — السرد المتحرك السينمائي:\n\n"
+            f"[SECTION: المقدمة]\n"
+            f"(خطاف سينمائي + تأسيس التوتر — {_intro_min_str}. "
+            f"ابدأ بمشهد بصري قصير ثم الجملة الصادمة. "
+            f"بنِ التوتر بطبقات: أولاً الشعور، ثم السياق، ثم السؤال الذي يجذب المشاهد. "
+            f"اترك مساحة بصرية بين الأفكار.)\n\n"
+            f"[SECTION: الخلفية]\n"
+            f"(السياق التاريخي والشخصيات — {_intro_min_str}. "
+            f"كل شخص مهم يأخذ مشهداً مستقلاً. "
+            f"صِف البيئة والزمان كما لو أن الكاميرا تتحرك في الفضاء. "
+            f"أسماء حقيقية وتواريخ فعلية مدمجة مع الوصف البصري.)\n\n"
+            f"اكتب الفصلين كاملين. النص السردي المنطوق فقط — بدون عناوين أو شرح."
         )
+    else:
+        prompt_1 = (
+            f"{entity_lock}"
+            f"اكتب بالعربية فصلين من وثائقي جريمة حقيقية عن: {topic_str}\n"
+            f"{series_line}"
+            f"\nالحقائق البحثية الحقيقية:\n{facts_block}\n"
+            f"{disc_line}"
+            f"{_tts_reminder}\n"
+            f"اكتب الفصلين التاليين بالعربية الفصحى بأسلوب وثائقي سينمائي:\n\n"
+            f"[SECTION: المقدمة]\n"
+            f"(خطاف قوي + تأسيس التوتر — {_intro_min_str}. "
+            f"الجملة الأولى يجب أن تكون صادمة وقصيرة. لا خلفية في البداية. ابدأ بالتوتر.)\n\n"
+            f"[SECTION: الخلفية]\n"
+            f"(السياق التاريخي والشخصيات — {_intro_min_str}. "
+            f"كل شخص مهم يأخذ فقرة كاملة. أسماء حقيقية وتواريخ فعلية.)\n\n"
+            f"اكتب الفصلين كاملين. لا تكتب عناوين أو ملاحظات. النص الوثائقي فقط."
+        )
+
+    # ── Call 2: Main Story + (Show vs Reality / Shocking Details) ─────────────
+    _main_min_str = f"ما يعادل 8-11 دقيقة من السرد (~{_main_target} كلمة)"
+    if is_doc:
+        if _anim_mode:
+            prompt_2 = (
+                f"{entity_lock}"
+                f"أنت راوٍ وثائقي متحرك. استمر في سرد الوثائقي المتحرك: {topic_str}\n"
+                f"\nالحقائق الأساسية:\n{facts_block}\n"
+                f"\nالحقائق الصادمة:\n{shocking_block}\n"
+                f"{disc_line}"
+                f"{_tts_reminder}\n"
+                f"اكتب:\n\n"
+                f"[SECTION: القصة الحقيقية]\n"
+                f"(قلب الوثائقي المتحرك — {_main_min_str}. "
+                f"روِ القصة بتسلسل مشاهد: كل مشهد له بداية بصرية، توتر، وكشف. "
+                f"أعمق تفاصيل الجريمة أو الحدث — كل قرار، كل نقطة تحول، كل شخص. "
+                f"اترك مساحة تنفس بصرية بين المشاهد. لا تتسرع في الانتقال.)\n\n"
+                f"[SECTION: التصعيد والكشف]\n"
+                f"(ما يعادل 4-6 دقائق من السرد. "
+                f"الحقائق الأقل شهرة مع بناء درامي: "
+                f"كل حقيقة تُقدَّم كمشهد اكتشاف — ليس كقائمة معلومات. "
+                f"وتيرة أسرع هنا — الجمل تقصر، التوتر يتصاعد.)\n\n"
+                f"النص السردي المنطوق فقط."
+            )
+        else:
+            prompt_2 = (
+                f"{entity_lock}"
+                f"استمر في كتابة وثائقي: {topic_str}\n"
+                f"\nالحقائق البحثية:\n{facts_block}\n"
+                f"\nالحقائق المفاجئة:\n{shocking_block}\n"
+                f"{disc_line}"
+                f"{_tts_reminder}\n"
+                f"اكتب:\n\n"
+                f"[SECTION: القصة الحقيقية]\n"
+                f"(قلب الوثائقي — {_main_min_str}. "
+                f"أعمق تفاصيل الجريمة أو الحدث. كل قرار، كل عاقبة، كل شخص مهم. "
+                f"تناوب بين الجمل القصيرة والمتوسطة.)\n\n"
+                f"[SECTION: حقائق صادمة]\n"
+                f"(ما يعادل 3-4 دقائق من السرد. الحقائق الأقل معرفة، الأشد إثارة. "
+                f"الحقائق نفسها تصنع الدراما — لا تضف عبارات إثارة.)\n\n"
+                f"النص الوثائقي الكامل فقط."
+            )
     else:
         chars_block = "\n".join(
             f"- {c.get('character','?')}: مبني على {c.get('based_on','?')}"
@@ -5163,10 +5263,10 @@ def _write_arabic_from_research(en_script: dict, ar_research: dict) -> str:
             f"{_tts_reminder}\n"
             f"اكتب:\n\n"
             f"[SECTION: القصة الحقيقية]\n"
-            f"(حوالي {sec_wc * 2} كلمة. القصة الحقيقية بعمق. تفاصيل الشخصية الحقيقية والأحداث. "
+            f"({_main_min_str}. القصة الحقيقية بعمق. تفاصيل الشخصية الحقيقية والأحداث. "
             f"تناوب بين الجمل القصيرة والمتوسطة.)\n\n"
             f"[SECTION: الرواية مقابل الواقع]\n"
-            f"(حوالي {sec_wc} كلمة. "
+            f"(ما يعادل 3-4 دقائق من السرد. "
             f"الجزء الأول يبدأ بالضبط بـ \"إليك ما أصابت فيه {series_name}:\". "
             f"الجزء الثاني يبدأ بالضبط بـ \"وإليك ما غيّرته أو أغفلته تماماً:\". "
             f"الشخصيات الخيالية تُذكر فقط في هذا الفصل.)\n\n"
@@ -5174,30 +5274,54 @@ def _write_arabic_from_research(en_script: dict, ar_research: dict) -> str:
         )
 
     # ── Call 3: Conclusion ─────────────────────────────────────────────────────
-    prompt_3 = (
-        f"{entity_lock}"
-        f"أكمل وثائقي: {topic_str}\n"
-        f"\nالحقائق المفاجئة:\n{shocking_block}\n"
-        f"{_tts_reminder}\n"
-        f"اكتب الفصل الأخير:\n\n"
-        f"[SECTION: الخاتمة]\n"
-        f"(حوالي {sec_wc} كلمة. "
-        f"لا تلخّص ما قيل. اختم بسؤال مفتوح، أو حقيقة إنسانية، أو دلالة أعمق. "
-        f"آخر جملتين يجب أن تتركا أثراً عميقاً في المستمع. "
-        f"لا تكتب: \"وهكذا...\" أو \"تلك هي قصة...\" "
-        f"جمل قصيرة ومحكومة عند الختام — لا ختامات مطوّلة.)\n\n"
-        f"النص الوثائقي الكامل فقط."
-    )
+    _conc_min_str = f"ما يعادل 3-5 دقائق من السرد (~{_conc_target} كلمة)"
+    if _anim_mode:
+        prompt_3 = (
+            f"{entity_lock}"
+            f"أنت راوٍ وثائقي متحرك. اكتب الخاتمة السينمائية لوثائقي: {topic_str}\n"
+            f"\nالحقائق الصادمة:\n{shocking_block}\n"
+            f"{_tts_reminder}\n"
+            f"اكتب الفصل الختامي:\n\n"
+            f"[SECTION: الخاتمة]\n"
+            f"({_conc_min_str}. "
+            f"ابدأ بمشهد بصري هادئ — الكاميرا تبتعد ببطء. "
+            f"لا تلخّص ما قيل. اختم بسؤال مفتوح أو حقيقة إنسانية أو دلالة أعمق. "
+            f"آخر ثلاث جمل يجب أن تكون قصيرة جداً ومحملة بالمعنى — تترك أثراً في المشاهد. "
+            f"لا تكتب: 'وهكذا...' أو 'تلك هي قصة...' "
+            f"تنفّس قبل كل جملة أخيرة — هذه لحظة صمت بصري.)\n\n"
+            f"النص السردي المنطوق فقط."
+        )
+    else:
+        prompt_3 = (
+            f"{entity_lock}"
+            f"أكمل وثائقي: {topic_str}\n"
+            f"\nالحقائق المفاجئة:\n{shocking_block}\n"
+            f"{_tts_reminder}\n"
+            f"اكتب الفصل الأخير:\n\n"
+            f"[SECTION: الخاتمة]\n"
+            f"({_conc_min_str}. "
+            f"لا تلخّص ما قيل. اختم بسؤال مفتوح، أو حقيقة إنسانية، أو دلالة أعمق. "
+            f"آخر جملتين يجب أن تتركا أثراً عميقاً في المستمع. "
+            f"لا تكتب: \"وهكذا...\" أو \"تلك هي قصة...\" "
+            f"جمل قصيرة ومحكومة عند الختام — لا ختامات مطوّلة.)\n\n"
+            f"النص الوثائقي الكامل فقط."
+        )
 
     # ── Section minimum word counts ──────────────────────────────────────────
-    # Per-section minimums are SOFT gates — total script floor (4200+ words) is
-    # enforced separately. Lower per-section values prevent cascading retry
-    # failures when OpenAI partially refuses or Groq rate-limits a single call.
-    _SECTION_MIN_WC: dict[str, int] = {
-        "AR-Hook+Background": 380,
-        "AR-MainStory+Ch4":   700,   # CORE — missing this = 9-second video
-        "AR-Conclusion":      320,
-    }
+    # Animation mode uses aggressive minimums matching cinematic runtime targets.
+    # Standard mode keeps moderate minimums to handle Groq rate-limit fallback paths.
+    if _anim_mode:
+        _SECTION_MIN_WC: dict[str, int] = {
+            "AR-Hook+Background": 1200,
+            "AR-MainStory+Ch4":   2000,
+            "AR-Conclusion":       900,
+        }
+    else:
+        _SECTION_MIN_WC: dict[str, int] = {
+            "AR-Hook+Background":  800,
+            "AR-MainStory+Ch4":   1400,
+            "AR-Conclusion":       600,
+        }
     # Core sections: missing any of these = pipeline must not continue
     _CORE_SECTIONS: frozenset = frozenset({"AR-MainStory+Ch4"})
 
@@ -5258,11 +5382,19 @@ def _write_arabic_from_research(en_script: dict, ar_research: dict) -> str:
         return ""
 
     # ── Execute calls with retry chain ────────────────────────────────────────
-    calls = [
-        ("AR-Hook+Background",    prompt_1, 3200),
-        ("AR-MainStory+Ch4",      prompt_2, 5000),
-        ("AR-Conclusion",         prompt_3, 2400),
-    ]
+    # Animation mode gets larger token budgets to allow cinematic-length sections
+    if _anim_mode:
+        calls = [
+            ("AR-Hook+Background",    prompt_1, 7000),
+            ("AR-MainStory+Ch4",      prompt_2, 10000),
+            ("AR-Conclusion",         prompt_3,  6000),
+        ]
+    else:
+        calls = [
+            ("AR-Hook+Background",    prompt_1, 5000),
+            ("AR-MainStory+Ch4",      prompt_2, 7000),
+            ("AR-Conclusion",         prompt_3, 4000),
+        ]
     parts: list[str] = []
     _missing_core = False
     import time as _t
