@@ -5672,6 +5672,35 @@ def _write_arabic_from_research(en_script: dict, ar_research: dict, target_minut
 
     full_ar = "\n\n".join(_labeled_parts)
 
+    # Runtime floor: Arabic minimum 20 min = 5000 words at 250 wpm.
+    # If generated script is short, append one continuation chunk.
+    _AR_MIN_WORDS = 5000
+    _final_wc = clean_word_count(full_ar)
+    if _final_wc < _AR_MIN_WORDS:
+        _deficit_w = _AR_MIN_WORDS - _final_wc
+        _deficit_min = round(_deficit_w / 250, 1)
+        print(f"[AR Runtime] {_final_wc}w < {_AR_MIN_WORDS}w ({_AR_MIN_WORDS // 250}min) minimum — "
+              f"appending {_deficit_w}w ({_deficit_min}min) extension")
+        import time as _trt
+        _trt.sleep(2)
+        _tail = " ".join(full_ar.split()[-150:])
+        _ext = _ai_script_call(
+            f"{entity_lock}"
+            f"استمر في السرد الوثائقي عن: {topic_str}\n"
+            f"{_tts_reminder}\n"
+            f"أضف ما يعادل {_deficit_min} دقيقة (~{_deficit_w} كلمة) من السرد التفصيلي. "
+            f"لا تكرر ما سبق. استمر مباشرة من حيث توقفت:\n\n{_tail}\n\n"
+            f"اكتب الاستمرار فقط. لا عناوين.",
+            max_tokens=min(4000, max(1500, _deficit_w * 2)),
+            temperature=0.68,
+            premium=True,
+        )
+        if _ext and clean_word_count(_ext) >= 100:
+            full_ar = full_ar.rstrip() + "\n\n" + _ext.strip()
+            print(f"[AR Runtime] Extended: {_final_wc}w → {clean_word_count(full_ar)}w")
+        else:
+            print(f"[AR Runtime] Extension failed — proceeding with {_final_wc}w")
+
     # Post-process: remove atmospheric filler and log density
     try:
         from agents.script_quality import (

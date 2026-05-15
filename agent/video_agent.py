@@ -2012,6 +2012,69 @@ def generate_ai_image(prompt: str, output_path: str, seed: int = None) -> str:
 
 # â"€â"€ Real-photo fetching â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
+def _is_dark_placeholder(path: str, threshold: int = 30) -> bool:
+    """Return True if image is a solid dark background (failed Pollinations response)."""
+    try:
+        from PIL import Image as _PILCheck
+        import numpy as _np_check
+        img = _PILCheck.open(path).convert("RGB")
+        w, h = img.size
+        cx, cy = w // 2, h // 2
+        sample = img.crop((max(0, cx - 50), max(0, cy - 50),
+                           min(w, cx + 50), min(h, cy + 50)))
+        arr = _np_check.array(sample, dtype=float)
+        return arr.mean() < threshold and arr.std() < 15
+    except Exception:
+        return False
+
+
+def _filter_dark_placeholders(paths: list[str], label: str = "") -> list[str]:
+    """Remove dark solid-background images from pool, log count."""
+    if not paths:
+        return paths
+    clean = [p for p in paths if not _is_dark_placeholder(p)]
+    removed = len(paths) - len(clean)
+    if removed > 0:
+        pct = removed / len(paths) * 100
+        tag = f" [{label}]" if label else ""
+        print(f"[ImageQC{tag}] Removed {removed} dark placeholders ({pct:.0f}%) "
+              f"— {len(clean)} real images remain")
+        if pct > 40:
+            print(f"[ImageQC] WARNING: placeholder coverage {pct:.0f}% > 40% "
+                  "— Pollinations may be down or returning errors")
+    return clean
+
+
+def _validate_render_inputs(
+    image_paths: list[str],
+    audio_secs: float,
+    is_short: bool = False,
+    language: str = "",
+) -> list[str]:
+    """Return list of warning strings. Logs all warnings. Empty = render is safe."""
+    warnings: list[str] = []
+    n = len(image_paths)
+
+    # Image count: minimum 1 unique image per 8 seconds
+    if audio_secs > 0:
+        min_imgs = max(4, int(audio_secs / 8))
+        if n < min_imgs:
+            warnings.append(
+                f"IMAGE COUNT LOW: {n} images for {audio_secs:.0f}s "
+                f"(need {min_imgs} for 1-per-8s rotation)"
+            )
+
+    # Narration length minimums
+    if not is_short and audio_secs < 600:
+        warnings.append(f"NARRATION SHORT: {audio_secs:.0f}s < 600s (10min) minimum")
+    if not is_short and "arabic" in (language or "").lower() and audio_secs < 900:
+        warnings.append(f"ARABIC NARRATION SHORT: {audio_secs:.0f}s < 900s (15min) minimum")
+
+    for w in warnings:
+        print(f"[PreExport] WARNING: {w}")
+    return warnings
+
+
 _IMAGE_MAGIC = {
     b"\xff\xd8\xff":         "jpeg",
     b"\x89\x50\x4e\x47":    "png",
@@ -7364,8 +7427,11 @@ def generate_tts_sections(script_text: str, video_id: str, language: str) -> tup
             except Exception as _te:
                 print(f"[Video] TTS section error: {_te}")
 
-    if any(p is None for p in section_paths):
-        print("[Video] One or more sections failed TTS — falling back to full-script TTS")
+    _failed_secs = [i for i, p in enumerate(section_paths) if p is None]
+    if _failed_secs:
+        _sec_names = [sections[i][0] for i in _failed_secs]
+        print(f"[Video] TTS sections failed: {_sec_names} ({len(_failed_secs)}/{len(sections)}) "
+              f"— falling back to full-script TTS")
         audio_path = generate_voiceover(script_text, video_id, language)
         return audio_path, ""
 
@@ -8176,6 +8242,13 @@ def run_fast_pipeline(
             print(f"[FAST] Visual fetch failed (non-fatal): {_ve}")
     image_paths = [p for p in image_paths if p and os.path.exists(p)]
 
+    # Filter dark solid-background placeholder images before assembly
+    image_paths = _filter_dark_placeholders(image_paths, label="FAST")
+
+    # Pre-export validation (warnings only — never abort on warnings alone)
+    _fast_audio_secs = _real_audio_secs if _real_audio_secs > 0 else 0.0
+    _validate_render_inputs(image_paths, _fast_audio_secs, is_short=is_short, language=language)
+
     # ── Smart PIL variation engine — reach n_images without extra API calls ─
     # If real images are fewer than target: create PIL crop/tint variants so
     # the assembler has enough unique visuals to avoid long-hold repetition.
@@ -8668,6 +8741,13 @@ def run_full_pipeline(
         print(f"[FULL] WARNING: {len(_missing)} path(s) missing — filtering out")
         all_image_paths = [p for p in all_image_paths if p and os.path.exists(p)]
     print(f"[FULL] Final image count: {len(all_image_paths)}")
+
+    # Filter dark solid-background placeholder images before assembly
+    all_image_paths = _filter_dark_placeholders(all_image_paths, label="FULL")
+
+    # Pre-export validation (warnings only — never abort on warnings alone)
+    _full_audio_secs = _real_audio_secs if _real_audio_secs > 0 else 0.0
+    _validate_render_inputs(all_image_paths, _full_audio_secs, is_short=is_short, language=language)
     print(f"[DEBUG] First 3 paths: {all_image_paths[:3]}")
 
     # ── Assembly ───────────────────────────────────────────────────────────
@@ -8681,17 +8761,37 @@ def run_full_pipeline(
                     _clip_durations[_cp] = float(_cd)
     if _clip_durations:
         print(f"[Clip] Passing {len(_clip_durations)} clip duration(s) to renderer")
-    if is_short:
-        video_path = assemble_short_video(
-            audio_path=audio_path, image_paths=all_image_paths,
-            output_path=output_path, clip_durations=_clip_durations or None,
-        )
-    else:
-        video_path = assemble_video_with_hook(
-            audio_path=audio_path, image_paths=all_image_paths,
-            output_path=output_path, video_id=video_id,
-            clip_durations=_clip_durations or None,
-        )
+    try:
+        if is_short:
+            video_path = assemble_short_video(
+                audio_path=audio_path, image_paths=all_image_paths,
+                output_path=output_path, clip_durations=_clip_durations or None,
+            )
+        else:
+            video_path = assemble_video_with_hook(
+                audio_path=audio_path, image_paths=all_image_paths,
+                output_path=output_path, video_id=video_id,
+                clip_durations=_clip_durations or None,
+            )
+    except Exception as e:
+        print(f"[FULL] Assembly crashed: {e}")
+        traceback.print_exc()
+        video_path = ""
+
+    # Fallback render if primary assembly failed
+    if not video_path or not os.path.exists(video_path):
+        print("[FULL] Primary assembly failed — attempting fallback render")
+        _fb_path = output_path.replace(".mp4", "_fb.mp4")
+        try:
+            _fb_imgs = all_image_paths[:min(8, len(all_image_paths))]
+            video_path = assemble_short_video(
+                audio_path=audio_path, image_paths=_fb_imgs, output_path=_fb_path
+            )
+            if video_path and os.path.exists(video_path):
+                print(f"[FULL] Fallback render succeeded: {video_path}")
+        except Exception as _fb_e:
+            print(f"[FULL] Fallback render also failed: {_fb_e}")
+            video_path = ""
 
     if video_path:
         if whisper_segments:
@@ -8716,7 +8816,6 @@ def run_full_pipeline(
             video_id=video_id,
             is_short=is_short,
             chapters_str=script_data.get("chapters", ""),
-            hook_text=script_data.get("angle_title", "") or topic_str,
         )
         if not is_short and os.getenv("ENABLE_PREMIUM_INTRO", "").strip() == "FORCE_ENABLE":
             try:
