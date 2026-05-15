@@ -6097,6 +6097,210 @@ Write ONLY the spoken words. No headings. No labels. No explanations."""
     return short_data
 
 
+# ── Cinematic Shorts Pipeline ─────────────────────────────────────────────────
+
+def _extract_scene_beat_map(script_text: str, topic: str, max_beats: int = 6) -> list[dict]:
+    """Extract the strongest cinematic beat candidates from a long script."""
+    snippet = " ".join(script_text.split()[:3000])
+    prompt = (
+        f"Read this crime documentary script about: {topic}\n\n"
+        f"Identify the {max_beats} strongest cinematic moments that could each stand alone "
+        f"as a 60-90 second micro-story. Each moment must be:\n"
+        f"- ONE specific event (a raid, testimony, discovery, betrayal, or reveal)\n"
+        f"- Emotionally focused — not a case summary\n"
+        f"- Rich enough for atmosphere + tension in 90 seconds\n\n"
+        f"For each moment return a JSON object with these exact keys:\n"
+        f"  label      — short name for this beat (e.g. 'The FBI Raid', 'The Missing Tape')\n"
+        f"  hook_line  — ONE shocking opening sentence (no setup, drop straight in)\n"
+        f"  event      — what specifically happens (2-3 sentences)\n"
+        f"  setting    — where and when (specific)\n"
+        f"  escalation — the disturbing implication this event reveals\n"
+        f"  mystery    — what remains unresolved or unanswered\n\n"
+        f"Return ONLY a JSON array of {max_beats} objects. No explanation. No markdown fences.\n\n"
+        f"SCRIPT:\n{snippet}"
+    )
+    try:
+        raw = _ai_script_call(prompt, max_tokens=1800, temperature=0.55, premium=True)
+        if not raw:
+            return []
+        m = re.search(r'\[.*\]', raw, re.DOTALL)
+        if not m:
+            return []
+        beats = json.loads(m.group(0))
+        if not isinstance(beats, list):
+            return []
+        return [
+            b for b in beats
+            if isinstance(b, dict) and b.get("label") and b.get("hook_line")
+        ][:max_beats]
+    except Exception as _e:
+        print(f"[Cinematic Shorts] Beat map extraction failed: {_e}")
+        return []
+
+
+def write_cinematic_short(
+    beat: dict,
+    topic: str,
+    series_name: str = "",
+    entity_anchor: str = "",
+) -> dict:
+    """Generate a standalone EN + AR cinematic micro-short for one scene beat (60-90s each)."""
+    label      = beat.get("label", "")
+    hook_line  = beat.get("hook_line", "")
+    event      = beat.get("event", "")
+    setting    = beat.get("setting", "")
+    escalation = beat.get("escalation", "")
+    mystery    = beat.get("mystery", "")
+    _series_line = f"Series/Show: {series_name}\n" if series_name else ""
+
+    _fact_lock_en = (
+        f"FACT LOCK — only use names and events from this reference:\n"
+        f"{entity_anchor[:300]}\n"
+        f"Do NOT invent new people, witnesses, investigators, or organizations.\n\n"
+        if entity_anchor else ""
+    )
+
+    en_prompt = (
+        f"You are writing a spoken voiceover for a 60-90 second cinematic crime short video.\n"
+        f"Topic: {topic}\n"
+        f"{_series_line}"
+        f"{_fact_lock_en}"
+        f"SCENE BEAT:\n"
+        f"  Label:      {label}\n"
+        f"  Event:      {event}\n"
+        f"  Setting:    {setting}\n"
+        f"  Escalation: {escalation}\n"
+        f"  Mystery:    {mystery}\n\n"
+        f"STRICT 5-PHASE STRUCTURE (continuous prose — NO headings or labels in the output):\n"
+        f"[0-5s]   SHOCK HOOK   — Begin with EXACTLY: \"{hook_line}\" (1 sentence, no setup)\n"
+        f"[5-20s]  ATMOSPHERE   — 2-3 sentences: place, time, visual tension. Zero facts yet.\n"
+        f"[20-50s] ONE EVENT    — 4-5 sentences: this single event only. Specific names. Specific action.\n"
+        f"[50-75s] ESCALATION   — 2-3 sentences: disturbing new implication, deeper layer.\n"
+        f"[75-90s] PUNCH ENDING — 1-2 sentences: emotional gut-punch, leave it unresolved.\n\n"
+        f"RULES:\n"
+        f"- Max 14 words per sentence. Shorter is stronger.\n"
+        f"- No channel intros. No subscribe CTAs. No broad context dumps.\n"
+        f"- One story beat only — NOT a summary of the whole case.\n"
+        f"- Every sentence escalates tension. Never flat.\n"
+        f"- Target 155-200 words total.\n\n"
+        f"Write ONLY the spoken words. No headings. No labels."
+    )
+
+    en_text = ""
+    for _att in range(3):
+        _r = _ai_script_call(en_prompt, max_tokens=550, temperature=0.82, premium=True).strip()
+        _wc = clean_word_count(_r)
+        if _wc > clean_word_count(en_text):
+            en_text = _r
+        if _wc >= 140:
+            break
+        print(f"[Cinematic Short] EN '{label}' attempt {_att+1}: {_wc}w — retrying...")
+
+    if not en_text:
+        print(f"[Cinematic Short] EN '{label}' failed — skipping")
+        return {}
+
+    en_wc   = clean_word_count(en_text)
+    en_secs = round(en_wc / _TTS_WPM.get("english", 145) * 60)
+    print(f"[Cinematic Short] EN '{label}': {en_wc}w → ~{en_secs}s")
+
+    # Arabic: generate standalone from the same beat for cinematic quality
+    _ar_entity_lock = (
+        f"[قفل الشخصيات] استخدم فقط الأشخاص والأحداث من المرجع التالي. "
+        f"لا تخترع أشخاصاً أو شهوداً أو محققين جدداً:\n"
+        f"{entity_anchor[:300]}\n\n"
+        if entity_anchor else ""
+    )
+
+    ar_prompt = (
+        f"أنت راوٍ وثائقي سينمائي. اكتب مقطعاً قصيراً بالعربية الفصحى (60-90 ثانية).\n"
+        f"الموضوع: {topic}\n"
+        f"{_ar_entity_lock}"
+        f"المشهد المحدد:\n"
+        f"  الحدث:         {event}\n"
+        f"  المكان والزمان: {setting}\n"
+        f"  التصعيد:       {escalation}\n"
+        f"  الغموض:        {mystery}\n\n"
+        f"الهيكل الصارم (نثر متواصل — بلا عناوين في النص):\n"
+        f"[0-5ث]   الخطاف: جملة واحدة صادمة. لا مقدمة.\n"
+        f"[5-20ث]  الجو: 2-3 جمل. توتر بصري ومكاني. لا حقائق بعد.\n"
+        f"[20-50ث] حدث واحد: 4-5 جمل عن هذا المشهد تحديداً. أسماء حقيقية. فعل محدد.\n"
+        f"[50-75ث] التصعيد: 2-3 جمل. الدلالة المقلقة. طبقة جديدة.\n"
+        f"[75-90ث] النهاية المعلقة: 1-2 جمل. الضربة العاطفية. اتركها مفتوحة.\n\n"
+        f"القواعد:\n"
+        f"- لا جملة تتجاوز 18 كلمة. الأقصر أقوى.\n"
+        f"- لا مقدمات. لا CTAs. لا سياق عام.\n"
+        f"- ابدأ فوراً بالتوتر — بلا تمهيد.\n"
+        f"- مشهد واحد فقط — ليس ملخص القضية.\n"
+        f"- الهدف: 250-330 كلمة.\n\n"
+        f"اكتب النص المنطوق فقط."
+    )
+
+    ar_text = ""
+    for _att in range(2):
+        _r = _ai_script_call(ar_prompt, max_tokens=800, temperature=0.82, premium=True).strip()
+        _wc = clean_word_count(_r)
+        if _wc > clean_word_count(ar_text):
+            ar_text = _r
+        if _wc >= 220:
+            break
+
+    if not ar_text:
+        ar_text = translate_to_arabic(en_text)
+
+    ar_wc   = clean_word_count(ar_text)
+    ar_secs = round(ar_wc / _TTS_WPM.get("arabic", 250) * 60)
+    print(f"[Cinematic Short] AR '{label}': {ar_wc}w → ~{ar_secs}s")
+
+    return {
+        "beat_label":         label,
+        "short_script_en":    en_text,
+        "short_script_ar":    ar_text,
+        "hook_line":          hook_line,
+        "en_duration_secs":   en_secs,
+        "ar_duration_secs":   ar_secs,
+        "is_cinematic_short": True,
+    }
+
+
+def generate_cinematic_shorts(en_long_script: dict, count: int = 5) -> list[dict]:
+    """Generate 3-8 standalone cinematic shorts from the strongest scene beats of the long script."""
+    topic       = en_long_script.get("topic", "")
+    script_text = en_long_script.get("script", "")
+    series_name = en_long_script.get("series_name", "")
+
+    if not script_text or not topic:
+        print("[Cinematic Shorts] No script or topic — skipping")
+        return []
+
+    count         = max(3, min(8, count))
+    entity_anchor = " ".join(script_text.split()[:200])
+
+    print(f"[Cinematic Shorts] Extracting up to {count} beat candidates from long script...")
+    beats = _extract_scene_beat_map(script_text, topic, max_beats=count)
+
+    if not beats:
+        print("[Cinematic Shorts] Beat extraction returned no results — skipping")
+        return []
+
+    print(f"[Cinematic Shorts] {len(beats)} beats found: {[b.get('label','?') for b in beats]}")
+
+    shorts = []
+    for i, beat in enumerate(beats):
+        print(f"[Cinematic Shorts] Generating short {i+1}/{len(beats)}: '{beat.get('label','?')}'")
+        result = write_cinematic_short(beat, topic, series_name, entity_anchor)
+        if result and result.get("short_script_en"):
+            result.update({
+                "topic":       topic,
+                "series_name": series_name,
+                "language":    "english",
+            })
+            shorts.append(result)
+
+    print(f"[Cinematic Shorts] Complete: {len(shorts)}/{count} shorts generated")
+    return shorts
+
+
 def write_scripts(topics: list[dict]) -> list[dict]:
     """Write English script then generate Arabic for each topic."""
     scripts = []

@@ -40,7 +40,7 @@ from config_darkcrimed import (
 # Local: use existing youtube_token_darkcrimed_en/ar.json files
 
 from agent.research_agent import research_topics, research_series, mark_covered, is_fictional, _detect_show_topic, _fetch_show_cast_from_wikipedia
-from agent.script_agent   import write_script, translate_script, detect_part_number, generate_chapters, write_short_script
+from agent.script_agent   import write_script, translate_script, detect_part_number, generate_chapters, write_short_script, generate_cinematic_shorts
 from agent.video_agent    import create_video, process_user_images_smart, load_part2_images, ensure_music_assets, cut_chapter_shorts, cut_best_short, load_all_content, find_content_folder
 from agent.notify_agent   import (
     send_message, send_for_manual_posting, send_daily_report,
@@ -545,14 +545,20 @@ def run_pipeline():
         _log("Scripts", f"Arabic translation failed: {e}", "ERROR")
         return
 
-    # Generate short scripts: extract + rewrite strongest moment from long script
-    try:
-        _short_data = write_short_script(en_long)
-        en_long["short_script_en"] = _short_data.get("short_script_en", "")
-        ar_long["short_script_ar"] = _short_data.get("short_script_ar", "")
-        _log("Scripts", "Short scripts done", "OK")
-    except Exception as e:
-        _log("Scripts", f"Short script generation failed (non-fatal): {e}", "WARN")
+    # Generate short scripts (skip in animation mode — cinematic shorts run separately)
+    _anim_mode_dc = os.getenv("PIPELINE_MODE", "").lower() == "animation"
+    if not _anim_mode_dc:
+        try:
+            _short_data = write_short_script(en_long)
+            en_long["short_script_en"] = _short_data.get("short_script_en", "")
+            ar_long["short_script_ar"] = _short_data.get("short_script_ar", "")
+            _log("Scripts", "Short scripts done", "OK")
+        except Exception as e:
+            _log("Scripts", f"Short script generation failed (non-fatal): {e}", "WARN")
+    else:
+        _log("Scripts", "Animation mode — short script generation skipped", "INFO")
+        en_long.setdefault("short_script_en", "")
+        ar_long.setdefault("short_script_ar", "")
 
     _stage("Scripts AR done")
 
@@ -567,21 +573,22 @@ def run_pipeline():
         except Exception as e:
             print(f"  [WARN] Script preview failed ({label}): {e}")
 
-    # Send short scripts to Telegram (non-blocking, non-fatal)
-    _short_en_text = en_long.get("short_script_en", "")
-    _short_ar_text = ar_long.get("short_script_ar", "")
-    if _short_en_text:
-        try:
-            send_english_script_preview({**en_long, "script": _short_en_text},
-                                        label="English SHORT script (45-90s)")
-        except Exception as e:
-            print(f"  [WARN] EN short script preview failed: {e}")
-    if _short_ar_text:
-        try:
-            send_arabic_script_preview({**ar_long, "script": _short_ar_text},
-                                       label="Arabic SHORT script (45-90s)")
-        except Exception as e:
-            print(f"  [WARN] AR short script preview failed: {e}")
+    # Send short scripts to Telegram (skipped in animation mode)
+    if not _anim_mode_dc:
+        _short_en_text = en_long.get("short_script_en", "")
+        _short_ar_text = ar_long.get("short_script_ar", "")
+        if _short_en_text:
+            try:
+                send_english_script_preview({**en_long, "script": _short_en_text},
+                                            label="English SHORT script (45-90s)")
+            except Exception as e:
+                print(f"  [WARN] EN short script preview failed: {e}")
+        if _short_ar_text:
+            try:
+                send_arabic_script_preview({**ar_long, "script": _short_ar_text},
+                                           label="Arabic SHORT script (45-90s)")
+            except Exception as e:
+                print(f"  [WARN] AR short script preview failed: {e}")
 
     _log("Telegram", "Scripts sent to Telegram — waiting for approval", "OK")
     _stage("Scripts sent to Telegram")

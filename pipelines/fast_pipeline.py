@@ -57,7 +57,7 @@ from config_darkcrimed import (
 )
 
 from agent.research_agent import research_topics, research_series, mark_covered, is_fictional
-from agent.script_agent   import write_script, translate_script, generate_chapters, write_short_script, clean_word_count, expand_script_runtime
+from agent.script_agent   import write_script, translate_script, generate_chapters, write_short_script, generate_cinematic_shorts, clean_word_count, expand_script_runtime
 from agent.video_agent    import create_video, ensure_music_assets, cut_best_short, load_all_content
 from agent.notify_agent   import (
     send_message, send_video_to_telegram, send_daily_report,
@@ -359,71 +359,80 @@ def run_pipeline() -> None:
         ar_long = dict(en_long)
         ar_long["language"] = "arabic"
 
-    # ── Promo short scripts (mandatory — these are the discovery funnel) ──────
+    # ── Promo short scripts (skipped in animation mode) ───────────────────────
     print(f"\n{'='*50}\n  SHORTS\n{'='*50}\n", flush=True)
-    _ctrl.update_stage("Shorts", "generating promo short scripts")
-    _log("Shorts", "Starting promo short script generation")
+    _anim_mode_fp   = os.getenv("PIPELINE_MODE", "").lower() == "animation"
     _short_data: dict = {}
-    try:
-        _short_data = write_short_script(en_long)
-        _en_short_script_text = _short_data.get("short_script_en", "")
-        _ar_short_script_text = _short_data.get("short_script_ar", "")
-        en_long["short_script_en"] = _en_short_script_text
-        ar_long["short_script_ar"] = _ar_short_script_text
-        if _en_short_script_text:
-            _sw_en = len(_en_short_script_text.split())
-            _sw_ar = len(_ar_short_script_text.split())
-            _log("Shorts", f"EN promo script ready: {_sw_en}w (~{round(_sw_en/170,1)} min)", "OK")
-            _log("Shorts", f"AR promo script ready: {_sw_ar}w", "OK")
-        else:
-            _log("Shorts", "Short scripts empty — will cut from long video", "WARN")
-    except Exception as e:
-        traceback.print_exc()
-        _log("Shorts", f"Short script generation failed (will cut from rendered video): {type(e).__name__}: {e}", "WARN")
+    _en_short_script_text = ""
+    _ar_short_script_text = ""
+
+    if _anim_mode_fp:
+        _log("Shorts", "Animation mode — promo short script skipped", "INFO")
         en_long.setdefault("short_script_en", "")
         ar_long.setdefault("short_script_ar", "")
-
-    # ── Send short script preview + .txt to Telegram ──────────────────────────
-    _en_short_script_text = en_long.get("short_script_en", "")
-    _ar_short_script_text = ar_long.get("short_script_ar", "")
-    if _en_short_script_text:
+    else:
+        _ctrl.update_stage("Shorts", "generating promo short scripts")
+        _log("Shorts", "Starting promo short script generation")
         try:
-            _sw_en = len(_en_short_script_text.split())
-            _short_preview = (
-                f"[FAST SHORT] SCRIPT READY\n\n"
-                f"Topic: {en_long.get('topic','')}\n"
-                f"Est. runtime: ~{round(_sw_en/170,1)} min\n\n"
-                f"── EN SHORT ──\n"
-                f"{_en_short_script_text[:600]}"
-                f"{'...' if len(_en_short_script_text) > 600 else ''}\n\n"
-                f"── AR SHORT ──\n"
-                f"{_ar_short_script_text[:400]}"
-                f"{'...' if len(_ar_short_script_text) > 400 else ''}"
-            )
-            send_message(_short_preview)
-            _log("Shorts", "Short script preview sent to Telegram", "OK")
-        except Exception as _se:
-            _log("Shorts", f"Short script preview (non-fatal): {_se}", "WARN")
+            _short_data = write_short_script(en_long)
+            _en_short_script_text = _short_data.get("short_script_en", "")
+            _ar_short_script_text = _short_data.get("short_script_ar", "")
+            en_long["short_script_en"] = _en_short_script_text
+            ar_long["short_script_ar"] = _ar_short_script_text
+            if _en_short_script_text:
+                _sw_en = len(_en_short_script_text.split())
+                _sw_ar = len(_ar_short_script_text.split())
+                _log("Shorts", f"EN promo script ready: {_sw_en}w (~{round(_sw_en/170,1)} min)", "OK")
+                _log("Shorts", f"AR promo script ready: {_sw_ar}w", "OK")
+            else:
+                _log("Shorts", "Short scripts empty — will cut from long video", "WARN")
+        except Exception as e:
+            traceback.print_exc()
+            _log("Shorts", f"Short script generation failed (will cut from rendered video): {type(e).__name__}: {e}", "WARN")
+            en_long.setdefault("short_script_en", "")
+            ar_long.setdefault("short_script_ar", "")
 
-        try:
-            _short_txt_path = f"output/fast_short_script_{today}.txt"
-            os.makedirs("output", exist_ok=True)
-            with open(_short_txt_path, "w", encoding="utf-8") as _sf:
-                _sf.write(
-                    f"[FAST SHORT] SCRIPT — {today}\n"
+        # ── Send short script preview + .txt to Telegram ─────────────────────
+        _en_short_script_text = en_long.get("short_script_en", "")
+        _ar_short_script_text = ar_long.get("short_script_ar", "")
+        if _en_short_script_text:
+            try:
+                _sw_en = len(_en_short_script_text.split())
+                _short_preview = (
+                    f"[FAST SHORT] SCRIPT READY\n\n"
                     f"Topic: {en_long.get('topic','')}\n"
-                    f"Title: {en_long.get('title','')}\n"
-                    f"{'='*60}\n\n"
-                    f"=== EN SHORT ===\n{_en_short_script_text}\n\n"
-                    f"=== AR SHORT ===\n{_ar_short_script_text}\n\n"
-                    f"=== HOOK ===\n{_short_data.get('hook','')}\n\n"
-                    f"=== HASHTAGS ===\n{en_long.get('hashtags','')}\n\n"
-                    f"=== CTA ===\nFollow Dark Crime Decoded for more real stories.\n"
+                    f"Est. runtime: ~{round(_sw_en/170,1)} min\n\n"
+                    f"── EN SHORT ──\n"
+                    f"{_en_short_script_text[:600]}"
+                    f"{'...' if len(_en_short_script_text) > 600 else ''}\n\n"
+                    f"── AR SHORT ──\n"
+                    f"{_ar_short_script_text[:400]}"
+                    f"{'...' if len(_ar_short_script_text) > 400 else ''}"
                 )
-            send_document(_short_txt_path, caption=f"[FAST SHORT] Script — {en_long.get('title','')[:80]}")
-            _log("Shorts", f"Short script .txt uploaded: {_short_txt_path}", "OK")
-        except Exception as _se:
-            _log("Shorts", f"Short script .txt upload (non-fatal): {_se}", "WARN")
+                send_message(_short_preview)
+                _log("Shorts", "Short script preview sent to Telegram", "OK")
+            except Exception as _se:
+                _log("Shorts", f"Short script preview (non-fatal): {_se}", "WARN")
+
+            try:
+                _short_txt_path = f"output/fast_short_script_{today}.txt"
+                os.makedirs("output", exist_ok=True)
+                with open(_short_txt_path, "w", encoding="utf-8") as _sf:
+                    _sf.write(
+                        f"[FAST SHORT] SCRIPT — {today}\n"
+                        f"Topic: {en_long.get('topic','')}\n"
+                        f"Title: {en_long.get('title','')}\n"
+                        f"{'='*60}\n\n"
+                        f"=== EN SHORT ===\n{_en_short_script_text}\n\n"
+                        f"=== AR SHORT ===\n{_ar_short_script_text}\n\n"
+                        f"=== HOOK ===\n{_short_data.get('hook','')}\n\n"
+                        f"=== HASHTAGS ===\n{en_long.get('hashtags','')}\n\n"
+                        f"=== CTA ===\nFollow Dark Crime Decoded for more real stories.\n"
+                    )
+                send_document(_short_txt_path, caption=f"[FAST SHORT] Script — {en_long.get('title','')[:80]}")
+                _log("Shorts", f"Short script .txt uploaded: {_short_txt_path}", "OK")
+            except Exception as _se:
+                _log("Shorts", f"Short script .txt upload (non-fatal): {_se}", "WARN")
 
     _check_cancel("after all scripts")
 
