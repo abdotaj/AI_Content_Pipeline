@@ -1970,9 +1970,11 @@ def generate_ai_image(prompt: str, output_path: str, seed: int = None) -> str:
                 img = img.resize((1080, 1920), PILImage.LANCZOS)
                 img.save(output_path, "PNG")
                 print(f"[Image] Generated: {prompt[:60]}")
+                _record_pollinations_result(True)
                 time.sleep(5)
                 return output_path
             elif response.status_code == 429:
+                _record_pollinations_result(False)
                 print(f"[Image] Rate limited, waiting 30s... (attempt {attempt + 1}/2)")
                 time.sleep(30)
             else:
@@ -2540,8 +2542,9 @@ def build_documentary_visual_pool(
         (ev, os.path.join(_img_dir, f"{video_id}_ev_{ev['idx']:04d}.png"), seed)
         for ev in events
     ]
+    print(f"[QUEUE] Image generation: {len(tasks)} pending | workers={_WORKERS['doc_visual']} | mode=doc-visual")
     raw_results = parallel_map_safe(
-        _gen_event, tasks, max_workers=25, timeout=120, label="doc visual",
+        _gen_event, tasks, max_workers=_WORKERS["doc_visual"], timeout=120, label="doc visual",
     )
 
     paths: list[str] = []
@@ -3531,9 +3534,11 @@ def _fetch_gap_images(
              os.path.join(IMAGES_DIR, f"{video_id}_gap_{i}.png"))
             for i in range(remaining)
         ]
+        _poll_workers = _adaptive_pollinations_workers()
+        print(f"[QUEUE] Image generation: {len(_tasks)} pending | workers={_poll_workers} | mode=pollinations")
         gen_results = parallel_map_safe(
             lambda args: generate_ai_image(args[0], args[1]),
-            _tasks, max_workers=40, timeout=120, label="AI image",
+            _tasks, max_workers=_poll_workers, timeout=120, label="AI image",
         )
         for r in gen_results:
             if r and os.path.exists(r):
@@ -4454,7 +4459,7 @@ def search_real_image(query: str, output_path: str) -> str | None:
 
     all_urls: list[str] = []
     try:
-        with ThreadPoolExecutor(max_workers=8) as pool:
+        with ThreadPoolExecutor(max_workers=_WORKERS["search"]) as pool:
             futures = {
                 pool.submit(_fetch_ddgs):    "DDG",
                 pool.submit(_fetch_wiki):    "Wikimedia",
@@ -4632,85 +4637,101 @@ def fetch_real_images(script_text: str, count: int, video_id: str,
         for i in range(remaining)
     ]
 
-    image_paths:  list[str]      = list(preloaded_paths)
-    query_cache:  dict[str, str] = {}
-    real_count    = len(preloaded_paths)
-    ai_count      = 0
+    image_paths: list[str] = list(preloaded_paths)
+    real_count   = len(preloaded_paths)
+    ai_count     = 0
 
-    for i, chunk in enumerate(chunks):
-        img_path = os.path.join(_img_dir, f"{video_id}_img_{i}.png")
-        saved    = None
+    # ── Parallel chunk processing ─────────────────────────────────────────────
+    # Each chunk is image-independent — run all searches simultaneously.
+    # Removes sequential 2s sleep between chunks (was ~2×remaining seconds wasted).
+    def _process_chunk(args: tuple):
+        ci, chunk_text, out_path, ai_prompt_c, seed_val = args
+        _saved = None
+        _kind  = "none"
 
-        # Step 1: person photo — runs on raw chunk, highest priority, before query gate
-        person = _detect_person_in_chunk(chunk)
-        if person:
-            photo_url = _search_wikimedia_person_photo(person)
-            if photo_url:
-                saved = _download_first_valid([photo_url], img_path)
-                if saved:
-                    print(f"[Image] Wikimedia person photo: '{person}'")
-                    real_count += 1
+        # Step 1: person photo (Wikimedia — highest priority)
+        _person = _detect_person_in_chunk(chunk_text)
+        if _person:
+            _photo_url = _search_wikimedia_person_photo(_person)
+            if _photo_url:
+                _saved = _download_first_valid([_photo_url], out_path)
+                if _saved:
+                    print(f"[Image] chunk {ci}: Wikimedia person photo '{_person}'")
+                    _kind = "real-person"
 
-        # Step 2: Wikimedia Commons general search + OpenAI web search
-        if not saved:
-            query = _get_search_query_for_chunk(chunk)
-            if query:
-                if query in query_cache:
-                    shutil.copy2(query_cache[query], img_path)
-                    saved = img_path
-                    print(f"[Image] Reused '{query}' for chunk {i}")
-                else:
-                    # Step 2a: Wikimedia Commons (mime-filtered, broader results)
-                    wiki_urls = _search_wikimedia_commons(query)
-                    if not wiki_urls:
-                        wiki_urls = _wikimedia_image_results(query)
-                    # Step 2a-retry: no results → try with first 3 words (drops rare modifiers)
-                    if not wiki_urls and len(query.split()) > 3:
-                        _short_q = " ".join(query.split()[:3])
-                        print(f"[Image] Wikimedia retry with shorter query: '{_short_q}'")
-                        wiki_urls = _search_wikimedia_commons(_short_q)
-                        if not wiki_urls:
-                            wiki_urls = _wikimedia_image_results(_short_q)
-                    if wiki_urls:
-                        saved = _download_first_valid(wiki_urls, img_path)
-                        if saved:
-                            print(f"[Image] Real photo (Wikimedia): '{query}'")
-                            query_cache[query] = saved
-                            real_count += 1
+        # Step 2: Wikimedia Commons + OpenAI web search
+        if not _saved:
+            _query = _get_search_query_for_chunk(chunk_text)
+            if _query:
+                _wiki = _search_wikimedia_commons(_query) or _wikimedia_image_results(_query)
+                if not _wiki and len(_query.split()) > 3:
+                    _sq = " ".join(_query.split()[:3])
+                    _wiki = _search_wikimedia_commons(_sq) or _wikimedia_image_results(_sq)
+                if _wiki:
+                    _saved = _download_first_valid(_wiki, out_path)
+                    if _saved:
+                        print(f"[Image] chunk {ci}: real photo (Wikimedia) '{_query}'")
+                        _kind = "real-wiki"
+                if not _saved:
+                    _oai = _search_images_openai(_query)
+                    if _oai:
+                        _saved = _download_first_valid(_oai, out_path)
+                        if _saved:
+                            print(f"[Image] chunk {ci}: real photo (OpenAI search) '{_query}'")
+                            _kind = "real-oai"
 
-                    # Step 2b: OpenAI web search
-                    if not saved:
-                        oai_urls = _search_images_openai(query)
-                        if oai_urls:
-                            saved = _download_first_valid(oai_urls, img_path)
-                            if saved:
-                                print(f"[Image] Real photo (OpenAI search): '{query}'")
-                                query_cache[query] = saved
-                                real_count += 1
+        # Step 3: Pollinations AI fallback (with prompt-hash cache to avoid duplicates)
+        if not _saved:
+            _cached = _check_image_prompt_cache(ai_prompt_c)
+            if _cached and os.path.exists(_cached):
+                try:
+                    shutil.copy2(_cached, out_path)
+                    _saved = out_path
+                    _kind = "ai-cached"
+                    print(f"[Image] chunk {ci}: reusing cached AI image")
+                except Exception:
+                    pass
+            if not _saved:
+                _saved = generate_ai_image(ai_prompt_c, out_path, seed=seed_val)
+                if _saved:
+                    _save_image_prompt_cache(ai_prompt_c, _saved)
+                    _kind = "ai-gen"
+                    print(f"[Image] chunk {ci}: AI generated")
 
-        # Step 3: AI fallback — Pollinations with topic-specific prompt
-        if not saved:
-            ai_prompt = ai_prompts[i] if i < len(ai_prompts) else fallback_base
-            # Check prompt hash cache before generating (avoids duplicate AI calls)
-            _cached_img = _check_image_prompt_cache(ai_prompt)
-            if _cached_img:
-                shutil.copy2(_cached_img, img_path)
-                saved = img_path
-                print(f"[Image] chunk {i}: reusing cached AI image for prompt hash")
-            else:
-                print(f"[Image] chunk {i}: no real image found, using AI generation")
-                saved = generate_ai_image(ai_prompt, img_path, seed=seed + i)
-                if saved:
-                    _save_image_prompt_cache(ai_prompt, saved)
-                    ai_count += 1
+        return ci, _saved, _kind
 
-        if saved:
-            image_paths.append(saved)
+    _chunk_tasks = [
+        (i, chunks[i],
+         os.path.join(_img_dir, f"{video_id}_img_{i}.png"),
+         ai_prompts[i] if i < len(ai_prompts) else fallback_base,
+         seed + i)
+        for i in range(len(chunks))
+    ]
+    _n_search_workers = min(len(_chunk_tasks), _WORKERS["search"])
+    print(f"[QUEUE] Image generation: {len(_chunk_tasks)} pending | workers={_n_search_workers} | mode=parallel-search")
 
-        if i < remaining - 1:
-            time.sleep(2)
+    import concurrent.futures as _cf_img
+    _chunk_results: list = [None] * len(_chunk_tasks)
+    with _cf_img.ThreadPoolExecutor(max_workers=_n_search_workers) as _img_ex:
+        _img_futs = {_img_ex.submit(_process_chunk, t): t[0] for t in _chunk_tasks}
+        for _img_fut in _cf_img.as_completed(_img_futs):
+            try:
+                _ci, _cpath, _ckind = _img_fut.result()
+                _chunk_results[_ci] = _cpath
+                if _cpath:
+                    if "real" in _ckind:
+                        real_count += 1
+                    elif "ai" in _ckind:
+                        ai_count += 1
+            except Exception as _ie:
+                print(f"[Image] chunk error: {_ie}")
 
-    print(f"[Image] Images: {real_count}/{count} real/user | {ai_count}/{count} AI generated")
+    # Preserve narrative order — extend image_paths in index order
+    for _cpath in _chunk_results:
+        if _cpath and os.path.exists(_cpath):
+            image_paths.append(_cpath)
+
+    print(f"[QUEUE] Image generation complete: {real_count} real | {ai_count} AI | {len(image_paths)}/{count} total")
     return image_paths
 
 
@@ -7336,7 +7357,8 @@ def generate_tts_sections(script_text: str, video_id: str, language: str) -> tup
         print(f"[Video] Section {i + 1} '{name}': {dur:.1f}s ({format_time(dur)})")
         return i, sec_path, dur
 
-    _n_workers = min(len(sections), 4)
+    _n_workers = min(len(sections), _WORKERS["tts"])
+    print(f"[QUEUE] TTS sections: {len(sections)} pending | workers={_n_workers}")
     with _cf.ThreadPoolExecutor(max_workers=_n_workers) as _ex:
         _futures = [_ex.submit(_tts_section, (i, name, content)) for i, (name, content) in enumerate(sections)]
         for _fut in _cf.as_completed(_futures):
@@ -7412,6 +7434,51 @@ PIPELINE_MODE: str = os.getenv("PIPELINE_MODE", "fast").lower().strip()
 
 # FULL mode enables the heavy clip system; FAST uses select_best_clips_fast()
 USE_CLIPS: bool = PIPELINE_MODE == "full"
+
+# ── Worker pool configuration ─────────────────────────────────────────────────
+# IO-bound (image search / Pollinations / TTS / enhance): high concurrency is safe.
+# CPU-bound (ffmpeg / compositing / render): 1 worker — GitHub runners have 2 cores.
+# GitHub Actions safe mode: slightly lower IO workers to stay within runner limits.
+_IS_CI = bool(os.getenv("GITHUB_ACTIONS") or os.getenv("CI"))
+_WORKERS: dict[str, int] = {
+    "search":       12 if _IS_CI else 20,   # multi-source image URL search (IO-bound)
+    "pollinations": 35 if _IS_CI else 40,   # Pollinations AI generation (IO-bound)
+    "doc_visual":   30 if _IS_CI else 35,   # documentary visual pool (IO-bound)
+    "enhance":      30 if _IS_CI else 40,   # image post-processing (IO-bound)
+    "tts":           5,                      # TTS sections — API rate-limit aware
+    "ffmpeg":        1,                      # CPU-bound — never increase
+    "render":        1,                      # CPU-bound — never increase
+    "script":        2,                      # LLM script generation — API rate-limited
+}
+
+# ── Adaptive 429 throttle ─────────────────────────────────────────────────────
+# Tracks Pollinations 429 count. When high, callers halve the worker pool.
+# Reset each pipeline run by the pipeline entry point.
+import threading as _threading
+_pollinations_429_lock  = _threading.Lock()
+_pollinations_429_count = 0
+_pollinations_req_count = 0
+
+
+def _record_pollinations_result(success: bool) -> None:
+    global _pollinations_429_count, _pollinations_req_count
+    with _pollinations_429_lock:
+        _pollinations_req_count += 1
+        if not success:
+            _pollinations_429_count += 1
+
+
+def _adaptive_pollinations_workers() -> int:
+    """Return current Pollinations worker count, halved if 429 rate > 25%."""
+    with _pollinations_429_lock:
+        req = max(_pollinations_req_count, 1)
+        rate = _pollinations_429_count / req
+    if rate > 0.25:
+        reduced = max(12, _WORKERS["pollinations"] // 2)
+        print(f"[QUEUE] Pollinations 429 rate={rate:.0%} — throttling to {reduced} workers")
+        return reduced
+    return _WORKERS["pollinations"]
+
 
 # Global start time for timeout tracking — reset at the top of create_video().
 _PIPELINE_START: float = 0.0
@@ -8581,7 +8648,8 @@ def run_full_pipeline(
         if _to_enhance:
             print(f"[FULL] Enhancing {len(_to_enhance)} image(s)...")
             from concurrent.futures import ThreadPoolExecutor as _TPE
-            with _TPE(max_workers=min(40, len(_to_enhance))) as _pool:
+            print(f"[QUEUE] Enhancement backlog: {len(_to_enhance)} images | workers={min(_WORKERS['enhance'], len(_to_enhance))}")
+            with _TPE(max_workers=min(_WORKERS["enhance"], len(_to_enhance))) as _pool:
                 _enh_results = list(_pool.map(_enhance_image, _to_enhance))
             _enh_map        = dict(zip(_to_enhance, _enh_results))
             all_image_paths = [_enh_map.get(p) or p for p in all_image_paths]
