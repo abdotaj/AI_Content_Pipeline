@@ -2,17 +2,14 @@ name: Daily Content Pipeline
 
 on:
   schedule:
-    - cron: '0 4 */3 * *'  # Dark Crime: every 72h, 7:00 AM Riyadh (UTC+3 = 04:00 UTC). fast mode only.
+    - cron: '0 4 1-31/3 * *'   # full mode    — days 1,4,7,10,13,16,19,22,25,28,31 (7 AM Riyadh)
+    - cron: '0 4 2-31/3 * *'   # animation mode — days 2,5,8,11,14,17,20,23,26,29  (never same day as full)
   workflow_dispatch:
     inputs:
       channel:
         description: 'Which channel to run (darkcrimed)'
         required: false
         default: 'darkcrimed'
-      mode:
-        description: 'Pipeline mode: fast, animation, full (full = manual only)'
-        required: false
-        default: 'fast'
 
 jobs:
   # ── Job 1: Dark Crime Decoded ────────────────────────────────────────────
@@ -99,7 +96,7 @@ jobs:
           PYTHONUNBUFFERED:                  "1"
           VIDEOS_PER_DAY:                    "1"
           ENABLE_PREMIUM_INTRO:              "0"
-          PIPELINE_MODE:                     ${{ github.event_name == 'schedule' && 'fast' || github.event.inputs.mode || 'fast' }}
+          PIPELINE_MODE:                     ${{ github.event_name == 'schedule' && github.event.schedule == '0 4 1-31/3 * *' && 'full' || github.event_name == 'schedule' && github.event.schedule == '0 4 2-31/3 * *' && 'animation' || 'fast' }}
           ANTHROPIC_API_KEY:                 ${{ secrets.ANTHROPIC_API_KEY }}
           GROQ_API_KEY:                      ${{ secrets.GROQ_API_KEY }}
           OPENAI_API_KEY:                    ${{ secrets.OPENAI_API_KEY }}
