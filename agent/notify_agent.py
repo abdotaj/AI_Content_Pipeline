@@ -925,6 +925,7 @@ def send_video_to_telegram(video_path: str, caption: str, label: str) -> dict:
         files_key = "video"
 
     try:
+        _fname = os.path.basename(video_path)
         with open(video_path, "rb") as f:
             response = requests.post(
                 url,
@@ -935,7 +936,7 @@ def send_video_to_telegram(video_path: str, caption: str, label: str) -> dict:
                     "width":             1080,
                     "height":            1920,
                 },
-                files={files_key: f},
+                files={files_key: (_fname, f, "video/mp4")},
                 timeout=300,
             )
 

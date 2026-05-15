@@ -102,6 +102,13 @@ def _check_cancel(stage: str = "") -> None:
     sys.exit(0)
 
 
+def _topic_slug(topic: str) -> str:
+    import re
+    s = re.sub(r"[^a-zA-Z0-9 ]", "", (topic or "video").lower()).strip()
+    s = re.sub(r"\s+", "_", s)
+    return (s[:30].rstrip("_")) or "video"
+
+
 def _make_video(script_data: dict, video_id: str, stats: dict,
                 user_images: list | None = None,
                 user_videos: list | None = None) -> str:
@@ -477,6 +484,8 @@ def run_pipeline() -> None:
         _log("Media", f"{len(gh_images)} images + {len(gh_videos)} videos loaded", "OK")
 
     # ── STEP 4: Generate 4 videos (Arabic first) ─────────────────────────────
+    _slug = _topic_slug(topic_text)
+
     _ctrl.update_stage("VideoGen", "rendering AR long video")
     _log("VideoGen", "Rendering AR long video")
     _ar_wc_check = len(ar_long.get("script", "").split())
@@ -491,7 +500,7 @@ def run_pipeline() -> None:
         ar_long_path = ""
         stats["errors"] += 1
     else:
-        ar_long_id   = f"{today}_{uuid.uuid4().hex[:8]}_arabic_long"
+        ar_long_id   = f"{today}_{_slug}_arabic_long"
         ar_long_path = _make_video(ar_long, ar_long_id, stats, user_images=user_images, user_videos=user_videos)
 
     # ── Arabic runtime auto-rebuild ───────────────────────────────────────────
@@ -515,13 +524,13 @@ def run_pipeline() -> None:
         send_message(f"[FAST] Arabic runtime {_ar_secs/60:.1f}min < 15min — auto-rebuilding (attempt {_ar_rebuild}/{_ar_max_rb})...")
         from agent.script_agent import expand_arabic_runtime as _ear
         ar_long["script"] = _ear(ar_long["script"], target_min=24.0, topic=topic_text)
-        ar_long_path = _make_video(ar_long, f"{today}_{uuid.uuid4().hex[:8]}_arabic_long", stats, user_images=user_images, user_videos=user_videos)
+        ar_long_path = _make_video(ar_long, f"{today}_{_slug}_arabic_long_rb{_ar_rebuild}", stats, user_images=user_images, user_videos=user_videos)
 
     _check_cancel("after AR long render")
 
     _ctrl.update_stage("VideoGen", "rendering EN long video")
     _log("VideoGen", "Rendering EN long video")
-    en_long_id   = f"{today}_{uuid.uuid4().hex[:8]}_english_long"
+    en_long_id   = f"{today}_{_slug}_english_long"
     en_long_path = _make_video(en_long, en_long_id, stats, user_images=user_images, user_videos=user_videos)
 
     _check_cancel("after EN long render")
@@ -539,7 +548,7 @@ def run_pipeline() -> None:
     _ar_short_via_script = False
     if _ar_short_script:
         _log("Shorts", "Path A: rendering AR short from script")
-        _ar_sid = f"{today}_{uuid.uuid4().hex[:8]}_arabic_short"
+        _ar_sid = f"{today}_{_slug}_arabic_short"
         ar_short_path = _make_video(
             {**ar_long, "script": _ar_short_script},
             _ar_sid, stats, user_images=user_images, user_videos=user_videos,
@@ -566,7 +575,7 @@ def run_pipeline() -> None:
             ar_long["short_script_ar"] = _ar_short_script
             ar_short_path = _make_video(
                 {**ar_long, "script": _ar_short_script},
-                f"{today}_{uuid.uuid4().hex[:8]}_arabic_short",
+                f"{today}_{_slug}_arabic_short",
                 stats, user_images=user_images, user_videos=user_videos,
             ) or ar_short_path
         else:
@@ -593,7 +602,7 @@ def run_pipeline() -> None:
     _en_short_via_script = False
     if _en_short_script:
         _log("Shorts", "Path A: rendering EN short from script")
-        _en_sid = f"{today}_{uuid.uuid4().hex[:8]}_english_short"
+        _en_sid = f"{today}_{_slug}_english_short"
         en_short_path = _make_video(
             {**en_long, "script": _en_short_script},
             _en_sid, stats, user_images=user_images, user_videos=user_videos,
@@ -620,7 +629,7 @@ def run_pipeline() -> None:
             en_long["short_script_en"] = _en_short_script
             en_short_path = _make_video(
                 {**en_long, "script": _en_short_script},
-                f"{today}_{uuid.uuid4().hex[:8]}_english_short",
+                f"{today}_{_slug}_english_short",
                 stats, user_images=user_images, user_videos=user_videos,
             ) or en_short_path
         else:
@@ -656,20 +665,20 @@ def run_pipeline() -> None:
             _log("VideoGen", "Re-render requested — regenerating all videos", "WARN")
             send_message("[FAST] Re-rendering videos...")
             en_long_path = _make_video(
-                en_long, f"{today}_{uuid.uuid4().hex[:8]}_english_long",
+                en_long, f"{today}_{_slug}_english_long",
                 stats, user_images=user_images, user_videos=user_videos,
             )
             _ar_wc_recheck = len(ar_long.get("script", "").split())
             if not (ar_long.get("script_too_short") or _ar_wc_recheck < 4200):
                 ar_long_path = _make_video(
-                    ar_long, f"{today}_{uuid.uuid4().hex[:8]}_arabic_long",
+                    ar_long, f"{today}_{_slug}_arabic_long",
                     stats, user_images=user_images, user_videos=user_videos,
                 )
             _en_ss = en_long.get("short_script_en", "")
             if _en_ss:
                 en_short_path = _make_video(
                     {**en_long, "script": _en_ss},
-                    f"{today}_{uuid.uuid4().hex[:8]}_english_short",
+                    f"{today}_{_slug}_english_short",
                     stats, user_images=user_images, user_videos=user_videos,
                 )
                 if en_short_path and _video_secs(en_short_path) < 60:
@@ -678,14 +687,14 @@ def run_pipeline() -> None:
                     en_long["short_script_en"] = _en_ss
                     en_short_path = _make_video(
                         {**en_long, "script": _en_ss},
-                        f"{today}_{uuid.uuid4().hex[:8]}_english_short",
+                        f"{today}_{_slug}_english_short",
                         stats, user_images=user_images, user_videos=user_videos,
                     ) or en_short_path
             _ar_ss = ar_long.get("short_script_ar", "")
             if _ar_ss and ar_long_path:
                 ar_short_path = _make_video(
                     {**ar_long, "script": _ar_ss},
-                    f"{today}_{uuid.uuid4().hex[:8]}_arabic_short",
+                    f"{today}_{_slug}_arabic_short",
                     stats, user_images=user_images, user_videos=user_videos,
                 )
                 if ar_short_path and _video_secs(ar_short_path) < 60:
@@ -694,7 +703,7 @@ def run_pipeline() -> None:
                     ar_long["short_script_ar"] = _ar_ss
                     ar_short_path = _make_video(
                         {**ar_long, "script": _ar_ss},
-                        f"{today}_{uuid.uuid4().hex[:8]}_arabic_short",
+                        f"{today}_{_slug}_arabic_short",
                         stats, user_images=user_images, user_videos=user_videos,
                     ) or ar_short_path
 
