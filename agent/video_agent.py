@@ -2081,7 +2081,7 @@ _IMAGE_MAGIC = {
     b"\x52\x49\x46\x46":    "webp",
     b"\x47\x49\x46\x38":    "gif",
 }
-_IMAGE_MIN_BYTES = 15_000   # 15 KB — reject placeholder/error images
+_IMAGE_MIN_BYTES = 5_000    # 5 KB — archive/newspaper scans can be small
 _BLOCKED_IMAGE_DOMAINS = {"pinterest.com", "instagram.com", "facebook.com", "twitter.com", "x.com"}
 _BLOCKED_URL_PATTERNS  = {".html", ".php", ".aspx", "/blog/", "/article/", "/post/"}
 _VALID_IMAGE_EXTS      = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".jfif"}
@@ -2564,6 +2564,43 @@ def extract_visual_events(
     return events
 
 
+# Search query templates for each visual event type.
+# {topic} is replaced with the actual documentary topic at runtime.
+_TYPE_SEARCH_QUERIES: dict[str, str] = {
+    "courtroom":     "{topic} courtroom trial",
+    "evidence":      "{topic} crime evidence investigation",
+    "newspaper":     "{topic} newspaper headline",
+    "cctv":          "{topic} surveillance security camera",
+    "prison":        "prison cell bars inmates",
+    "location":      "{topic} building location exterior",
+    "map":           "{topic} city map aerial",
+    "interrogation": "police interrogation room detective",
+    "childhood":     "{topic} young childhood portrait vintage",
+    "atmosphere":    "{topic} crime investigation documentary",
+}
+
+
+def _prefetch_real_urls(events: list[dict], topic: str) -> dict[str, list[str]]:
+    """Fetch Wikimedia Commons + Internet Archive URLs once per event type.
+
+    Called once before the parallel map so each type makes at most 2 API calls
+    (Wikimedia + IA fallback) regardless of how many events share that type.
+    Returns dict[type → [url, ...]] used as a cycling real-image pool.
+    """
+    needed = {ev["type"] for ev in events if ev["type"] != "portrait"}
+    pool: dict[str, list[str]] = {}
+    for t in needed:
+        tmpl = _TYPE_SEARCH_QUERIES.get(t, "{topic} documentary")
+        q = tmpl.replace("{topic}", topic.strip())
+        urls = _wikimedia_image_results(q, max_results=6)
+        if not urls:
+            urls = _internet_archive_image_results(q, max_results=4)
+        pool[t] = urls
+        tag = "real" if urls else "none"
+        print(f"[RealImages] {t}: {len(urls)} {tag} URLs ('{q}')")
+    return pool
+
+
 def build_documentary_visual_pool(
     script_text: str,
     runtime_secs: float,
@@ -2577,8 +2614,8 @@ def build_documentary_visual_pool(
     Architecture:
       1. extract_visual_events() → typed events (portrait/courtroom/evidence/etc.)
       2. Portrait events → Wikimedia person photo first, Pollinations fallback
-      3. All other events → Pollinations AI with type-specific prompt
-      4. Emergency gradient fallback only if Pollinations returns < 8 images
+      3. All other events → real archive images first, Pollinations AI fallback
+      4. Emergency gradient fallback only if pool returns < 8 images
 
     Result: N UNIQUE images in narrative order — NO PIL recycling, NO repeats.
     """
@@ -2594,42 +2631,69 @@ def build_documentary_visual_pool(
             script_text, 30, video_id, topic=topic, style_profile=style_profile
         )
 
-    seed   = random.randint(1, 99999)
+    seed = random.randint(1, 99999)
+    # Pre-fetch real image URLs once per event type — avoids hammering Wikimedia
+    # with hundreds of identical queries from the parallel workers.
+    real_url_pool = _prefetch_real_urls(events, topic)
 
     def _gen_event(args):
-        ev, out_path, _seed = args
+        ev, out_path, _seed, _pool = args
         idx = ev["idx"]
         if os.path.exists(out_path) and os.path.getsize(out_path) > 5_000:
             return (ev["type"], out_path)
         saved = None
-        if ev["type"] == "portrait":
+        ev_type = ev["type"]
+
+        if ev_type == "portrait":
             person = _detect_person_in_chunk(ev["chunk"])
             if person:
                 resolved = _PERSON_ALIASES.get(person.lower(), person)
                 photo_url = _search_wikimedia_person_photo(resolved)
                 if photo_url:
                     saved = _download_first_valid([photo_url], out_path)
+                if not saved:
+                    fallback_urls = _wikimedia_image_results(resolved, max_results=3)
+                    if fallback_urls:
+                        saved = _download_first_valid(fallback_urls, out_path)
+        else:
+            # Try pre-fetched real archive images first; cycle through the pool
+            # so consecutive events of the same type use different photos.
+            type_urls = _pool.get(ev_type, [])
+            if type_urls:
+                url = type_urls[idx % len(type_urls)]
+                saved = _download_first_valid([url], out_path)
+
+        # AI generation only when no real image was found
         if not saved:
             saved = generate_ai_image(ev["prompt"], out_path, seed=_seed + idx)
-        return (ev["type"], saved) if saved else (ev["type"], None)
+        return (ev_type, saved) if saved else (ev_type, None)
 
     tasks = [
-        (ev, os.path.join(_img_dir, f"{video_id}_ev_{ev['idx']:04d}.png"), seed)
+        (ev, os.path.join(_img_dir, f"{video_id}_ev_{ev['idx']:04d}.png"), seed, real_url_pool)
         for ev in events
     ]
     print(f"[QUEUE] Image generation: {len(tasks)} pending | workers={_WORKERS['doc_visual']} | mode=doc-visual")
+    real_types = {t for t, urls in real_url_pool.items() if urls}
+    print(f"[RealImages] Types with real archive images: {real_types or 'none'} — AI fallback for rest")
     raw_results = parallel_map_safe(
         _gen_event, tasks, max_workers=_WORKERS["doc_visual"], timeout=120, label="doc visual",
     )
 
     paths: list[str] = []
     _type_counts: dict[str, int] = {}
+    _real_count = 0
+    _ai_count   = 0
     for r in raw_results:
         if r and r[1]:
             paths.append(r[1])
             _type_counts[r[0]] = _type_counts.get(r[0], 0) + 1
+            if r[0] in real_types or r[0] == "portrait":
+                _real_count += 1
+            else:
+                _ai_count += 1
 
-    print(f"[VisualPlan] Pool complete: {len(paths)}/{len(events)} unique visuals — " +
+    print(f"[VisualPlan] Pool complete: {len(paths)}/{len(events)} visuals — "
+          f"real:{_real_count} AI:{_ai_count} | " +
           " | ".join(f"{t}:{c}" for t, c in sorted(_type_counts.items())))
 
     # Emergency fallback: never return fewer than 8 images
@@ -3058,7 +3122,7 @@ def load_all_content(
 
     def _validate_video_file(path: str) -> bool:
         size = os.path.getsize(path)
-        if size < 10000:
+        if size < 1000:  # LFS pointer files are ~130 bytes — 1KB is safe floor
             print(f'[GitHub] Skipping LFS pointer file: {os.path.basename(path)} ({size} bytes)')
             return False
         try:
