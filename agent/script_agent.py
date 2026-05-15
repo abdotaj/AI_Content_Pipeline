@@ -4697,7 +4697,16 @@ def expand_arabic_runtime(ar_script: str, target_min: float, topic: str = "") ->
 
     joined = "\n\n".join(result_parts)
     new_min = estimate_arabic_duration(joined)
-    print(f"[AR] Arabic runtime balanced: {current_min:.1f}min → {new_min:.1f}min (+{words_added} words)")
+    if words_added == 0:
+        print(f"[AR EXPANSION] WARNING: expansion added 0 words — all section expansions failed "
+              f"(Groq rate-limited or OpenAI refused every section). "
+              f"Runtime unchanged: {current_min:.1f}min")
+    elif words_added < int(gap_wc * 0.7):
+        print(f"[AR EXPANSION] WARNING: expansion added only {words_added}w "
+              f"(target was {gap_wc}w, achieved {words_added/max(gap_wc,1)*100:.0f}%). "
+              f"Runtime: {current_min:.1f}min → {new_min:.1f}min")
+    else:
+        print(f"[AR] Arabic runtime balanced: {current_min:.1f}min → {new_min:.1f}min (+{words_added} words)")
     return joined
 
 
@@ -5626,6 +5635,18 @@ def translate_script(en_script: dict, research: dict | None = None) -> dict:
         ar_data["script_too_short"] = True
     else:
         ar_data.pop("script_too_short", None)
+
+    # ── Hard Arabic word floor — enforced independently of WPM estimates ──────
+    # WPM estimates can pass 15-min gate even at 3200 words (18.3 min at 175 WPM).
+    # Word floor is the authoritative gate: below 4200 words = blocking render.
+    _AR_HARD_FLOOR_WORDS = 4200
+    if _final_wc < _AR_HARD_FLOOR_WORDS:
+        print(
+            f"[AR BLOCKED] Word count {_final_wc}w below hard minimum {_AR_HARD_FLOOR_WORDS}w "
+            f"— blocking render (expansion failed to reach floor)"
+        )
+        ar_data["script_too_short"] = True
+
     ar_data["estimated_runtime_min"] = round(_final_min, 1)
 
     if _final_min < _AR_RUNTIME_FLOOR_MIN:

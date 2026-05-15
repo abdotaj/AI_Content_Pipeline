@@ -442,14 +442,12 @@ def run_pipeline() -> None:
     # ── STEP 4: Generate 4 videos (Arabic first) ─────────────────────────────
     _ctrl.update_stage("VideoGen", "rendering AR long video")
     _log("VideoGen", "Rendering AR long video")
-    _ar_wc_check  = len(ar_long.get("script", "").split())
-    _ar_min_check = _ar_wc_check / 250.0
-    _AR_LONG_MIN  = 10.0
-    if ar_long.get("script_too_short") or _ar_min_check < _AR_LONG_MIN:
+    _ar_wc_check = len(ar_long.get("script", "").split())
+    _AR_WORD_MIN = 4200   # hard minimum — below this = script is too short to render
+    if ar_long.get("script_too_short") or _ar_wc_check < _AR_WORD_MIN:
         _block_msg = (
-            f"[AR BLOCKED] Runtime below minimum: {_ar_min_check:.1f}min "
-            f"({_ar_wc_check}w) < {_AR_LONG_MIN}min — "
-            f"blocking Arabic render to prevent invalid upload"
+            f"[AR BLOCKED] Script below hard minimum: {_ar_wc_check}w < {_AR_WORD_MIN}w "
+            f"— blocking Arabic render to prevent invalid upload"
         )
         _log("VideoGen", _block_msg, "ERROR")
         send_message(_block_msg)
@@ -460,26 +458,26 @@ def run_pipeline() -> None:
         ar_long_path = _make_video(ar_long, ar_long_id, stats, user_images=user_images, user_videos=user_videos)
 
     # ── Arabic runtime auto-rebuild ───────────────────────────────────────────
-    # Measure ACTUAL rendered video length. If < 10 min, expand script + re-render.
+    # Measure ACTUAL rendered video length via ffprobe. If < 15 min, expand + re-render.
     # Repeats up to 3 times. Skips if ar_long_path is empty (render already failed).
-    _AR_MIN_SECS  = 600   # 10 minutes
+    _AR_MIN_SECS  = 900   # 15 minutes — real rendered video floor
     _ar_rebuild   = 0
     _ar_max_rb    = 3
     while ar_long_path and os.path.exists(ar_long_path):
         _ar_secs = _video_secs(ar_long_path)
         _log("VideoGen", f"[AR RUNTIME] Final render duration: {_ar_secs/60:.1f}min ({_ar_secs:.0f}s)")
         if _ar_secs >= _AR_MIN_SECS:
-            _log("VideoGen", f"[AR PASSED] Runtime valid: {_ar_secs/60:.1f}min >= 10min", "OK")
+            _log("VideoGen", f"[AR PASSED] Runtime valid: {_ar_secs/60:.1f}min >= 15min", "OK")
             break
         _ar_rebuild += 1
         if _ar_rebuild > _ar_max_rb:
             _log("VideoGen", f"[AR EXPANSION] Rebuild limit reached — continuing with {_ar_secs/60:.1f}min video", "WARN")
             send_message(f"[FAST] Arabic runtime {_ar_secs/60:.1f}min after {_ar_max_rb} rebuilds — proceeding")
             break
-        _log("VideoGen", f"[AR EXPANSION] Runtime {_ar_secs/60:.1f}min < 10min — auto-rebuilding (attempt {_ar_rebuild}/{_ar_max_rb})", "WARN")
-        send_message(f"[FAST] Arabic runtime {_ar_secs/60:.1f}min < 10min — auto-rebuilding (attempt {_ar_rebuild}/{_ar_max_rb})...")
+        _log("VideoGen", f"[AR EXPANSION] Runtime {_ar_secs/60:.1f}min < 15min — auto-rebuilding (attempt {_ar_rebuild}/{_ar_max_rb})", "WARN")
+        send_message(f"[FAST] Arabic runtime {_ar_secs/60:.1f}min < 15min — auto-rebuilding (attempt {_ar_rebuild}/{_ar_max_rb})...")
         from agent.script_agent import expand_arabic_runtime as _ear
-        ar_long["script"] = _ear(ar_long["script"], target_min=11.0, topic=topic_text)
+        ar_long["script"] = _ear(ar_long["script"], target_min=24.0, topic=topic_text)
         ar_long_path = _make_video(ar_long, f"{today}_{uuid.uuid4().hex[:8]}_arabic_long", stats, user_images=user_images, user_videos=user_videos)
 
     _check_cancel("after AR long render")
@@ -625,7 +623,7 @@ def run_pipeline() -> None:
                 stats, user_images=user_images, user_videos=user_videos,
             )
             _ar_wc_recheck = len(ar_long.get("script", "").split())
-            if not (ar_long.get("script_too_short") or (_ar_wc_recheck / 250.0) < 10.0):
+            if not (ar_long.get("script_too_short") or _ar_wc_recheck < 4200):
                 ar_long_path = _make_video(
                     ar_long, f"{today}_{uuid.uuid4().hex[:8]}_arabic_long",
                     stats, user_images=user_images, user_videos=user_videos,

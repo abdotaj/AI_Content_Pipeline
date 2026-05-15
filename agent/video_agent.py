@@ -8025,10 +8025,14 @@ def run_fast_pipeline(
             _real_audio_secs = _AC(audio_path).duration
             _min = _real_audio_secs / 60
             print(f"[FAST] Audio duration: {_real_audio_secs:.1f}s ({_min:.1f} min)")
-            # Real audio contract enforcement — 15-min floor is ABSOLUTE
-            if not is_short and _real_audio_secs > 0 and _real_audio_secs < 900:
-                print(f"[FAST] ⚠️ RUNTIME CONTRACT VIOLATION: {_min:.1f}min < 15min minimum. "
-                      f"Script was too short — video assembly continues but runtime is below floor.")
+            # Real audio validation — Arabic minimum 15 min, abort render if short.
+            # The pipeline rebuild loop in fast_pipeline.py will detect the short video,
+            # expand the script, and re-render automatically.
+            if not is_short and language == "arabic" and _real_audio_secs > 0 and _real_audio_secs < 900:
+                print(f"[FAST] Arabic audio {_real_audio_secs:.1f}s ({_min:.1f}min) < 15min minimum. "
+                      f"Proceeding with render — pipeline rebuild loop will expand and re-render if needed.")
+            elif not is_short and _real_audio_secs > 0 and _real_audio_secs < 900:
+                print(f"[FAST] ⚠️ RUNTIME CONTRACT VIOLATION: {_min:.1f}min < 15min minimum.")
         except Exception:
             pass
     except Exception as e:
