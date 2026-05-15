@@ -5102,7 +5102,83 @@ def translate_research_to_arabic(research: dict) -> dict:
     return ar
 
 
-def _write_arabic_from_research(en_script: dict, ar_research: dict) -> str:
+def _write_ar_section_chunked(
+    label: str,
+    topic_str: str,
+    entity_lock: str,
+    target_words: int,
+    existing_text: str = "",
+    initial_prompt: str = "",
+    tts_reminder: str = "",
+    is_anim: bool = False,
+    max_tok_first: int = 2800,
+) -> str:
+    """
+    Build or extend an Arabic section in continuation chunks.
+    - If existing_text provided: extends it with continuation chunks until target_words.
+    - If initial_prompt provided: generates first chunk then continues.
+    Each continuation receives only the last 200 words — not the full script.
+    """
+    import time as _tc
+
+    accumulated = existing_text.strip() if existing_text else ""
+    acc_wc      = clean_word_count(accumulated)
+
+    if not accumulated and initial_prompt:
+        first = _ai_script_call(
+            initial_prompt, max_tokens=max_tok_first,
+            temperature=0.65, system_prompt=_AR_SCRIPT_SYSTEM_PROMPT, premium=True,
+        )
+        if not first or clean_word_count(first) < 50:
+            return ""
+        accumulated = first.strip()
+        acc_wc      = clean_word_count(accumulated)
+        print(f"[AR Chunk] {label} chunk 1: {acc_wc}w / target {target_words}w")
+
+    if acc_wc >= target_words:
+        return accumulated
+
+    _style = (
+        "السرد المتحرك السينمائي: مشهد بصري → نبضة عاطفية → كشف → انتقال. "
+        "الكثافة 55-70%. لا تكرر مشاهد سبق ذكرها."
+        if is_anim else
+        "السرد الوثائقي: أسماء حقيقية، تواريخ، تفاصيل محددة. لا تكرر ما سبق ذكره."
+    )
+    chunk_num = 2 if (not existing_text and initial_prompt) else 1
+
+    for _ in range(7):
+        if acc_wc >= target_words:
+            break
+        needed     = target_words - acc_wc
+        needed_min = round(needed / 250, 1)
+        tail       = " ".join(accumulated.split()[-200:])
+        max_tok    = min(3000, max(1200, needed * 2))
+
+        _tc.sleep(2)
+        cont = _ai_script_call(
+            f"{entity_lock}"
+            f"استمر في سرد الوثائقي عن: {topic_str}\n"
+            f"{_style}\n\n"
+            f"أضف ما يعادل {needed_min} دقيقة (~{needed} كلمة) من السرد. "
+            f"لا تكرر ما سبق. استمر مباشرة بعد هذا النص:\n\n{tail}\n\n"
+            f"اكتب الاستمرار فقط.",
+            max_tokens=max_tok,
+            temperature=0.68,
+            premium=True,
+        )
+        cont_wc = clean_word_count(cont) if cont else 0
+        if cont_wc < 100:
+            print(f"[AR Chunk] {label} chunk {chunk_num}: too short ({cont_wc}w) — stopping")
+            break
+        accumulated = accumulated.rstrip() + "\n\n" + cont.strip()
+        acc_wc      = clean_word_count(accumulated)
+        print(f"[AR Chunk] {label} chunk {chunk_num}: +{cont_wc}w → {acc_wc}w / {target_words}w")
+        chunk_num  += 1
+
+    return accumulated
+
+
+def _write_arabic_from_research(en_script: dict, ar_research: dict, target_minutes: float | None = None) -> str:
     """
     Write a full Arabic documentary script directly from Arabic research facts.
     Uses 3 LLM calls (section pairs) to stay within token limits.
@@ -5128,15 +5204,33 @@ def _write_arabic_from_research(en_script: dict, ar_research: dict) -> str:
     import os as _os_sa
     _anim_mode = _os_sa.getenv("PIPELINE_MODE", "").lower() == "animation"
 
-    # Cinematic section targets — animation mode uses larger targets for pacing room
-    if _anim_mode:
-        _intro_target = max(1400, int(en_wc * 0.44))   # ~1400-1700w
-        _main_target  = max(2400, int(en_wc * 0.76))   # ~2400-3200w
-        _conc_target  = max(1100, int(en_wc * 0.36))   # ~1100-1500w
+    # Section word budgets — derived from minutes target when available,
+    # falling back to English word count ratios (legacy behaviour).
+    _AR_WPM = 250
+    if target_minutes and target_minutes > 0:
+        _total_target_w = int(target_minutes * _AR_WPM)
+        if _anim_mode:
+            _intro_target = max(1400, int(_total_target_w * 0.30))
+            _main_target  = max(2400, int(_total_target_w * 0.50))
+            _conc_target  = max(1100, int(_total_target_w * 0.20))
+        else:
+            _intro_target = max(900,  int(_total_target_w * 0.30))
+            _main_target  = max(1400, int(_total_target_w * 0.50))
+            _conc_target  = max(700,  int(_total_target_w * 0.20))
+        print(
+            f"[AR Budget] target={target_minutes}min → "
+            f"intro={_intro_target}w main={_main_target}w conc={_conc_target}w"
+        )
     else:
-        _intro_target = max(900,  int(en_wc * 0.30))
-        _main_target  = max(1400, int(en_wc * 0.50))
-        _conc_target  = max(700,  int(en_wc * 0.25))
+        # Legacy: ratios of English word count
+        if _anim_mode:
+            _intro_target = max(1400, int(en_wc * 0.44))
+            _main_target  = max(2400, int(en_wc * 0.76))
+            _conc_target  = max(1100, int(en_wc * 0.36))
+        else:
+            _intro_target = max(900,  int(en_wc * 0.30))
+            _main_target  = max(1400, int(en_wc * 0.50))
+            _conc_target  = max(700,  int(en_wc * 0.25))
     # Keep sec_wc for simplified/emergency prompts
     sec_wc = _intro_target
 
@@ -5333,16 +5427,18 @@ def _write_arabic_from_research(en_script: dict, ar_research: dict) -> str:
     # ── Section minimum word counts ──────────────────────────────────────────
     # Animation mode uses aggressive minimums matching cinematic runtime targets.
     # Standard mode keeps moderate minimums to handle Groq rate-limit fallback paths.
+    # Minimum word counts for ACCEPTANCE of each section call.
+    # Main story minimum is the first-chunk floor — chunking extends it after.
     if _anim_mode:
         _SECTION_MIN_WC: dict[str, int] = {
             "AR-Hook+Background": 1200,
-            "AR-MainStory+Ch4":   2000,
+            "AR-MainStory+Ch4":    700,   # first chunk only; extended by _write_ar_section_chunked
             "AR-Conclusion":       900,
         }
     else:
         _SECTION_MIN_WC: dict[str, int] = {
             "AR-Hook+Background":  800,
-            "AR-MainStory+Ch4":   1400,
+            "AR-MainStory+Ch4":    500,   # first chunk only; extended by _write_ar_section_chunked
             "AR-Conclusion":       600,
         }
     # Core sections: missing any of these = pipeline must not continue
@@ -5405,18 +5501,19 @@ def _write_arabic_from_research(en_script: dict, ar_research: dict) -> str:
         return ""
 
     # ── Execute calls with retry chain ────────────────────────────────────────
-    # Animation mode gets larger token budgets to allow cinematic-length sections
+    # Main story uses a capped first-chunk budget — _write_ar_section_chunked
+    # extends it afterward in 900-1200w continuation passes.
     if _anim_mode:
         calls = [
-            ("AR-Hook+Background",    prompt_1, 7000),
-            ("AR-MainStory+Ch4",      prompt_2, 10000),
-            ("AR-Conclusion",         prompt_3,  6000),
+            ("AR-Hook+Background",    prompt_1, 4500),   # one call → ~1400-2000w
+            ("AR-MainStory+Ch4",      prompt_2, 3000),   # first chunk → extended by chunker
+            ("AR-Conclusion",         prompt_3, 3500),   # one call → ~900-1500w
         ]
     else:
         calls = [
-            ("AR-Hook+Background",    prompt_1, 5000),
-            ("AR-MainStory+Ch4",      prompt_2, 7000),
-            ("AR-Conclusion",         prompt_3, 4000),
+            ("AR-Hook+Background",    prompt_1, 3500),
+            ("AR-MainStory+Ch4",      prompt_2, 2800),
+            ("AR-Conclusion",         prompt_3, 2800),
         ]
     parts: list[str] = []
     _missing_core = False
@@ -5495,6 +5592,19 @@ def _write_arabic_from_research(en_script: dict, ar_research: dict) -> str:
                     print(f"[AR RETRY] Attempt {attempt + 1} scheduled")
 
         if section:
+            # Main story: extend with continuation chunks until _main_target reached
+            if label == "AR-MainStory+Ch4" and clean_word_count(section) < _main_target:
+                _ms_pre = clean_word_count(section)
+                print(f"[AR Chunk] Main story {_ms_pre}w < target {_main_target}w — extending")
+                section = _write_ar_section_chunked(
+                    label        = label,
+                    topic_str    = topic_str,
+                    entity_lock  = entity_lock,
+                    target_words = _main_target,
+                    existing_text = section,
+                    tts_reminder = _tts_reminder,
+                    is_anim      = _anim_mode,
+                )
             parts.append(section)
         else:
             print(
@@ -5621,6 +5731,15 @@ def translate_script(en_script: dict, research: dict | None = None) -> dict:
             en_script.get("series_type"),
         )
 
+    # Arabic runtime target — independent of English length.
+    # Set via AR_TARGET_MINUTES env var or derived from pipeline mode.
+    _ar_target_minutes = float(os.getenv("AR_TARGET_MINUTES", "0") or "0")
+    if _ar_target_minutes <= 0:
+        _ar_target_minutes = (
+            30.0 if os.getenv("PIPELINE_MODE", "").lower() == "animation" else 22.0
+        )
+    print(f"[AR] Runtime target: {_ar_target_minutes}min")
+
     # ── Choose script generation path ─────────────────────────────────────────
     # Path A (preferred): write Arabic directly from Arabic research
     # Path B (fallback):  translate the finished English script
@@ -5634,7 +5753,10 @@ def translate_script(en_script: dict, research: dict | None = None) -> dict:
             # Pass series_type from en_script so the prompt knows the angle
             _ar_en_script_augmented = dict(en_script)
             _ar_en_script_augmented.setdefault("series_type", research.get("series_type", ""))
-            _ar_script_body = _write_arabic_from_research(_ar_en_script_augmented, ar_research)
+            _ar_script_body = _write_arabic_from_research(
+                _ar_en_script_augmented, ar_research,
+                target_minutes=_ar_target_minutes,
+            )
             if _ar_script_body and clean_word_count(_ar_script_body) >= 300:
                 # Validate core section is present before accepting
                 _core_present = any(
@@ -5703,14 +5825,12 @@ def translate_script(en_script: dict, research: dict | None = None) -> dict:
     _ar_min    = estimate_arabic_duration(ar_data.get("script", ""))
     _ar_wc_now = clean_word_count(ar_data.get("script", ""))
     _ar_contract_ref = get_runtime_contract("fast")
-    _ar_target = min(
-        max(_ar_contract_ref["min_minutes"], _en_min * 0.95),
-        _en_min * 1.10,
-    )
+    # Arabic runtime target is set independently of English — Arabic is primary.
+    _ar_target = max(_ar_contract_ref["min_minutes"], _ar_target_minutes)
     print(
         f"[AR RUNTIME] Script words: {_ar_wc_now}\n"
         f"[AR RUNTIME] OpenAI TTS estimated duration: ~{_ar_min:.1f}min "
-        f"(EN: ~{_en_min:.1f}min | target ≥ {_ar_target:.1f}min)"
+        f"(EN: ~{_en_min:.1f}min | AR target: {_ar_target:.1f}min)"
     )
     if _ar_min < _ar_target:
         print(f"[AR EXPANSION] Runtime {_ar_min:.1f}min below target {_ar_target:.1f}min — regenerating narration")
