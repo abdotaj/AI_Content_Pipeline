@@ -2491,33 +2491,76 @@ _AI_PROMPT_SUFFIX_CLEAN = ", photorealistic, vertical 9:16"
 _wikimedia_query_cache: dict[str, list[str]] = {}
 
 
-def _build_scene_search_query(chunk: str, topic: str, event_type: str) -> str:
-    """Build a concrete 3-6 word archive/stock search query from a script chunk.
+# Short event-type context word to combine with the person name
+_TYPE_CONTEXT: dict[str, str] = {
+    "courtroom":     "courtroom",
+    "evidence":      "FBI investigation",
+    "newspaper":     "newspaper",
+    "cctv":          "surveillance footage",
+    "prison":        "prison",
+    "location":      "location",
+    "map":           "location map",
+    "interrogation": "interrogation",
+    "childhood":     "childhood",
+    "atmosphere":    "investigation",
+    "portrait":      "",
+}
 
-    Extracts real subjects (people, places, objects) from the chunk text
-    instead of embedding the full video title in the search string.
+
+def _build_scene_search_queries(chunk: str, topic: str, event_type: str) -> list[str]:
+    """Return an ordered list of archive/stock search queries for this scene chunk.
+
+    Priority (most specific → most generic):
+    1. person + location  e.g. 'Jeffrey Epstein Palm Beach'
+    2. location alone     e.g. 'Palm Beach Florida mansion exterior'
+    3. person + context   e.g. 'Jeffrey Epstein courtroom'
+    4. person + year      e.g. 'Jeffrey Epstein 2008'
+    5. person alone       e.g. 'Jeffrey Epstein'   (identity anchor)
+    6. generic type base  e.g. 'courtroom empty wooden'  (no person)
+
+    The caller tries each in order and stops at the first successful download.
+    The per-run cache (_wikimedia_query_cache) ensures duplicate queries across
+    parallel workers only hit the API once.
     """
     person = _clean_topic_name(topic)
     chunk_lower = chunk.lower()
     years = re.findall(r'\b(19[4-9]\d|20[0-2]\d)\b', chunk)
     year = years[0] if years else ""
+    type_ctx = _TYPE_CONTEXT.get(event_type, "")
 
-    # Specific geographic location → concrete query (beats generic type base)
+    queries: list[str] = []
+
+    # 1 & 2: person + location, then location alone
     for loc_phrase, loc_query in _CHUNK_LOCATION_HINTS.items():
         if loc_phrase in chunk_lower:
-            return f"{loc_query} {year}".strip() if year else loc_query
+            queries.append(f"{person} {loc_phrase}")  # "Jeffrey Epstein Palm Beach"
+            queries.append(loc_query)                  # "Palm Beach Florida mansion exterior"
+            break
 
-    # Portrait → person name + year for archive search
-    if event_type == "portrait":
-        return f"{person} {year}".strip() if year else person
+    # 3: person + event context
+    if type_ctx:
+        queries.append(f"{person} {type_ctx}")         # "Jeffrey Epstein courtroom"
 
-    # Named person + year is more specific than a generic type base
+    # 4: person + year
     if year:
-        return f"{person} {year}"
+        queries.append(f"{person} {year}")             # "Jeffrey Epstein 2008"
 
-    # Fall back to the first 3 words of the event-type base query
+    # 5: person alone (identity anchor — always included for person-centric events)
+    if person:
+        queries.append(person)                         # "Jeffrey Epstein"
+
+    # 6: generic type base (no person — useful when person photos are exhausted)
     base = _SCENE_BASE_QUERIES.get(event_type, "documentary archival")
-    return " ".join(base.split()[:3])
+    queries.append(" ".join(base.split()[:3]))         # "courtroom empty wooden"
+
+    # Deduplicate while preserving order
+    seen: set[str] = set()
+    result: list[str] = []
+    for q in queries:
+        if q and q.strip() not in seen:
+            seen.add(q.strip())
+            result.append(q.strip())
+    return result
 
 
 def _sanitize_ai_prompt(prompt: str, topic: str) -> str:
@@ -2705,26 +2748,39 @@ _TYPE_SEARCH_QUERIES: dict[str, str] = {
 
 
 def _prefetch_real_urls(events: list[dict], topic: str) -> dict[str, list[str]]:
-    """Fetch Wikimedia Commons + Internet Archive URLs once per event type.
+    """Fetch Wikimedia URLs once per event type using multi-query strategy.
 
-    Uses the clean person/topic name (not the full video title) in search queries
-    so results stay relevant. Called once before the parallel map — each type
-    makes at most 2 API calls regardless of how many events share that type.
-    Returns dict[type → [url, ...]] used as a cycling real-image pool.
+    For each type, uses the first chunk of that type to generate an ordered
+    query list (person+location, person+context, person+year, person alone,
+    generic base), tries each until it collects enough URLs.
+    Returns dict[type → [url, ...]] as a cycling real-image pool.
     """
-    person = _clean_topic_name(topic)
-    needed = {ev["type"] for ev in events if ev["type"] != "portrait"}
+    # Take a representative chunk for each event type
+    type_chunks: dict[str, str] = {}
+    for ev in events:
+        t = ev["type"]
+        if t not in type_chunks and t != "portrait":
+            type_chunks[t] = ev.get("chunk", "")
+
     pool: dict[str, list[str]] = {}
-    for t in needed:
-        # Build a concrete searchable query using the clean person name
-        base = _SCENE_BASE_QUERIES.get(t, "documentary archival")
-        q = f"{person} {' '.join(base.split()[:2])}"
-        urls = _wikimedia_image_results(q, max_results=6)
-        if not urls:
-            urls = _internet_archive_image_results(q, max_results=4)
-        pool[t] = urls
-        tag = "real" if urls else "none"
-        print(f"[RealImages] prefetch {t}: {len(urls)} {tag} URLs ('{q}')")
+    for t, chunk in type_chunks.items():
+        queries = _build_scene_search_queries(chunk, topic, t)
+        all_urls: list[str] = []
+        for q in queries:
+            if len(all_urls) >= 8:
+                break
+            urls = _wikimedia_image_results(q, max_results=4)
+            # Cache result so _gen_event workers don't repeat the API call
+            _wikimedia_query_cache[q] = urls
+            all_urls.extend(urls)
+        if not all_urls:
+            # Internet Archive fallback using the best query
+            q = queries[0] if queries else topic
+            all_urls = _internet_archive_image_results(q, max_results=4)
+        pool[t] = list(dict.fromkeys(all_urls))  # deduplicate, preserve order
+        tag = "real" if all_urls else "none"
+        top_q = queries[0] if queries else ""
+        print(f"[RealImages] prefetch {t}: {len(all_urls)} {tag} URLs (top='{top_q}')")
     return pool
 
 
@@ -2772,40 +2828,45 @@ def build_documentary_visual_pool(
         if os.path.exists(out_path) and os.path.getsize(out_path) > 5_000:
             return (ev_type, out_path)
 
-        # ── Scene analysis ──────────────────────────────────────────────
-        scene_q = _build_scene_search_query(chunk, topic, ev_type)
-        print(f"[ScenePlanner] idx={idx} type={ev_type} query='{scene_q}'")
+        # ── Scene analysis — build ordered query list ───────────────────
+        scene_queries = _build_scene_search_queries(chunk, topic, ev_type)
+        print(f"[ScenePlanner] idx={idx} type={ev_type} "
+              f"queries={scene_queries[:3]}")
 
         saved = None
 
-        # ── Step 1: portrait — Wikipedia person photo ───────────────────
+        # ── Step 1: portrait — Wikipedia REST then Commons ──────────────
         if ev_type == "portrait":
             person = _detect_person_in_chunk(chunk)
             if person:
                 resolved = _PERSON_ALIASES.get(person.lower(), person)
-                print(f"[VisualSearch] Wikimedia person: '{resolved}'")
+                print(f"[VisualSearch] Wikipedia person photo: '{resolved}'")
                 photo_url = _search_wikimedia_person_photo(resolved)
                 if photo_url:
                     saved = _download_first_valid([photo_url], out_path)
                 if not saved:
-                    print(f"[VisualSearch] Wikimedia Commons: '{resolved}'")
-                    fallback_urls = _wikimedia_cached(resolved, max_results=3)
-                    if fallback_urls:
-                        saved = _download_first_valid(fallback_urls, out_path)
+                    # Fall through the query list (includes person+context, person+year, etc.)
+                    for q in scene_queries:
+                        urls = _wikimedia_cached(q, max_results=3)
+                        if urls:
+                            saved = _download_first_valid(urls, out_path)
+                            if saved:
+                                print(f"[VisualSearch] portrait found via '{q}'")
+                                break
             if saved:
                 print(f"[VisualSearch] found real portrait image")
 
-        # ── Step 2: non-portrait — scene-specific archive search ────────
+        # ── Step 2: non-portrait — iterate query list until hit ─────────
         else:
-            # Try the scene-specific query first (chunk-derived, not title-based)
-            print(f"[VisualSearch] Wikimedia scene query: '{scene_q}'")
-            scene_urls = _wikimedia_cached(scene_q, max_results=4)
-            if scene_urls:
-                saved = _download_first_valid(scene_urls, out_path)
-                if saved:
-                    print(f"[VisualSearch] found real archive image for '{scene_q}'")
+            for q in scene_queries:
+                urls = _wikimedia_cached(q, max_results=4)
+                if urls:
+                    saved = _download_first_valid(urls, out_path)
+                    if saved:
+                        print(f"[VisualSearch] found real archive image: '{q}'")
+                        break
 
-            # Pre-fetched type pool as secondary fallback (cycles through photos)
+            # Pre-fetched pool as final real-image fallback (cycles through pool)
             if not saved:
                 type_urls = _pool.get(ev_type, [])
                 if type_urls:
@@ -2813,7 +2874,7 @@ def build_documentary_visual_pool(
                     print(f"[VisualSearch] pool fallback: type={ev_type}")
                     saved = _download_first_valid([url], out_path)
                     if saved:
-                        print(f"[VisualSearch] found real archive image from pool")
+                        print(f"[VisualSearch] found pool image: type={ev_type}")
 
         # ── Step 3: AI generation with sanitized prompt ─────────────────
         if not saved:
