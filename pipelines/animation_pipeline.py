@@ -32,6 +32,7 @@
 
 import os
 import sys
+import json
 import uuid
 import time
 import datetime
@@ -204,6 +205,36 @@ def _video_secs(path: str) -> float:
 import re as _re_pipeline
 _SLUG_PAT_PIPE = _re_pipeline.compile(r'^[a-z][a-z0-9]*(?:[_\-][a-z0-9]+)+$')
 
+_TYPE_HASHTAGS: dict[str, list[str]] = {
+    "serial killer":    ["#TrueCrime", "#SerialKiller", "#Documentary"],
+    "cartel":           ["#TrueCrime", "#Cartel", "#DrugWar"],
+    "mafia":            ["#TrueCrime", "#Mafia", "#Gangster"],
+    "fraud":            ["#TrueCrime", "#Fraud", "#WhiteCollarCrime"],
+    "cult leader":      ["#TrueCrime", "#Cult", "#CriminalMind"],
+    "unsolved":         ["#TrueCrime", "#Unsolved", "#ColdCase"],
+    "gangster":         ["#TrueCrime", "#Gangster", "#CriminalHistory"],
+    "drug trafficking": ["#TrueCrime", "#DrugTrafficking", "#Cartel"],
+    "domestic terrorism":["#TrueCrime", "#Terrorism", "#CriminalMind"],
+    "scandal":          ["#TrueCrime", "#Scandal", "#CriminalMind"],
+    "crime":            ["#TrueCrime", "#Crime", "#Documentary"],
+    "organized crime":  ["#TrueCrime", "#OrganizedCrime", "#Mafia"],
+    "political crime":  ["#TrueCrime", "#PoliticalCrime", "#Documentary"],
+    "war crime":        ["#TrueCrime", "#WarCrime", "#Documentary"],
+    "espionage":        ["#TrueCrime", "#Espionage", "#Spy"],
+    "heist":            ["#TrueCrime", "#Heist", "#CriminalMind"],
+}
+
+
+def _build_topic_hashtags(keyword: str, data: dict) -> str:
+    """Build relevant hashtag string for a topic based on its type and name."""
+    ttype = data.get("type", "crime").lower()
+    base_tags = _TYPE_HASHTAGS.get(ttype, ["#TrueCrime", "#Documentary"])
+
+    # Add name-based hashtag
+    name_tag = "#" + "".join(w.capitalize() for w in keyword.split())
+    tags = list(dict.fromkeys([name_tag] + base_tags + ["#DarkCrimeDecoded"]))
+    return " ".join(tags[:6])
+
 
 def _normalize_topic_title(title: str) -> str:
     """
@@ -287,11 +318,14 @@ def _wait_for_topic_selection(
         print("[TOPIC] No valid candidates after normalization — skipping selection")
         return None
 
-    # Build the numbered menu
+    # Build the numbered menu (show source label + hashtags for registry picks)
     lines = ["[ANIMATION PIPELINE]\nSelect a topic:\n"]
     for i, c in enumerate(valid, 1):
-        lines.append(f"{i}. {c['topic']}")
-    lines.append(f"{len(valid) + 1}. Auto-select best topic")
+        _src    = " [registry]" if c.get("_source") == "registry" else " [fresh]"
+        _show   = f"  ↳ {c['show']}" if c.get("show") else ""
+        _htags  = f"\n   {c['hashtags']}" if c.get("hashtags") else ""
+        lines.append(f"{i}. {c['topic']}{_src}{_show}{_htags}")
+    lines.append(f"\n{len(valid) + 1}. Auto-select best topic")
     reply_hint = " / ".join(str(i) for i in range(1, len(valid) + 2))
     lines.append(f"\nReply with: {reply_hint}")
     lines.append("Or: /auto · /cancel · /refresh")
@@ -465,37 +499,141 @@ def run_pipeline() -> None:
     # ── STEP 1: Topic selection (Telegram-first) ──────────────────────────────
     print(f"\n{'='*50}\n  TOPIC SELECTION\n{'='*50}\n", flush=True)
 
-    # Allow manual topic override via environment variable
+    # Allow manual topic override via environment variable OR topic_inject.json
     _manual_topic = os.getenv("ANIM_TOPIC", "").strip()
     _topic_wait_sec = int(os.getenv("ANIM_TOPIC_WAIT_SEC", "300"))
+    _force_rewrite_scripts = False
+
+    # ── topic_inject.json: direct topic confirmation (created by create_topic.py) ─
+    _inject_file = os.path.join(_ROOT, "topic_inject.json")
+    _inject: dict = {}
+    if not _manual_topic and os.path.exists(_inject_file):
+        try:
+            with open(_inject_file, encoding="utf-8") as _f:
+                _inject = json.load(_f)
+            _manual_topic = _inject.get("topic", "").strip()
+            _force_rewrite_scripts = bool(_inject.get("force_rewrite", False))
+            os.remove(_inject_file)  # consume once — single-shot
+            print(f"[TOPIC] topic_inject.json consumed: '{_manual_topic}'")
+            if _inject.get("note"):
+                print(f"[TOPIC] Note: {_inject['note']}")
+            if _force_rewrite_scripts:
+                print("[TOPIC] Force-rewrite mode: EN + AR scripts will be regenerated")
+        except Exception as _ie:
+            print(f"[TOPIC] topic_inject.json read failed ({_ie}) — continuing normally")
+            _inject = {}
+            _manual_topic = ""
 
     topic: dict = {}
 
     if _manual_topic:
         # User pre-supplied the topic — use immediately, no Telegram wait
         _log("Research", f"Manual topic override: '{_manual_topic}'", "OK")
-        _canonical = build_canonical_research_payload(_manual_topic, manual=True)
+        _norm_manual = normalize_topic_title(_manual_topic) or _manual_topic
+
+        # Enrich with topics.py registry context (show, type, region, arabic_name)
+        _topic_show   = _inject.get("show", "")
+        _topic_type   = _inject.get("type", "")
+        _topic_region = _inject.get("region", "")
+        _topic_ar_nm  = _inject.get("arabic_name", "")
+        _user_note    = _inject.get("note", "")
+
+        # Build a richer user_note that includes show context for the research agent
+        _research_note = _user_note
+        if _topic_show and not _user_note:
+            _research_note = f"Associated with TV/film: {_topic_show}"
+        elif _topic_show and _user_note:
+            _research_note = f"{_user_note} | Show: {_topic_show}"
+
+        _canonical = build_canonical_research_payload(_norm_manual, manual=True)
         topic = {
-            "topic":        _canonical["topic"],
-            "niche":        _canonical["topic"],
-            "search_query": _canonical["search_query"],
-            "keywords":     _canonical["keywords"],
-            "domain":       _canonical["domain"],
-            "topic_hash":   _canonical["topic_hash"],
-            "entities":     _canonical["entities"],
-            "research":     _canonical,
-            "manual_topic": True,
+            "topic":          _canonical["topic"],
+            "niche":          _canonical["topic"],
+            "search_query":   _canonical["search_query"],
+            "keywords":       _canonical["keywords"],
+            "domain":         _canonical["domain"],
+            "topic_hash":     _canonical["topic_hash"],
+            "entities":       _canonical["entities"],
+            "research":       _canonical,
+            "manual_topic":   True,
+            "force_rewrite":  _force_rewrite_scripts,
+            "user_note":      _research_note,
+            "show":           _topic_show,
+            "topic_type":     _topic_type,
+            "region":         _topic_region,
+            "arabic_name":    _topic_ar_nm,
         }
-        _ctrl.set_topic(_manual_topic)
+        if _topic_show:
+            _log("Research", f"Registry: show={_topic_show!r} type={_topic_type!r}", "OK")
+        _ctrl.set_topic(_norm_manual)
         _ctrl.start()
     else:
         # Auto-discover candidates, let user choose via Telegram
         _ctrl.update_stage("Research", "discovering topic candidates")
         _log("Research", "Discovering topic candidates for Telegram selection")
         try:
-            _candidates = research_topics(count=4)
+            # ── Build candidate pool: registry best (uncovered) + fresh DDG picks ──
+            # Registry best — top uncovered topics from topics.py with hashtags
+            _registry_candidates: list[dict] = []
+            try:
+                from topics import USA_TOPICS, WORLD_TOPICS, ARABIC_TOPICS, ALIASES
+                import re as _re_t
+                _all_registry = {**USA_TOPICS, **WORLD_TOPICS, **ARABIC_TOPICS}
+
+                # Load covered topics to skip already-done ones
+                _covered_set: set[str] = set()
+                try:
+                    with open("output/covered_topics.json", encoding="utf-8") as _cf:
+                        _ct_data = json.load(_cf)
+                    for _ct in (_ct_data if isinstance(_ct_data, list) else _ct_data.get("covered", [])):
+                        _covered_set.add(_ct.get("topic", "").lower())
+                        _covered_set.add(_ct.get("series", "").lower())
+                except Exception:
+                    pass
+
+                _PRIORITY_TYPES = ("serial killer", "cartel", "mafia", "fraud")
+                _sorted_keys = sorted(
+                    _all_registry,
+                    key=lambda k: (
+                        0 if _all_registry[k].get("type") in _PRIORITY_TYPES else 1,
+                        list(_all_registry.keys()).index(k),
+                    )
+                )
+                for _rk in _sorted_keys:
+                    _rdata = _all_registry[_rk]
+                    _rtitle = " ".join(w.capitalize() for w in _rk.split())
+                    _slug = _rtitle.lower()
+                    if _slug in _covered_set or any(
+                        _slug in _cs or _cs in _slug for _cs in _covered_set
+                    ):
+                        continue  # already covered
+                    _hashtags = _build_topic_hashtags(_rk, _rdata)
+                    _registry_candidates.append({
+                        "topic":    _rtitle,
+                        "niche":    _rtitle,
+                        "show":     _rdata.get("show", ""),
+                        "type":     _rdata.get("type", ""),
+                        "region":   _rdata.get("region", ""),
+                        "hashtags": _hashtags,
+                        "_source":  "registry",
+                    })
+                    if len(_registry_candidates) >= 2:
+                        break
+                print(f"[TOPIC] Registry candidates: {[c['topic'] for c in _registry_candidates]}")
+            except Exception as _re:
+                print(f"[TOPIC] Registry lookup failed (non-fatal): {_re}")
+
+            # Fresh DDG picks — new topics from web research
+            _ddg_candidates: list[dict] = []
+            try:
+                _ddg_candidates = research_topics(count=3)
+            except Exception as _de:
+                print(f"[TOPIC] DDG research failed (non-fatal): {_de}")
+
+            # Merge: registry first (best picks), then fresh (new discoveries)
+            _candidates = (_registry_candidates + _ddg_candidates)[:4]
             if not _candidates:
-                raise RuntimeError("research_topics returned empty list")
+                raise RuntimeError("Both registry and DDG topic discovery returned empty")
         except Exception as e:
             send_message(f"[ANIM] Topic discovery failed: {e}")
             _log("Research", str(e), "ERROR")
@@ -569,6 +707,16 @@ def run_pipeline() -> None:
     _topic_content = ensure_topic_content(topic_text)
     set_active_topic_content(_topic_content)
     _log("Research", f"Content storage: {_topic_content['path']}", "OK")
+
+    # Force-rewrite: clear character memory so portraits are re-fetched
+    if topic.get("force_rewrite"):
+        _chars_cache = os.path.join(_topic_content.get("path", ""), "characters", "cast.json")
+        if os.path.exists(_chars_cache):
+            try:
+                os.remove(_chars_cache)
+                _log("Research", "Force-rewrite: cleared character cast cache", "OK")
+            except Exception as _cce:
+                _log("Research", f"Cast cache clear failed (non-fatal): {_cce}", "WARN")
 
     # ── Pre-research semantic gate ────────────────────────────────────────────
     # Two independent scores are computed:
