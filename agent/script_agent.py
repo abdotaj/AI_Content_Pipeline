@@ -1392,6 +1392,55 @@ def _build_arabic_title(en_title: str, series_name: str | None, series_type: str
     return f"{prefix}{ar_topic} | Dark Crime Decoded"
 
 
+def _generate_arabic_title_llm(
+    topic_str: str,
+    angle_title: str = "",
+    series_name: str | None = None,
+    series_type: str | None = None,
+) -> str:
+    """Generate a natural Arabic documentary title via LLM. Falls back to _build_arabic_title."""
+    if not topic_str:
+        return "Dark Crime Decoded"
+
+    _series_ctx = ""
+    if series_name and not _is_historical_topic(topic_str):
+        _ar_type = "فيلم" if (series_type or "").lower() == "movie" else "مسلسل"
+        _series_ctx = (
+            f"\nالعمل ذو الصلة (للسياق فقط — ليس موضوع الفيديو): "
+            f"{_ar_type} مستوحى من {series_name}"
+        )
+    _angle_ctx = f"\nزاوية الفيديو: {angle_title}" if angle_title else ""
+
+    prompt = (
+        f"أنت خبير في صياغة عناوين الوثائقيات العربية.\n\n"
+        f"الموضوع: {topic_str}{_angle_ctx}{_series_ctx}\n\n"
+        f"اكتب عنواناً وثائقياً عربياً قوياً وطبيعياً. القواعد:\n"
+        f"- العنوان يأتي مباشرة من القصة والزاوية — ليس من قوالب جاهزة\n"
+        f"- لا تستخدم «القصة الحقيقية وراء فيلم/مسلسل...» إلا إذا كان العمل هو صلب الموضوع\n"
+        f"- لا تخترع أعمالاً غير موجودة أو تفرض إطاراً درامياً\n"
+        f"- اجعله طبيعياً كعنوان وثائقي حقيقي\n\n"
+        f"أمثلة ممتازة:\n"
+        f"- داخل إمبراطورية بابلو إسكوبار\n"
+        f"- الليلة الأخيرة لجيفري إيبستين\n"
+        f"- كيف سقط تيد بندي؟\n"
+        f"- هل اكتشف العلماء آثار سدوم؟\n"
+        f"- الملفات السرية لقضية داهمر\n"
+        f"- ماذا حدث لمدينة قوم لوط؟\n\n"
+        f"أعطني العنوان فقط (بدون | Dark Crime Decoded)، لا يتجاوز 55 حرفاً."
+    )
+    try:
+        raw = _ai_script_call(prompt, max_tokens=80, temperature=0.4).strip()
+        raw = raw.strip("\"'«»").strip()
+        if raw and 5 < len(raw) < 120:
+            raw = re.sub(r'\b[A-Za-z]{4,}\b', '', raw).strip()
+            raw = re.sub(r'\s+', ' ', raw).strip().strip('|').strip()
+            if raw:
+                return f"{raw} | Dark Crime Decoded"
+    except Exception as _e:
+        print(f"[AR Title] LLM generation failed ({_e}) — using template fallback")
+    return _build_arabic_title(topic_str, series_name, series_type)
+
+
 # 5-chapter proportions for new structure
 _CHAPTER_PROPORTIONS_5 = [0.0, 0.20, 0.42, 0.65, 0.85]
 
@@ -1429,7 +1478,7 @@ def generate_chapters(total_words: int, language: str = "english",
             "🎬 مقدمة",
             f"🔍 {angle_label}",
             "📖 القصة الحقيقية",
-            "⚡ المسلسل مقابل الواقع",
+            "⚡ التفاصيل الخفية",
             "🎯 الخاتمة",
         ]
     else:
@@ -1438,7 +1487,7 @@ def generate_chapters(total_words: int, language: str = "english",
             "Introduction",
             angle_label,
             "The Real Story",
-            "What They Got Wrong",
+            "Hidden Details",
             "The Truth Revealed",
         ]
 
@@ -2102,11 +2151,17 @@ DOCUMENTARY_ONLY_TOPICS = [
 
 
 def get_script_angle(topic_text: str, series_info: tuple | None) -> str:
-    """Return 'documentary' for topics with no movie/series, else 'series'."""
+    """Return 'documentary' when topic has no confirmed adaptation, else 'series'."""
     topic_lower = safe_lower(topic_text)
     for doc_topic in DOCUMENTARY_ONLY_TOPICS:
         if doc_topic in topic_lower:
             return "documentary"
+    # Historical/biblical/archaeological topics never need series framing
+    if _is_historical_topic(topic_text):
+        return "documentary"
+    # No confirmed PERSON_TO_SERIES match → investigative documentary angle
+    if series_info is None:
+        return "documentary"
     return "series"
 
 
@@ -3462,12 +3517,16 @@ def _write_darkcrimed_script(topic: dict) -> dict:
                     "Hemedti: The Most Dangerous Man You Never Heard Of | Dark Crime Decoded"
                 )
         else:
-            # Generic documentary title with optional part label
+            # Dynamic title from generated angle — avoids generic "What The World Needs To Know"
             part_suffix = f" — Part {part_number}" if part_number else ""
-            doc_title = (
-                f"The Untold Story of {topic['topic']}{part_suffix}: "
-                f"What The World Needs To Know | Dark Crime Decoded"
-            )
+            _doc_angle = generate_untold_angle(topic["topic"], "")
+            _doc_angle_title = _doc_angle.get("angle_title", "")
+            if _doc_angle_title and "hidden truth" not in _doc_angle_title.lower():
+                doc_title = f"{_doc_angle_title}{part_suffix} | Dark Crime Decoded"
+            else:
+                doc_title = (
+                    f"The Untold Story of {topic['topic']}{part_suffix} | Dark Crime Decoded"
+                )
 
         # Queue Part 2 automatically when Part 1 is being written
         if part_number == 1:
@@ -3783,21 +3842,27 @@ Do not summarize — give full detailed information."""
 Based on this voiceover script about "{topic['topic']}", generate the metadata fields.
 
 TITLE FORMAT (mandatory):
-Use the untold angle as the title hook: "{_angle_data.get('angle_title', topic['topic'])} | Dark Crime Decoded"
-Examples of good angle-based titles:
+Generate a strong, story-driven documentary title directly from the actual content.
+The untold angle for this video: "{_angle_data.get('angle_title', topic['topic'])}"
+The real subject: {topic['topic']}
+Related series/movie (supporting context only — NOT required in title): {_related_series}
+
+GOOD TITLE PATTERNS (use as inspiration, not templates):
+"The Last Night of Jeffrey Epstein | Dark Crime Decoded"
+"How Pablo Escobar Built His Empire | Dark Crime Decoded"
+"The Secret Files of the Dahmer Case | Dark Crime Decoded"
 "The Interview That Broke John Douglas | Dark Crime Decoded"
-"The Woman Netflix Erased From Mindhunter | Dark Crime Decoded"
-"The Confession That Should Never Have Happened | Dark Crime Decoded"
 "The Real Pablo Escobar Was Even Darker Than Narcos | Dark Crime Decoded"
-The real person for this topic is: {topic['topic']}
-The related series/movie is: {_related_series}
-The untold angle for this video is: {_angle_data.get('angle_title', '')}
+
+DO NOT use "[Person] & [Movie/Series] — [hook]" format.
+DO NOT invent adaptations or force series framing into the title.
+The series/movie is OPTIONAL context — only include it if it naturally fits the story.
 TONE: Gripping and revelatory. The title teases the hidden truth.
 Max 90 chars total.
 
 Return ONLY this JSON with no extra text:
 {{
-  "title": "Dark Crime Decoded: [Real Person] & [Movie/Series Type] — [hook]",
+  "title": "[Compelling documentary title from the actual story] | Dark Crime Decoded",
   "hook": "First 3-second spoken hook sentence",
   "on_screen_texts": [
     "Short bold text for second 0",
@@ -3815,10 +3880,10 @@ Return ONLY this JSON with no extra text:
         required_keys=["title", "hook", "on_screen_texts", "caption", "hashtags", "thumbnail_text"],
         list_keys=["on_screen_texts"],
     )
-    _series_name = _series_info[0] if _series_info else _related_series
+    _angle_str = _angle_data.get("angle_title", "")
     _fallback_title = (
-        f"The Real Story Behind {_series_name}: {topic['topic']}'s True Life | Dark Crime Decoded"
-        if _series_info else f"The True Story of {topic['topic']}: The Real Events Behind The Legend | Dark Crime Decoded"
+        f"{_angle_str} | Dark Crime Decoded"
+        if _angle_str else f"The True Story of {topic['topic']} | Dark Crime Decoded"
     )
     script_data = {
         "title":          meta.get("title", _fallback_title),
@@ -5273,9 +5338,17 @@ def _write_arabic_from_research(en_script: dict, ar_research: dict, target_minut
     )
 
     is_doc = (angle or "").lower() not in ("movie", "series", "mini-series")
+    # Historical/biblical topics are always pure documentary — no series framing
+    if _is_historical_topic(topic_str) or _is_historical_topic(series_name):
+        series_name = ""
+        is_doc = True
 
     # ── Call 1: Hook + Background ─────────────────────────────────────────────
-    series_line = f"السلسلة أو الفيلم: {series_name}\n" if series_name and not is_doc else ""
+    # Series is supporting context only — never the primary frame of the documentary
+    series_line = (
+        f"العمل ذو الصلة (سياق داعم فقط — ليس محور الوثائقي): {series_name}\n"
+        if series_name and not is_doc else ""
+    )
     disc_line   = f"ملاحظة خاصة من البحث: {ar_disc}\n" if ar_disc else ""
 
     if _anim_mode:
@@ -5305,6 +5378,18 @@ def _write_arabic_from_research(en_script: dict, ar_research: dict, target_minut
         )
 
     _intro_min_str = f"ما يعادل 4-6 دقائق من السرد (~{_intro_target} كلمة)"
+
+    # For historical/religious topics: prioritise Quran and Islamic history over Torah/Bible
+    _religious_source_note = ""
+    if _is_historical_topic(topic_str):
+        _religious_source_note = (
+            "\n[أولوية المصادر للوثائقي الإسلامي والتاريخي]:\n"
+            "1. القرآن الكريم والأحاديث النبوية أولاً.\n"
+            "2. التاريخ الإسلامي وعلم الآثار الإسلامي ثانياً.\n"
+            "3. المصادر الأثرية المحايدة ثالثاً.\n"
+            "لا تعتمد على التوراة أو الإنجيل كمصدر رئيسي — اذكرهما كمصدر مقارن فقط إذا لزم الأمر.\n"
+        )
+
     if _anim_mode:
         # 3-phase cold open: atmosphere-only → one shocking fact → real context
         _cold_open_w = 350
@@ -5316,6 +5401,7 @@ def _write_arabic_from_research(en_script: dict, ar_research: dict, target_minut
             f"{series_line}"
             f"\nالحقائق الأساسية (للرجوع إليها — لا تذكرها في المشهد الافتتاحي أو الكشف):\n{facts_block}\n"
             f"{disc_line}"
+            f"{_religious_source_note}"
             f"{_tts_reminder}\n"
             f"اكتب الفصول الثلاثة التالية بالعربية الفصحى — السرد المتحرك السينمائي:\n\n"
             f"[SECTION: المشهد الافتتاحي]\n"
@@ -5343,6 +5429,7 @@ def _write_arabic_from_research(en_script: dict, ar_research: dict, target_minut
             f"{series_line}"
             f"\nالحقائق البحثية الحقيقية:\n{facts_block}\n"
             f"{disc_line}"
+            f"{_religious_source_note}"
             f"{_tts_reminder}\n"
             f"اكتب الفصلين التاليين بالعربية الفصحى بأسلوب وثائقي سينمائي:\n\n"
             f"[SECTION: المقدمة]\n"
@@ -5405,21 +5492,20 @@ def _write_arabic_from_research(en_script: dict, ar_research: dict, target_minut
 
         prompt_2 = (
             f"{entity_lock}"
-            f"استمر في كتابة وثائقي: {topic_str} — السلسلة: {series_name}\n"
+            f"استمر في كتابة وثائقي: {topic_str}\n"
+            f"العمل ذو الصلة (مرجع داعم فقط): {series_name}\n"
             f"\nالحقائق البحثية:\n{facts_block}\n"
-            f"\nما أصابت فيه السلسلة/الفيلم:\n{facts_block}\n"
-            f"\nما غيّرته أو حذفته:\n{inaccs_block}\n"
+            f"\nما غيّرته السلسلة/الفيلم مقارنة بالواقع (للإثراء فقط):\n{inaccs_block}\n"
             f"\nالشخصيات الخيالية ومقابلهم الحقيقيون:\n{chars_block}\n"
             f"{_tts_reminder}\n"
             f"اكتب:\n\n"
             f"[SECTION: القصة الحقيقية]\n"
-            f"({_main_min_str}. القصة الحقيقية بعمق. تفاصيل الشخصية الحقيقية والأحداث. "
+            f"({_main_min_str}. القصة الحقيقية بعمق — الشخصية الحقيقية والأحداث والقرارات. "
+            f"العمل الدرامي سياق داعم فقط — لا تجعله محور الفصل. "
             f"تناوب بين الجمل القصيرة والمتوسطة.)\n\n"
-            f"[SECTION: الرواية مقابل الواقع]\n"
-            f"(ما يعادل 3-4 دقائق من السرد. "
-            f"الجزء الأول يبدأ بالضبط بـ \"إليك ما أصابت فيه {series_name}:\". "
-            f"الجزء الثاني يبدأ بالضبط بـ \"وإليك ما غيّرته أو أغفلته تماماً:\". "
-            f"الشخصيات الخيالية تُذكر فقط في هذا الفصل.)\n\n"
+            f"[SECTION: حقائق صادمة]\n"
+            f"(ما يعادل 3-4 دقائق من السرد. الحقائق الأقل شهرة والأشد إثارة. "
+            f"يمكن الإشارة إلى {series_name} كمرجع بصري أو سردي، لكن الحقيقة هي المحور.)\n\n"
             f"النص الوثائقي الكامل فقط."
         )
 
@@ -5494,13 +5580,12 @@ def _write_arabic_from_research(en_script: dict, ar_research: dict, target_minut
                 return (
                     f"{entity_lock}"
                     f"اكتب بالعربية الفصحى عن: {topic_str}\n"
-                    f"السلسلة: {series_name}\n\n"
+                    f"العمل ذو الصلة (سياق داعم): {series_name}\n\n"
                     f"الحقائق:\n{facts_block}\n\n"
                     f"[SECTION: القصة الحقيقية]\n"
-                    f"اكتب حوالي {sec_wc * 2} كلمة. القصة الحقيقية بعمق.\n\n"
-                    f"[SECTION: الرواية مقابل الواقع]\n"
-                    f"ابدأ بـ \"إليك ما أصابت فيه {series_name}:\""
-                    f" ثم \"وإليك ما غيّرته أو أغفلته تماماً:\"\n\n"
+                    f"اكتب حوالي {sec_wc * 2} كلمة. القصة الحقيقية بعمق — الشخصية والأحداث الحقيقية.\n\n"
+                    f"[SECTION: حقائق صادمة]\n"
+                    f"اكتب حوالي {sec_wc} كلمة. الحقائق الأقل شهرة والأشد إثارة.\n\n"
                     f"النص الوثائقي فقط."
                 )
         # For other sections, just return original prompt
@@ -5511,13 +5596,9 @@ def _write_arabic_from_research(en_script: dict, ar_research: dict, target_minut
         """Bare-minimum prompt — no style rules, facts only. Last resort."""
         if "MainStory" in label:
             target_wc = sec_wc * 2
-            section_a = "القصة الحقيقية" if is_doc else "القصة الحقيقية"
-            section_b = "حقائق صادمة" if is_doc else "الرواية مقابل الواقع"
-            detail_b  = (
-                "اكتب حقائق مفاجئة وأقل شهرة عن الموضوع."
-                if is_doc else
-                f"ابدأ بـ \"إليك ما أصابت فيه {series_name}:\" ثم \"وإليك ما غيّرته:\""
-            )
+            section_a = "القصة الحقيقية"
+            section_b = "حقائق صادمة"
+            detail_b  = "اكتب حقائق مفاجئة وأقل شهرة عن الموضوع."
             return (
                 f"اكتب نصاً عربياً وثائقياً بسيطاً عن: {topic_str}\n\n"
                 f"استخدم هذه الحقائق:\n{facts_block}\n\n"
@@ -5813,10 +5894,11 @@ def translate_script(en_script: dict, research: dict | None = None) -> dict:
     if _is_hemedti:
         ar_title = _build_hemedti_arabic_title(en_script.get("part_number"))
     else:
-        ar_title = _build_arabic_title(
-            en_script.get("title", ""),
-            en_script.get("series_name"),
-            en_script.get("series_type"),
+        ar_title = _generate_arabic_title_llm(
+            topic_str=en_script.get("topic", ""),
+            angle_title=en_script.get("angle_title", ""),
+            series_name=en_script.get("series_name"),
+            series_type=en_script.get("series_type"),
         )
 
     # Arabic runtime target — independent of English length.
@@ -6560,7 +6642,12 @@ def write_arabic_script(topic: dict, research: dict | None = None) -> dict:
     if _is_hemedti:
         ar_title = _build_hemedti_arabic_title(part_number)
     else:
-        ar_title = _build_arabic_title(topic_str, series_name, series_type)
+        ar_title = _generate_arabic_title_llm(
+            topic_str=topic_str,
+            angle_title=topic.get("angle_title", ""),
+            series_name=series_name,
+            series_type=series_type,
+        )
 
     # ── Runtime target ────────────────────────────────────────────────────────
     _ar_target_minutes = float(os.getenv("AR_TARGET_MINUTES", "0") or "0")
