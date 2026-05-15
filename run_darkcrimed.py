@@ -266,11 +266,52 @@ def run_pipeline():
     _part_number:       int | None = None
     _series_name_for_filter: str | None = None
 
+    # Priority 2: topic_inject.json — created by create_topic.py, consumed once
+    _inject_file = os.path.join(os.path.dirname(__file__), "topic_inject.json")
+    if not ingested and os.path.exists(_inject_file):
+        try:
+            with open(_inject_file, encoding="utf-8") as _f:
+                _inject = json.load(_f)
+            os.remove(_inject_file)
+            _inject_topic_text = _inject.get("topic", "").strip()
+            if _inject_topic_text:
+                print(f"[1/5] topic_inject.json consumed: '{_inject_topic_text}'")
+                from agent.script_agent import get_series_for_person as _gsfp_inj
+                _inj_si = _gsfp_inj(_inject_topic_text)
+                _inj_series = (_inj_si[0] if _inj_si else None) or _inject.get("show") or None
+                _log("Research", f"Inject topic: {_inject_topic_text}")
+                try:
+                    _inj_res = _with_retry(research_series, _inject_topic_text, _inj_series,
+                                           user_note=_inject.get("note", ""), retries=3, delay=12,
+                                           label="research_series")
+                    if _inj_res is None:
+                        _inj_res = {}
+                except Exception as _inj_e:
+                    _log("Research", f"research_series failed (inject): {_inj_e}", "WARN")
+                    _inj_res = {}
+                if _inj_res:
+                    _inj_res["real_person"] = _inject_topic_text
+                    _inj_res["series_name"] = _inj_series or _inject_topic_text
+                topic = {
+                    "topic":         _inject_topic_text,
+                    "niche":         f"Real story behind {_inj_series or _inject_topic_text}",
+                    "angle":         "",
+                    "keywords":      [_inject_topic_text],
+                    "search_query":  _inject_topic_text,
+                    "series_name":   _inj_series,
+                    "research":      _inj_res,
+                    "manual_topic":  True,
+                    "force_rewrite": bool(_inject.get("force_rewrite", False)),
+                }
+                send_message(f"[Pipeline] Inject topic: {_inject_topic_text}\nSkipping Telegram wait.")
+        except Exception as _ie:
+            print(f"[1/5] topic_inject.json read error (ignored): {_ie}")
+
     if ingested:
         print("[1/5] Using script from content files.")
         en_long = next((s for s in ingested if s.get("language") == "english"), ingested[0])
 
-    else:
+    elif not topic:
         # ── 1A: Clear ALL old messages so only new ones are read ──────────────
         print("[1/5] Clearing old Telegram messages...")
         clear_telegram_queue()

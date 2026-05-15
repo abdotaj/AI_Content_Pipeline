@@ -179,19 +179,47 @@ def run_pipeline() -> None:
 
     ensure_music_assets()
 
-    # ── STEP 1: Auto-research one topic ──────────────────────────────────────
+    # ── STEP 1: Topic selection ───────────────────────────────────────────────
     print(f"\n{'='*50}\n  RESEARCH\n{'='*50}\n", flush=True)
-    _ctrl.update_stage("Research", "auto-selecting topic")
-    _log("Research", "Auto-selecting topic (no Telegram wait)")
-    try:
-        topics = research_topics(count=1)
-        if not topics:
-            raise RuntimeError("research_topics returned empty list")
-        topic = topics[0]
-    except Exception as e:
-        send_message(f"[FAST] Research failed: {e}")
-        _log("Research", str(e), "ERROR")
-        return
+    _ctrl.update_stage("Research", "selecting topic")
+
+    # Check topic_inject.json first (created by create_topic.py — consumed once)
+    topic = None
+    _inject_file = os.path.join(_ROOT, "topic_inject.json")
+    if os.path.exists(_inject_file):
+        try:
+            with open(_inject_file, encoding="utf-8") as _f:
+                _inject = json.load(_f)
+            os.remove(_inject_file)
+            _inject_text = _inject.get("topic", "").strip()
+            if _inject_text:
+                print(f"[FAST] topic_inject.json consumed: '{_inject_text}'")
+                _log("Research", f"Inject topic: {_inject_text}")
+                topic = {
+                    "topic":         _inject_text,
+                    "niche":         f"Real story behind {_inject.get('show') or _inject_text}",
+                    "angle":         "",
+                    "keywords":      [_inject_text],
+                    "search_query":  _inject_text,
+                    "series_name":   _inject.get("show") or None,
+                    "manual_topic":  True,
+                    "force_rewrite": bool(_inject.get("force_rewrite", False)),
+                    "user_note":     _inject.get("note", ""),
+                }
+        except Exception as _ie:
+            print(f"[FAST] topic_inject.json read error (ignored): {_ie}")
+
+    if topic is None:
+        _log("Research", "Auto-selecting topic (no Telegram wait)")
+        try:
+            topics = research_topics(count=1)
+            if not topics:
+                raise RuntimeError("research_topics returned empty list")
+            topic = topics[0]
+        except Exception as e:
+            send_message(f"[FAST] Research failed: {e}")
+            _log("Research", str(e), "ERROR")
+            return
 
     topic_text  = topic.get("topic", "")
     topic_niche = topic.get("niche", "")
