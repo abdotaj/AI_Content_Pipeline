@@ -4549,6 +4549,18 @@ def _expand_arabic_script_to_min(ar_script: str, target_min: int = 5000) -> str:
         words = text.split()
         return " ".join(words[-n:]) if len(words) > n else text
 
+    # Fact-lock: first ~200 words of the original script anchor known entities.
+    # Expansion prompts reference this so the model cannot invent new characters.
+    _entity_anchor = " ".join(ar_script.split()[:200])
+    _entity_lock_block = (
+        f"[قفل الشخصيات والوقائع الموثقة]\n"
+        f"السرد يجب أن يقتصر على الشخصيات والأحداث الموجودة في النص الأصلي فقط.\n"
+        f"محظور تماماً: اختراع أشخاص جدد (محققين، شهود، صحفيين، ضحايا، منظمات) "
+        f"لم يُذكروا في النص.\n"
+        f"المرجع — مطلع النص الأصلي:\n{_entity_anchor}\n"
+        f"---\n"
+    )
+
     _tok_budgets = [2400, 3000, 2500, 2000]
     for _attempt in range(1, 5):
         cur_wc = clean_word_count(result)
@@ -4603,6 +4615,7 @@ def _expand_arabic_script_to_min(ar_script: str, target_min: int = 5000) -> str:
 
         print(f"[Script] Arabic expansion attempt {_attempt}: {cur_wc}w, need +{needed}w (~{needed_min}min)")
         prompt = (
+            f"{_entity_lock_block}"
             f"{instruction}\n\n"
             f"نهاية النص الحالي (استمر بعده مباشرة):\n...\n{context}\n\n"
             f"اكتب الاستمرار فقط — لا تعد النص الأصلي. لا شرح."
@@ -5166,25 +5179,35 @@ def _write_arabic_from_research(en_script: dict, ar_research: dict) -> str:
 
     _intro_min_str = f"ما يعادل 4-6 دقائق من السرد (~{_intro_target} كلمة)"
     if _anim_mode:
+        # 3-phase cold open: atmosphere-only → one shocking fact → real context
+        _cold_open_w = 350
+        _hook_w      = 250
+        _bg_w        = max(400, _intro_target - _cold_open_w - _hook_w)
         prompt_1 = (
             f"{entity_lock}"
             f"أنت راوٍ وثائقي متحرك. اكتب السرد الافتتاحي لوثائقي متحرك عن: {topic_str}\n"
             f"{series_line}"
-            f"\nالحقائق الأساسية:\n{facts_block}\n"
+            f"\nالحقائق الأساسية (للرجوع إليها — لا تذكرها في المشهد الافتتاحي أو الكشف):\n{facts_block}\n"
             f"{disc_line}"
             f"{_tts_reminder}\n"
-            f"اكتب الفصلين التاليين بالعربية الفصحى — السرد المتحرك السينمائي:\n\n"
-            f"[SECTION: المقدمة]\n"
-            f"(خطاف سينمائي + تأسيس التوتر — {_intro_min_str}. "
-            f"ابدأ بمشهد بصري قصير ثم الجملة الصادمة. "
-            f"بنِ التوتر بطبقات: أولاً الشعور، ثم السياق، ثم السؤال الذي يجذب المشاهد. "
-            f"اترك مساحة بصرية بين الأفكار.)\n\n"
+            f"اكتب الفصول الثلاثة التالية بالعربية الفصحى — السرد المتحرك السينمائي:\n\n"
+            f"[SECTION: المشهد الافتتاحي]\n"
+            f"(الجو والمكان فقط — حوالي {_cold_open_w} كلمة. "
+            f"ممنوع تماماً: الأسماء، التواريخ، الحقائق، الشرح، الخلفية. "
+            f"فقط: المكان، الزمان، الجو، التوتر، الشعور، السؤال المعلق في الهواء. "
+            f"الكاميرا تتحرك ببطء في فضاء مجهول. الصمت أثقل من الكلام. "
+            f"المشاهد يشعر بثقل ما قبل أن يعرف ما هو.)\n\n"
+            f"[SECTION: الكشف الصادم]\n"
+            f"(حقيقة واحدة فقط — حوالي {_hook_w} كلمة. "
+            f"جملة واحدة قصيرة تكشف الحدث أو الشخص، ثم صمت مقصود في السرد. "
+            f"لا شرح. لا سياق. لا تتابع. المشاهد يحتاج لثانية ليستوعب ما سمعه. "
+            f"انتهِ بسؤال يبقى معلقاً.)\n\n"
             f"[SECTION: الخلفية]\n"
-            f"(السياق التاريخي والشخصيات — {_intro_min_str}. "
-            f"كل شخص مهم يأخذ مشهداً مستقلاً. "
-            f"صِف البيئة والزمان كما لو أن الكاميرا تتحرك في الفضاء. "
-            f"أسماء حقيقية وتواريخ فعلية مدمجة مع الوصف البصري.)\n\n"
-            f"اكتب الفصلين كاملين. النص السردي المنطوق فقط — بدون عناوين أو شرح."
+            f"(السياق والشخصيات الحقيقية — حوالي {_bg_w} كلمة. "
+            f"الآن فقط تبدأ الحقائق: أسماء حقيقية، تواريخ فعلية، بيئة ومكان. "
+            f"كل شخص مهم يأخذ مشهداً مستقلاً مع وصف بصري. "
+            f"صِف البيئة كما لو أن الكاميرا تتحرك في الفضاء الجغرافي.)\n\n"
+            f"اكتب الفصول الثلاثة كاملة. النص السردي المنطوق فقط — بدون عناوين إضافية أو شرح."
         )
     else:
         prompt_1 = (
