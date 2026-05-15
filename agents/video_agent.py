@@ -7390,8 +7390,24 @@ def generate_tts_sections(script_text: str, video_id: str, language: str) -> tup
 
     final_audio = os.path.join(AUDIO_DIR, f"{video_id}.mp3")
 
-    # Parse section markers robustly (English + Arabic + braces).
-    sections = _parse_script_sections(script_text)
+    # For Arabic: always use direct [SECTION: ...] regex split — more reliable than
+    # the complex line-by-line parser which can fragment sections via bracket expressions
+    # in Arabic body text.  Falls back to _parse_script_sections for English.
+    import re as _re_tts
+    sections: list[tuple[str, str]] = []
+    if (language or "").lower().startswith("ar"):
+        _raw = _re_tts.split(r'\[SECTION:\s*([^\]]+)\]', script_text.strip(), flags=_re_tts.IGNORECASE)
+        for _ai in range(1, len(_raw), 2):
+            _an = _canonical_section_name(_raw[_ai].strip())
+            _ac = _raw[_ai + 1].strip() if _ai + 1 < len(_raw) else ""
+            if _ac:
+                sections.append((_an, _ac))
+        if sections:
+            print(f"[Video] Arabic direct section split: {len(sections)} sections")
+        else:
+            sections = _parse_script_sections(script_text)
+    else:
+        sections = _parse_script_sections(script_text)
 
     if not sections:
         print("[Video] No section markers — using single-call TTS")
@@ -7503,8 +7519,8 @@ USE_CLIPS: bool = PIPELINE_MODE == "full"
 _IS_CI = bool(os.getenv("GITHUB_ACTIONS") or os.getenv("CI"))
 _WORKERS: dict[str, int] = {
     "search":       12 if _IS_CI else 20,   # multi-source image URL search (IO-bound)
-    "pollinations": 35 if _IS_CI else 40,   # Pollinations AI generation (IO-bound)
-    "doc_visual":   30 if _IS_CI else 35,   # documentary visual pool (IO-bound)
+    "pollinations":  4 if _IS_CI else  6,   # Pollinations free API — strict rate limit, keep low
+    "doc_visual":    4 if _IS_CI else  6,   # documentary visual pool — same Pollinations limit
     "enhance":      30 if _IS_CI else 40,   # image post-processing (IO-bound)
     "tts":           5,                      # TTS sections — API rate-limit aware
     "ffmpeg":        1,                      # CPU-bound — never increase
@@ -7535,7 +7551,7 @@ def _adaptive_pollinations_workers() -> int:
         req = max(_pollinations_req_count, 1)
         rate = _pollinations_429_count / req
     if rate > 0.25:
-        reduced = max(12, _WORKERS["pollinations"] // 2)
+        reduced = max(3, _WORKERS["pollinations"] // 2)
         print(f"[QUEUE] Pollinations 429 rate={rate:.0%} — throttling to {reduced} workers")
         return reduced
     return _WORKERS["pollinations"]

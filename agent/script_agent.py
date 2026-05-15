@@ -5425,6 +5425,10 @@ def _write_arabic_from_research(en_script: dict, ar_research: dict, target_minut
         )
 
     # ── Section minimum word counts ──────────────────────────────────────────
+    # Animation mode uses aggressive minimums matching cinematic runtime targets.
+    # Standard mode keeps moderate minimums to handle Groq rate-limit fallback paths.
+    # Minimum word counts for ACCEPTANCE of each section call.
+    # Main story minimum is the first-chunk floor — chunking extends it after.
     # Acceptance floor is intentionally low — any real content (100w) passes,
     # then _write_ar_section_chunked extends ALL sections to their full targets.
     # High minimums caused every section to fail all 3 retries; chunking never ran.
@@ -5869,8 +5873,6 @@ def translate_script(en_script: dict, research: dict | None = None) -> dict:
         ar_data["script"] = _expand_arabic_script_to_min(ar_data["script"], target_min=_AR_WORD_TARGET)
 
     # ── Runtime target check ──────────────────────────────────────────────────
-    # Target = max(contract_min, EN_runtime × 0.95), capped at EN × 1.10.
-    # Never use word-floor / WPM — that produced a 135% English target (28.6min).
     _en_wc     = clean_word_count(en_script.get("script", ""))
     _en_min    = _en_wc / 145.0
     _ar_min    = estimate_arabic_duration(ar_data.get("script", ""))
@@ -5919,6 +5921,16 @@ def translate_script(en_script: dict, research: dict | None = None) -> dict:
         ar_data["script"] = tts_readability_pass(ar_data["script"])
         ar_data["script"] = enforce_arabic_purity(ar_data["script"])
         ar_data["script"] = remove_arabic_filler_phrases(ar_data["script"])
+
+        # ── Section marker guard — ensure [SECTION: المقدمة] survives all processing ──
+        # All cleanup steps protect [SECTION:] lines, but if the marker was never
+        # injected (LLM omitted it), the TTS splitter only finds MainStory+Conclusion.
+        # This guard runs AFTER all cleanup so it cannot be stripped again.
+        import re as _re_mg
+        _ar_script = ar_data.get("script", "")
+        if _ar_script and not _re_mg.search(r'\[SECTION:\s*المقدمة', _ar_script):
+            ar_data["script"] = f"[SECTION: المقدمة]\n{_ar_script.lstrip()}"
+            print("[AR Script] Marker guard: prepended [SECTION: المقدمة] — marker was absent after processing")
 
         # ── RUNTIME PRESERVATION GUARD — restore locked version if cleanup regressed ─
         _post_cleanup_wc  = clean_word_count(ar_data.get("script", ""))
