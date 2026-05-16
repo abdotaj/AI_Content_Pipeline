@@ -109,6 +109,87 @@ def _topic_slug(topic: str) -> str:
     return (s[:30].rstrip("_")) or "video"
 
 
+def _wait_for_manual_topic_fast(candidates: list, timeout_sec: int = 300) -> dict | None:
+    """Telegram topic menu — fires when auto-research has no candidates or as fallback."""
+    import requests as _rq
+    try:
+        from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+        _base    = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
+        _chat_id = str(TELEGRAM_CHAT_ID)
+    except Exception:
+        return None
+
+    def _tg(text: str) -> None:
+        try:
+            _rq.post(f"{_base}/sendMessage",
+                     json={"chat_id": _chat_id, "text": text}, timeout=12)
+        except Exception:
+            pass
+
+    if candidates:
+        lines = ["[FAST PIPELINE] Select a topic:\n"]
+        for i, c in enumerate(candidates, 1):
+            lines.append(f"{i}. {c.get('topic', '?')}")
+        _cancel_n = len(candidates) + 1
+        lines.append(f"\n{_cancel_n}. Cancel")
+        lines.append("\nOr type any topic directly.")
+        lines.append(f"Timeout: {timeout_sec // 60} min → stop")
+        _tg("\n".join(lines))
+    else:
+        _cancel_n = 1
+        _tg(
+            "[FAST PIPELINE] Auto-research found no topics.\n\n"
+            "Type a topic directly (e.g. 'Pablo Escobar', 'El Chapo').\n\n"
+            f"Or 'cancel' to stop. Timeout: {timeout_sec // 60} min."
+        )
+
+    _offset: int | None = None
+    try:
+        r = _rq.get(f"{_base}/getUpdates", params={"timeout": 0, "limit": 1}, timeout=10)
+        updates = r.json().get("result", [])
+        if updates:
+            _offset = updates[-1]["update_id"] + 1
+    except Exception:
+        pass
+
+    deadline = time.time() + timeout_sec
+    while time.time() < deadline:
+        time.sleep(8)
+        try:
+            params: dict = {"timeout": 0, "limit": 10}
+            if _offset is not None:
+                params["offset"] = _offset
+            r = _rq.get(f"{_base}/getUpdates", params=params, timeout=15)
+            updates = r.json().get("result", [])
+        except Exception:
+            continue
+        for upd in updates:
+            _offset = upd["update_id"] + 1
+            msg  = upd.get("message") or {}
+            if str(msg.get("chat", {}).get("id", "")) != _chat_id:
+                continue
+            text = (msg.get("text") or "").strip()
+            if not text:
+                continue
+            cmd = text.lower()
+            if cmd in ("/cancel", "cancel", str(_cancel_n)):
+                _tg("[FAST PIPELINE] Cancelled.")
+                return None
+            if candidates and text.isdigit():
+                idx = int(text) - 1
+                if 0 <= idx < len(candidates):
+                    sel = candidates[idx]
+                    _tg(f"[FAST PIPELINE] ✅ Selected: {sel.get('topic','?')}\n\nStarting...")
+                    return sel
+                continue
+            if len(text) >= 5 and not text.startswith("/"):
+                _tg(f"[FAST PIPELINE] ✅ Topic: {text}\n\nStarting fast generation...")
+                return {"topic": text, "niche": text, "manual_topic": True}
+
+    _tg(f"[FAST PIPELINE] ⛔ No topic selected in {timeout_sec // 60} min. Pipeline stopped.")
+    return None
+
+
 def _make_video(script_data: dict, video_id: str, stats: dict,
                 user_images: list | None = None,
                 user_videos: list | None = None) -> str:
@@ -185,12 +266,13 @@ def run_pipeline() -> None:
     print(f"{'='*60}\n")
 
     ensure_music_assets()
+    send_message(f"[FAST PIPELINE] Starting — {today}\nSearching for topic...")
 
     # ── STEP 1: Topic selection ───────────────────────────────────────────────
     print(f"\n{'='*50}\n  RESEARCH\n{'='*50}\n", flush=True)
     _ctrl.update_stage("Research", "selecting topic")
 
-    # Check topic_inject.json first (created by create_topic.py — consumed once)
+    # Priority 1: topic_inject.json (created by create_topic.py — consumed once)
     topic = None
     _inject_file = os.path.join(_ROOT, "topic_inject.json")
     if os.path.exists(_inject_file):
@@ -217,21 +299,24 @@ def run_pipeline() -> None:
             print(f"[FAST] topic_inject.json read error (ignored): {_ie}")
 
     if topic is None:
-        # No injection — auto-select via DuckDuckGo + NICHES (same as full pipeline)
+        # Priority 2: auto-research via DuckDuckGo + NICHES
         _log("Research", "No topic_inject.json — running auto-research", "INFO")
+        _auto_candidates: list = []
         try:
-            _auto_topics = research_topics(count=1)
-            if _auto_topics:
-                topic = _auto_topics[0]
-                _log("Research", f"Auto-selected: {topic.get('topic','?')}", "OK")
-            else:
-                _log("Research", "Auto-research returned no topics — aborting", "ERROR")
-                send_message("[FAST PIPELINE] ⛔ Auto-research found no topics.\nPipeline stopped.")
-                return
+            _auto_candidates = research_topics(count=4)
         except Exception as _re:
-            _log("Research", f"Auto-research failed: {_re} — aborting", "ERROR")
-            send_message(f"[FAST PIPELINE] ⛔ Auto-research error: {_re}\nPipeline stopped.")
-            return
+            _log("Research", f"Auto-research failed (non-fatal): {_re}", "WARN")
+
+        if _auto_candidates:
+            topic = _auto_candidates[0]
+            _log("Research", f"Auto-selected: {topic.get('topic','?')}", "OK")
+        else:
+            # Priority 3: Telegram manual selection — never abort without asking the user
+            _log("Research", "Auto-research empty — requesting manual topic via Telegram", "WARN")
+            topic = _wait_for_manual_topic_fast(candidates=_auto_candidates)
+            if topic is None:
+                _log("Research", "No topic selected — pipeline stopped", "WARN")
+                return
 
     topic_text  = topic.get("topic", "")
     topic_niche = topic.get("niche", "")

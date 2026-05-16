@@ -160,18 +160,23 @@ def _wait_for_topic_lang(label: str, candidates: list, timeout_sec: int = 300) -
             print(f"[TOPIC] Telegram send failed: {_e}")
 
     if not candidates:
-        _tg_send(f"{label} ⛔ No topic candidates available. Pipeline stopped.")
-        return None
-
-    # Build menu
-    lines = [f"{label}\n\nSelect a topic:\n"]
-    for i, c in enumerate(candidates, 1):
-        lines.append(f"{i}. {c.get('topic', '?')}")
-    cancel_n = len(candidates) + 1
-    lines.append(f"\n{cancel_n}. Cancel")
-    lines.append(f"\nOr type any topic directly.")
-    lines.append(f"Timeout: {timeout_sec // 60} min → cancel")
-    menu_text = "\n".join(lines)
+        # No auto-candidates — still allow free-text manual input
+        cancel_n  = 1
+        menu_text = (
+            f"{label} Auto-research found no topic candidates.\n\n"
+            "Type a topic directly (e.g. 'Pablo Escobar', 'El Chapo').\n\n"
+            f"Or 'cancel' to stop. Timeout: {timeout_sec // 60} min."
+        )
+    else:
+        # Build numbered menu
+        lines = [f"{label}\n\nSelect a topic:\n"]
+        for i, c in enumerate(candidates, 1):
+            lines.append(f"{i}. {c.get('topic', '?')}")
+        cancel_n = len(candidates) + 1
+        lines.append(f"\n{cancel_n}. Cancel")
+        lines.append(f"\nOr type any topic directly.")
+        lines.append(f"Timeout: {timeout_sec // 60} min → cancel")
+        menu_text = "\n".join(lines)
 
     # Advance offset so we only read messages sent AFTER this menu
     _offset: int | None = None

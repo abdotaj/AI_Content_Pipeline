@@ -315,23 +315,30 @@ def _wait_for_topic_selection(
             valid.append({**c, "topic": t})
 
     if not valid:
-        print("[TOPIC] No valid candidates after normalization — skipping selection")
-        return None
-
-    # Build the numbered menu (show source label + hashtags for registry picks)
-    lines = ["[ANIMATION PIPELINE]\nSelect a topic:\n"]
-    for i, c in enumerate(valid, 1):
-        _src    = " [registry]" if c.get("_source") == "registry" else " [fresh]"
-        _show   = f"  ↳ {c['show']}" if c.get("show") else ""
-        _htags  = f"\n   {c['hashtags']}" if c.get("hashtags") else ""
-        lines.append(f"{i}. {c['topic']}{_src}{_show}{_htags}")
-    cancel_n = len(valid) + 1
-    lines.append(f"\n{cancel_n}. Cancel")
-    reply_hint = " / ".join(str(i) for i in range(1, cancel_n + 1))
-    lines.append(f"\nReply with: {reply_hint}")
-    lines.append("Or: /cancel · /refresh")
-    lines.append("Or type any topic directly to override.")
-    menu_text = "\n".join(lines)
+        # No auto-candidates — still show free-text prompt so user can type manually
+        print("[TOPIC] No valid candidates — sending free-text prompt to Telegram")
+        cancel_n  = 1
+        menu_text = (
+            "[ANIMATION PIPELINE] Auto-research found no topic candidates.\n\n"
+            "Type a topic directly (e.g. 'Pablo Escobar', 'Jeffrey Dahmer').\n\n"
+            "Or /cancel to stop.\n"
+            f"Timeout: {timeout_sec // 60} min."
+        )
+    else:
+        # Build the numbered menu (show source label + hashtags for registry picks)
+        lines = ["[ANIMATION PIPELINE]\nSelect a topic:\n"]
+        for i, c in enumerate(valid, 1):
+            _src    = " [registry]" if c.get("_source") == "registry" else " [fresh]"
+            _show   = f"  ↳ {c['show']}" if c.get("show") else ""
+            _htags  = f"\n   {c['hashtags']}" if c.get("hashtags") else ""
+            lines.append(f"{i}. {c['topic']}{_src}{_show}{_htags}")
+        cancel_n = len(valid) + 1
+        lines.append(f"\n{cancel_n}. Cancel")
+        reply_hint = " / ".join(str(i) for i in range(1, cancel_n + 1))
+        lines.append(f"\nReply with: {reply_hint}")
+        lines.append("Or: /cancel · /refresh")
+        lines.append("Or type any topic directly to override.")
+        menu_text = "\n".join(lines)
 
     # Advance the offset so we only see replies AFTER this message
     _offset: int | None = None
@@ -631,16 +638,16 @@ def run_pipeline() -> None:
             if not _candidates:
                 raise RuntimeError("Both registry and DDG topic discovery returned empty")
         except Exception as e:
-            send_message(f"[ANIM] Topic discovery failed: {e}")
-            _log("Research", str(e), "ERROR")
-            return
+            _log("Research", f"Topic discovery failed ({e}) — falling back to manual selection", "WARN")
+            send_message(f"[ANIM] Auto-research failed: {e}\n\nFalling back to manual topic selection.")
+            _candidates = []  # let _wait_for_topic_selection show free-text prompt
 
         # Wait for user selection (blocking — up to _topic_wait_sec seconds)
         _selection = _wait_for_topic_selection(_candidates, timeout_sec=_topic_wait_sec)
 
-        # CANCEL covers both explicit cancel and timeout (timeout now returns "CANCEL")
+        # CANCEL/None: message already sent by selector; just stop cleanly
         if _selection == "CANCEL" or _selection is None:
-            _log("Research", "Pipeline cancelled — no topic selected", "WARN")
+            _log("Research", "Pipeline stopped — no topic selected", "WARN")
             return
 
         topic = _selection
