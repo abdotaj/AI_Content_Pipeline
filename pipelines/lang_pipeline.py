@@ -445,6 +445,21 @@ def run_lang_pipeline(language: str, mode: str) -> None:
 
     _log("VideoGen", f"Rendering {_lang.upper()} long video ({_mode})")
 
+    # Animation mode requires topic lock + content storage init before first render.
+    # The full animation_pipeline.py does this setup; without it create_animation_video()
+    # has no character identity, domain context, or persistent clip cache.
+    if _mode == "animation":
+        try:
+            from agent.animation_agent import init_topic_lock
+            from agent.video_agent import set_active_topic_content
+            from utils.content_manager import ensure_topic_content
+            init_topic_lock(topic_text)
+            _anim_content = ensure_topic_content(topic_text)
+            set_active_topic_content(_anim_content)
+            _log("VideoGen", f"Animation topic lock + content storage ready: {topic_text[:50]}", "OK")
+        except Exception as _anim_init_err:
+            _log("VideoGen", f"Animation init (non-fatal): {_anim_init_err}", "WARN")
+
     if _mode == "animation":
         long_path = _make_animation_video(
             long_script, topic.get("research", {}), stats,

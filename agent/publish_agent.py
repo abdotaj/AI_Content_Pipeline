@@ -172,7 +172,7 @@ def upload_to_youtube(video_path: str, script_data: dict, token_file: str = None
                 "categoryId": "25"
             },
             "status": {
-                "privacyStatus": "public",
+                "privacyStatus": "private",
                 "selfDeclaredMadeForKids": False
             }
         }
