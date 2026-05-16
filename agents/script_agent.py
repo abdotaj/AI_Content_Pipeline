@@ -5819,7 +5819,19 @@ def _write_arabic_from_research(en_script: dict, ar_research: dict, target_minut
         section = ""
 
         for attempt in range(1, 4):
-            if attempt > 1:
+            # Smart cooldown wait: if both providers are blocked, sleep until
+            # the soonest one recovers instead of burning all retries while
+            # no provider is available (e.g. Groq 60s cooldown vs OpenAI 300s).
+            _now_a  = _t.time()
+            _g_wait = max(0.0, _GROQ_RATE_LIMITED_UNTIL - _now_a)
+            _o_wait = max(0.0, _OPENAI_QUOTA_EXCEEDED_UNTIL - _now_a)
+            if _g_wait > 0 and _o_wait > 0:
+                _soonest = min(_GROQ_RATE_LIMITED_UNTIL, _OPENAI_QUOTA_EXCEEDED_UNTIL)
+                _sleep_s = min(max(0.0, _soonest - _t.time()), 120.0)
+                if _sleep_s > 1:
+                    print(f"[AR WAIT] Both providers cooling — waiting {int(_sleep_s)}s for soonest to recover")
+                    _t.sleep(_sleep_s)
+            elif attempt > 1:
                 _t.sleep(3)
 
             if attempt == 1:
