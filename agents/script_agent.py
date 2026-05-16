@@ -613,94 +613,116 @@ def _ai_script_call(prompt: str, max_tokens: int = 1000,
                     premium: bool = False) -> str:
     """Route script calls by quality tier.
 
-    premium=True  → OpenAI gpt-4o (primary) → Groq fallback  — long-form sections
-    premium=False → Groq (primary) → OpenAI gpt-4o-mini fallback — cheap helpers
+    premium=True  → OpenAI gpt-4o (primary) → Groq → Gemini  — long-form sections
+    premium=False → Groq (primary) → OpenAI → Gemini           — cheap helpers
     """
     import requests as _req
     import time
     global _OPENAI_QUOTA_EXCEEDED_UNTIL
 
-    if premium:
-        # ── Premium path: OpenAI gpt-4o → Groq fallback ─────────────────────
+    _now = time.time()
+    _g_wait_s   = max(0, int(_GROQ_RATE_LIMITED_UNTIL    - _now))
+    _o_wait_s   = max(0, int(_OPENAI_QUOTA_EXCEEDED_UNTIL - _now))
+    _gem_wait_s = max(0, int(_GEMINI_QUOTA_EXCEEDED_UNTIL - _now))
+    print(
+        f"[Provider Status] Groq={'✅' if _g_wait_s == 0 else f'❌ {_g_wait_s}s'} | "
+        f"OpenAI={'✅' if _o_wait_s == 0 else f'❌ {_o_wait_s}s'} | "
+        f"Gemini={'✅' if _gem_wait_s == 0 else f'❌ {_gem_wait_s}s'}"
+    )
+
+    def _openai_call(model: str) -> str:
+        """Single OpenAI call with strict per-status-code error handling."""
+        global _OPENAI_QUOTA_EXCEEDED_UNTIL
         api_key = os.getenv('OPENAI_API_KEY', '').strip()
-        if api_key and time.time() >= _OPENAI_QUOTA_EXCEEDED_UNTIL:
-            try:
-                messages = []
-                if system_prompt:
-                    messages.append({'role': 'system', 'content': system_prompt})
-                messages.append({'role': 'user', 'content': prompt})
-                r = _req.post(
-                    'https://api.openai.com/v1/chat/completions',
-                    headers={'Authorization': f'Bearer {api_key}',
-                             'Content-Type': 'application/json'},
-                    json={'model': 'gpt-4o', 'messages': messages,
-                          'max_tokens': max_tokens, 'temperature': temperature},
-                    timeout=120,
-                )
-                if r.status_code == 200:
-                    print('[Script] OpenAI gpt-4o ✅')
-                    return r.json()['choices'][0]['message']['content'].strip()
-                if r.status_code == 429:
-                    _OPENAI_QUOTA_EXCEEDED_UNTIL = time.time() + 300
-                    print('[Script] OpenAI quota exceeded — falling back to Groq (retry in 300s)')
-                else:
-                    print(f'[Script] OpenAI gpt-4o HTTP {r.status_code} — falling back to Groq')
-            except Exception as e:
-                print(f'[Script] OpenAI gpt-4o failed: {e} — falling back to Groq')
-        # Groq fallback for premium path
+        if not api_key:
+            print('[Script] OpenAI: OPENAI_API_KEY not configured in environment')
+            return ''
+        if time.time() < _OPENAI_QUOTA_EXCEEDED_UNTIL:
+            _rem = int(_OPENAI_QUOTA_EXCEEDED_UNTIL - time.time())
+            print(f'[Script] OpenAI: cooldown {_rem}s remaining — skipping')
+            return ''
+        msgs = []
+        if system_prompt:
+            msgs.append({'role': 'system', 'content': system_prompt})
+        msgs.append({'role': 'user', 'content': prompt})
         try:
-            result = _groq_fallback(prompt, max_tokens, json_mode, system_prompt=system_prompt)
-            if result:
-                print('[Script] Groq fallback used (premium path)')
-                return result
-        except Exception as e:
-            print(f'[Script] Groq fallback failed: {e}')
-        # Gemini fallback — used when both OpenAI and Groq are quota-exhausted
-        result = _gemini_call(prompt, max_tokens, system_prompt=system_prompt)
-        if result:
-            return result
-        return ""
-
-    # ── Standard path: Groq primary → OpenAI fallback ───────────────────────
-    # On Groq rate limit, upgrade to gpt-4o (same quality as premium path).
-    # On other Groq failures, use gpt-4o-mini to conserve quota.
-    try:
-        result = _groq_fallback(prompt, max_tokens, json_mode, system_prompt=system_prompt)
-        if result:
-            return result
-    except Exception as e:
-        print(f'[Script] Groq failed: {e}')
-
-    api_key = os.getenv('OPENAI_API_KEY', '').strip()
-    if api_key and time.time() >= _OPENAI_QUOTA_EXCEEDED_UNTIL:
-        # Use gpt-4o when Groq is rate-limited; gpt-4o-mini for ordinary failures
-        oai_model = 'gpt-4o' if time.time() < _GROQ_RATE_LIMITED_UNTIL else 'gpt-4o-mini'
-        try:
-            messages = []
-            if system_prompt:
-                messages.append({'role': 'system', 'content': system_prompt})
-            messages.append({'role': 'user', 'content': prompt})
+            _t0 = time.time()
             r = _req.post(
                 'https://api.openai.com/v1/chat/completions',
                 headers={'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json'},
-                json={'model': oai_model, 'messages': messages,
+                json={'model': model, 'messages': msgs,
                       'max_tokens': max_tokens, 'temperature': temperature},
                 timeout=120,
             )
+            _elapsed = time.time() - _t0
             if r.status_code == 200:
-                print(f'[Script] Used OpenAI {oai_model} fallback')
-                return r.json()['choices'][0]['message']['content'].strip()
+                try:
+                    content = r.json()['choices'][0]['message']['content']
+                    if content and content.strip():
+                        print(f'[Script] OpenAI {model} ✅ ({len(content)}chars, {_elapsed:.1f}s)')
+                        return content.strip()
+                    print(f'[Script] OpenAI {model}: 200 OK but empty content — skipping')
+                except (KeyError, IndexError, TypeError) as _pe:
+                    print(f'[Script] OpenAI {model}: 200 malformed response ({_pe}): {r.text[:200]}')
+            elif r.status_code == 401:
+                print(
+                    f'[Script] OpenAI 401 UNAUTHORIZED — verify OPENAI_API_KEY in GitHub Secrets '
+                    f'(wrong key, revoked, or wrong project). Body: {r.text[:300]}'
+                )
+            elif r.status_code == 403:
+                print(
+                    f'[Script] OpenAI 403 FORBIDDEN — check OPENAI_ORG_ID / OPENAI_PROJECT_ID. '
+                    f'Body: {r.text[:300]}'
+                )
             elif r.status_code == 429:
-                _OPENAI_QUOTA_EXCEEDED_UNTIL = time.time() + 300
-                print(f'[Script] OpenAI {oai_model} quota exceeded (retry in 300s)')
-        except Exception as e:
-            print(f'[Script] OpenAI {oai_model} failed: {e}')
+                body = r.text[:400]
+                retry_after = r.headers.get('Retry-After', 'not-set')
+                is_billing = any(kw in body for kw in (
+                    'insufficient_quota', 'exceeded your current quota', 'billing',
+                ))
+                cooldown = 3600 if is_billing else 300
+                label = 'BILLING QUOTA EXHAUSTED' if is_billing else 'RATE LIMIT (RPM/TPM)'
+                _OPENAI_QUOTA_EXCEEDED_UNTIL = time.time() + cooldown
+                print(
+                    f'[Script] OpenAI 429 {label} — cooldown {cooldown}s. '
+                    f'Retry-After: {retry_after}. Body: {body}'
+                )
+            elif r.status_code >= 500:
+                print(f'[Script] OpenAI {model} HTTP {r.status_code} SERVER ERROR. Body: {r.text[:300]}')
+            else:
+                print(f'[Script] OpenAI {model} HTTP {r.status_code}. Body: {r.text[:300]}')
+        except Exception as _e:
+            print(f'[Script] OpenAI {model} exception: {_e}')
+        return ''
 
-    # Gemini fallback — used when Groq and OpenAI are both exhausted
+    if premium:
+        # ── Premium path: OpenAI gpt-4o → Groq → Gemini ─────────────────────
+        result = _openai_call('gpt-4o')
+        if result:
+            return result
+        result = _groq_fallback(prompt, max_tokens, json_mode, system_prompt=system_prompt)
+        if result:
+            print('[Script] Groq used (premium path)')
+            return result
+        result = _gemini_call(prompt, max_tokens, system_prompt=system_prompt)
+        if result:
+            return result
+        print('[Script] ❌ All providers exhausted (premium path) — returning empty')
+        return ''
+
+    # ── Standard path: Groq primary → OpenAI → Gemini ───────────────────────
+    result = _groq_fallback(prompt, max_tokens, json_mode, system_prompt=system_prompt)
+    if result:
+        return result
+    oai_model = 'gpt-4o' if time.time() < _GROQ_RATE_LIMITED_UNTIL else 'gpt-4o-mini'
+    result = _openai_call(oai_model)
+    if result:
+        return result
     result = _gemini_call(prompt, max_tokens, system_prompt=system_prompt)
     if result:
         return result
-    return ""
+    print('[Script] ❌ All providers exhausted (standard path) — returning empty')
+    return ''
 
 
 def expand_section(existing_text: str, missing_words: int,
@@ -6024,11 +6046,32 @@ def _write_arabic_from_research(en_script: dict, ar_research: dict, target_minut
                 f"{clean_word_count(emergency_final)}w"
             )
         else:
-            print(
-                "[AR EMERGENCY] English-to-Arabic recovery path — "
-                "returning empty to force translation fallback"
-            )
-            return ""
+            # All LLMs failed — use Google Translate on English script as final safety net
+            print("[AR EMERGENCY] All LLM providers failed — falling back to Google Translate of English script")
+            _en_body = en_script.get("script", "").strip()
+            _gt_success = False
+            if _en_body:
+                try:
+                    _en_words = _en_body.split()
+                    _gt_start = len(_en_words) // 5
+                    _gt_end   = 4 * len(_en_words) // 5
+                    _en_excerpt = " ".join(_en_words[_gt_start:_gt_end])[:3500]
+                    _gt_result = translate_to_arabic_google(_en_excerpt)
+                    if _gt_result and clean_word_count(_gt_result) >= 100:
+                        _gt_section = f"[SECTION: القصة الحقيقية]\n{_gt_result}"
+                        if len(parts) > 1:
+                            parts.insert(-1, _gt_section)
+                        else:
+                            parts.append(_gt_section)
+                        print(f"[AR EMERGENCY] Google Translate fallback: {clean_word_count(_gt_result)}w added ✅")
+                        _gt_success = True
+                    else:
+                        print("[AR EMERGENCY] Google Translate returned empty")
+                except Exception as _gt_err:
+                    print(f"[AR EMERGENCY] Google Translate failed: {_gt_err}")
+            if not _gt_success:
+                print("[AR EMERGENCY] No recovery possible — returning empty to caller")
+                return ""
 
     if not parts:
         return ""
