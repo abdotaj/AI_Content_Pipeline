@@ -580,7 +580,7 @@ def run_pipeline() -> None:
     _ctrl.update_stage("VideoGen", "rendering AR long video")
     _log("VideoGen", "Rendering AR long video")
     _ar_wc_check = len(ar_long.get("script", "").split())
-    _AR_WORD_MIN = 4500   # hard minimum — below this = script is too short to render (30-min absolute floor)
+    _AR_WORD_MIN = 8000   # ~19 min at 420 WPM; rebuild loop handles 19-30 min range
     if ar_long.get("script_too_short") or _ar_wc_check < _AR_WORD_MIN:
         _block_msg = (
             f"[AR BLOCKED] Script below hard minimum: {_ar_wc_check}w < {_AR_WORD_MIN}w "

@@ -246,17 +246,18 @@ def clean_word_count(text: str) -> int:
 # Runtime targets (actual rendered audio — not WPM estimates):
 #   Arabic: FAST 30-40 min | ANIMATION 35-60 min | FULL 45-90 min
 #   English: FAST 10-15 min | ANIMATION 12-18 min | FULL 15-20 min
-# Word floors sized to reach minimums at ElevenLabs eleven_multilingual_v2 pacing.
+# Word floors sized to reach minimums at OpenAI TTS nova pacing (~420 WPM Arabic, 145 WPM English).
+# Arabic floors = target_minutes × 420 WPM (measured from production logs).
 _WORD_FLOORS = {
-    "fast":      {"english": 3_500, "arabic": 5_500},
-    "full":      {"english": 4_500, "arabic": 8_000},
-    "animation": {"english": 4_000, "arabic": 6_500},
+    "fast":      {"english": 3_500, "arabic": 12_600},   # 30 min × 420
+    "full":      {"english": 4_500, "arabic": 18_900},   # 45 min × 420
+    "animation": {"english": 4_000, "arabic": 14_700},   # 35 min × 420
     "short":     {"english": 0,     "arabic": 0},
 }
 _WORD_CEILINGS = {
-    "fast":      {"english": 4_800,  "arabic": 9_500},
-    "full":      {"english": 5_500,  "arabic": 17_000},
-    "animation": {"english": 5_000,  "arabic": 12_500},
+    "fast":      {"english": 4_800,  "arabic": 16_800},  # 40 min × 420
+    "full":      {"english": 5_500,  "arabic": 37_800},  # 90 min × 420
+    "animation": {"english": 5_000,  "arabic": 25_200},  # 60 min × 420
     "short":     {"english": 500,    "arabic": 500},
 }
 # Legacy aliases — write_long_script_split and callers use fast/full English by default.
@@ -364,7 +365,7 @@ def _cap_script_max_words(script_text: str, max_words: int = LONG_SCRIPT_MAX_WOR
     return result
 
 
-_TTS_WPM = {"english": 145, "arabic": 175}   # Arabic cinematic narrative pacing target: 160-190 effective WPM
+_TTS_WPM = {"english": 145, "arabic": 420}   # Arabic: OpenAI TTS nova@1.0x measured ~420-500 WPM in production
 
 # Runtime floors (minutes) by mode — ABSOLUTE MINIMUMS.
 # Any long video below 15 minutes is an automatic failure.
@@ -6220,15 +6221,48 @@ def translate_script(en_script: dict, research: dict | None = None) -> dict:
         ar_data["script"] = enforce_arabic_purity(ar_data["script"])
         ar_data["script"] = remove_arabic_filler_phrases(ar_data["script"])
 
-        # ── Section marker guard — ensure [SECTION: المقدمة] survives all processing ──
-        # All cleanup steps protect [SECTION:] lines, but if the marker was never
-        # injected (LLM omitted it), the TTS splitter only finds MainStory+Conclusion.
-        # This guard runs AFTER all cleanup so it cannot be stripped again.
+        # ── Section marker guard — ensure all 3 structural sections survive cleanup ─
+        # Runs AFTER all cleanup so guards cannot be stripped again.
+        # Without markers, TTS generates the whole script as one section → truncation risk.
         import re as _re_mg
         _ar_script = ar_data.get("script", "")
-        if _ar_script and not _re_mg.search(r'\[SECTION:\s*المقدمة', _ar_script):
-            ar_data["script"] = f"[SECTION: المقدمة]\n{_ar_script.lstrip()}"
-            print("[AR Script] Marker guard: prepended [SECTION: المقدمة] — marker was absent after processing")
+        if _ar_script:
+            # Guard 1: intro marker
+            if not _re_mg.search(r'\[SECTION:\s*المقدمة', _ar_script):
+                ar_data["script"] = f"[SECTION: المقدمة]\n{_ar_script.lstrip()}"
+                _ar_script = ar_data["script"]
+                print("[AR Script] Marker guard: prepended [SECTION: المقدمة] — marker was absent after processing")
+
+            # Guard 2: main story — any of the accepted section names counts
+            _main_story_patterns = [
+                r'\[SECTION:\s*القصة\s*الحقيقية',
+                r'\[SECTION:\s*القصة\s*الحقيقية',
+                r'\[SECTION:\s*التصعيد',
+                r'\[SECTION:\s*الرواية\s*مقابل',
+                r'\[SECTION:\s*حقائق\s*صادمة',
+                r'\[SECTION:\s*الخلفية',
+            ]
+            if not any(_re_mg.search(p, _ar_script) for p in _main_story_patterns):
+                # Split at conclusion marker (if present) and insert main story before it
+                _conc_match = _re_mg.search(r'\[SECTION:\s*الخاتمة', _ar_script)
+                if _conc_match:
+                    _before = _ar_script[:_conc_match.start()].rstrip()
+                    _after  = _ar_script[_conc_match.start():]
+                    ar_data["script"] = _before + "\n\n[SECTION: القصة الحقيقية]\n\n" + _after
+                    _ar_script = ar_data["script"]
+                    print("[AR Script] Marker guard: inserted [SECTION: القصة الحقيقية] before conclusion")
+
+            # Guard 3: conclusion marker
+            if not _re_mg.search(r'\[SECTION:\s*الخاتمة', _ar_script):
+                # Append a conclusion marker before the last 15% of the script
+                _lines = _ar_script.split("\n")
+                _split = max(int(len(_lines) * 0.85), len(_lines) - 30)
+                ar_data["script"] = (
+                    "\n".join(_lines[:_split]).rstrip()
+                    + "\n\n[SECTION: الخاتمة]\n"
+                    + "\n".join(_lines[_split:]).lstrip()
+                )
+                print("[AR Script] Marker guard: inserted [SECTION: الخاتمة] — conclusion marker was absent")
 
         # ── RUNTIME PRESERVATION GUARD — restore locked version if cleanup regressed ─
         _post_cleanup_wc  = clean_word_count(ar_data.get("script", ""))
@@ -6261,8 +6295,8 @@ def translate_script(en_script: dict, research: dict | None = None) -> dict:
     # Uses WPM estimate only — REAL validation happens on rendered audio duration.
     # Only block clearly broken scripts (< 30 min absolute minimum across all modes).
     # Mode-specific targets are enforced post-render by the pipeline rebuild loop.
-    _AR_ABS_FLOOR_MIN    = 30.0   # universal absolute minimum — below this is broken
-    _AR_HARD_FLOOR_WORDS = 5000   # universal word floor (~30 min at 175 WPM)
+    _AR_ABS_FLOOR_MIN    = 15.0   # gate: below this is a broken script; 15-30 min is handled by rebuild loop
+    _AR_HARD_FLOOR_WORDS = 6300   # ~15 min at 420 WPM — must still allow render so rebuild loop can expand
     if _final_min < _AR_ABS_FLOOR_MIN:
         print(
             f"[AR BLOCKED] Estimated runtime {_final_min:.1f}min below "
@@ -6958,12 +6992,30 @@ def write_arabic_script(topic: dict, research: dict | None = None) -> dict:
         ar_data["script"] = enforce_arabic_purity(ar_data["script"])
         ar_data["script"] = remove_arabic_filler_phrases(ar_data["script"])
 
-        # Section-marker guard
+        # Section-marker guard — ensure all 3 structural sections survive cleanup
         import re as _re_ar
         _body = ar_data.get("script", "")
-        if _body and not _re_ar.search(r'\[SECTION:\s*المقدمة', _body):
-            ar_data["script"] = f"[SECTION: المقدمة]\n{_body.lstrip()}"
-            print("[AR] Marker guard: prepended [SECTION: المقدمة]")
+        if _body:
+            if not _re_ar.search(r'\[SECTION:\s*المقدمة', _body):
+                ar_data["script"] = f"[SECTION: المقدمة]\n{_body.lstrip()}"
+                _body = ar_data["script"]
+                print("[AR] Marker guard: prepended [SECTION: المقدمة]")
+            _main_pats = [
+                r'\[SECTION:\s*القصة\s*الحقيقية', r'\[SECTION:\s*التصعيد',
+                r'\[SECTION:\s*الرواية\s*مقابل', r'\[SECTION:\s*حقائق\s*صادمة',
+                r'\[SECTION:\s*الخلفية',
+            ]
+            if not any(_re_ar.search(p, _body) for p in _main_pats):
+                _cm = _re_ar.search(r'\[SECTION:\s*الخاتمة', _body)
+                if _cm:
+                    ar_data["script"] = _body[:_cm.start()].rstrip() + "\n\n[SECTION: القصة الحقيقية]\n\n" + _body[_cm.start():]
+                    _body = ar_data["script"]
+                    print("[AR] Marker guard: inserted [SECTION: القصة الحقيقية] before conclusion")
+            if not _re_ar.search(r'\[SECTION:\s*الخاتمة', _body):
+                _lns = _body.split("\n")
+                _sp  = max(int(len(_lns) * 0.85), len(_lns) - 30)
+                ar_data["script"] = "\n".join(_lns[:_sp]).rstrip() + "\n\n[SECTION: الخاتمة]\n" + "\n".join(_lns[_sp:]).lstrip()
+                print("[AR] Marker guard: inserted [SECTION: الخاتمة]")
 
         # Runtime preservation guard
         _post_cl_wc  = clean_word_count(ar_data.get("script", ""))
@@ -6983,8 +7035,8 @@ def write_arabic_script(topic: dict, research: dict | None = None) -> dict:
     _final_wc  = clean_word_count(ar_data.get("script", ""))
     _final_min = estimate_arabic_duration(ar_data.get("script", ""))
 
-    _AR_ABS_FLOOR_MIN = 30.0  # universal absolute minimum across all modes
-    _AR_HARD_WC_FLOOR = 5000  # ~30 min at 175 WPM — mode targets enforced post-render
+    _AR_ABS_FLOOR_MIN = 15.0  # gate: below this is broken; 15-30 min handled by rebuild loop
+    _AR_HARD_WC_FLOOR = 6300  # ~15 min at 420 WPM — allows render so rebuild loop can expand
 
     if _final_min < _AR_ABS_FLOOR_MIN:
         ar_data["script_too_short"] = True

@@ -28,8 +28,9 @@ import os
 PIPELINE_MODE: str = os.getenv("PIPELINE_MODE", "fast").lower().strip()
 
 # ── Speech rate ───────────────────────────────────────────────────────────────
-WORDS_PER_MINUTE: int = 156      # Arabic narration pace (ElevenLabs)
-WORDS_PER_MINUTE_EN: int = 163   # English TTS is slightly faster
+WORDS_PER_MINUTE: int = 156         # English TTS narration pace (used for EN script duration estimates)
+WORDS_PER_MINUTE_EN: int = 163      # English TTS slightly faster (alt estimate)
+WORDS_PER_MINUTE_AR: int = 420      # Arabic OpenAI TTS nova@1.0x — measured ~420-500 WPM in production
 
 # ── Preferred video duration range (guidance only, not enforced) ──────────────
 # Topics with deeper investigation naturally run longer — that is correct.
