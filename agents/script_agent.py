@@ -1157,9 +1157,9 @@ def upgrade_arabic_script(script: str) -> str:
         _new_wc       = clean_word_count(improved)
         _new_min      = _new_wc / _TTS_WPM["arabic"]
         _contract_min = get_runtime_contract("fast")["min_minutes"]
-        if _new_wc < _orig_wc * 0.90:
+        if _new_wc < _orig_wc * 0.70:
             print(
-                f"[RUNTIME GUARD] Arabic upgrade rejected: {_new_wc}w < {_orig_wc}w×90% "
+                f"[RUNTIME GUARD] Arabic upgrade rejected: {_new_wc}w < {_orig_wc}w×70% "
                 f"({_new_min:.1f}min vs {_orig_min:.1f}min) — keeping original"
             )
             return script
@@ -5422,8 +5422,20 @@ def _write_ar_section_chunked(
         )
         cont_wc = clean_word_count(cont) if cont else 0
         if cont_wc < 100:
-            print(f"[AR Chunk] {label} chunk {chunk_num}: too short ({cont_wc}w) — stopping")
-            break
+            # Retry with a stripped-down prompt — entity_lock may have confused the model
+            _tc.sleep(4)
+            cont = _ai_script_call(
+                f"استمر في الكتابة العربية عن: {topic_str}\n"
+                f"أضف {needed} كلمة جديدة من السرد. لا تكرر ما سبق. استمر مباشرة بعد:\n\n{tail}\n\nاكتب فقط:",
+                max_tokens=max_tok,
+                temperature=0.72,
+                premium=True,
+            )
+            cont_wc = clean_word_count(cont) if cont else 0
+            if cont_wc < 50:
+                print(f"[AR Chunk] {label} chunk {chunk_num}: too short ({cont_wc}w after simple retry) — stopping")
+                break
+            print(f"[AR Chunk] {label} chunk {chunk_num}: simple-retry OK ({cont_wc}w)")
         accumulated = accumulated.rstrip() + "\n\n" + cont.strip()
         acc_wc      = clean_word_count(accumulated)
         print(f"[AR Chunk] {label} chunk {chunk_num}: +{cont_wc}w → {acc_wc}w / {target_words}w")
@@ -5897,6 +5909,18 @@ def _write_arabic_from_research(en_script: dict, ar_research: dict, target_minut
             premium=True,
         )
         if emergency_final and clean_word_count(emergency_final) >= 200:
+            # Extend emergency section to main target via chunking
+            _em_wc = clean_word_count(emergency_final)
+            if _em_wc < _main_target:
+                print(f"[AR PIPELINE] Extending emergency main story: {_em_wc}w → target {_main_target}w")
+                emergency_final = _write_ar_section_chunked(
+                    label         = "AR-MainStory+Ch4",
+                    topic_str     = topic_str,
+                    entity_lock   = entity_lock,
+                    target_words  = _main_target,
+                    existing_text = emergency_final.strip(),
+                    is_anim       = _anim_mode,
+                )
             # Insert before conclusion (last part) to maintain story order
             if len(parts) > 1:
                 parts.insert(-1, emergency_final.strip())
