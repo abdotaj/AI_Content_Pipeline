@@ -6532,6 +6532,16 @@ def assemble_video_with_hook(
         )
         return np.array(pil)
 
+    # Frame cache: each unique image path loads its numpy array only once.
+    # Clips sharing the same image reference the same array instead of duplicating 6 MB per clip.
+    # For a 28-min video with 120 images, this drops frame RAM from ~2 GB to ~700 MB.
+    _frame_cache: dict = {}
+
+    def _load_frame_cached(img_path: str):
+        if img_path not in _frame_cache:
+            _frame_cache[img_path] = _load_frame(img_path)
+        return _frame_cache[img_path]
+
     def _fit_vertical(clip):
         """Scale clip to fill 1080×1920 with center crop — no black bars for any aspect ratio."""
         cw, ch = clip.size
@@ -6617,7 +6627,7 @@ def assemble_video_with_hook(
             if tl_dur is None and c.duration < dur:
                 c = c.set_duration(dur)
             return c
-        frame = _load_frame(src_path)
+        frame = _load_frame_cached(src_path)
         return _zoom_clip(frame, dur, 1.00, 1.08 if zoom_in else 1.00, fade_in=fi, fade_out=0.2)
 
     # â"€â"€ HOOK SECTION (0:00 to 1:30): fast cuts every 3-5 s â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
@@ -6665,7 +6675,7 @@ def assemble_video_with_hook(
             # Rotate through 4 motion styles for cinematic variety
             if not _is_video_file(img_path) and idx % 4 == 1:
                 try:
-                    frame = _load_frame(img_path)
+                    frame = _load_frame_cached(img_path)
                     main_clips.append(_pan_clip(frame, dur1, pan_right=True,  fade_in=0.2, fade_out=0.2))
                     main_clips.append(_zoom_clip(frame, dur2, 1.00, 1.06, fade_in=0.2, fade_out=0.2))
                     print(f"[Visual] Reusing cinematic montage (pan-R): {os.path.basename(img_path)[:40]}")
@@ -6674,7 +6684,7 @@ def assemble_video_with_hook(
                     pass
             elif not _is_video_file(img_path) and idx % 4 == 3:
                 try:
-                    frame = _load_frame(img_path)
+                    frame = _load_frame_cached(img_path)
                     main_clips.append(_pan_clip(frame, dur1, pan_right=False, fade_in=0.2, fade_out=0.2))
                     main_clips.append(_zoom_clip(frame, dur2, 1.06, 1.00, fade_in=0.2, fade_out=0.2))
                     print(f"[Visual] Reusing cinematic montage (pan-L): {os.path.basename(img_path)[:40]}")
@@ -6792,13 +6802,18 @@ def _generate_emergency_visuals(
     """Generate cinematic emergency visuals when Pollinations, stock, and user content all fail.
 
     Priority:
-      Tier 1 — Pollinations AI with crime documentary prompts
+      Tier 1 — Pollinations AI with crime documentary prompts (parallel, capped at 24 unique)
       Tier 2 — PIL dark-gradient images (never flat solid colors)
+
+    Caps unique images at 24 — the assembly loop cycles them to fill the full pool duration.
+    Parallel workers prevent the 90s-per-image sequential hang that caused OOM (exit 137).
     """
+    # Cap unique images — assembly cycles them; 100+ sequential calls = multi-hour hang
+    n_unique = min(n, 24)
     os.makedirs(output_dir, exist_ok=True)
     paths: list[str] = []
 
-    # Tier 1: Pollinations with cinematic inserts
+    # Tier 1: Pollinations in parallel (4 workers)
     _EM_PROMPTS = [
         f"{'true crime documentary dark cinematic evidence investigation' if not topic else topic + ' crime investigation dark documentary cinematic'}{_IMAGE_PROMPT_SUFFIX}",
         f"police investigation dark room crime file dramatic cinematic{_IMAGE_PROMPT_SUFFIX}",
@@ -6807,17 +6822,24 @@ def _generate_emergency_visuals(
         f"evidence board crime photos newspaper clippings dark documentary{_IMAGE_PROMPT_SUFFIX}",
     ]
     _em_seed = random.randint(1, 99999)
-    for i in range(n):
-        prompt   = _EM_PROMPTS[i % len(_EM_PROMPTS)]
-        em_path  = os.path.join(output_dir, f"_emergency_{i:03d}.png")
-        result   = generate_ai_image(prompt, em_path, seed=_em_seed + i)
-        if result:
-            paths.append(result)
-        if len(paths) >= n:
-            break
+
+    from concurrent.futures import ThreadPoolExecutor as _TEX, as_completed as _asc
+
+    def _try_one(i: int):
+        prompt  = _EM_PROMPTS[i % len(_EM_PROMPTS)]
+        em_path = os.path.join(output_dir, f"_emergency_{i:03d}.png")
+        return generate_ai_image(prompt, em_path, seed=_em_seed + i)
+
+    print(f"[Emergency] Generating {n_unique} unique visuals (cap={n_unique}, requested={n}), 4 workers")
+    with _TEX(max_workers=4) as _pool:
+        _futures = {_pool.submit(_try_one, i): i for i in range(n_unique)}
+        for _fut in _asc(_futures):
+            _res = _fut.result()
+            if _res:
+                paths.append(_res)
 
     if paths:
-        print(f"[Emergency] {len(paths)}/{n} AI cinematic emergency visuals generated")
+        print(f"[Emergency] {len(paths)}/{n_unique} AI cinematic emergency visuals generated (cap={n_unique}, requested={n})")
         return paths
 
     # Tier 2: PIL dark-gradient fallback (not flat solid)
