@@ -175,7 +175,7 @@ def _wait_for_topic_lang(label: str, candidates: list, timeout_sec: int = 300) -
         cancel_n = len(candidates) + 1
         lines.append(f"\n{cancel_n}. Cancel")
         lines.append(f"\nOr type any topic directly.")
-        lines.append(f"Timeout: {timeout_sec // 60} min → cancel")
+        lines.append(f"Timeout: {timeout_sec // 60} min → auto-select #1")
         menu_text = "\n".join(lines)
 
     # Advance offset so we only read messages sent AFTER this menu
@@ -238,8 +238,15 @@ def _wait_for_topic_lang(label: str, candidates: list, timeout_sec: int = 300) -
                 print(f"[TOPIC] Free-text topic: '{text[:60]}'")
                 return sel
 
-    _tg_send(f"{label} ⛔ No selection received within time limit. Pipeline stopped.")
-    print(f"[TOPIC] Timeout ({timeout_sec}s) — aborting")
+    # Timeout — auto-select first candidate if available
+    print(f"[TOPIC] Timeout ({timeout_sec}s)")
+    if candidates:
+        auto = candidates[0]
+        _tg_send(f"{label} No reply — auto-selecting:\n{auto.get('topic','?')}\n\nStarting...")
+        print(f"[TOPIC] Auto-selected: {auto.get('topic','?')[:60]}")
+        return auto
+    _tg_send(f"{label} ⛔ No selection and no candidates. Pipeline stopped.")
+    print(f"[TOPIC] Timeout — no candidates, aborting")
     return None
 
 
@@ -287,8 +294,8 @@ def run_lang_pipeline(language: str, mode: str) -> None:
     print(f"  PIPELINE_MODE = {os.getenv('PIPELINE_MODE', '?')}")
     print(f"{'='*60}\n")
 
-    ensure_music_assets()
     send_message(f"{_label} Starting...\nLanguage: {_lang} | Mode: {_mode}")
+    ensure_music_assets()
 
     # ── STEP 1: Topic ─────────────────────────────────────────────────────────
     topic = None

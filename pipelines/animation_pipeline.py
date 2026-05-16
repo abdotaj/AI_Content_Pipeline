@@ -338,6 +338,7 @@ def _wait_for_topic_selection(
         lines.append(f"\nReply with: {reply_hint}")
         lines.append("Or: /cancel · /refresh")
         lines.append("Or type any topic directly to override.")
+        lines.append(f"Timeout: {timeout_sec // 60} min → auto-select #1")
         menu_text = "\n".join(lines)
 
     # Advance the offset so we only see replies AFTER this message
@@ -464,11 +465,16 @@ def _wait_for_topic_selection(
                 print(f"[TOPIC] Starting generation from manual topic: '{_norm[:60]}'")
                 return {"topic": _norm, "niche": _norm}
 
-    # Timeout — no auto-selection; caller must abort
-    print(f"[TOPIC] No Telegram reply in {timeout_sec}s — aborting (no auto-select)")
+    # Timeout — auto-select first candidate if available
+    print(f"[TOPIC] No Telegram reply in {timeout_sec}s")
+    if valid:
+        auto = valid[0]
+        _tg_send(base, chat_id,
+            f"[ANIMATION PIPELINE] No reply — auto-selecting:\n{auto['topic']}\n\nStarting generation...")
+        print(f"[TOPIC] Auto-selected: {auto['topic'][:60]}")
+        return auto
     _tg_send(base, chat_id,
-        "[ANIMATION PIPELINE] ⛔ No topic selected within time limit.\n"
-        "Pipeline stopped. Run again and select a topic from the menu.")
+        "[ANIMATION PIPELINE] ⛔ No topic selected and no candidates. Pipeline stopped.")
     return "CANCEL"
 
 
@@ -497,6 +503,7 @@ def run_pipeline() -> None:
     print(f"  Visual mode: character-centric motion documentary")
     print(f"{'='*60}\n")
 
+    send_message(f"[ANIMATION PIPELINE] Starting — {today}\nPreparing assets & selecting topic...")
     ensure_music_assets()
 
     # ── STEP 1: Topic selection (Telegram-first) ──────────────────────────────
