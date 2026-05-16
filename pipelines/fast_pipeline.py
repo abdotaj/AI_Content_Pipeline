@@ -217,14 +217,21 @@ def run_pipeline() -> None:
             print(f"[FAST] topic_inject.json read error (ignored): {_ie}")
 
     if topic is None:
-        # Strict manual-only policy: no auto-selection allowed
-        _log("Research", "No topic provided — aborting (manual topic required)", "ERROR")
-        send_message(
-            "[FAST PIPELINE] ⛔ No topic selected.\n\n"
-            "Set a topic via topic_inject.json before starting the pipeline.\n"
-            "Pipeline stopped."
-        )
-        return
+        # No injection — auto-select via DuckDuckGo + NICHES (same as full pipeline)
+        _log("Research", "No topic_inject.json — running auto-research", "INFO")
+        try:
+            _auto_topics = research_topics(count=1)
+            if _auto_topics:
+                topic = _auto_topics[0]
+                _log("Research", f"Auto-selected: {topic.get('topic','?')}", "OK")
+            else:
+                _log("Research", "Auto-research returned no topics — aborting", "ERROR")
+                send_message("[FAST PIPELINE] ⛔ Auto-research found no topics.\nPipeline stopped.")
+                return
+        except Exception as _re:
+            _log("Research", f"Auto-research failed: {_re} — aborting", "ERROR")
+            send_message(f"[FAST PIPELINE] ⛔ Auto-research error: {_re}\nPipeline stopped.")
+            return
 
     topic_text  = topic.get("topic", "")
     topic_niche = topic.get("niche", "")
