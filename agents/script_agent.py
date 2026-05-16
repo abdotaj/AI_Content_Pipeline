@@ -470,8 +470,8 @@ def _trim_plain_text_to_words(text: str, max_words: int) -> str:
     return trimmed
 
 
-_GROQ_RATE_LIMITED    = False   # set True on first 429 — skips all subsequent Groq calls
-_OPENAI_QUOTA_EXCEEDED = False
+_GROQ_RATE_LIMITED_UNTIL:    float = 0.0   # epoch seconds; Groq is skipped until this time
+_OPENAI_QUOTA_EXCEEDED_UNTIL: float = 0.0  # epoch seconds; OpenAI is skipped until this time
 
 
 def _groq_fallback(prompt: str, max_tokens: int, json_mode: bool,
@@ -479,10 +479,11 @@ def _groq_fallback(prompt: str, max_tokens: int, json_mode: bool,
     """Groq primary call. Detects 429 immediately and sets session flag to skip Groq."""
     import os
     import time
-    global _GROQ_RATE_LIMITED
+    global _GROQ_RATE_LIMITED_UNTIL
 
-    if _GROQ_RATE_LIMITED:
-        print("[Groq] Rate-limited this session — skipping Groq entirely")
+    if time.time() < _GROQ_RATE_LIMITED_UNTIL:
+        _remaining = int(_GROQ_RATE_LIMITED_UNTIL - time.time())
+        print(f"[Groq] Rate-limited — retrying in {_remaining}s")
         return ""
 
     groq_key = os.getenv("GROQ_API_KEY", "").strip()
@@ -530,8 +531,8 @@ def _groq_fallback(prompt: str, max_tokens: int, json_mode: bool,
                 or "too many requests" in err
             )
             if is_rate_limit:
-                _GROQ_RATE_LIMITED = True
-                print(f"[Groq] Rate limit hit — switching to OpenAI fallback")
+                _GROQ_RATE_LIMITED_UNTIL = time.time() + 60
+                print(f"[Groq] Rate limit hit — switching to OpenAI fallback (retry in 60s)")
                 return ""   # caller will use OpenAI; do NOT try next Groq model
             print(f"[Script] Groq {model} failed: {e}")
             time.sleep(5)
@@ -549,12 +550,13 @@ def _ai_script_call(prompt: str, max_tokens: int = 1000,
     premium=False → Groq (primary) → OpenAI gpt-4o-mini fallback — cheap helpers
     """
     import requests as _req
-    global _OPENAI_QUOTA_EXCEEDED
+    import time
+    global _OPENAI_QUOTA_EXCEEDED_UNTIL
 
     if premium:
         # ── Premium path: OpenAI gpt-4o → Groq fallback ─────────────────────
         api_key = os.getenv('OPENAI_API_KEY', '').strip()
-        if api_key and not _OPENAI_QUOTA_EXCEEDED:
+        if api_key and time.time() >= _OPENAI_QUOTA_EXCEEDED_UNTIL:
             try:
                 messages = []
                 if system_prompt:
@@ -572,8 +574,8 @@ def _ai_script_call(prompt: str, max_tokens: int = 1000,
                     print('[Script] OpenAI gpt-4o ✅')
                     return r.json()['choices'][0]['message']['content'].strip()
                 if r.status_code == 429:
-                    _OPENAI_QUOTA_EXCEEDED = True
-                    print('[Script] OpenAI quota exceeded — falling back to Groq')
+                    _OPENAI_QUOTA_EXCEEDED_UNTIL = time.time() + 300
+                    print('[Script] OpenAI quota exceeded — falling back to Groq (retry in 300s)')
                 else:
                     print(f'[Script] OpenAI gpt-4o HTTP {r.status_code} — falling back to Groq')
             except Exception as e:
@@ -599,9 +601,9 @@ def _ai_script_call(prompt: str, max_tokens: int = 1000,
         print(f'[Script] Groq failed: {e}')
 
     api_key = os.getenv('OPENAI_API_KEY', '').strip()
-    if api_key and not _OPENAI_QUOTA_EXCEEDED:
+    if api_key and time.time() >= _OPENAI_QUOTA_EXCEEDED_UNTIL:
         # Use gpt-4o when Groq is rate-limited; gpt-4o-mini for ordinary failures
-        oai_model = 'gpt-4o' if _GROQ_RATE_LIMITED else 'gpt-4o-mini'
+        oai_model = 'gpt-4o' if time.time() < _GROQ_RATE_LIMITED_UNTIL else 'gpt-4o-mini'
         try:
             messages = []
             if system_prompt:
@@ -618,8 +620,8 @@ def _ai_script_call(prompt: str, max_tokens: int = 1000,
                 print(f'[Script] Used OpenAI {oai_model} fallback')
                 return r.json()['choices'][0]['message']['content'].strip()
             elif r.status_code == 429:
-                _OPENAI_QUOTA_EXCEEDED = True
-                print(f'[Script] OpenAI {oai_model} quota exceeded')
+                _OPENAI_QUOTA_EXCEEDED_UNTIL = time.time() + 300
+                print(f'[Script] OpenAI {oai_model} quota exceeded (retry in 300s)')
         except Exception as e:
             print(f'[Script] OpenAI {oai_model} failed: {e}')
 

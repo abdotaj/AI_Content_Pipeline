@@ -651,7 +651,7 @@ def run_pipeline():
     # ── Approval gate 1: Scripts ─────────────────────────────────────────────
     while True:
         _approval_1 = wait_for_approval(
-            stage_name=f"Scripts Ready — {en_long.get('title', '')[:60]}\nReview the scripts above.",
+            stage_name=f"Scripts Ready — {(en_long.get('title') or '')[:60]}\nReview the scripts above.",
             available_commands=["approve", "rewrite", "cancel"],
             mode="PIPELINE",
         )
