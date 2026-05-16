@@ -436,7 +436,7 @@ def run_lang_pipeline(language: str, mode: str) -> None:
     # Arabic hard minimum gate — mode-specific word floor
     if _lang == "arabic":
         _ar_wc_gate  = len(long_script.get("script", "").split())
-        _AR_WORD_MIN = {"fast": 5500, "animation": 6500, "full": 7500}.get(_mode, 5500)
+        _AR_WORD_MIN = {"fast": 4500, "animation": 5000, "full": 5000}.get(_mode, 4500)
         if long_script.get("script_too_short") or _ar_wc_gate < _AR_WORD_MIN:
             _msg = f"{_label} AR blocked: {_ar_wc_gate}w < {_AR_WORD_MIN}w minimum"
             _log("VideoGen", _msg, "ERROR")

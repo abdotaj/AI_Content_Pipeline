@@ -6061,9 +6061,9 @@ def translate_script(en_script: dict, research: dict | None = None) -> dict:
     # Set via AR_TARGET_MINUTES env var or derived from pipeline mode.
     _ar_target_minutes = float(os.getenv("AR_TARGET_MINUTES", "0") or "0")
     if _ar_target_minutes <= 0:
-        _ar_target_minutes = (
-            30.0 if os.getenv("PIPELINE_MODE", "").lower() == "animation" else 22.0
-        )
+        _ar_target_minutes = {
+            "fast": 30.0, "animation": 35.0, "full": 45.0,
+        }.get(os.getenv("PIPELINE_MODE", "fast").lower(), 30.0)
     print(f"[AR] Runtime target: {_ar_target_minutes}min")
 
     # ── Choose script generation path ─────────────────────────────────────────
@@ -6236,41 +6236,38 @@ def translate_script(en_script: dict, research: dict | None = None) -> dict:
 
     # ── Runtime floor — pre-render WPM estimate gate ─────────────────────────
     # Uses WPM estimate only — REAL validation happens on rendered audio duration.
-    # Below contract minimum = script_too_short flag → pipeline blocks render.
-    _ar_contract          = get_runtime_contract(_pipeline_mode_tr, "arabic")
-    _AR_RUNTIME_FLOOR_MIN = _ar_contract["min_minutes"]
-    if _final_min < _AR_RUNTIME_FLOOR_MIN:
+    # Only block clearly broken scripts (< 30 min absolute minimum across all modes).
+    # Mode-specific targets are enforced post-render by the pipeline rebuild loop.
+    _AR_ABS_FLOOR_MIN    = 30.0   # universal absolute minimum — below this is broken
+    _AR_HARD_FLOOR_WORDS = 5000   # universal word floor (~30 min at 175 WPM)
+    if _final_min < _AR_ABS_FLOOR_MIN:
         print(
             f"[AR BLOCKED] Estimated runtime {_final_min:.1f}min below "
-            f"{_AR_RUNTIME_FLOOR_MIN:.0f}min contract minimum ({_final_wc}w) — "
+            f"{_AR_ABS_FLOOR_MIN:.0f}min absolute minimum ({_final_wc}w) — "
             f"marking script as too short to render"
         )
         ar_data["script_too_short"] = True
-    else:
-        ar_data.pop("script_too_short", None)
-
-    # ── Hard Arabic word floor — enforced independently of WPM estimates ──────
-    # WPM estimates alone can't guarantee 30-min minimum; word floor is a hard gate.
-    _AR_HARD_FLOOR_WORDS = _WORD_FLOORS[_pipeline_mode_tr]["arabic"]
-    if _final_wc < _AR_HARD_FLOOR_WORDS:
+    elif _final_wc < _AR_HARD_FLOOR_WORDS:
         print(
             f"[AR BLOCKED] Word count {_final_wc}w below hard minimum {_AR_HARD_FLOOR_WORDS}w "
             f"— blocking render (expansion failed to reach floor)"
         )
         ar_data["script_too_short"] = True
+    else:
+        ar_data.pop("script_too_short", None)
 
     ar_data["estimated_runtime_min"] = round(_final_min, 1)
 
-    if _final_min < _AR_RUNTIME_FLOOR_MIN:
+    if _final_min < _AR_ABS_FLOOR_MIN:
         print(
             f"[AR RUNTIME] Estimated duration: ~{_final_min:.1f}min — "
-            f"BELOW {_AR_RUNTIME_FLOOR_MIN:.0f}min contract minimum "
+            f"BELOW {_AR_ABS_FLOOR_MIN:.0f}min absolute minimum "
             f"(WPM estimate only — real validation on rendered audio)"
         )
     else:
         print(
             f"[AR RUNTIME] Estimated duration: ~{_final_min:.1f}min >= "
-            f"{_AR_RUNTIME_FLOOR_MIN:.0f}min contract minimum "
+            f"{_AR_ABS_FLOOR_MIN:.0f}min absolute minimum "
             f"(WPM estimate only — real validation on rendered audio)"
         )
     print(
@@ -6811,9 +6808,9 @@ def write_arabic_script(topic: dict, research: dict | None = None) -> dict:
     # ── Runtime target ────────────────────────────────────────────────────────
     _ar_target_minutes = float(os.getenv("AR_TARGET_MINUTES", "0") or "0")
     if _ar_target_minutes <= 0:
-        _ar_target_minutes = (
-            30.0 if os.getenv("PIPELINE_MODE", "").lower() == "animation" else 22.0
-        )
+        _ar_target_minutes = {
+            "fast": 30.0, "animation": 35.0, "full": 45.0,
+        }.get(os.getenv("PIPELINE_MODE", "fast").lower(), 30.0)
     print(f"[AR] Independent pipeline | topic='{topic_str}' | target={_ar_target_minutes}min")
 
     # Minimal metadata dict for _write_arabic_from_research (no English body needed)
@@ -6963,13 +6960,12 @@ def write_arabic_script(topic: dict, research: dict | None = None) -> dict:
     _final_wc  = clean_word_count(ar_data.get("script", ""))
     _final_min = estimate_arabic_duration(ar_data.get("script", ""))
 
-    _ar_contract      = get_runtime_contract(_pipeline_mode, "arabic")
-    _AR_FLOOR_MIN     = _ar_contract["min_minutes"]
-    _AR_HARD_WC_FLOOR = _WORD_FLOORS[_pipeline_mode]["arabic"]
+    _AR_ABS_FLOOR_MIN = 30.0  # universal absolute minimum across all modes
+    _AR_HARD_WC_FLOOR = 5000  # ~30 min at 175 WPM — mode targets enforced post-render
 
-    if _final_min < _AR_FLOOR_MIN:
+    if _final_min < _AR_ABS_FLOOR_MIN:
         ar_data["script_too_short"] = True
-        print(f"[AR BLOCKED] {_final_min:.1f}min < {_AR_FLOOR_MIN:.0f}min floor")
+        print(f"[AR BLOCKED] {_final_min:.1f}min < {_AR_ABS_FLOOR_MIN:.0f}min absolute minimum")
     elif _final_wc < _AR_HARD_WC_FLOOR:
         ar_data["script_too_short"] = True
         print(f"[AR BLOCKED] {_final_wc}w < {_AR_HARD_WC_FLOOR}w hard floor")

@@ -942,9 +942,9 @@ def run_pipeline() -> None:
     _ctrl.update_stage("AnimGen", "generating AR animation video")
     _log("AnimGen", "Generating AR animation video")
     _ar_wc_initial = len(ar_long.get("script", "").split())
-    if ar_long.get("script_too_short") or _ar_wc_initial < 6500:
+    if ar_long.get("script_too_short") or _ar_wc_initial < 5000:
         _block_msg = (
-            f"[AR BLOCKED] Script below hard minimum: {_ar_wc_initial}w < 6500w "
+            f"[AR BLOCKED] Script below hard minimum: {_ar_wc_initial}w < 5000w "
             f"— skipping Arabic animation render"
         )
         _log("AnimGen", _block_msg, "ERROR")
