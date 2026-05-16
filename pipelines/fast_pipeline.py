@@ -133,7 +133,7 @@ def _wait_for_manual_topic_fast(candidates: list, timeout_sec: int = 300) -> dic
         _cancel_n = len(candidates) + 1
         lines.append(f"\n{_cancel_n}. Cancel")
         lines.append("\nOr type any topic directly.")
-        lines.append(f"Timeout: {timeout_sec // 60} min → stop")
+        lines.append(f"Timeout: {timeout_sec // 60} min → auto-select #1")
         _tg("\n".join(lines))
     else:
         _cancel_n = 1
@@ -265,8 +265,8 @@ def run_pipeline() -> None:
     print(f"  PIPELINE_MODE = {os.getenv('PIPELINE_MODE','fast')}")
     print(f"{'='*60}\n")
 
+    send_message(f"[FAST PIPELINE] Starting — {today}\nPreparing assets & searching for topic...")
     ensure_music_assets()
-    send_message(f"[FAST PIPELINE] Starting — {today}\nSearching for topic...")
 
     # ── STEP 1: Topic selection ───────────────────────────────────────────────
     print(f"\n{'='*50}\n  RESEARCH\n{'='*50}\n", flush=True)
@@ -307,15 +307,16 @@ def run_pipeline() -> None:
         except Exception as _re:
             _log("Research", f"Auto-research failed (non-fatal): {_re}", "WARN")
 
-        if _auto_candidates:
-            topic = _auto_candidates[0]
-            _log("Research", f"Auto-selected: {topic.get('topic','?')}", "OK")
-        else:
-            # Priority 3: Telegram manual selection — never abort without asking the user
-            _log("Research", "Auto-research empty — requesting manual topic via Telegram", "WARN")
-            topic = _wait_for_manual_topic_fast(candidates=_auto_candidates)
-            if topic is None:
-                _log("Research", "No topic selected — pipeline stopped", "WARN")
+        # Always show Telegram menu — user picks or types; timeout auto-selects if candidates exist
+        _log("Research", f"Showing topic menu ({len(_auto_candidates)} candidates)", "INFO")
+        topic = _wait_for_manual_topic_fast(candidates=_auto_candidates)
+        if topic is None:
+            if _auto_candidates:
+                topic = _auto_candidates[0]
+                _log("Research", f"Timeout — auto-selected first: {topic.get('topic','?')}", "WARN")
+                send_message(f"[FAST PIPELINE] No reply — auto-selected:\n{topic.get('topic','?')}\n\nStarting...")
+            else:
+                _log("Research", "No topic selected and no candidates — pipeline stopped", "WARN")
                 return
 
     topic_text  = topic.get("topic", "")
