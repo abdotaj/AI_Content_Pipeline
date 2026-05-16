@@ -243,22 +243,25 @@ def clean_word_count(text: str) -> int:
 # GLOBAL RULE: NO long video under 15 minutes — automatic failure.
 # Word counts are SAFETY FLOORS only. Real runtime authority is measured TTS audio:
 #   script → draft TTS → real duration → expand (new scenes only) → lock contract.
-# Arabic compresses faster in TTS (~175 WPM) → needs higher floors than English.
+# Runtime targets (actual rendered audio — not WPM estimates):
+#   Arabic: FAST 30-40 min | ANIMATION 35-60 min | FULL 45-90 min
+#   English: FAST 10-15 min | ANIMATION 12-18 min | FULL 15-20 min
+# Word floors sized to reach minimums at ElevenLabs eleven_multilingual_v2 pacing.
 _WORD_FLOORS = {
-    "fast":      {"english": 3_500, "arabic": 5_000},
-    "full":      {"english": 4_500, "arabic": 6_500},
-    "animation": {"english": 4_000, "arabic": 6_000},
+    "fast":      {"english": 3_500, "arabic": 5_500},
+    "full":      {"english": 4_500, "arabic": 8_000},
+    "animation": {"english": 4_000, "arabic": 6_500},
     "short":     {"english": 0,     "arabic": 0},
 }
 _WORD_CEILINGS = {
-    "fast":      {"english": 7_000,  "arabic": 9_000},
-    "full":      {"english": 15_000, "arabic": 18_000},
-    "animation": {"english": 10_000, "arabic": 14_000},
+    "fast":      {"english": 4_800,  "arabic": 9_500},
+    "full":      {"english": 5_500,  "arabic": 17_000},
+    "animation": {"english": 5_000,  "arabic": 12_500},
     "short":     {"english": 500,    "arabic": 500},
 }
 # Legacy aliases — write_long_script_split and callers use fast/full English by default.
 LONG_SCRIPT_MIN_WORDS: int = _WORD_FLOORS["fast"]["english"]    # 3,500
-LONG_SCRIPT_MAX_WORDS: int = _WORD_CEILINGS["full"]["english"]  # 15,000
+LONG_SCRIPT_MAX_WORDS: int = _WORD_CEILINGS["full"]["english"]  # 5,500
 
 # ── Story variation profiles — prevents formula fatigue ──────────────────────
 # Each profile shifts the narrative APPROACH without removing the 5-act structure.
@@ -382,18 +385,37 @@ _RUNTIME_CAPS = {
 
 # ── Single source of truth for all runtime contracts ────────────────────────
 # ALL validators MUST reference get_runtime_contract() — no hardcoded seconds.
-# Approval gates must use REAL rendered audio duration, not WPM estimates.
+# Enforcement uses REAL rendered audio duration (ffprobe), not WPM estimates.
 RUNTIME_CONTRACTS: dict[str, dict] = {
-    "fast":      {"min_minutes": 15.0, "max_minutes": 45.0},
-    "full":      {"min_minutes": 15.0, "max_minutes": 90.0},
-    "animation": {"min_minutes": 15.0, "max_minutes": 60.0},
-    "short":     {"min_minutes": 1.0,  "max_minutes": 1.5},
+    "fast": {
+        "english": {"min_minutes": 10.0, "max_minutes": 15.0},
+        "arabic":  {"min_minutes": 30.0, "max_minutes": 40.0},
+    },
+    "full": {
+        "english": {"min_minutes": 15.0, "max_minutes": 20.0},
+        "arabic":  {"min_minutes": 45.0, "max_minutes": 90.0},
+    },
+    "animation": {
+        "english": {"min_minutes": 12.0, "max_minutes": 18.0},
+        "arabic":  {"min_minutes": 35.0, "max_minutes": 60.0},
+    },
+    "short": {
+        "english": {"min_minutes": 1.0,  "max_minutes": 1.5},
+        "arabic":  {"min_minutes": 1.0,  "max_minutes": 1.5},
+    },
 }
 
 
-def get_runtime_contract(mode: str) -> dict:
-    """Return runtime contract for the given pipeline mode. Falls back to 'fast'."""
-    contract = RUNTIME_CONTRACTS.get(mode, RUNTIME_CONTRACTS["fast"])
+def get_runtime_contract(mode: str, language: str = "english") -> dict:
+    """Return runtime contract for the given pipeline mode and language."""
+    mode_data = RUNTIME_CONTRACTS.get(mode, RUNTIME_CONTRACTS["fast"])
+    lang_key  = language.lower()
+    # Support language-nested format (new) and flat format (legacy callers)
+    first_val = next(iter(mode_data.values()))
+    if isinstance(first_val, dict):
+        contract = mode_data.get(lang_key, mode_data.get("english", {}))
+    else:
+        contract = mode_data  # flat fallback (short mode keeps flat shape)
     return {
         "min_minutes": contract["min_minutes"],
         "max_minutes": contract["max_minutes"],
@@ -728,6 +750,22 @@ def expand_script_runtime(script_text: str, missing_words: int,
         new_body = expanded_map.get(name, body)
         result_parts.append(f"[SECTION: {name}]\n{new_body.strip()}")
     return "\n\n".join(result_parts)
+
+
+def compress_english_script(script_text: str, target_words: int, topic: str = "") -> str:
+    """
+    Trim English script to target_words when rendered audio exceeds the max runtime.
+    Uses proportional section trimming — preserves section markers and story structure.
+    Only compresses narration text; never touches metadata or image markers.
+    """
+    current_wc = clean_word_count(script_text)
+    if current_wc <= target_words:
+        return script_text
+    print(f"[EN COMPRESS] {current_wc}w → target {target_words}w (removing ~{current_wc - target_words}w)")
+    compressed = _cap_script_max_words(script_text, target_words)
+    new_wc = clean_word_count(compressed)
+    print(f"[EN COMPRESS] Result: {new_wc}w (removed {current_wc - new_wc}w)")
+    return compressed
 
 
 # ============================================================
@@ -6100,9 +6138,10 @@ def translate_script(en_script: dict, research: dict | None = None) -> dict:
     print(f"[Script] Arabic word count ({ar_data['arabic_path']} path): {_ar_wc}")
 
     # Arabic floor by mode — animation and full need higher minimums
-    _is_anim_script = bool(en_script.get("anim_mode"))
-    _AR_WORD_FLOOR  = (_WORD_FLOORS["animation"]["arabic"] if _is_anim_script
-                       else _WORD_FLOORS["fast"]["arabic"])    # 6,000 anim / 5,000 fast
+    _pipeline_mode_tr = os.getenv("PIPELINE_MODE", "fast").lower()
+    if _pipeline_mode_tr not in _WORD_FLOORS:
+        _pipeline_mode_tr = "fast"
+    _AR_WORD_FLOOR  = _WORD_FLOORS[_pipeline_mode_tr]["arabic"]
     _AR_WORD_TARGET = int(_AR_WORD_FLOOR * 1.1)               # 10% headroom above floor
     if _ar_wc < _AR_WORD_TARGET:
         print(f"[AR RUNTIME] Script words: {_ar_wc} — below target {_AR_WORD_TARGET:,}, expanding...")
@@ -6113,7 +6152,7 @@ def translate_script(en_script: dict, research: dict | None = None) -> dict:
     _en_min    = _en_wc / 145.0
     _ar_min    = estimate_arabic_duration(ar_data.get("script", ""))
     _ar_wc_now = clean_word_count(ar_data.get("script", ""))
-    _ar_contract_ref = get_runtime_contract("fast")
+    _ar_contract_ref = get_runtime_contract(_pipeline_mode_tr, "arabic")
     # Arabic runtime target is set independently of English — Arabic is primary.
     _ar_target = max(_ar_contract_ref["min_minutes"], _ar_target_minutes)
     print(
@@ -6198,7 +6237,7 @@ def translate_script(en_script: dict, research: dict | None = None) -> dict:
     # ── Runtime floor — pre-render WPM estimate gate ─────────────────────────
     # Uses WPM estimate only — REAL validation happens on rendered audio duration.
     # Below contract minimum = script_too_short flag → pipeline blocks render.
-    _ar_contract          = get_runtime_contract("fast")
+    _ar_contract          = get_runtime_contract(_pipeline_mode_tr, "arabic")
     _AR_RUNTIME_FLOOR_MIN = _ar_contract["min_minutes"]
     if _final_min < _AR_RUNTIME_FLOOR_MIN:
         print(
@@ -6211,9 +6250,8 @@ def translate_script(en_script: dict, research: dict | None = None) -> dict:
         ar_data.pop("script_too_short", None)
 
     # ── Hard Arabic word floor — enforced independently of WPM estimates ──────
-    # WPM estimates can pass 15-min gate even at 3200 words (18.3 min at 175 WPM).
-    # Word floor is the authoritative gate: below 4200 words = blocking render.
-    _AR_HARD_FLOOR_WORDS = 4200
+    # WPM estimates alone can't guarantee 30-min minimum; word floor is a hard gate.
+    _AR_HARD_FLOOR_WORDS = _WORD_FLOORS[_pipeline_mode_tr]["arabic"]
     if _final_wc < _AR_HARD_FLOOR_WORDS:
         print(
             f"[AR BLOCKED] Word count {_final_wc}w below hard minimum {_AR_HARD_FLOOR_WORDS}w "
@@ -6859,14 +6897,16 @@ def write_arabic_script(topic: dict, research: dict | None = None) -> dict:
 
     # ── Post-processing (mirrors translate_script exactly) ────────────────────
     _ar_wc         = clean_word_count(ar_data.get("script", ""))
-    _is_anim       = os.getenv("PIPELINE_MODE", "").lower() == "animation"
-    _AR_WORD_FLOOR = _WORD_FLOORS["animation"]["arabic"] if _is_anim else _WORD_FLOORS["fast"]["arabic"]
+    _pipeline_mode = os.getenv("PIPELINE_MODE", "fast").lower()
+    if _pipeline_mode not in _WORD_FLOORS:
+        _pipeline_mode = "fast"
+    _AR_WORD_FLOOR = _WORD_FLOORS[_pipeline_mode]["arabic"]
     _AR_WORD_TGT   = int(_AR_WORD_FLOOR * 1.1)
     if _ar_wc < _AR_WORD_TGT:
         print(f"[AR RUNTIME] {_ar_wc}w below target {_AR_WORD_TGT}w — expanding...")
         ar_data["script"] = _expand_arabic_script_to_min(ar_data["script"], target_min=_AR_WORD_TGT)
 
-    _ar_contract_ref = get_runtime_contract("fast")
+    _ar_contract_ref = get_runtime_contract(_pipeline_mode, "arabic")
     _ar_min  = estimate_arabic_duration(ar_data.get("script", ""))
     _ar_wc_n = clean_word_count(ar_data.get("script", ""))
     _ar_tgt  = max(_ar_contract_ref["min_minutes"], _ar_target_minutes)
@@ -6923,9 +6963,9 @@ def write_arabic_script(topic: dict, research: dict | None = None) -> dict:
     _final_wc  = clean_word_count(ar_data.get("script", ""))
     _final_min = estimate_arabic_duration(ar_data.get("script", ""))
 
-    _ar_contract      = get_runtime_contract("fast")
+    _ar_contract      = get_runtime_contract(_pipeline_mode, "arabic")
     _AR_FLOOR_MIN     = _ar_contract["min_minutes"]
-    _AR_HARD_WC_FLOOR = 4200
+    _AR_HARD_WC_FLOOR = _WORD_FLOORS[_pipeline_mode]["arabic"]
 
     if _final_min < _AR_FLOOR_MIN:
         ar_data["script_too_short"] = True

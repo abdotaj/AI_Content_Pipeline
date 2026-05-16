@@ -487,7 +487,7 @@ def run_pipeline() -> None:
     _ctrl.update_stage("VideoGen", "rendering AR long video")
     _log("VideoGen", "Rendering AR long video")
     _ar_wc_check = len(ar_long.get("script", "").split())
-    _AR_WORD_MIN = 4200   # hard minimum — below this = script is too short to render
+    _AR_WORD_MIN = 5500   # hard minimum — below this = script is too short to render (30-min target)
     if ar_long.get("script_too_short") or _ar_wc_check < _AR_WORD_MIN:
         _block_msg = (
             f"[AR BLOCKED] Script below hard minimum: {_ar_wc_check}w < {_AR_WORD_MIN}w "
@@ -502,26 +502,28 @@ def run_pipeline() -> None:
         ar_long_path = _make_video(ar_long, ar_long_id, stats, user_images=user_images, user_videos=user_videos)
 
     # ── Arabic runtime auto-rebuild ───────────────────────────────────────────
-    # Measure ACTUAL rendered video length via ffprobe. If < 15 min, expand + re-render.
-    # Repeats up to 3 times. Skips if ar_long_path is empty (render already failed).
-    _AR_MIN_SECS  = 900   # 15 minutes — real rendered video floor
+    # Measure ACTUAL rendered video length via ffprobe. If < 30 min, expand + re-render.
+    # Repeats up to 4 times. Skips if ar_long_path is empty (render already failed).
+    _AR_MIN_SECS  = 1800  # 30 minutes — real rendered audio floor (FAST AR target: 30-40 min)
     _ar_rebuild   = 0
-    _ar_max_rb    = 3
+    _ar_max_rb    = 4
     while ar_long_path and os.path.exists(ar_long_path):
         _ar_secs = _video_secs(ar_long_path)
-        _log("VideoGen", f"[AR RUNTIME] Final render duration: {_ar_secs/60:.1f}min ({_ar_secs:.0f}s)")
+        _ar_mins = _ar_secs / 60
+        _ar_status = "PASS" if _ar_secs >= _AR_MIN_SECS else "UNDER"
+        _log("VideoGen", f"[AR RUNTIME] Target: 30-40m | Rendered: {_ar_mins:.1f}m | Status: {_ar_status}")
         if _ar_secs >= _AR_MIN_SECS:
-            _log("VideoGen", f"[AR PASSED] Runtime valid: {_ar_secs/60:.1f}min >= 15min", "OK")
+            _log("VideoGen", f"[AR PASSED] Runtime valid: {_ar_mins:.1f}min >= 30min", "OK")
             break
         _ar_rebuild += 1
         if _ar_rebuild > _ar_max_rb:
-            _log("VideoGen", f"[AR EXPANSION] Rebuild limit reached — continuing with {_ar_secs/60:.1f}min video", "WARN")
-            send_message(f"[FAST] Arabic runtime {_ar_secs/60:.1f}min after {_ar_max_rb} rebuilds — proceeding")
+            _log("VideoGen", f"[AR EXPANSION] Rebuild limit reached — continuing with {_ar_mins:.1f}min video", "WARN")
+            send_message(f"[FAST] Arabic runtime {_ar_mins:.1f}min after {_ar_max_rb} rebuilds — proceeding")
             break
-        _log("VideoGen", f"[AR EXPANSION] Runtime {_ar_secs/60:.1f}min < 15min — auto-rebuilding (attempt {_ar_rebuild}/{_ar_max_rb})", "WARN")
-        send_message(f"[FAST] Arabic runtime {_ar_secs/60:.1f}min < 15min — auto-rebuilding (attempt {_ar_rebuild}/{_ar_max_rb})...")
+        _log("VideoGen", f"[AR EXPANSION] Runtime {_ar_mins:.1f}min < 30min — auto-rebuilding (attempt {_ar_rebuild}/{_ar_max_rb})", "WARN")
+        send_message(f"[FAST] Arabic runtime {_ar_mins:.1f}min < 30min — auto-rebuilding (attempt {_ar_rebuild}/{_ar_max_rb})...")
         from agent.script_agent import expand_arabic_runtime as _ear
-        ar_long["script"] = _ear(ar_long["script"], target_min=24.0, topic=topic_text)
+        ar_long["script"] = _ear(ar_long["script"], target_min=35.0, topic=topic_text)
         ar_long_path = _make_video(ar_long, f"{today}_{_slug}_arabic_long_rb{_ar_rebuild}", stats, user_images=user_images, user_videos=user_videos)
 
     _check_cancel("after AR long render")
@@ -530,6 +532,36 @@ def run_pipeline() -> None:
     _log("VideoGen", "Rendering EN long video")
     en_long_id   = f"{today}_{_slug}_english_long"
     en_long_path = _make_video(en_long, en_long_id, stats, user_images=user_images, user_videos=user_videos)
+
+    # ── English runtime validation (FAST EN target: 10-15 min) ───────────────
+    _EN_MAX_SECS = 900   # 15 minutes — English must stay concise
+    _EN_MIN_SECS = 600   # 10 minutes — minimum for FAST EN
+    _en_comp     = 0
+    _en_max_comp = 2
+    while en_long_path and os.path.exists(en_long_path):
+        _en_secs   = _video_secs(en_long_path)
+        _en_mins   = _en_secs / 60
+        _en_status = "PASS" if _EN_MIN_SECS <= _en_secs <= _EN_MAX_SECS else ("OVER LIMIT" if _en_secs > _EN_MAX_SECS else "UNDER")
+        _log("VideoGen", f"[EN RUNTIME] Target: 10-15m | Rendered: {_en_mins:.1f}m | Status: {_en_status}")
+        if _en_secs <= _EN_MAX_SECS:
+            if _en_secs < _EN_MIN_SECS:
+                _log("VideoGen", f"[EN WARN] {_en_mins:.1f}min < 10min — content may be too sparse", "WARN")
+            break
+        _en_comp += 1
+        if _en_comp > _en_max_comp:
+            _log("VideoGen", f"[EN RUNTIME] Still over limit after {_en_max_comp} compressions — proceeding with {_en_mins:.1f}min", "WARN")
+            break
+        _target_wc = int(len(en_long.get("script", "").split()) * (_EN_MAX_SECS / _en_secs) * 0.92)
+        _log("VideoGen", f"[EN COMPRESSION] {_en_mins:.1f}min > 15min — compressing to ~{_target_wc}w (attempt {_en_comp}/{_en_max_comp})", "WARN")
+        send_message(f"[FAST] English runtime {_en_mins:.1f}min > 15min — compressing (attempt {_en_comp}/{_en_max_comp})...")
+        from agent.script_agent import compress_english_script as _ces
+        _compressed_en = _ces(en_long.get("script", ""), target_words=_target_wc, topic=topic_text)
+        if len(_compressed_en.split()) < len(en_long.get("script", "").split()) * 0.97:
+            en_long["script"] = _compressed_en
+            en_long_path = _make_video(en_long, f"{today}_{_slug}_english_long_c{_en_comp}", stats, user_images=user_images, user_videos=user_videos) or en_long_path
+        else:
+            _log("VideoGen", "[EN COMPRESSION] No meaningful reduction — stopping compression", "WARN")
+            break
 
     _check_cancel("after EN long render")
 

@@ -20,7 +20,7 @@
 # Arabic modes:
 #   - write_arabic_script()  — native Arabic, no English dependency
 #   - write_arabic_short()   — native Arabic short, no translation
-#   - 4200-word minimum gate, 15-min runtime rebuild loop
+#   - mode-specific word gate (5500/6500/7500w), 30/35/45-min runtime rebuild loop
 #
 # English modes:
 #   - write_script("english")
@@ -433,10 +433,10 @@ def run_lang_pipeline(language: str, mode: str) -> None:
     _slug     = _topic_slug(topic_text)
     _video_id = f"{today}_{_slug}_{_lang[:2]}_{_mode}_long"
 
-    # Arabic hard minimum gate
+    # Arabic hard minimum gate — mode-specific word floor
     if _lang == "arabic":
-        _ar_wc_gate = len(long_script.get("script", "").split())
-        _AR_WORD_MIN = 4200
+        _ar_wc_gate  = len(long_script.get("script", "").split())
+        _AR_WORD_MIN = {"fast": 5500, "animation": 6500, "full": 7500}.get(_mode, 5500)
         if long_script.get("script_too_short") or _ar_wc_gate < _AR_WORD_MIN:
             _msg = f"{_label} AR blocked: {_ar_wc_gate}w < {_AR_WORD_MIN}w minimum"
             _log("VideoGen", _msg, "ERROR")
@@ -458,32 +458,82 @@ def run_lang_pipeline(language: str, mode: str) -> None:
         send_message(f"{_label} Long video render failed — aborting")
         return
 
-    # ── Arabic runtime rebuild (mirrors production logic exactly) ─────────────
-    if _lang == "arabic" and _mode != "animation":
-        _AR_MIN_SECS = 900   # 15 minutes floor
-        _ar_rebuild  = 0
-        _ar_max_rb   = 3
+    # ── Arabic runtime rebuild — mode-specific floor ──────────────────────────
+    # Checks ACTUAL rendered audio duration (ffprobe). Expands if below floor.
+    if _lang == "arabic":
+        _AR_MIN_SECS   = {"fast": 1800, "animation": 2100, "full": 2700}.get(_mode, 1800)
+        _AR_TGT_MIN    = {"fast": 35.0, "animation": 47.5, "full": 60.0}.get(_mode, 35.0)
+        _AR_TARGET_STR = {"fast": "30-40m", "animation": "35-60m", "full": "45-90m"}.get(_mode, "30-40m")
+        _ar_rebuild    = 0
+        _ar_max_rb     = 4
         while long_path and os.path.exists(long_path):
-            _ar_secs = _video_secs(long_path)
-            _log("VideoGen", f"[AR RUNTIME] {_ar_secs/60:.1f}min ({_ar_secs:.0f}s)")
+            _ar_secs   = _video_secs(long_path)
+            _ar_mins   = _ar_secs / 60
+            _ar_status = "PASS" if _ar_secs >= _AR_MIN_SECS else "UNDER"
+            _log("VideoGen", f"[AR RUNTIME] Target: {_AR_TARGET_STR} | Rendered: {_ar_mins:.1f}m | Status: {_ar_status}")
             if _ar_secs >= _AR_MIN_SECS:
-                _log("VideoGen", f"[AR PASSED] {_ar_secs/60:.1f}min >= 15min", "OK")
+                _log("VideoGen", f"[AR PASSED] {_ar_mins:.1f}min >= {_AR_MIN_SECS//60}min", "OK")
                 break
             _ar_rebuild += 1
             if _ar_rebuild > _ar_max_rb:
-                _log("VideoGen", f"[AR EXPANSION] Limit reached — continuing with {_ar_secs/60:.1f}min", "WARN")
+                _log("VideoGen", f"[AR EXPANSION] Limit reached — continuing with {_ar_mins:.1f}min", "WARN")
                 break
             send_message(
-                f"{_label} AR runtime {_ar_secs/60:.1f}min < 15min — "
+                f"{_label} AR runtime {_ar_mins:.1f}min < {_AR_MIN_SECS//60}min — "
                 f"rebuilding ({_ar_rebuild}/{_ar_max_rb})..."
             )
             from agent.script_agent import expand_arabic_runtime as _ear
             long_script["script"] = _ear(
-                long_script["script"], target_min=24.0, topic=topic_text
+                long_script["script"], target_min=_AR_TGT_MIN, topic=topic_text
             )
             _rb_id    = f"{_video_id}_rb{_ar_rebuild}"
-            long_path = _make_video(long_script, _rb_id, stats,
-                                    user_images=user_images, user_videos=user_videos) or long_path
+            if _mode == "animation":
+                long_path = _make_animation_video(
+                    long_script, topic.get("research", {}), stats,
+                    label=f"{_lang.upper()} long ({_mode}) rb{_ar_rebuild}",
+                ) or long_path
+            else:
+                long_path = _make_video(long_script, _rb_id, stats,
+                                        user_images=user_images, user_videos=user_videos) or long_path
+
+    # ── English runtime validation — mode-specific max ────────────────────────
+    if _lang == "english":
+        _EN_MAX_SECS = {"fast": 900, "animation": 1080, "full": 1200}.get(_mode, 900)
+        _EN_MIN_SECS = {"fast": 600, "animation": 720,  "full": 900}.get(_mode, 600)
+        _EN_TARGET_STR = {"fast": "10-15m", "animation": "12-18m", "full": "15-20m"}.get(_mode, "10-15m")
+        _en_comp     = 0
+        _en_max_comp = 2
+        while long_path and os.path.exists(long_path):
+            _en_secs   = _video_secs(long_path)
+            _en_mins   = _en_secs / 60
+            _en_status = "PASS" if _EN_MIN_SECS <= _en_secs <= _EN_MAX_SECS else ("OVER LIMIT" if _en_secs > _EN_MAX_SECS else "UNDER")
+            _log("VideoGen", f"[EN RUNTIME] Target: {_EN_TARGET_STR} | Rendered: {_en_mins:.1f}m | Status: {_en_status}")
+            if _en_secs <= _EN_MAX_SECS:
+                if _en_secs < _EN_MIN_SECS:
+                    _log("VideoGen", f"[EN WARN] {_en_mins:.1f}min < {_EN_MIN_SECS//60}min — content may be too sparse", "WARN")
+                break
+            _en_comp += 1
+            if _en_comp > _en_max_comp:
+                _log("VideoGen", f"[EN RUNTIME] Over limit after {_en_max_comp} compressions — proceeding with {_en_mins:.1f}min", "WARN")
+                break
+            _target_wc = int(len(long_script.get("script", "").split()) * (_EN_MAX_SECS / _en_secs) * 0.92)
+            _log("VideoGen", f"[EN COMPRESSION] {_en_mins:.1f}min > limit — compressing to ~{_target_wc}w (attempt {_en_comp}/{_en_max_comp})", "WARN")
+            send_message(f"{_label} EN runtime {_en_mins:.1f}min > limit — compressing (attempt {_en_comp}/{_en_max_comp})...")
+            from agent.script_agent import compress_english_script as _ces
+            _compressed_en = _ces(long_script.get("script", ""), target_words=_target_wc, topic=topic_text)
+            if len(_compressed_en.split()) < len(long_script.get("script", "").split()) * 0.97:
+                long_script["script"] = _compressed_en
+                if _mode == "animation":
+                    long_path = _make_animation_video(
+                        long_script, topic.get("research", {}), stats,
+                        label=f"EN long ({_mode}) c{_en_comp}",
+                    ) or long_path
+                else:
+                    long_path = _make_video(long_script, f"{_video_id}_c{_en_comp}", stats,
+                                            user_images=user_images, user_videos=user_videos) or long_path
+            else:
+                _log("VideoGen", "[EN COMPRESSION] No meaningful reduction — stopping compression", "WARN")
+                break
 
     # ── Short video ───────────────────────────────────────────────────────────
     short_path = ""
