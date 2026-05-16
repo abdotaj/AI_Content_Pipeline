@@ -458,35 +458,53 @@ def run_lang_pipeline(language: str, mode: str) -> None:
         send_message(f"{_label} Long video render failed — aborting")
         return
 
-    # ── Arabic runtime rebuild — mode-specific floor ──────────────────────────
-    # Checks ACTUAL rendered audio duration (ffprobe). Expands if below floor.
+    # ── Arabic runtime rebuild — mode-specific tiered validation ─────────────
+    # Checks ACTUAL rendered audio duration (ffprobe). Tiers by mode:
+    #   FULL:  <30m=FAIL  30-44m=UNDER TARGET  45-60m=IDEAL  60-90m=ACCEPTABLE  >90m=TOO LONG
+    #   ANIM:  <30m=FAIL  30-35m=UNDER TARGET  35-60m=IDEAL  >60m=ACCEPTABLE
+    #   FAST:  <30m=FAIL  30-40m=IDEAL         >40m=TOO LONG
     if _lang == "arabic":
-        _AR_MIN_SECS   = {"fast": 1800, "animation": 2100, "full": 2700}.get(_mode, 1800)
-        _AR_TGT_MIN    = {"fast": 35.0, "animation": 47.5, "full": 60.0}.get(_mode, 35.0)
+        _AR_IDEAL_SECS = {"fast": 1800, "animation": 2100, "full": 2700}.get(_mode, 1800)  # floor for export
+        _AR_MAX_SECS   = {"fast": 2400, "animation": 3600, "full": 5400}.get(_mode, 2400)  # 40/60/90 min
+        _AR_TGT_MIN    = {"fast": 35.0, "animation": 47.5, "full": 55.0}.get(_mode, 35.0)  # expansion target
         _AR_TARGET_STR = {"fast": "30-40m", "animation": "35-60m", "full": "45-90m"}.get(_mode, "30-40m")
+        _AR_HARD_FAIL  = 1800  # 30 min — absolute floor below which is always FAIL
         _ar_rebuild    = 0
         _ar_max_rb     = 4
         while long_path and os.path.exists(long_path):
-            _ar_secs   = _video_secs(long_path)
-            _ar_mins   = _ar_secs / 60
-            _ar_status = "PASS" if _ar_secs >= _AR_MIN_SECS else "UNDER"
+            _ar_secs = _video_secs(long_path)
+            _ar_mins = _ar_secs / 60
+            # Determine tier
+            if _ar_secs < _AR_HARD_FAIL:
+                _ar_status = "FAIL"
+            elif _ar_secs < _AR_IDEAL_SECS:
+                _ar_status = "UNDER TARGET"
+            elif _ar_secs <= _AR_MAX_SECS:
+                _ar_status = "IDEAL" if _ar_secs <= 3600 else "ACCEPTABLE LONGFORM"
+            else:
+                _ar_status = "TOO LONG"
             _log("VideoGen", f"[AR RUNTIME] Target: {_AR_TARGET_STR} | Rendered: {_ar_mins:.1f}m | Status: {_ar_status}")
-            if _ar_secs >= _AR_MIN_SECS:
-                _log("VideoGen", f"[AR PASSED] {_ar_mins:.1f}min >= {_AR_MIN_SECS//60}min", "OK")
+            if _ar_status in ("IDEAL", "ACCEPTABLE LONGFORM"):
+                _log("VideoGen", f"[AR PASSED] {_ar_mins:.1f}min — {_ar_status}", "OK")
+                break
+            if _ar_status == "TOO LONG":
+                _log("VideoGen", f"[AR TOO LONG] {_ar_mins:.1f}min > {_AR_MAX_SECS//60}min — exporting as-is", "WARN")
+                send_message(f"{_label} AR {_ar_mins:.1f}min exceeds max — exporting as-is")
                 break
             _ar_rebuild += 1
             if _ar_rebuild > _ar_max_rb:
                 _log("VideoGen", f"[AR EXPANSION] Limit reached — continuing with {_ar_mins:.1f}min", "WARN")
+                send_message(f"{_label} AR {_ar_mins:.1f}min after {_ar_max_rb} expansions — proceeding")
                 break
             send_message(
-                f"{_label} AR runtime {_ar_mins:.1f}min < {_AR_MIN_SECS//60}min — "
-                f"rebuilding ({_ar_rebuild}/{_ar_max_rb})..."
+                f"{_label} AR {_ar_status}: {_ar_mins:.1f}min | target {_AR_IDEAL_SECS//60}min — "
+                f"fallback expansion ({_ar_rebuild}/{_ar_max_rb})..."
             )
             from agent.script_agent import expand_arabic_runtime as _ear
             long_script["script"] = _ear(
                 long_script["script"], target_min=_AR_TGT_MIN, topic=topic_text
             )
-            _rb_id    = f"{_video_id}_rb{_ar_rebuild}"
+            _rb_id = f"{_video_id}_rb{_ar_rebuild}"
             if _mode == "animation":
                 long_path = _make_animation_video(
                     long_script, topic.get("research", {}), stats,
