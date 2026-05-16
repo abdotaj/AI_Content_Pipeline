@@ -33,14 +33,28 @@ def safe_lower(v) -> str:
 def _groq_call(**kwargs):
     """Try each model with one 40-second retry on rate limit before moving to fallback."""
     import time
+    global _GROQ_RATE_LIMITED_UNTIL
+
+    if time.time() < _GROQ_RATE_LIMITED_UNTIL:
+        _remaining = int(_GROQ_RATE_LIMITED_UNTIL - time.time())
+        print(f"[Groq] Rate-limited — skipping (cooldown {_remaining}s remaining)")
+        raise Exception(f"Groq rate-limited (cooldown: {_remaining}s)")
+
     last_err = None
     for model in _FALLBACK_MODELS:
+        # llama-3.1-8b-instant has a 6000 TPM limit — cap max_tokens so
+        # prompt + response stays under 6000 total tokens
+        call_kwargs = dict(kwargs)
+        if model == "llama-3.1-8b-instant":
+            call_kwargs["max_tokens"] = min(call_kwargs.get("max_tokens", 2000), 4000)
+
         for attempt in range(2):
             try:
                 time.sleep(3)
-                return _groq.chat.completions.create(model=model, **kwargs)
+                return _groq.chat.completions.create(model=model, **call_kwargs)
             except groq_lib.RateLimitError as e:
                 last_err = e
+                _GROQ_RATE_LIMITED_UNTIL = time.time() + 60
                 if attempt == 0:
                     print(f"[Groq] Rate limit hit — waiting 40 seconds...")
                     time.sleep(40)
