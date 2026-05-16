@@ -486,6 +486,7 @@ def _trim_plain_text_to_words(text: str, max_words: int) -> str:
 
 _GROQ_RATE_LIMITED_UNTIL:    float = 0.0   # epoch seconds; Groq is skipped until this time
 _OPENAI_QUOTA_EXCEEDED_UNTIL: float = 0.0  # epoch seconds; OpenAI is skipped until this time
+_GEMINI_QUOTA_EXCEEDED_UNTIL: float = 0.0  # epoch seconds; Gemini is skipped until this time
 
 
 def _groq_fallback(prompt: str, max_tokens: int, json_mode: bool,
@@ -554,6 +555,58 @@ def _groq_fallback(prompt: str, max_tokens: int, json_mode: bool,
     return ""
 
 
+def _gemini_call(prompt: str, max_tokens: int,
+                 system_prompt: str | None = None) -> str:
+    """Gemini 2.0 Flash — tertiary fallback when Groq and OpenAI are both exhausted."""
+    import os, time
+    import requests as _greq
+    global _GEMINI_QUOTA_EXCEEDED_UNTIL
+
+    if time.time() < _GEMINI_QUOTA_EXCEEDED_UNTIL:
+        _rem = int(_GEMINI_QUOTA_EXCEEDED_UNTIL - time.time())
+        print(f"[Gemini] Quota exceeded — skipping (cooldown {_rem}s remaining)")
+        return ""
+
+    api_key = os.getenv('GEMINI_API_KEY', '').strip()
+    if not api_key:
+        return ""
+
+    payload: dict = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"maxOutputTokens": min(max_tokens, 8192), "temperature": 0.7},
+    }
+    if system_prompt:
+        payload["system_instruction"] = {"parts": [{"text": system_prompt}]}
+
+    try:
+        r = _greq.post(
+            f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={api_key}",
+            json=payload,
+            timeout=120,
+        )
+        if r.status_code == 200:
+            data = r.json()
+            text = (
+                data.get("candidates", [{}])[0]
+                .get("content", {})
+                .get("parts", [{}])[0]
+                .get("text", "")
+            )
+            if text:
+                print("[Script] Gemini gemini-2.0-flash ✅")
+                return text.strip()
+            print("[Script] Gemini 200 but empty response")
+        elif r.status_code == 429:
+            _GEMINI_QUOTA_EXCEEDED_UNTIL = time.time() + 300
+            print("[Script] Gemini quota exceeded (retry in 300s)")
+        else:
+            print(f"[Script] Gemini HTTP {r.status_code}: {r.text[:200]}")
+    except Exception as e:
+        print(f"[Script] Gemini failed: {e}")
+
+    return ""
+
+
 def _ai_script_call(prompt: str, max_tokens: int = 1000,
                     json_mode: bool = False, temperature: float = 0.7,
                     system_prompt: str | None = None,
@@ -602,6 +655,10 @@ def _ai_script_call(prompt: str, max_tokens: int = 1000,
                 return result
         except Exception as e:
             print(f'[Script] Groq fallback failed: {e}')
+        # Gemini fallback — used when both OpenAI and Groq are quota-exhausted
+        result = _gemini_call(prompt, max_tokens, system_prompt=system_prompt)
+        if result:
+            return result
         return ""
 
     # ── Standard path: Groq primary → OpenAI fallback ───────────────────────
@@ -639,6 +696,10 @@ def _ai_script_call(prompt: str, max_tokens: int = 1000,
         except Exception as e:
             print(f'[Script] OpenAI {oai_model} failed: {e}')
 
+    # Gemini fallback — used when Groq and OpenAI are both exhausted
+    result = _gemini_call(prompt, max_tokens, system_prompt=system_prompt)
+    if result:
+        return result
     return ""
 
 
@@ -5819,17 +5880,20 @@ def _write_arabic_from_research(en_script: dict, ar_research: dict, target_minut
         section = ""
 
         for attempt in range(1, 4):
-            # Smart cooldown wait: if both providers are blocked, sleep until
+            # Smart cooldown wait: if ALL providers are blocked, sleep until
             # the soonest one recovers instead of burning all retries while
-            # no provider is available (e.g. Groq 60s cooldown vs OpenAI 300s).
-            _now_a  = _t.time()
-            _g_wait = max(0.0, _GROQ_RATE_LIMITED_UNTIL - _now_a)
-            _o_wait = max(0.0, _OPENAI_QUOTA_EXCEEDED_UNTIL - _now_a)
-            if _g_wait > 0 and _o_wait > 0:
-                _soonest = min(_GROQ_RATE_LIMITED_UNTIL, _OPENAI_QUOTA_EXCEEDED_UNTIL)
+            # no provider is available.
+            _now_a    = _t.time()
+            _g_wait   = max(0.0, _GROQ_RATE_LIMITED_UNTIL    - _now_a)
+            _o_wait   = max(0.0, _OPENAI_QUOTA_EXCEEDED_UNTIL - _now_a)
+            _gem_wait = max(0.0, _GEMINI_QUOTA_EXCEEDED_UNTIL - _now_a)
+            if _g_wait > 0 and _o_wait > 0 and _gem_wait > 0:
+                _soonest = min(_GROQ_RATE_LIMITED_UNTIL,
+                               _OPENAI_QUOTA_EXCEEDED_UNTIL,
+                               _GEMINI_QUOTA_EXCEEDED_UNTIL)
                 _sleep_s = min(max(0.0, _soonest - _t.time()), 120.0)
                 if _sleep_s > 1:
-                    print(f"[AR WAIT] Both providers cooling — waiting {int(_sleep_s)}s for soonest to recover")
+                    print(f"[AR WAIT] All providers cooling — waiting {int(_sleep_s)}s for soonest to recover")
                     _t.sleep(_sleep_s)
             elif attempt > 1:
                 _t.sleep(3)
