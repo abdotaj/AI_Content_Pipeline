@@ -761,8 +761,9 @@ def run_pipeline():
         # ── OUTPUT 1 — Arabic long-form (isolated — EN failure does not skip this) ──
         ar_long_path = ""
         if ar_long:
-            _ar_wc_pre = len(ar_long.get("script", "").split())
-            _AR_WORD_MIN = 4200
+            _ar_wc_pre   = len(ar_long.get("script", "").split())
+            _dc_mode     = os.getenv("PIPELINE_MODE", "fast").lower()
+            _AR_WORD_MIN = {"fast": 4500, "animation": 5000, "full": 5000}.get(_dc_mode, 4500)
             if ar_long.get("script_too_short") or _ar_wc_pre < _AR_WORD_MIN:
                 _block_msg = (
                     f"[AR BLOCKED] Script below hard minimum: {_ar_wc_pre}w < {_AR_WORD_MIN}w "
@@ -785,32 +786,49 @@ def run_pipeline():
         else:
             _log("VideoGen", "[EN SKIPPED] English script generation failed — no EN video", "WARN")
 
-    # ── Arabic runtime auto-rebuild ───────────────────────────────────────────
-    # Validate REAL rendered video duration via ffprobe. If < 15 min, expand + re-render.
-    # Repeats up to 3 times. Skips if ar_long_path is empty or ar_long is None.
-    _AR_MIN_SECS  = 900   # 15 minutes — real rendered video floor
-    _ar_rebuild   = 0
-    _ar_max_rb    = 3
+    # ── Arabic runtime validation — mode-specific tiered system ─────────────
+    # FULL:  <30m=FAIL  30-44m=UNDER TARGET→expand  45-60m=IDEAL  60-90m=ACCEPTABLE  >90m=TOO LONG
+    # ANIM:  <30m=FAIL  30-35m=UNDER TARGET→expand  35-60m=IDEAL  >60m=ACCEPTABLE
+    # FAST:  <30m=FAIL  30-40m=IDEAL                >40m=TOO LONG
+    _dc_mode       = os.getenv("PIPELINE_MODE", "fast").lower()
+    _AR_IDEAL_SECS = {"fast": 1800, "animation": 2100, "full": 2700}.get(_dc_mode, 1800)
+    _AR_MAX_SECS   = {"fast": 2400, "animation": 3600, "full": 5400}.get(_dc_mode, 2400)
+    _AR_TGT_MIN    = {"fast": 35.0, "animation": 47.5, "full": 55.0}.get(_dc_mode, 35.0)
+    _AR_TARGET_STR = {"fast": "30-40m", "animation": "35-60m", "full": "45-90m"}.get(_dc_mode, "30-40m")
+    _AR_HARD_FAIL  = 1800  # 30 min — universal absolute floor
+    _ar_rebuild    = 0
+    _ar_max_rb     = 4
+    _topic_text_ar = topic.get("topic", "") if topic else (ar_long.get("topic", "") if ar_long else "")
     while ar_long and ar_long_path and os.path.exists(ar_long_path):
         _ar_secs = _video_secs(ar_long_path)
-        _log("VideoGen", f"[AR AUDIO] Rendered: {_ar_secs/60:.1f}min ({_ar_secs:.0f}s)")
-        _ar_est_min = len(ar_long.get("script", "").split()) / 175.0
-        if abs(_ar_est_min - _ar_secs / 60) > 3.0:
-            _log("VideoGen", f"[AR AUDIO] Runtime mismatch: est={_ar_est_min:.1f}min actual={_ar_secs/60:.1f}min "
-                 f"(delta={_ar_secs/60-_ar_est_min:+.1f}min)", "WARN")
-        if _ar_secs >= _AR_MIN_SECS:
-            _log("VideoGen", f"[AR PASSED] Runtime valid: {_ar_secs/60:.1f}min >= 15min", "OK")
+        _ar_mins = _ar_secs / 60
+        if _ar_secs < _AR_HARD_FAIL:
+            _ar_status = "FAIL"
+        elif _ar_secs < _AR_IDEAL_SECS:
+            _ar_status = "UNDER TARGET"
+        elif _ar_secs <= _AR_MAX_SECS:
+            _ar_status = "IDEAL" if _ar_secs <= 3600 else "ACCEPTABLE LONGFORM"
+        else:
+            _ar_status = "TOO LONG"
+        _log("VideoGen", f"[AR RUNTIME] Target: {_AR_TARGET_STR} | Rendered: {_ar_mins:.1f}m | Status: {_ar_status}")
+        if _ar_status in ("IDEAL", "ACCEPTABLE LONGFORM"):
+            _log("VideoGen", f"[AR PASSED] {_ar_mins:.1f}min — {_ar_status}", "OK")
+            break
+        if _ar_status == "TOO LONG":
+            _log("VideoGen", f"[AR TOO LONG] {_ar_mins:.1f}min > {_AR_MAX_SECS//60}min — exporting as-is", "WARN")
+            send_message(f"[Pipeline] AR {_ar_mins:.1f}min exceeds {_AR_MAX_SECS//60}min — exporting as-is")
             break
         _ar_rebuild += 1
         if _ar_rebuild > _ar_max_rb:
-            _log("VideoGen", f"[AR EXPANSION] Rebuild limit reached — continuing with {_ar_secs/60:.1f}min video", "WARN")
-            send_message(f"[Pipeline] Arabic runtime {_ar_secs/60:.1f}min after {_ar_max_rb} rebuilds — proceeding")
+            _log("VideoGen", f"[AR EXPANSION] Limit reached — continuing with {_ar_mins:.1f}min", "WARN")
+            send_message(f"[Pipeline] AR {_ar_mins:.1f}min after {_ar_max_rb} expansions — proceeding")
             break
-        _log("VideoGen", f"[AR AUDIO] Rebuild triggered — {_ar_secs/60:.1f}min < 15min (attempt {_ar_rebuild}/{_ar_max_rb})", "WARN")
-        send_message(f"[Pipeline] Arabic runtime {_ar_secs/60:.1f}min < 15min — auto-rebuilding (attempt {_ar_rebuild}/{_ar_max_rb})...")
+        send_message(
+            f"[Pipeline] AR {_ar_status}: {_ar_mins:.1f}min | target {_AR_IDEAL_SECS//60}min — "
+            f"fallback expansion ({_ar_rebuild}/{_ar_max_rb})..."
+        )
         from agent.script_agent import expand_arabic_runtime as _ear
-        _topic_text_ar = topic.get("topic", "") if topic else (ar_long.get("topic", "") if ar_long else "")
-        ar_long["script"] = _ear(ar_long["script"], target_min=24.0, topic=_topic_text_ar)
+        ar_long["script"] = _ear(ar_long["script"], target_min=_AR_TGT_MIN, topic=_topic_text_ar)
         _slug_rb     = _topic_slug(_topic_for_dedup)
         ar_long_id   = f"{today}_{_slug_rb}_arabic_long_rb{_ar_rebuild}"
         ar_long_path = _make_video(ar_long, ar_long_id, stats, user_images=user_images, user_videos=user_videos)
