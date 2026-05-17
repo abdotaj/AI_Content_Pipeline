@@ -3014,6 +3014,64 @@ def _is_video_file(path: str) -> bool:
     return ext in {".mp4", ".mov", ".m4v", ".webm"}
 
 
+def _search_pexels_images(query: str, max_results: int = 5) -> list[str]:
+    """Search Pexels photos and return direct image URLs (free licensed)."""
+    api_key = os.getenv("PEXELS_API_KEY", "").strip()
+    if not api_key or api_key.startswith("YOUR_"):
+        return []
+    try:
+        r = requests.get(
+            "https://api.pexels.com/v1/search",
+            headers={"Authorization": api_key},
+            params={"query": query, "per_page": max_results, "orientation": "landscape"},
+            timeout=20,
+        )
+        if r.status_code != 200:
+            print(f"[Image] Pexels photos {r.status_code} for '{query}'")
+            return []
+        urls = []
+        for photo in r.json().get("photos", []):
+            src = photo.get("src", {})
+            url = src.get("large2x") or src.get("large") or src.get("original")
+            if url:
+                urls.append(url)
+        return urls
+    except Exception as e:
+        print(f"[Image] Pexels photo search error: {e}")
+        return []
+
+
+def _search_pixabay_images(query: str, max_results: int = 5) -> list[str]:
+    """Search Pixabay photos and return direct image URLs (free licensed)."""
+    api_key = os.getenv("PIXABAY_API_KEY", "").strip()
+    if not api_key or api_key.startswith("YOUR_"):
+        return []
+    try:
+        r = requests.get(
+            "https://pixabay.com/api/",
+            params={
+                "key": api_key,
+                "q": query,
+                "per_page": max_results,
+                "image_type": "photo",
+                "orientation": "horizontal",
+                "safesearch": "true",
+            },
+            timeout=20,
+        )
+        if r.status_code != 200:
+            print(f"[Image] Pixabay photos {r.status_code} for '{query}'")
+            return []
+        return [
+            hit.get("largeImageURL", "")
+            for hit in r.json().get("hits", [])
+            if hit.get("largeImageURL")
+        ]
+    except Exception as e:
+        print(f"[Image] Pixabay image search error: {e}")
+        return []
+
+
 def _search_pexels_videos(query: str, per_page: int = 15) -> list[str]:
     """Search Pexels videos and return direct MP4 URLs (watermark-safe source)."""
     api_key = os.getenv("PEXELS_API_KEY", "").strip()
@@ -4897,13 +4955,15 @@ def fetch_real_images(script_text: str, count: int, video_id: str,
     Priority order:
       1. User images from Telegram (always first)
       2. Wikimedia person photo (if person detected in chunk)
-      3. Wikimedia Commons general search
-      4. Pollinations AI generation with topic-specific prompt (last resort)
+      3. Wikimedia Commons + OpenAI web search
+      4. Pexels photos (real licensed photos)
+      5. Pexels video clip (related video used directly in assembler)
+      6. Pixabay photos (real licensed photos)
+      7. Pollinations AI photo generation
+      8. Pollinations animation/illustration style (gap-filler of last resort)
 
-    Pexels is never used (returns irrelevant content for specific queries).
-
-    Logs each image as real photo or AI generated.
-    Returns list of image paths.
+    Logs each image as real photo, video, AI, or animation.
+    Returns list of image/video paths.
     """
     import re
     import shutil
@@ -4981,11 +5041,13 @@ def fetch_real_images(script_text: str, count: int, video_id: str,
 
     # ── Parallel chunk processing ─────────────────────────────────────────────
     # Each chunk is image-independent — run all searches simultaneously.
-    # Removes sequential 2s sleep between chunks (was ~2×remaining seconds wasted).
     def _process_chunk(args: tuple):
         ci, chunk_text, out_path, ai_prompt_c, seed_val = args
         _saved = None
         _kind  = "none"
+
+        # Extract query once — reused across all steps
+        _query = _get_search_query_for_chunk(chunk_text)
 
         # Step 1: person photo (Wikimedia — highest priority)
         _person = _detect_person_in_chunk(chunk_text)
@@ -4998,27 +5060,53 @@ def fetch_real_images(script_text: str, count: int, video_id: str,
                     _kind = "real-person"
 
         # Step 2: Wikimedia Commons + OpenAI web search
-        if not _saved:
-            _query = _get_search_query_for_chunk(chunk_text)
-            if _query:
-                _wiki = _search_wikimedia_commons(_query) or _wikimedia_image_results(_query)
-                if not _wiki and len(_query.split()) > 3:
-                    _sq = " ".join(_query.split()[:3])
-                    _wiki = _search_wikimedia_commons(_sq) or _wikimedia_image_results(_sq)
-                if _wiki:
-                    _saved = _download_first_valid(_wiki, out_path)
+        if not _saved and _query:
+            _wiki = _search_wikimedia_commons(_query) or _wikimedia_image_results(_query)
+            if not _wiki and len(_query.split()) > 3:
+                _sq = " ".join(_query.split()[:3])
+                _wiki = _search_wikimedia_commons(_sq) or _wikimedia_image_results(_sq)
+            if _wiki:
+                _saved = _download_first_valid(_wiki, out_path)
+                if _saved:
+                    print(f"[Image] chunk {ci}: real photo (Wikimedia) '{_query}'")
+                    _kind = "real-wiki"
+            if not _saved:
+                _oai = _search_images_openai(_query)
+                if _oai:
+                    _saved = _download_first_valid(_oai, out_path)
                     if _saved:
-                        print(f"[Image] chunk {ci}: real photo (Wikimedia) '{_query}'")
-                        _kind = "real-wiki"
-                if not _saved:
-                    _oai = _search_images_openai(_query)
-                    if _oai:
-                        _saved = _download_first_valid(_oai, out_path)
-                        if _saved:
-                            print(f"[Image] chunk {ci}: real photo (OpenAI search) '{_query}'")
-                            _kind = "real-oai"
+                        print(f"[Image] chunk {ci}: real photo (OpenAI search) '{_query}'")
+                        _kind = "real-oai"
 
-        # Step 3: Pollinations AI fallback (with prompt-hash cache to avoid duplicates)
+        # Step 3: Pexels photos (real licensed photos)
+        if not _saved and _query:
+            _pex_imgs = _search_pexels_images(_query, max_results=3)
+            if _pex_imgs:
+                _saved = _download_first_valid(_pex_imgs, out_path)
+                if _saved:
+                    print(f"[Image] chunk {ci}: Pexels photo '{_query}'")
+                    _kind = "real-pexels"
+
+        # Step 4: Pexels video clip (assembler handles .mp4 natively)
+        if not _saved and _query:
+            _pex_vids = _search_pexels_videos(_query, per_page=5)
+            if _pex_vids:
+                _vid_out = out_path.replace(".png", "_pv.mp4")
+                _saved = _download_first_valid_video(_pex_vids, _vid_out)
+                if _saved:
+                    print(f"[Image] chunk {ci}: Pexels video '{_query}'")
+                    _kind = "real-pexels-video"
+
+        # Step 5: Pixabay photos (real licensed photos)
+        if not _saved and _query:
+            _pix_imgs = _search_pixabay_images(_query, max_results=3)
+            if _pix_imgs:
+                _saved = _download_first_valid(_pix_imgs, out_path)
+                if _saved:
+                    print(f"[Image] chunk {ci}: Pixabay photo '{_query}'")
+                    _kind = "real-pixabay"
+
+        # Step 6: Pollinations AI photo (with prompt-hash cache to avoid duplicates)
         if not _saved:
             _cached = _check_image_prompt_cache(ai_prompt_c)
             if _cached and os.path.exists(_cached):
@@ -5035,6 +5123,20 @@ def fetch_real_images(script_text: str, count: int, video_id: str,
                     _save_image_prompt_cache(ai_prompt_c, _saved)
                     _kind = "ai-gen"
                     print(f"[Image] chunk {ci}: AI generated")
+
+        # Step 7: Pollinations animation/illustration (gap-filler of last resort)
+        if not _saved:
+            _q_words  = (_query or "").split()[:3]
+            _t_words  = topic.split()[:2] if topic else []
+            _anim_prompt = (
+                f"{' '.join(_t_words + _q_words)} documentary illustration "
+                f"cinematic art style dark atmospheric{_IMAGE_PROMPT_SUFFIX}"
+            )
+            _anim_out = out_path.replace(".png", "_anim.png")
+            _saved = generate_ai_image(_anim_prompt, _anim_out, seed=seed_val + 50000)
+            if _saved:
+                _kind = "ai-animation"
+                print(f"[Image] chunk {ci}: animation illustration gap-filler")
 
         return ci, _saved, _kind
 
@@ -8627,6 +8729,23 @@ def run_fast_pipeline(
             print(f"[FAST] Visual fetch failed (non-fatal): {_ve}")
     image_paths = [p for p in image_paths if p and os.path.exists(p)]
     image_paths = list(dict.fromkeys(image_paths))  # deduplicate, preserve order
+
+    # ── Stock-video supplement: if source count is still below the per-minute
+    # floor, pull related videos from Pexels/Pixabay/Archive.
+    # Target: ~1 unique source per minute of content, minimum 10 for any long video.
+    if not is_short and _real_audio_secs > 0:
+        _src_floor = max(10, int(_real_audio_secs / 60))  # sources needed
+        _src_gap   = _src_floor - len(image_paths)
+        if _src_gap > 0:
+            _stock_n = min(_src_gap, 15)
+            print(f"[FAST] Only {len(image_paths)} sources for "
+                  f"{_real_audio_secs/60:.1f}min — fetching {_stock_n} stock videos")
+            _stock = fetch_stock_videos(
+                script_data.get("script", ""), _stock_n, video_id + "_sv", topic=topic_str
+            )
+            image_paths.extend([p for p in _stock if p and os.path.exists(p)])
+            image_paths = list(dict.fromkeys(image_paths))
+            print(f"[FAST] After stock supplement: {len(image_paths)} unique sources")
 
     # Filter dark solid-background placeholder images before assembly
     image_paths = _filter_dark_placeholders(image_paths, label="FAST")
