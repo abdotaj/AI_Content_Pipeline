@@ -5446,7 +5446,7 @@ def assemble_video(
         final, output_path, _clips_to_close,
         timeout_seconds=14400,
         fps=30, codec="libx264", audio_codec="aac", preset="ultrafast",
-        ffmpeg_params=["-pix_fmt", "yuv420p", "-movflags", "+faststart"],
+        ffmpeg_params=["-threads", "0", "-pix_fmt", "yuv420p", "-movflags", "+faststart"],
         temp_audiofile=temp_audio, logger=None,
     )
     for _ in range(5):
@@ -6655,9 +6655,12 @@ def assemble_video_with_hook(
     # FAST mode: max 8 s/clip → 8+ visual transitions/min → no long image holds.
     # FULL mode: max 14 s/clip → more cinematic breathing room.
     _n_imgs = max(len(image_paths), 1)
-    # FULL: 6s max/clip → 10+ visual cuts/min → cinematic Netflix documentary pace
-    # FAST: 8s max/clip → 7+ cuts/min
-    _dur_cap = 8.0 if PIPELINE_MODE == "fast" else 6.0
+    # Clip duration cap scales with video length to keep total clips ≤ ~200.
+    # Each visual position generates 2 sub-clips (zoom-in + zoom-out), so
+    # _dur_cap ≥ main_duration / 200 keeps MoviePy composition manageable.
+    # Floor cap (8s for FAST, 6s for FULL) preserved for short videos.
+    _dur_cap_base = 8.0 if PIPELINE_MODE == "fast" else 6.0
+    _dur_cap = max(_dur_cap_base, min(16.0, main_duration / 200.0))
     _floor   = 2.5 if PIPELINE_MODE == "fast" else 3.0
     _adaptive_base = max(_floor, min(_dur_cap, main_duration / (2.0 * _n_imgs + 1)))
     if _adaptive_base >= _dur_cap:
@@ -6740,7 +6743,7 @@ def assemble_video_with_hook(
         final, output_path, _clips_to_close,
         timeout_seconds=14400,
         fps=24, codec="libx264", audio_codec="aac", preset="ultrafast",
-        ffmpeg_params=["-pix_fmt", "yuv420p", "-movflags", "+faststart"],
+        ffmpeg_params=["-threads", "0", "-pix_fmt", "yuv420p", "-movflags", "+faststart"],
         temp_audiofile=temp_audio, remove_temp=True, logger=None,
     )
     for _ in range(5):
@@ -7857,11 +7860,11 @@ USE_CLIPS: bool = PIPELINE_MODE == "full"
 # GitHub Actions safe mode: slightly lower IO workers to stay within runner limits.
 _IS_CI = bool(os.getenv("GITHUB_ACTIONS") or os.getenv("CI"))
 _WORKERS: dict[str, int] = {
-    "search":       12 if _IS_CI else 20,   # multi-source image URL search (IO-bound)
+    "search":       16 if _IS_CI else 20,   # multi-source image URL search (IO-bound)
     "pollinations":  4 if _IS_CI else  6,   # Pollinations free API — strict rate limit, keep low
     "doc_visual":    4 if _IS_CI else  6,   # documentary visual pool — same Pollinations limit
     "enhance":      30 if _IS_CI else 40,   # image post-processing (IO-bound)
-    "tts":           8 if _IS_CI else 10,    # TTS sections — API rate-limit aware
+    "tts":          12 if _IS_CI else 14,   # TTS sections — API rate-limit aware
     "ffmpeg":        1,                      # CPU-bound — never increase
     "render":        1,                      # CPU-bound — never increase
     "script":        2,                      # LLM script generation — API rate-limited
