@@ -25,18 +25,21 @@ Local: C:\Users\abdot\content_pipeline
 2. Write English script via Groq (llama-3.3-70b-versatile)
 3. Translate to Arabic via Google Translate free API
 4. Send 4 scripts to Telegram for review (non-blocking)
-5. Generate voiceover via ElevenLabs cloned voices
+5. Generate voiceover via OpenAI TTS → edge-tts fallback
 6. Generate 10 AI images via Pollinations API
 7. Assemble 4 videos via MoviePy
 8. Auto-post 2 long videos to YouTube
 9. Send 2 short clips to Telegram
 
 ## Voice Configuration
-ELEVENLABS_API_KEY — in .env and GitHub Secrets
-ELEVENLABS_VOICE_ID_EN = oHXsMWwdWLsNE9IdmbuT
-ELEVENLABS_VOICE_ID_AR = kVE76Ng0Z4kGR7oebETP
-Model: eleven_multilingual_v2
-Chunking: scripts split into 2500 char chunks, merged with ffmpeg/pydub
+Primary: OpenAI TTS (tts-1-hd)
+- English: alloy voice, speed 1.0
+- Arabic: nova voice, speed 1.1
+Fallback: edge-tts (free, no API key required)
+- English: en-US-AriaNeural
+- Arabic: ar-SA-ZariyahNeural
+Key: OPENAI_API_KEY — in .env and GitHub Secrets
+Chunking: long scripts split by [SECTION:] markers, concatenated via ffmpeg
 
 ## Image Generation
 Provider: Pollinations API (free, no API key)
@@ -51,8 +54,11 @@ Clips shuffled randomly, looped to fill audio duration
 - Groq: script writing only (llama-3.3-70b-versatile → llama-3.1-8b-instant fallback)
 - Google Translate: Arabic translation (free REST API, no key)
 - DuckDuckGo: web research (duckduckgo-search library)
-- ElevenLabs: voice cloning (eleven_multilingual_v2)
+- OpenAI TTS (tts-1-hd): voiceover — primary engine
+- edge-tts: voiceover fallback (free, no key)
 - Pollinations: AI image generation (free, no key)
+- Pexels API: stock photos + videos (PEXELS_API_KEY)
+- Pixabay API: stock photos + videos (PIXABAY_API_KEY)
 
 ## YouTube Channels
 Dark Crime Decoded:
@@ -75,7 +81,7 @@ Shopmart Global:
 - config_shopmart.py — Shopmart settings
 - agents/research_agent.py — DuckDuckGo research + topic memory
 - agents/script_agent.py — Groq script + Google Translate
-- agents/video_agent.py — ElevenLabs + Pollinations + MoviePy
+- agents/video_agent.py — OpenAI TTS + edge-tts + Pollinations + Pexels + Pixabay + MoviePy
 - agents/notify_agent.py — Telegram bot
 - agents/publish_agent.py — YouTube upload
 - output/covered_topics.json — never repeat a topic
@@ -89,7 +95,7 @@ Griselda, American Gangster, Donnie Brasco, City of God, Sicario
 ## Known Issues & Fixes
 - Windows temp file lock: use unique temp_audiofile path
 - Groq rate limit: 6000 TPM free tier, sleep 8s between calls
-- ElevenLabs timeout: chunk at 2500 chars, 90s timeout per chunk
+- OpenAI TTS quota: tracked via _OPENAI_QUOTA_EXCEEDED flag, falls back to edge-tts
 - Pollinations 429: retry 3x with 30s wait, PIL fallback
 - .claude/ folder: always in .gitignore, never commit
 - youtube_token*.json: always in .gitignore, never commit
