@@ -229,24 +229,37 @@ def _load_script_injection() -> dict | None:
             with open(src, encoding="utf-8") as _f:
                 data = json.load(_f)
             title       = data.get("title", "").strip()
+            title_ar    = data.get("title_ar", "").strip()
             topic_text  = data.get("topic", "").strip() or title
             series_name = data.get("series_name", "").strip() or None
             script_body = data.get("script", "").strip()
+            script_ar   = data.get("script_ar", "").strip()
         else:
-            # TXT: TITLE: ... / TOPIC: ... / --- / body
+            # TXT: TITLE: ... / TITLE_AR: ... / TOPIC: ... / --- / EN body / === / AR body
             raw = Path(src).read_text(encoding="utf-8")
             lines    = raw.splitlines()
             title    = ""
+            title_ar = ""
             topic_text = ""
             series_name = None
+            script_ar   = ""
             body_lines: list[str] = []
+            ar_lines:   list[str] = []
             past_sep = False
+            in_ar    = False
             for line in lines:
                 if line.strip() == "---":
                     past_sep = True
                     continue
-                if past_sep:
+                if past_sep and line.strip() == "===":
+                    in_ar = True
+                    continue
+                if in_ar:
+                    ar_lines.append(line)
+                elif past_sep:
                     body_lines.append(line)
+                elif line.upper().startswith("TITLE_AR:"):
+                    title_ar = line.split(":", 1)[1].strip()
                 elif line.upper().startswith("TITLE:"):
                     title = line.split(":", 1)[1].strip()
                 elif line.upper().startswith("TOPIC:"):
@@ -254,6 +267,7 @@ def _load_script_injection() -> dict | None:
                 elif line.upper().startswith("SERIES:"):
                     series_name = line.split(":", 1)[1].strip() or None
             script_body = "\n".join(body_lines).strip()
+            script_ar   = "\n".join(ar_lines).strip()
             if not topic_text:
                 topic_text = title
 
@@ -271,13 +285,15 @@ def _load_script_injection() -> dict | None:
 
         return {
             "title":       title,
+            "title_ar":    title_ar,
             "topic":       topic_text,
             "series_name": series_name,
             "script":      script_body,
+            "script_ar":   script_ar,   # non-empty → skip translate_script()
             "language":    "english",
             "niche":       f"Real story behind {series_name or topic_text}",
             "research":    {},
-            "_injected":   True,   # flag so pipeline skips write_script
+            "_injected":   True,
         }
     except Exception as _e:
         print(f"[ScriptInject] Failed to load '{chosen}': {_e}")
@@ -585,8 +601,26 @@ def run_pipeline() -> None:
     _check_cancel("after script generation")
 
     _ctrl.update_stage("Scripts", "writing Arabic script from research")
+    _injected_ar = (_injected_script or {}).get("script_ar", "").strip()
     try:
-        ar_long = translate_script(en_long, research=topic.get("research", {}))
+        if _injected_ar:
+            # Both scripts provided — skip translation entirely (0 API calls)
+            _ar_title = (_injected_script or {}).get("title_ar", "") or en_long.get("title", "")
+            _log("Scripts", f"[INJECT] Using injected Arabic script ({len(_injected_ar.split())} words)", "OK")
+            send_message(f"[FAST] Arabic script injected — skipping translation.\nTitle: {_ar_title}")
+            ar_long = {
+                "title":       _ar_title,
+                "topic":       topic_text,
+                "script":      _injected_ar,
+                "language":    "arabic",
+                "niche":       en_long.get("niche", ""),
+                "angle_title": en_long.get("angle_title", ""),
+                "angle_hook":  en_long.get("angle_hook", ""),
+                "research":    {},
+                "chapters":    "",
+            }
+        else:
+            ar_long = translate_script(en_long, research=topic.get("research", {}))
         ar_wc   = len(ar_long.get("script", "").split())
         if ar_wc > 0:
             ar_long["chapters"] = generate_chapters(

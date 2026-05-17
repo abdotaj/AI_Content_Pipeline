@@ -1,6 +1,10 @@
 {
-  "title": "Pablo Escobar - The Real Story Behind Narcos",
-  "topic": "Pablo Escobar",
+  "title":       "Pablo Escobar - The Real Story Behind Narcos",
+  "title_ar":    "بابلو إسكوبار - القصة الحقيقية وراء ناركوس",
+  "topic":       "Pablo Escobar",
   "series_name": "Narcos",
-  "script": "Place your full English script here.\n\nUse [SECTION: Title] markers to separate chapters.\n\nExample:\n\n[SECTION: Introduction]\nHe built the most powerful drug empire in history...\n\n[SECTION: The Rise]\n..."
+
+  "script": "Full English script here.\n\nUse [SECTION: Title] markers to separate chapters.\n\n[SECTION: Introduction]\nHe built the most powerful drug empire in history...\n\n[SECTION: The Rise]\n...",
+
+  "script_ar": "النص العربي الكامل هنا.\n\nاستخدم علامات [SECTION: العنوان] لفصل الفصول.\n\n[SECTION: المقدمة]\nبنى أقوى إمبراطورية مخدرات في التاريخ...\n\n[SECTION: الصعود]\n..."
 }
