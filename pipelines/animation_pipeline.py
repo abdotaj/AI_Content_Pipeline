@@ -879,7 +879,7 @@ def run_pipeline() -> None:
         _AR_EXPAND_TARGET = 10_000
         if ar_wc < _AR_EXPAND_TARGET:
             _log("Scripts", f"AR {ar_wc}w below {_AR_EXPAND_TARGET}w target — expanding", "WARN")
-            send_message(f"[ANIM] AR script {ar_wc}w (~{round(ar_wc/190,1)}min) — expanding to {_AR_EXPAND_TARGET}w...")
+            send_message(f"[ANIM] AR script {ar_wc}w (~{round(ar_wc/175,1)}min) — expanding to {_AR_EXPAND_TARGET}w...")
             try:
                 _ar_expanded = _expand_arabic_script_to_min(ar_long["script"], target_min=_AR_EXPAND_TARGET)
                 _ar_expanded_wc = len(_ar_expanded.split())
@@ -887,7 +887,7 @@ def run_pipeline() -> None:
                     ar_long["script"] = _ar_expanded
                     ar_wc = _ar_expanded_wc
                     ar_long["chapters"] = generate_chapters(ar_wc, language="arabic", angle_title=en_long.get("angle_title", ""))
-                    _log("Scripts", f"AR expanded: {ar_wc}w (~{round(ar_wc/190,1)}min)", "OK")
+                    _log("Scripts", f"AR expanded: {ar_wc}w (~{round(ar_wc/175,1)}min)", "OK")
                 else:
                     _log("Scripts", f"AR expansion no improvement ({_ar_expanded_wc}w) — proceeding with {ar_wc}w", "WARN")
             except Exception as _exp_e:
@@ -935,7 +935,7 @@ def run_pipeline() -> None:
 
     # ── Approval gate 1: Scripts ─────────────────────────────────────────────
     _ar_wc_display   = len(ar_long.get("script", "").split())
-    _ar_est_min_disp = round(_ar_wc_display / 420, 1)
+    _ar_est_min_disp = round(_ar_wc_display / 175, 1)
     _ar_status       = (
         f"⚠️ SHORT (~{_ar_est_min_disp}min, target 10000w/60min)"
         if _ar_wc_display < 10_000
@@ -986,7 +986,7 @@ def run_pipeline() -> None:
         ar_long_path = ""
     else:
         if _ar_wc_initial < 8_000:
-            _log("AnimGen", f"[AR SHORT] {_ar_wc_initial}w (~{round(_ar_wc_initial/420,1)}min) below 8000w target — rendering anyway", "WARN")
+            _log("AnimGen", f"[AR SHORT] {_ar_wc_initial}w (~{round(_ar_wc_initial/175,1)}min) below 8000w target — rendering anyway", "WARN")
         ar_long_path = _make_animation_video(ar_long, topic.get("research", {}), FINAL_DIR, stats, "AR long")
 
     # ── Arabic runtime auto-rebuild ───────────────────────────────────────────
