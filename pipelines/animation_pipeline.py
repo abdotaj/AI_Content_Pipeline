@@ -996,6 +996,7 @@ def run_pipeline() -> None:
     _AR_HARD_FAIL  = 1800  # 30 min — universal absolute minimum
     _ar_rebuild    = 0
     _ar_max_rb     = 4
+    _ar_is_timeout_fallback = bool(ar_long_path and "_fb." in os.path.basename(ar_long_path))
     while ar_long_path and os.path.exists(ar_long_path):
         _ar_secs = _video_secs(ar_long_path)
         _ar_mins = _ar_secs / 60
@@ -1011,6 +1012,11 @@ def run_pipeline() -> None:
         if _ar_status in ("IDEAL", "ACCEPTABLE LONGFORM"):
             _log("AnimGen", f"[AR PASSED] {_ar_mins:.1f}min — {_ar_status}", "OK")
             break
+        if _ar_is_timeout_fallback:
+            _ar_est = round(len(ar_long.get("script", "").split()) / 175, 1)
+            _log("AnimGen", f"[AR TIMEOUT] Render timed out — script ~{_ar_est}min estimated. Increase render timeout.", "ERROR")
+            send_message(f"[ANIM] AR render timed out — script is {_ar_est}min, CI render needs >120min. Fallback clip retained.")
+            break
         _ar_rebuild += 1
         if _ar_rebuild > _ar_max_rb:
             _log("AnimGen", f"[AR EXPANSION] Rebuild limit reached — continuing with {_ar_mins:.1f}min video", "WARN")
@@ -1021,6 +1027,7 @@ def run_pipeline() -> None:
         from agent.script_agent import expand_arabic_runtime as _ear
         ar_long["script"] = _ear(ar_long["script"], target_min=47.5, topic=topic_text)
         ar_long_path = _make_animation_video(ar_long, topic.get("research", {}), FINAL_DIR, stats, "AR long")
+        _ar_is_timeout_fallback = bool(ar_long_path and "_fb." in os.path.basename(ar_long_path))
 
     _check_cancel("after AR animation render")
 

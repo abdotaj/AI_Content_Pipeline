@@ -622,6 +622,9 @@ def run_pipeline() -> None:
     _AR_MAX_SECS   = 2400  # 40 min — FAST AR ceiling
     _ar_rebuild    = 0
     _ar_max_rb     = 4
+    # Detect fallback clip (_fb.mp4): primary render timed out, short clip used as placeholder.
+    # Don't expand in this case — the script is long enough, the render just needs more time.
+    _ar_is_timeout_fallback = bool(ar_long_path and "_fb." in os.path.basename(ar_long_path))
     while ar_long_path and os.path.exists(ar_long_path):
         _ar_secs = _video_secs(ar_long_path)
         _ar_mins = _ar_secs / 60
@@ -639,6 +642,13 @@ def run_pipeline() -> None:
             _log("VideoGen", f"[AR TOO LONG] {_ar_mins:.1f}min > 40min — exporting as-is", "WARN")
             send_message(f"[FAST] Arabic {_ar_mins:.1f}min exceeds 40min — exporting as-is")
             break
+        if _ar_is_timeout_fallback:
+            # Primary render timed out — script is fine, renderer ran out of time.
+            # Expansion would make it worse. Report and skip.
+            _ar_est = round(len(ar_long.get("script", "").split()) / 175, 1)
+            _log("VideoGen", f"[AR TIMEOUT] Render timed out — script ~{_ar_est}min estimated. Increase render timeout.", "ERROR")
+            send_message(f"[FAST] AR render timed out — script is {_ar_est}min, CI render needs >120min. Fallback clip retained.")
+            break
         _ar_rebuild += 1
         if _ar_rebuild > _ar_max_rb:
             _log("VideoGen", f"[AR EXPANSION] Rebuild limit reached — continuing with {_ar_mins:.1f}min video", "WARN")
@@ -649,6 +659,7 @@ def run_pipeline() -> None:
         from agent.script_agent import expand_arabic_runtime as _ear
         ar_long["script"] = _ear(ar_long["script"], target_min=35.0, topic=topic_text)
         ar_long_path = _make_video(ar_long, f"{today}_{_slug}_arabic_long_rb{_ar_rebuild}", stats, user_images=user_images, user_videos=user_videos)
+        _ar_is_timeout_fallback = bool(ar_long_path and "_fb." in os.path.basename(ar_long_path))
 
     _check_cancel("after AR long render")
 

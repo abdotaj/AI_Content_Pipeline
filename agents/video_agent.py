@@ -5444,7 +5444,7 @@ def assemble_video(
     _clips_to_close = [audio, final] + list(before_clips or []) + list(after_clips or [])
     _ok = _write_video_safe(
         final, output_path, _clips_to_close,
-        timeout_seconds=7200,
+        timeout_seconds=14400,
         fps=30, codec="libx264", audio_codec="aac", preset="ultrafast",
         ffmpeg_params=["-pix_fmt", "yuv420p", "-movflags", "+faststart"],
         temp_audiofile=temp_audio, logger=None,
@@ -6738,7 +6738,7 @@ def assemble_video_with_hook(
     _clips_to_close = [audio, final] + hook_clips + final_main
     _ok = _write_video_safe(
         final, output_path, _clips_to_close,
-        timeout_seconds=7200,
+        timeout_seconds=14400,
         fps=24, codec="libx264", audio_codec="aac", preset="ultrafast",
         ffmpeg_params=["-pix_fmt", "yuv420p", "-movflags", "+faststart"],
         temp_audiofile=temp_audio, remove_temp=True, logger=None,
