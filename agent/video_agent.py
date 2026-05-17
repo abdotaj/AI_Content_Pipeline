@@ -5444,9 +5444,9 @@ def assemble_video(
     _clips_to_close = [audio, final] + list(before_clips or []) + list(after_clips or [])
     _ok = _write_video_safe(
         final, output_path, _clips_to_close,
-        timeout_seconds=7200,
+        timeout_seconds=14400,
         fps=30, codec="libx264", audio_codec="aac", preset="ultrafast",
-        ffmpeg_params=["-pix_fmt", "yuv420p", "-movflags", "+faststart"],
+        ffmpeg_params=["-threads", "0", "-pix_fmt", "yuv420p", "-movflags", "+faststart"],
         temp_audiofile=temp_audio, logger=None,
     )
     for _ in range(5):
@@ -6655,9 +6655,12 @@ def assemble_video_with_hook(
     # FAST mode: max 8 s/clip → 8+ visual transitions/min → no long image holds.
     # FULL mode: max 14 s/clip → more cinematic breathing room.
     _n_imgs = max(len(image_paths), 1)
-    # FULL: 6s max/clip → 10+ visual cuts/min → cinematic Netflix documentary pace
-    # FAST: 8s max/clip → 7+ cuts/min
-    _dur_cap = 8.0 if PIPELINE_MODE == "fast" else 6.0
+    # Clip duration cap scales with video length to keep total clips ≤ ~200.
+    # Each visual position generates 2 sub-clips (zoom-in + zoom-out), so
+    # _dur_cap ≥ main_duration / 200 keeps MoviePy composition manageable.
+    # Floor cap (8s for FAST, 6s for FULL) preserved for short videos.
+    _dur_cap_base = 8.0 if PIPELINE_MODE == "fast" else 6.0
+    _dur_cap = max(_dur_cap_base, min(16.0, main_duration / 200.0))
     _floor   = 2.5 if PIPELINE_MODE == "fast" else 3.0
     _adaptive_base = max(_floor, min(_dur_cap, main_duration / (2.0 * _n_imgs + 1)))
     if _adaptive_base >= _dur_cap:
@@ -6698,15 +6701,21 @@ def assemble_video_with_hook(
 
     random.shuffle(main_clips)
 
-    # Loop main clips until they cover main_duration + buffer
+    # Loop main clips until they cover main_duration + buffer.
+    # Round-robin through deduplicated paths so every image appears equally
+    # before any image repeats — prevents the same few images dominating.
+    _unique_srcs = list(dict.fromkeys(image_paths))
+    _cov_idx = 0
     while sum(c.duration for c in main_clips) < main_duration + 20:
-        src = image_paths[random.randint(0, len(image_paths) - 1)]
+        src = _unique_srcs[_cov_idx % len(_unique_srcs)]
+        _cov_idx += 1
         dur = random.uniform(_adaptive_base, _adaptive_base * 1.15)
         try:
-            main_clips.append(_media_clip(src, dur, zoom_in=True))
-            print("[Visual] Coverage recovered via animation: looping clips")
+            main_clips.append(_media_clip(src, dur, zoom_in=(_cov_idx % 2 == 0)))
         except Exception:
             pass
+    if _cov_idx > 0:
+        print(f"[Visual] Coverage loop: {_cov_idx} extra clips over {len(_unique_srcs)} unique images")
     # Trim to main_duration
     accumulated = 0.0
     final_main  = []
@@ -6738,9 +6747,9 @@ def assemble_video_with_hook(
     _clips_to_close = [audio, final] + hook_clips + final_main
     _ok = _write_video_safe(
         final, output_path, _clips_to_close,
-        timeout_seconds=7200,
+        timeout_seconds=14400,
         fps=24, codec="libx264", audio_codec="aac", preset="ultrafast",
-        ffmpeg_params=["-pix_fmt", "yuv420p", "-movflags", "+faststart"],
+        ffmpeg_params=["-threads", "0", "-pix_fmt", "yuv420p", "-movflags", "+faststart"],
         temp_audiofile=temp_audio, remove_temp=True, logger=None,
     )
     for _ in range(5):
@@ -7857,11 +7866,11 @@ USE_CLIPS: bool = PIPELINE_MODE == "full"
 # GitHub Actions safe mode: slightly lower IO workers to stay within runner limits.
 _IS_CI = bool(os.getenv("GITHUB_ACTIONS") or os.getenv("CI"))
 _WORKERS: dict[str, int] = {
-    "search":       12 if _IS_CI else 20,   # multi-source image URL search (IO-bound)
+    "search":       16 if _IS_CI else 20,   # multi-source image URL search (IO-bound)
     "pollinations":  4 if _IS_CI else  6,   # Pollinations free API — strict rate limit, keep low
     "doc_visual":    4 if _IS_CI else  6,   # documentary visual pool — same Pollinations limit
     "enhance":      30 if _IS_CI else 40,   # image post-processing (IO-bound)
-    "tts":           8 if _IS_CI else 10,    # TTS sections — API rate-limit aware
+    "tts":          12 if _IS_CI else 14,   # TTS sections — API rate-limit aware
     "ffmpeg":        1,                      # CPU-bound — never increase
     "render":        1,                      # CPU-bound — never increase
     "script":        2,                      # LLM script generation — API rate-limited
@@ -8545,7 +8554,7 @@ def run_fast_pipeline(
         n_images = 6
     elif _real_audio_secs > 0:
         _density_floor = _math.ceil(_real_audio_secs / 60 * _FAST_IMAGES_PER_MIN)
-        n_images = max(25, min(60, _density_floor))
+        n_images = max(25, min(120, _density_floor))
         print(f"[FAST] Visual density: {n_images} images for {_real_audio_secs/60:.1f}min "
               f"({_FAST_VISUALS_PER_MIN} clips/min target)")
     else:
@@ -8596,6 +8605,7 @@ def run_fast_pipeline(
         except Exception as _ve:
             print(f"[FAST] Visual fetch failed (non-fatal): {_ve}")
     image_paths = [p for p in image_paths if p and os.path.exists(p)]
+    image_paths = list(dict.fromkeys(image_paths))  # deduplicate, preserve order
 
     # Filter dark solid-background placeholder images before assembly
     image_paths = _filter_dark_placeholders(image_paths, label="FAST")
@@ -8605,8 +8615,9 @@ def run_fast_pipeline(
     _validate_render_inputs(image_paths, _fast_audio_secs, is_short=is_short, language=language)
 
     # ── Smart PIL variation engine — reach n_images without extra API calls ─
-    # If real images are fewer than target: create PIL crop/tint variants so
-    # the assembler has enough unique visuals to avoid long-hold repetition.
+    # Uses itertools.product (not cycle×cycle) so each source×op combo is
+    # generated exactly once. Caps at len(sources)×len(ops) unique variants;
+    # anything beyond that triggers emergency AI visuals for true diversity.
     if 0 < len(image_paths) < n_images:
         _real_img_exts = {".jpg", ".jpeg", ".png", ".webp"}
         _base_imgs = [
@@ -8626,16 +8637,21 @@ def run_fast_pipeline(
                 ("hc",  lambda im: _PILEN.Contrast(im).enhance(1.6)),
                 ("lo",  lambda im: _PILEN.Brightness(im).enhance(0.6)),
                 ("sat", lambda im: _PILEN.Color(im).enhance(0.3)),
+                ("tl",  lambda im: im.crop((0, 0, im.width * 3 // 4, im.height * 3 // 4))
+                                    .resize(im.size, _PILV.LANCZOS)),
+                ("br",  lambda im: im.crop((im.width // 4, im.height // 4,
+                                            im.width, im.height))
+                                    .resize(im.size, _PILV.LANCZOS)),
             ]
             import itertools as _it
-            for _bpath, (_tag, _op) in zip(
-                _it.cycle(_base_imgs), _it.cycle(_VAR_OPS)
+            # product gives unique (source, op) pairs — no cycling duplicates
+            _pil_target = min(_needed_variants, len(_base_imgs) * len(_VAR_OPS))
+            for _bpath, (_tag, _op) in _it.islice(
+                _it.product(_base_imgs, _VAR_OPS), _pil_target
             ):
-                if _created >= _needed_variants:
-                    break
                 _vname = f"{os.path.splitext(os.path.basename(_bpath))[0]}_{_tag}.jpg"
                 _vpath = os.path.join(IMAGES_DIR, _vname)
-                if os.path.exists(_vpath):
+                if os.path.exists(_vpath) and os.path.getsize(_vpath) > 2_000:
                     image_paths.append(_vpath)
                     _created += 1
                     continue
@@ -8650,10 +8666,22 @@ def run_fast_pipeline(
                 except Exception:
                     pass
             if _created:
-                print(f"[FAST] PIL variation engine: +{_created} variants → "
+                print(f"[FAST] PIL variation engine: +{_created} unique variants "
+                      f"({len(_base_imgs)} sources × {len(_VAR_OPS)} ops) → "
                       f"{len(image_paths)} total images")
         except ImportError:
             print("[FAST] PIL not available — skipping variation engine")
+        # When unique PIL combos are exhausted and sources were scarce,
+        # generate emergency AI visuals for genuine diversity.
+        _em_still_needed = n_images - len(image_paths)
+        if _em_still_needed > 0 and len(_base_imgs) < 10:
+            print(f"[FAST] PIL pool from only {len(_base_imgs)} sources — "
+                  f"generating {_em_still_needed} emergency AI visuals for diversity")
+            _em_extra = _generate_emergency_visuals(
+                _em_still_needed, IMAGES_DIR, is_short=is_short
+            )
+            image_paths.extend([p for p in _em_extra if p and os.path.exists(p)])
+            image_paths = list(dict.fromkeys(image_paths))
 
     # ── Fallback visual engine: never abort due to empty visuals ──────────
     if len(image_paths) < 4:

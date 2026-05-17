@@ -1711,7 +1711,9 @@ def _generate_chapter_titles_llm(
         f"- Language: {lang_note}\n"
         f"- NO generic titles like Introduction / Conclusion / Background\n"
         f"- NO emoji — plain text only\n"
-        f"- Max 6 words per title\n\n"
+        f"- Max 6 words per title\n"
+        f"- ALL {n} titles must be UNIQUE — no two chapters can share the same name\n"
+        f"- The LAST title must feel like a final ending, aftermath, or revelation\n\n"
         f"Good style examples: {examples}\n\n"
         f"Return ONLY this JSON:\n"
         f'{{"chapters": ["Title1", "Title2", "Title3", "Title4", "Title5"]}}'
@@ -1768,6 +1770,19 @@ def generate_chapters_from_script(
         _sanitize_chapter_title(l) or f"Part {i + 1}"
         for i, l in enumerate(labels)
     ]
+
+    # Deduplicate: if LLM returned duplicate titles, append index to distinguish
+    _seen_titles: dict[str, int] = {}
+    deduped: list[str] = []
+    for _lbl in labels:
+        _key = _lbl.strip().lower()
+        if _key in _seen_titles:
+            _seen_titles[_key] += 1
+            deduped.append(f"{_lbl} {_seen_titles[_key]}")
+        else:
+            _seen_titles[_key] = 1
+            deduped.append(_lbl)
+    labels = deduped
 
     chapters = []
     for ratio, title in zip(_CHAPTER_PROPORTIONS_5, labels):

@@ -1711,7 +1711,9 @@ def _generate_chapter_titles_llm(
         f"- Language: {lang_note}\n"
         f"- NO generic titles like Introduction / Conclusion / Background\n"
         f"- NO emoji — plain text only\n"
-        f"- Max 6 words per title\n\n"
+        f"- Max 6 words per title\n"
+        f"- ALL {n} titles must be UNIQUE — no two chapters can share the same name\n"
+        f"- The LAST title must feel like a final ending, aftermath, or revelation\n\n"
         f"Good style examples: {examples}\n\n"
         f"Return ONLY this JSON:\n"
         f'{{"chapters": ["Title1", "Title2", "Title3", "Title4", "Title5"]}}'
@@ -1768,6 +1770,19 @@ def generate_chapters_from_script(
         _sanitize_chapter_title(l) or f"Part {i + 1}"
         for i, l in enumerate(labels)
     ]
+
+    # Deduplicate: if LLM returned duplicate titles, append index to distinguish
+    _seen_titles: dict[str, int] = {}
+    deduped: list[str] = []
+    for _lbl in labels:
+        _key = _lbl.strip().lower()
+        if _key in _seen_titles:
+            _seen_titles[_key] += 1
+            deduped.append(f"{_lbl} {_seen_titles[_key]}")
+        else:
+            _seen_titles[_key] = 1
+            deduped.append(_lbl)
+    labels = deduped
 
     chapters = []
     for ratio, title in zip(_CHAPTER_PROPORTIONS_5, labels):
@@ -6384,9 +6399,10 @@ def translate_script(en_script: dict, research: dict | None = None) -> dict:
     print(f"[Script] Arabic word count ({ar_data['arabic_path']} path): {_ar_wc}")
 
     # Arabic floor by mode — animation and full need higher minimums
-    _is_anim_script = bool(en_script.get("anim_mode"))
-    _AR_WORD_FLOOR  = (_WORD_FLOORS["animation"]["arabic"] if _is_anim_script
-                       else _WORD_FLOORS["fast"]["arabic"])    # 6,000 anim / 5,000 fast
+    _pipeline_mode_tr = os.getenv("PIPELINE_MODE", "fast").lower()
+    if _pipeline_mode_tr not in _WORD_FLOORS:
+        _pipeline_mode_tr = "fast"
+    _AR_WORD_FLOOR  = _WORD_FLOORS[_pipeline_mode_tr]["arabic"]
     _AR_WORD_TARGET = int(_AR_WORD_FLOOR * 1.1)               # 10% headroom above floor
     if _ar_wc < _AR_WORD_TARGET:
         print(f"[AR RUNTIME] Script words: {_ar_wc} — below target {_AR_WORD_TARGET:,}, expanding...")
@@ -6397,7 +6413,7 @@ def translate_script(en_script: dict, research: dict | None = None) -> dict:
     _en_min    = _en_wc / 160.0
     _ar_min    = estimate_arabic_duration(ar_data.get("script", ""))
     _ar_wc_now = clean_word_count(ar_data.get("script", ""))
-    _ar_contract_ref = get_runtime_contract("fast")
+    _ar_contract_ref = get_runtime_contract(_pipeline_mode_tr, "arabic")
     # Arabic runtime target is set independently of English — Arabic is primary.
     _ar_target = max(_ar_contract_ref["min_minutes"], _ar_target_minutes)
     print(
@@ -6512,8 +6528,8 @@ def translate_script(en_script: dict, research: dict | None = None) -> dict:
     _final_wc  = clean_word_count(ar_data.get("script", ""))
     _final_min = estimate_arabic_duration(ar_data.get("script", ""))
 
-    # ── Runtime estimate — no blocking; pipeline always renders if non-empty ─────
-    ar_data.pop("script_too_short", None)   # never block based on word count
+    # ── Runtime estimate log — no blocking; pipeline always renders if script is non-empty ──
+    ar_data.pop("script_too_short", None)   # never set script_too_short based on word count
     if _final_wc < 50:
         ar_data["script_too_short"] = True  # only flag truly empty scripts
         print(f"[AR EMPTY] Script has {_final_wc}w — marking as empty, will skip render")
