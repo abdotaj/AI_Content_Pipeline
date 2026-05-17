@@ -488,6 +488,18 @@ _GROQ_RATE_LIMITED_UNTIL:    float = 0.0   # epoch seconds; Groq is skipped unti
 _OPENAI_QUOTA_EXCEEDED_UNTIL: float = 0.0  # epoch seconds; OpenAI is skipped until this time
 _GEMINI_QUOTA_EXCEEDED_UNTIL: float = 0.0  # epoch seconds; Gemini is skipped until this time
 
+# Content-refusal signals — short phrases OpenAI returns when it refuses to write
+# sensitive/lengthy Arabic content. Checked inside _openai_call so Gemini is tried next.
+_AR_REFUSAL_SIGNALS: tuple = (
+    "عذراً، لا يمكنني", "عذرًا، لا يمكنني",
+    "عذرًا، لا أستطيع", "عذراً، لا أستطيع",
+    "لا يمكنني تلبية",  "لا أستطيع تلبية",
+    "لا أستطيع المساعدة", "لا يمكنني المساعدة",
+    "لا أستطيع أن أكتب", "لا يمكنني أن أكتب",
+    "I'm sorry, but I can't", "I'm sorry, I can't",
+    "I cannot assist", "I can't assist",
+)
+
 
 def _groq_fallback(prompt: str, max_tokens: int, json_mode: bool,
                    system_prompt: str | None = None) -> str:
@@ -659,8 +671,17 @@ def _ai_script_call(prompt: str, max_tokens: int = 1000,
                 try:
                     content = r.json()['choices'][0]['message']['content']
                     if content and content.strip():
+                        _stripped = content.strip()
+                        # Detect content-policy refusals before returning — treat them as
+                        # failures so the caller falls through to Groq/Gemini.
+                        if len(_stripped) < 300 and any(sig in _stripped for sig in _AR_REFUSAL_SIGNALS):
+                            print(
+                                f'[Script] OpenAI {model} CONTENT REFUSAL ({len(_stripped)}chars) — '
+                                f'skipping to next provider'
+                            )
+                            return ''
                         print(f'[Script] OpenAI {model} ✅ ({len(content)}chars, {_elapsed:.1f}s)')
-                        return content.strip()
+                        return _stripped
                     print(f'[Script] OpenAI {model}: 200 OK but empty content — skipping')
                 except (KeyError, IndexError, TypeError) as _pe:
                     print(f'[Script] OpenAI {model}: 200 malformed response ({_pe}): {r.text[:200]}')
@@ -5955,12 +5976,9 @@ def _write_arabic_from_research(en_script: dict, ar_research: dict, target_minut
             _raw_chars  = len(raw) if raw else 0
             _raw_lines  = (raw or "").count("\n")
 
-            # OpenAI content-policy refusal detection — reject before word-count check.
-            # Refusals are short Arabic apologies that would otherwise pass a low floor.
-            _REFUSAL_SIGNALS = ("عذراً، لا يمكنني", "عذرًا، لا يمكنني", "لا يمكنني تلبية",
-                                "لا أستطيع المساعدة", "لا يمكنني المساعدة",
-                                "I'm sorry", "I cannot", "I can't")
-            _is_refusal = raw and raw_wc < 60 and any(sig in raw for sig in _REFUSAL_SIGNALS)
+            # Secondary refusal check for anything that slipped through _openai_call
+            # (e.g. a refusal > 300 chars, or from Groq/Gemini using similar phrasing).
+            _is_refusal = raw and raw_wc < 60 and any(sig in raw for sig in _AR_REFUSAL_SIGNALS)
             if _is_refusal:
                 print(
                     f"[AR REFUSAL] {label} attempt {attempt}: content refusal detected — "
