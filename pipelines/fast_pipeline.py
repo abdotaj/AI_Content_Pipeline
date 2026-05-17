@@ -190,6 +190,100 @@ def _wait_for_manual_topic_fast(candidates: list, timeout_sec: int = 300) -> dic
     return None
 
 
+_SCRIPTS_DIR = os.path.join(_ROOT, "content", "scripts")
+_SCRIPTS_USED = os.path.join(_SCRIPTS_DIR, "_used")
+
+
+def _load_script_injection() -> dict | None:
+    """Check content/scripts/ for a queued .json or .txt script file.
+
+    Consumes the oldest file (alphabetical), moves it to _used/ for reference,
+    and returns a ready-to-use script_data dict that bypasses write_script().
+    Returns None if no files are waiting.
+
+    JSON format (recommended):
+        {"title": "...", "topic": "...", "script": "...", "series_name": "..."}
+
+    TXT format (simple):
+        First line:  TITLE: ...
+        Second line: TOPIC: ...        (optional)
+        After "---": full script body
+    """
+    os.makedirs(_SCRIPTS_DIR, exist_ok=True)
+    os.makedirs(_SCRIPTS_USED, exist_ok=True)
+
+    candidates = sorted([
+        f for f in os.listdir(_SCRIPTS_DIR)
+        if f.endswith((".json", ".txt"))
+        and not f.startswith("TEMPLATE")
+        and os.path.isfile(os.path.join(_SCRIPTS_DIR, f))
+    ])
+    if not candidates:
+        return None
+
+    chosen = candidates[0]
+    src    = os.path.join(_SCRIPTS_DIR, chosen)
+
+    try:
+        if chosen.endswith(".json"):
+            with open(src, encoding="utf-8") as _f:
+                data = json.load(_f)
+            title       = data.get("title", "").strip()
+            topic_text  = data.get("topic", "").strip() or title
+            series_name = data.get("series_name", "").strip() or None
+            script_body = data.get("script", "").strip()
+        else:
+            # TXT: TITLE: ... / TOPIC: ... / --- / body
+            raw = Path(src).read_text(encoding="utf-8")
+            lines    = raw.splitlines()
+            title    = ""
+            topic_text = ""
+            series_name = None
+            body_lines: list[str] = []
+            past_sep = False
+            for line in lines:
+                if line.strip() == "---":
+                    past_sep = True
+                    continue
+                if past_sep:
+                    body_lines.append(line)
+                elif line.upper().startswith("TITLE:"):
+                    title = line.split(":", 1)[1].strip()
+                elif line.upper().startswith("TOPIC:"):
+                    topic_text = line.split(":", 1)[1].strip()
+                elif line.upper().startswith("SERIES:"):
+                    series_name = line.split(":", 1)[1].strip() or None
+            script_body = "\n".join(body_lines).strip()
+            if not topic_text:
+                topic_text = title
+
+        if not script_body:
+            print(f"[ScriptInject] '{chosen}' has no script body — skipping")
+            return None
+        if not title:
+            title = topic_text or os.path.splitext(chosen)[0]
+
+        # Move to _used/ so it is not re-consumed
+        ts   = datetime.datetime.now().strftime("%Y%m%d_%H%M")
+        dest = os.path.join(_SCRIPTS_USED, f"{ts}_{chosen}")
+        os.rename(src, dest)
+        print(f"[ScriptInject] Consumed '{chosen}' → _used/{ts}_{chosen}")
+
+        return {
+            "title":       title,
+            "topic":       topic_text,
+            "series_name": series_name,
+            "script":      script_body,
+            "language":    "english",
+            "niche":       f"Real story behind {series_name or topic_text}",
+            "research":    {},
+            "_injected":   True,   # flag so pipeline skips write_script
+        }
+    except Exception as _e:
+        print(f"[ScriptInject] Failed to load '{chosen}': {_e}")
+        return None
+
+
 def _make_video(script_data: dict, video_id: str, stats: dict,
                 user_images: list | None = None,
                 user_videos: list | None = None) -> str:
@@ -268,6 +362,21 @@ def run_pipeline() -> None:
     send_message(f"[FAST PIPELINE] Starting — {today}\nPreparing assets & searching for topic...")
     ensure_music_assets()
 
+    # ── STEP 0: Script injection check ───────────────────────────────────────
+    # If content/scripts/ contains a .json or .txt file, consume it and skip
+    # research_series + write_script entirely (zero Groq tokens consumed).
+    _injected_script: dict | None = _load_script_injection()
+    if _injected_script:
+        _inj_topic = _injected_script["topic"]
+        _log("Scripts", f"[INJECT] Script loaded: '{_injected_script['title']}'", "OK")
+        send_message(
+            f"[FAST] Script injection detected!\n"
+            f"Topic: {_inj_topic}\n"
+            f"Title: {_injected_script['title']}\n"
+            f"Words: {len(_injected_script['script'].split())}\n\n"
+            f"Skipping research + script generation. Starting from translation..."
+        )
+
     # ── STEP 1: Topic selection ───────────────────────────────────────────────
     print(f"\n{'='*50}\n  RESEARCH\n{'='*50}\n", flush=True)
     _ctrl.update_stage("Research", "selecting topic")
@@ -315,6 +424,17 @@ def run_pipeline() -> None:
                 topic = _auto_candidates[0]
                 _log("Research", f"Timeout — auto-selected first: {topic.get('topic','?')}", "WARN")
                 send_message(f"[FAST PIPELINE] No reply — auto-selected:\n{topic.get('topic','?')}\n\nStarting...")
+            elif _injected_script:
+                # Script injection provides its own topic — no selection needed
+                topic = {
+                    "topic":        _injected_script["topic"],
+                    "niche":        _injected_script.get("niche", ""),
+                    "search_query": _injected_script["topic"],
+                    "series_name":  _injected_script.get("series_name"),
+                    "manual_topic": True,
+                    "research":     {},
+                }
+                _log("Research", f"[INJECT] Topic from script file: '{topic['topic']}'", "OK")
             else:
                 _log("Research", "No topic selected and no candidates — pipeline stopped", "WARN")
                 return
@@ -328,36 +448,65 @@ def run_pipeline() -> None:
         return
 
     # Topic confirmed — set in controller and start listener
+    # When a script is injected, override topic from the file and skip research
+    if _injected_script:
+        topic_text  = _injected_script["topic"]
+        topic_niche = _injected_script.get("niche", f"Real story behind {topic_text}")
+        if topic is None:
+            topic = {
+                "topic":        topic_text,
+                "niche":        topic_niche,
+                "search_query": topic_text,
+                "series_name":  _injected_script.get("series_name"),
+                "manual_topic": True,
+                "research":     {},
+            }
+        else:
+            topic["research"] = {}
+
     _ctrl.set_topic(topic_text)
     _ctrl.start()
 
     _log("Research", f"Topic: '{topic_text}'", "OK")
     send_message(f"[FAST PIPELINE] Topic: {topic_text}\n\nStarting fast generation...")
 
-    series = topic_niche.split("behind")[-1].strip() if "behind" in topic_niche else topic_text
-    _ctrl.update_stage("Research", f"deep research: {series}")
-    try:
-        research = research_series(series, user_note=topic.get("user_note"))
-        if research is None:
-            research = {}
-        research["real_person"] = topic_text
-        topic["research"]       = research
-        _log("Research", "Deep research done", "OK")
-    except Exception as e:
-        _log("Research", f"research_series failed (non-fatal): {e}", "WARN")
-        topic["research"] = {}
+    if _injected_script:
+        _log("Research", "[INJECT] Skipping research_series (script provided)", "OK")
+    else:
+        series = topic_niche.split("behind")[-1].strip() if "behind" in topic_niche else topic_text
+        _ctrl.update_stage("Research", f"deep research: {series}")
+        try:
+            research = research_series(series, user_note=topic.get("user_note"))
+            if research is None:
+                research = {}
+            research["real_person"] = topic_text
+            topic["research"]       = research
+            _log("Research", "Deep research done", "OK")
+        except Exception as e:
+            _log("Research", f"research_series failed (non-fatal): {e}", "WARN")
+            topic["research"] = {}
 
     # ── STEP 2: Scripts (EN + AR) ─────────────────────────────────────────────
     print(f"\n{'='*50}\n  SCRIPTS\n{'='*50}\n", flush=True)
     _ctrl.update_stage("Scripts", "writing English script")
-    _log("Scripts", "Writing English script")
-    try:
-        en_long = write_script(topic, language="english")
-    except Exception as e:
-        traceback.print_exc()
-        send_message(f"[FAST] Script failed: {type(e).__name__}: {e}")
-        _log("Scripts", f"{type(e).__name__}: {e}", "ERROR")
-        return
+
+    if _injected_script:
+        # Use the pre-written script — no Groq call
+        _log("Scripts", f"[INJECT] Using injected script: {len(_injected_script['script'].split())} words", "OK")
+        en_long = _injected_script
+        en_long.setdefault("topic",  topic_text)
+        en_long.setdefault("niche",  topic_niche)
+        en_long.setdefault("chapters", "")
+        en_long.setdefault("description", "")
+    else:
+        _log("Scripts", "Writing English script")
+        try:
+            en_long = write_script(topic, language="english")
+        except Exception as e:
+            traceback.print_exc()
+            send_message(f"[FAST] Script failed: {type(e).__name__}: {e}")
+            _log("Scripts", f"{type(e).__name__}: {e}", "ERROR")
+            return
 
     # Enforce minimum duration.
     # Instead of aborting immediately on a short script, retry lightweight
