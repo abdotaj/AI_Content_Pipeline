@@ -6510,6 +6510,13 @@ def assemble_video_with_hook(
     print(f"[DEBUG] User image paths in pool: {[os.path.basename(p) for p in _ui_existing]}")
     print(f"[DEBUG] First 5 images for long video: {[os.path.basename(p) for p in image_paths[:5]]}")
 
+    # Hard dedup: remove duplicate paths and missing files before any clip is made.
+    # Guarantees no image file is counted twice in coverage math.
+    _before_dedup = len(image_paths)
+    image_paths = list(dict.fromkeys(p for p in image_paths if p and os.path.exists(p)))
+    if len(image_paths) < _before_dedup:
+        print(f"[Video] Deduped image pool: {_before_dedup} → {len(image_paths)} unique paths")
+
     TARGET_W, TARGET_H = 1080, 1920
     hook_duration = 90  # first 90 seconds
 
@@ -6811,24 +6818,38 @@ def _generate_emergency_visuals(
     """Generate cinematic emergency visuals when Pollinations, stock, and user content all fail.
 
     Priority:
-      Tier 1 — Pollinations AI with crime documentary prompts (parallel, capped at 24 unique)
+      Tier 1 — Pollinations AI with 15 diverse crime documentary prompts (parallel, capped at 60)
       Tier 2 — PIL dark-gradient images (never flat solid colors)
 
-    Caps unique images at 24 — the assembly loop cycles them to fill the full pool duration.
-    Parallel workers prevent the 90s-per-image sequential hang that caused OOM (exit 137).
+    Caps unique images at 60 (4 workers × 15 batches). When Pollinations is down (402),
+    each call exits immediately so 60 attempts stay fast. Unique seeds ensure diversity.
     """
-    # Cap unique images — assembly cycles them; 100+ sequential calls = multi-hour hang
-    n_unique = min(n, 24)
+    # Cap at 60 unique — 4 parallel workers × 15 batches = manageable runtime.
+    # When Pollinations returns 402 (down), each call exits immediately so 60 calls
+    # are near-instant. When Pollinations works, 60 seeds guarantee unique images.
+    n_unique = min(n, 60)
     os.makedirs(output_dir, exist_ok=True)
     paths: list[str] = []
 
-    # Tier 1: Pollinations in parallel (4 workers)
+    # Tier 1: Pollinations in parallel (4 workers) — 15 diverse scene prompts,
+    # each with a unique seed so the same prompt produces a different image.
+    _top = topic or "true crime"
     _EM_PROMPTS = [
-        f"{'true crime documentary dark cinematic evidence investigation' if not topic else topic + ' crime investigation dark documentary cinematic'}{_IMAGE_PROMPT_SUFFIX}",
-        f"police investigation dark room crime file dramatic cinematic{_IMAGE_PROMPT_SUFFIX}",
-        f"crime scene night urban dark atmospheric documentary{_IMAGE_PROMPT_SUFFIX}",
-        f"interrogation room single overhead light shadow detective{_IMAGE_PROMPT_SUFFIX}",
-        f"evidence board crime photos newspaper clippings dark documentary{_IMAGE_PROMPT_SUFFIX}",
+        f"{_top} crime investigation dark documentary cinematic{_IMAGE_PROMPT_SUFFIX}",
+        f"police detective office 1970s dark cinematic file cabinet{_IMAGE_PROMPT_SUFFIX}",
+        f"crime scene night urban dark atmospheric yellow tape{_IMAGE_PROMPT_SUFFIX}",
+        f"interrogation room single overhead light shadow two chairs{_IMAGE_PROMPT_SUFFIX}",
+        f"evidence board crime photos newspaper clippings map pins{_IMAGE_PROMPT_SUFFIX}",
+        f"{_top} court trial gavel dark dramatic cinematic{_IMAGE_PROMPT_SUFFIX}",
+        f"surveillance camera footage grainy documentary dark{_IMAGE_PROMPT_SUFFIX}",
+        f"prison cell iron bars shadow dramatic dark cinematic{_IMAGE_PROMPT_SUFFIX}",
+        f"newspaper front page 1980s crime headline dark dramatic{_IMAGE_PROMPT_SUFFIX}",
+        f"city skyline night rain neon reflections dark{_IMAGE_PROMPT_SUFFIX}",
+        f"detective notebook handwriting evidence dark moody{_IMAGE_PROMPT_SUFFIX}",
+        f"abandoned building interior dark shadow cinematic{_IMAGE_PROMPT_SUFFIX}",
+        f"courtroom empty witness stand dramatic window light{_IMAGE_PROMPT_SUFFIX}",
+        f"police car lights reflection wet street night{_IMAGE_PROMPT_SUFFIX}",
+        f"archive filing cabinet open folders dusty dark{_IMAGE_PROMPT_SUFFIX}",
     ]
     _em_seed = random.randint(1, 99999)
 
@@ -8629,18 +8650,36 @@ def run_fast_pipeline(
         _created = 0
         try:
             from PIL import Image as _PILV, ImageEnhance as _PILEN, ImageFilter as _PILF
+            # 15 visually distinct ops → 4 sources × 15 = 60 unique variants
+            # guaranteed even when Pollinations is completely unavailable.
             _VAR_OPS = [
                 ("cc",  lambda im: im.crop((im.width//8, im.height//8,
                                             im.width*7//8, im.height*7//8))
                                     .resize(im.size, _PILV.LANCZOS)),
                 ("gs",  lambda im: _PILV.merge("RGB", [im.convert("L")] * 3)),
-                ("hc",  lambda im: _PILEN.Contrast(im).enhance(1.6)),
-                ("lo",  lambda im: _PILEN.Brightness(im).enhance(0.6)),
-                ("sat", lambda im: _PILEN.Color(im).enhance(0.3)),
+                ("hc",  lambda im: _PILEN.Contrast(im).enhance(1.8)),
+                ("lo",  lambda im: _PILEN.Brightness(im).enhance(0.50)),
+                ("sat", lambda im: _PILEN.Color(im).enhance(0.18)),
                 ("tl",  lambda im: im.crop((0, 0, im.width * 3 // 4, im.height * 3 // 4))
                                     .resize(im.size, _PILV.LANCZOS)),
                 ("br",  lambda im: im.crop((im.width // 4, im.height // 4,
                                             im.width, im.height))
+                                    .resize(im.size, _PILV.LANCZOS)),
+                ("bl",  lambda im: im.filter(_PILF.GaussianBlur(radius=4))),
+                ("mf",  lambda im: im.transpose(_PILV.FLIP_LEFT_RIGHT)),
+                ("gn",  lambda im: _PILEN.Contrast(
+                            _PILV.merge("RGB", [im.convert("L")] * 3)
+                        ).enhance(2.2)),
+                ("wb",  lambda im: _PILEN.Color(
+                            _PILEN.Brightness(im).enhance(1.15)
+                        ).enhance(0.55)),
+                ("dk",  lambda im: _PILEN.Brightness(
+                            _PILEN.Contrast(im).enhance(1.5)
+                        ).enhance(0.42)),
+                ("rc",  lambda im: im.crop((im.width // 5, 0, im.width, im.height))
+                                    .resize(im.size, _PILV.LANCZOS)),
+                ("sh",  lambda im: im.filter(_PILF.SHARPEN).filter(_PILF.SHARPEN)),
+                ("ls",  lambda im: im.crop((0, im.height // 5, im.width, im.height))
                                     .resize(im.size, _PILV.LANCZOS)),
             ]
             import itertools as _it
