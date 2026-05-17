@@ -5925,20 +5925,24 @@ def _write_arabic_from_research(en_script: dict, ar_research: dict, target_minut
         _openai_refused_this_section = False   # reset per-section
 
         for attempt in range(1, 4):
-            # Smart cooldown wait: if ALL providers are blocked, sleep until
-            # the soonest one recovers instead of burning all retries while
-            # no provider is available.
+            # Smart cooldown wait: if ALL effective providers are blocked, sleep
+            # until the soonest one recovers instead of burning retries.
+            # When OpenAI was content-refused this section it won't be called
+            # again — treat it as blocked so Groq+Gemini wait fires correctly.
             _now_a    = _t.time()
             _g_wait   = max(0.0, _GROQ_RATE_LIMITED_UNTIL    - _now_a)
             _o_wait   = max(0.0, _OPENAI_QUOTA_EXCEEDED_UNTIL - _now_a)
             _gem_wait = max(0.0, _GEMINI_QUOTA_EXCEEDED_UNTIL - _now_a)
-            if _g_wait > 0 and _o_wait > 0 and _gem_wait > 0:
-                _soonest = min(_GROQ_RATE_LIMITED_UNTIL,
-                               _OPENAI_QUOTA_EXCEEDED_UNTIL,
-                               _GEMINI_QUOTA_EXCEEDED_UNTIL)
+            _oai_effectively_blocked = _o_wait > 0 or _openai_refused_this_section
+            if _g_wait > 0 and _oai_effectively_blocked and _gem_wait > 0:
+                _soonest = min(_GROQ_RATE_LIMITED_UNTIL, _GEMINI_QUOTA_EXCEEDED_UNTIL)
                 _sleep_s = min(max(0.0, _soonest - _t.time()), 120.0)
                 if _sleep_s > 1:
-                    print(f"[AR WAIT] All providers cooling — waiting {int(_sleep_s)}s for soonest to recover")
+                    _oai_label = "refused" if _openai_refused_this_section else f"{int(_o_wait)}s"
+                    print(
+                        f"[AR WAIT] All effective providers cooling — waiting {int(_sleep_s)}s "
+                        f"(Groq:{int(_g_wait)}s Gemini:{int(_gem_wait)}s OpenAI:{_oai_label})"
+                    )
                     _t.sleep(_sleep_s)
             elif attempt > 1:
                 _t.sleep(3)

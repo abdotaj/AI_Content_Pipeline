@@ -917,11 +917,20 @@ def run_pipeline() -> None:
         _log("Scripts", f"Metadata persist (non-fatal): {_me}", "WARN")
 
     # ── Approval gate 1: Scripts ─────────────────────────────────────────────
+    _ar_wc_display   = len(ar_long.get("script", "").split())
+    _ar_est_min_disp = round(_ar_wc_display / 420, 1)
+    _AR_BLOCK_MIN    = 8_000
+    _ar_status       = (
+        f"⚠️ BLOCKED ({_ar_wc_display}w < {_AR_BLOCK_MIN}w)"
+        if _ar_wc_display < _AR_BLOCK_MIN
+        else f"~{_ar_est_min_disp} min"
+    )
     while True:
         _approval_1 = wait_for_approval(
             stage_name=(
                 f"Scripts Ready — {en_long.get('title', topic_text)[:60]}\n"
-                f"EN: {_en_wc} words (~{_est_min} min)"
+                f"EN: {_en_wc} words (~{_est_min} min)\n"
+                f"AR: {_ar_wc_display} words ({_ar_status})"
             ),
             available_commands=["approve", "rewrite", "cancel"],
             mode="ANIMATION",
