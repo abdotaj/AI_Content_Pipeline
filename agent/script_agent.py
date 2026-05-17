@@ -5894,12 +5894,14 @@ def _write_arabic_from_research(en_script: dict, ar_research: dict, target_minut
             ("AR-Conclusion",         prompt_3, 2800),
         ]
     parts: list[str] = []
-    _missing_core = False
+    _missing_core       = False
+    _any_openai_refused = False   # track if OpenAI content-refused any section this run
     import time as _t
 
     for label, ptext, max_tok in calls:
         min_wc = _SECTION_MIN_WC.get(label, 150)
         section = ""
+        _openai_refused_this_section = False   # reset per-section
 
         for attempt in range(1, 4):
             # Smart cooldown wait: if ALL providers are blocked, sleep until
@@ -5935,13 +5937,19 @@ def _write_arabic_from_research(en_script: dict, ar_research: dict, target_minut
                 prompt_used = emergency_p if emergency_p else ptext
                 temp        = 0.75
 
+            # After an OpenAI content refusal, bypass OpenAI entirely on retry
+            # so Groq / Gemini (more permissive) get a chance.
+            _call_premium = not _openai_refused_this_section
+            if _openai_refused_this_section:
+                print(f"[AR RETRY] {label} attempt {attempt}: OpenAI previously refused — routing to Groq/Gemini")
+
             print(f"[AR Script] Writing {label} (attempt {attempt}/3)...")
             raw = _ai_script_call(
                 prompt_used,
                 max_tokens=max_tok,
                 temperature=temp,
                 system_prompt=_AR_SCRIPT_SYSTEM_PROMPT if attempt < 3 else None,
-                premium=True,
+                premium=_call_premium,
             )
             raw_wc      = clean_word_count(raw) if raw else 0
             _raw_chars  = len(raw) if raw else 0
@@ -5954,8 +5962,13 @@ def _write_arabic_from_research(en_script: dict, ar_research: dict, target_minut
                                 "I'm sorry", "I cannot", "I can't")
             _is_refusal = raw and raw_wc < 60 and any(sig in raw for sig in _REFUSAL_SIGNALS)
             if _is_refusal:
-                print(f"[AR REFUSAL] {label} attempt {attempt}: OpenAI content refusal detected — forcing retry")
-                raw = None
+                print(
+                    f"[AR REFUSAL] {label} attempt {attempt}: content refusal detected — "
+                    f"switching to Groq/Gemini for next attempt"
+                )
+                _openai_refused_this_section = True
+                _any_openai_refused          = True
+                raw    = None
                 raw_wc = 0
 
             print(
@@ -6017,12 +6030,24 @@ def _write_arabic_from_research(en_script: dict, ar_research: dict, target_minut
     # ── Section completeness check ────────────────────────────────────────────
     if _missing_core:
         print("[AR PIPELINE] Regeneration triggered — emergency reconstruction of main story")
+        # If OpenAI content-refused this topic, go straight to Groq/Gemini
+        _em_premium = not _any_openai_refused
+        if _any_openai_refused:
+            print("[AR PIPELINE] OpenAI refused content — using Groq/Gemini for emergency reconstruction")
         emergency_final = _ai_script_call(
             _emergency_section_prompt("AR-MainStory+Ch4"),
             max_tokens=2600,
             temperature=0.75,
-            premium=True,
+            premium=_em_premium,
         )
+        # If Groq/Gemini also failed, try the other tier once
+        if (not emergency_final or clean_word_count(emergency_final) < 200) and _any_openai_refused:
+            emergency_final = _ai_script_call(
+                _emergency_section_prompt("AR-MainStory+Ch4"),
+                max_tokens=2600,
+                temperature=0.75,
+                premium=True,
+            )
         if emergency_final and clean_word_count(emergency_final) >= 200:
             # Extend emergency section to main target via chunking
             _em_wc = clean_word_count(emergency_final)
@@ -6046,17 +6071,19 @@ def _write_arabic_from_research(en_script: dict, ar_research: dict, target_minut
                 f"{clean_word_count(emergency_final)}w"
             )
         else:
-            # All LLMs failed — use Google Translate on English script as final safety net
-            print("[AR EMERGENCY] All LLM providers failed — falling back to Google Translate of English script")
-            _en_body = en_script.get("script", "").strip()
+            # All LLMs failed — last-resort recovery chain
+            print("[AR EMERGENCY] All LLM providers failed — attempting recovery")
+            _en_body    = en_script.get("script", "").strip()
             _gt_success = False
+
+            # Recovery path A: Google-Translate the English script (when available)
             if _en_body:
                 try:
-                    _en_words = _en_body.split()
-                    _gt_start = len(_en_words) // 5
-                    _gt_end   = 4 * len(_en_words) // 5
+                    _en_words   = _en_body.split()
+                    _gt_start   = len(_en_words) // 5
+                    _gt_end     = 4 * len(_en_words) // 5
                     _en_excerpt = " ".join(_en_words[_gt_start:_gt_end])[:3500]
-                    _gt_result = translate_to_arabic_google(_en_excerpt)
+                    _gt_result  = translate_to_arabic_google(_en_excerpt)
                     if _gt_result and clean_word_count(_gt_result) >= 100:
                         _gt_section = f"[SECTION: القصة الحقيقية]\n{_gt_result}"
                         if len(parts) > 1:
@@ -6069,8 +6096,44 @@ def _write_arabic_from_research(en_script: dict, ar_research: dict, target_minut
                         print("[AR EMERGENCY] Google Translate returned empty")
                 except Exception as _gt_err:
                     print(f"[AR EMERGENCY] Google Translate failed: {_gt_err}")
+
+            # Recovery path B: Use existing Arabic research facts directly (no LLM, no English needed)
             if not _gt_success:
-                print("[AR EMERGENCY] No recovery possible — returning empty to caller")
+                _ar_facts   = ar_research.get("ar_research_facts",    [])
+                _ar_shock   = ar_research.get("ar_research_shocking", [])
+                _ar_inaccs  = ar_research.get("ar_research_inaccuracies", [])
+                _all_ar_facts = list(dict.fromkeys(_ar_facts + _ar_shock + _ar_inaccs))
+                if _all_ar_facts:
+                    _facts_text = "\n\n".join(_all_ar_facts[:10])
+                    _raw_section = (
+                        f"[SECTION: القصة الحقيقية]\n"
+                        f"الحقائق الموثقة حول {topic_str}:\n\n{_facts_text}"
+                    )
+                    if len(parts) > 1:
+                        parts.insert(-1, _raw_section)
+                    else:
+                        parts.append(_raw_section)
+                    print(f"[AR EMERGENCY] Arabic research facts used directly: {clean_word_count(_raw_section)}w added ✅")
+                    _gt_success = True
+
+            # Recovery path C: Translate just the topic description via Google
+            if not _gt_success:
+                try:
+                    _topic_en   = f"The true story of {topic_str}. A documentary about real events and real people."
+                    _gt_result2 = translate_to_arabic_google(_topic_en)
+                    if _gt_result2 and clean_word_count(_gt_result2) >= 5:
+                        _raw_section2 = f"[SECTION: القصة الحقيقية]\n{_gt_result2}"
+                        if len(parts) > 1:
+                            parts.insert(-1, _raw_section2)
+                        else:
+                            parts.append(_raw_section2)
+                        print(f"[AR EMERGENCY] Topic-only translation: {clean_word_count(_gt_result2)}w added ✅")
+                        _gt_success = True
+                except Exception as _gt_err2:
+                    print(f"[AR EMERGENCY] Topic translation failed: {_gt_err2}")
+
+            if not _gt_success:
+                print("[AR EMERGENCY] All recovery paths exhausted — returning empty to caller")
                 return ""
 
     if not parts:
