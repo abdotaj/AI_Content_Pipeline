@@ -57,7 +57,7 @@ from config_darkcrimed import (
 )
 
 from agent.research_agent import research_topics, research_series, mark_covered, is_fictional
-from agent.script_agent   import write_script, translate_script, generate_chapters, write_short_script, generate_cinematic_shorts, clean_word_count, expand_script_runtime
+from agent.script_agent   import write_script, translate_script, generate_chapters, write_short_script, generate_cinematic_shorts, clean_word_count, expand_script_runtime, _expand_arabic_script_to_min
 from agent.video_agent    import create_video, ensure_music_assets, cut_best_short, load_all_content
 from agent.notify_agent   import (
     send_message, send_video_to_telegram, send_daily_report,
@@ -446,6 +446,23 @@ def run_pipeline() -> None:
         ar_long["angle_title"] = en_long.get("angle_title", "")
         ar_long["angle_hook"]  = en_long.get("angle_hook", "")
         _log("Scripts", "Arabic script done", "OK")
+        # ── Expand AR script until 8000w target ─────────────────────────────
+        _AR_EXPAND_TARGET = 8_000
+        if ar_wc < _AR_EXPAND_TARGET:
+            _log("Scripts", f"AR {ar_wc}w below {_AR_EXPAND_TARGET}w target — expanding", "WARN")
+            send_message(f"[FAST] AR script {ar_wc}w (~{round(ar_wc/420,1)}min) — expanding to {_AR_EXPAND_TARGET}w...")
+            try:
+                _ar_expanded = _expand_arabic_script_to_min(ar_long["script"], target_min=_AR_EXPAND_TARGET)
+                _ar_expanded_wc = len(_ar_expanded.split())
+                if _ar_expanded_wc > ar_wc:
+                    ar_long["script"] = _ar_expanded
+                    ar_wc = _ar_expanded_wc
+                    ar_long["chapters"] = generate_chapters(ar_wc, language="arabic", angle_title=en_long.get("angle_title", ""))
+                    _log("Scripts", f"AR expanded: {ar_wc}w (~{round(ar_wc/420,1)}min)", "OK")
+                else:
+                    _log("Scripts", f"AR expansion no improvement ({_ar_expanded_wc}w) — proceeding with {ar_wc}w", "WARN")
+            except Exception as _exp_e:
+                _log("Scripts", f"AR expansion failed (non-fatal): {_exp_e}", "WARN")
         # Send Arabic preview
         try:
             send_arabic_script_preview(ar_long)
@@ -537,10 +554,9 @@ def run_pipeline() -> None:
     # ── Approval gate 1: Scripts ─────────────────────────────────────────────
     _ar_wc_display   = len(ar_long.get("script", "").split())
     _ar_est_min_disp = round(_ar_wc_display / 420, 1)
-    _AR_BLOCK_MIN    = 8_000
     _ar_status       = (
-        f"⚠️ BLOCKED ({_ar_wc_display}w < {_AR_BLOCK_MIN}w)"
-        if _ar_wc_display < _AR_BLOCK_MIN
+        f"⚠️ SHORT (~{_ar_est_min_disp}min, target 8000w)"
+        if _ar_wc_display < 8_000
         else f"~{_ar_est_min_disp} min"
     )
     while True:
@@ -589,17 +605,13 @@ def run_pipeline() -> None:
     _ctrl.update_stage("VideoGen", "rendering AR long video")
     _log("VideoGen", "Rendering AR long video")
     _ar_wc_check = len(ar_long.get("script", "").split())
-    _AR_WORD_MIN = 8000   # ~19 min at 420 WPM; rebuild loop handles 19-30 min range
-    if ar_long.get("script_too_short") or _ar_wc_check < _AR_WORD_MIN:
-        _block_msg = (
-            f"[AR BLOCKED] Script below hard minimum: {_ar_wc_check}w < {_AR_WORD_MIN}w "
-            f"— blocking Arabic render to prevent invalid upload"
-        )
-        _log("VideoGen", _block_msg, "ERROR")
-        send_message(_block_msg)
+    if _ar_wc_check < 50:
+        _log("VideoGen", f"[AR SKIP] Script empty ({_ar_wc_check}w) — skipping Arabic render", "ERROR")
         ar_long_path = ""
         stats["errors"] += 1
     else:
+        if _ar_wc_check < 8_000:
+            _log("VideoGen", f"[AR SHORT] {_ar_wc_check}w (~{round(_ar_wc_check/420,1)}min) below 8000w target — rendering anyway", "WARN")
         ar_long_id   = f"{today}_{_slug}_arabic_long"
         ar_long_path = _make_video(ar_long, ar_long_id, stats, user_images=user_images, user_videos=user_videos)
 
@@ -811,7 +823,7 @@ def run_pipeline() -> None:
                 stats, user_images=user_images, user_videos=user_videos,
             )
             _ar_wc_recheck = len(ar_long.get("script", "").split())
-            if not (ar_long.get("script_too_short") or _ar_wc_recheck < 4200):
+            if _ar_wc_recheck >= 50:
                 ar_long_path = _make_video(
                     ar_long, f"{today}_{_slug}_arabic_long",
                     stats, user_images=user_images, user_videos=user_videos,

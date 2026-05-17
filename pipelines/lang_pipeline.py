@@ -445,15 +445,14 @@ def run_lang_pipeline(language: str, mode: str) -> None:
     _slug     = _topic_slug(topic_text)
     _video_id = f"{today}_{_slug}_{_lang[:2]}_{_mode}_long"
 
-    # Arabic hard minimum gate — mode-specific word floor
+    # Arabic script check — only skip if truly empty
     if _lang == "arabic":
-        _ar_wc_gate  = len(long_script.get("script", "").split())
-        _AR_WORD_MIN = {"fast": 4500, "animation": 5000, "full": 5000}.get(_mode, 4500)
-        if long_script.get("script_too_short") or _ar_wc_gate < _AR_WORD_MIN:
-            _msg = f"{_label} AR blocked: {_ar_wc_gate}w < {_AR_WORD_MIN}w minimum"
-            _log("VideoGen", _msg, "ERROR")
-            send_message(_msg)
+        _ar_wc_gate = len(long_script.get("script", "").split())
+        if _ar_wc_gate < 50:
+            _log("VideoGen", f"{_label} AR script empty ({_ar_wc_gate}w) — skipping", "ERROR")
             return
+        if _ar_wc_gate < 8_000:
+            _log("VideoGen", f"{_label} AR {_ar_wc_gate}w below 8000w target — rendering anyway", "WARN")
 
     _log("VideoGen", f"Rendering {_lang.upper()} long video ({_mode})")
 

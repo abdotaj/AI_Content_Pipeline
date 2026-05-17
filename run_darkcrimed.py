@@ -761,18 +761,14 @@ def run_pipeline():
         # ── OUTPUT 1 — Arabic long-form (isolated — EN failure does not skip this) ──
         ar_long_path = ""
         if ar_long:
-            _ar_wc_pre   = len(ar_long.get("script", "").split())
-            _dc_mode     = os.getenv("PIPELINE_MODE", "fast").lower()
-            _AR_WORD_MIN = {"fast": 4500, "animation": 5000, "full": 5000}.get(_dc_mode, 4500)
-            if ar_long.get("script_too_short") or _ar_wc_pre < _AR_WORD_MIN:
-                _block_msg = (
-                    f"[AR BLOCKED] Script below hard minimum: {_ar_wc_pre}w < {_AR_WORD_MIN}w "
-                    f"— blocking Arabic render to prevent invalid upload"
-                )
-                _log("VideoGen", _block_msg, "ERROR")
-                send_message(_block_msg)
+            _ar_wc_pre = len(ar_long.get("script", "").split())
+            if _ar_wc_pre < 50:
+                _log("VideoGen", f"[AR SKIP] Script empty ({_ar_wc_pre}w) — skipping Arabic render", "ERROR")
             else:
-                _log("VideoGen", f"[AR AUDIO] Script: {_ar_wc_pre}w | est. ~{_ar_wc_pre/175:.1f}min")
+                if _ar_wc_pre < 8_000:
+                    _log("VideoGen", f"[AR SHORT] {_ar_wc_pre}w (~{round(_ar_wc_pre/420,1)}min) below 8000w target — rendering anyway", "WARN")
+                else:
+                    _log("VideoGen", f"[AR AUDIO] Script: {_ar_wc_pre}w | est. ~{round(_ar_wc_pre/420,1)}min")
                 ar_long_id   = f"{today}_{_slug}_arabic_long"
                 ar_long_path = _make_video(ar_long, ar_long_id, stats, user_images=user_images, user_videos=user_videos)
         else:

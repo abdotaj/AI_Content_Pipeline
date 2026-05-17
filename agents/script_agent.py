@@ -6512,42 +6512,15 @@ def translate_script(en_script: dict, research: dict | None = None) -> dict:
     _final_wc  = clean_word_count(ar_data.get("script", ""))
     _final_min = estimate_arabic_duration(ar_data.get("script", ""))
 
-    # ── Runtime floor — pre-render WPM estimate gate ─────────────────────────
-    # Uses WPM estimate only — REAL validation happens on rendered audio duration.
-    # Only block clearly broken scripts (< 30 min absolute minimum across all modes).
-    # Mode-specific targets are enforced post-render by the pipeline rebuild loop.
-    _AR_ABS_FLOOR_MIN    = 15.0   # gate: below this is a broken script; 15-30 min is handled by rebuild loop
-    _AR_HARD_FLOOR_WORDS = 6300   # ~15 min at 420 WPM — must still allow render so rebuild loop can expand
-    if _final_min < _AR_ABS_FLOOR_MIN:
-        print(
-            f"[AR BLOCKED] Estimated runtime {_final_min:.1f}min below "
-            f"{_AR_ABS_FLOOR_MIN:.0f}min absolute minimum ({_final_wc}w) — "
-            f"marking script as too short to render"
-        )
-        ar_data["script_too_short"] = True
-    elif _final_wc < _AR_HARD_FLOOR_WORDS:
-        print(
-            f"[AR BLOCKED] Word count {_final_wc}w below hard minimum {_AR_HARD_FLOOR_WORDS}w "
-            f"— blocking render (expansion failed to reach floor)"
-        )
-        ar_data["script_too_short"] = True
-    else:
-        ar_data.pop("script_too_short", None)
+    # ── Runtime estimate log — no blocking; pipeline always renders if script is non-empty ──
+    ar_data.pop("script_too_short", None)   # never set script_too_short based on word count
+    if _final_wc < 50:
+        ar_data["script_too_short"] = True  # only flag truly empty scripts
+        print(f"[AR EMPTY] Script has {_final_wc}w — marking as empty, will skip render")
 
     ar_data["estimated_runtime_min"] = round(_final_min, 1)
 
-    if _final_min < _AR_ABS_FLOOR_MIN:
-        print(
-            f"[AR RUNTIME] Estimated duration: ~{_final_min:.1f}min — "
-            f"BELOW {_AR_ABS_FLOOR_MIN:.0f}min absolute minimum "
-            f"(WPM estimate only — real validation on rendered audio)"
-        )
-    else:
-        print(
-            f"[AR RUNTIME] Estimated duration: ~{_final_min:.1f}min >= "
-            f"{_AR_ABS_FLOOR_MIN:.0f}min absolute minimum "
-            f"(WPM estimate only — real validation on rendered audio)"
-        )
+    print(f"[AR RUNTIME] Estimated duration: ~{_final_min:.1f}min (WPM estimate only — real validation on rendered audio)")
     print(
         f"[Script] Arabic done ({ar_data['arabic_path']} path): "
         f"'{ar_data['title']}' | {_final_wc}w | ~{_final_min:.1f}min"
@@ -7252,21 +7225,14 @@ def write_arabic_script(topic: dict, research: dict | None = None) -> dict:
         _density = validate_information_density(ar_data["script"], language="arabic")
         print(f"[AR] density={_density.get('density_pct',0):.0f}% [{_density.get('verdict','?')}]")
 
-    # ── Runtime & word-count gates (block render if below floor) ─────────────
+    # ── Runtime estimate — no blocking; pipeline always renders if non-empty ─────
     _final_wc  = clean_word_count(ar_data.get("script", ""))
     _final_min = estimate_arabic_duration(ar_data.get("script", ""))
 
-    _AR_ABS_FLOOR_MIN = 15.0  # gate: below this is broken; 15-30 min handled by rebuild loop
-    _AR_HARD_WC_FLOOR = 6300  # ~15 min at 420 WPM — allows render so rebuild loop can expand
-
-    if _final_min < _AR_ABS_FLOOR_MIN:
-        ar_data["script_too_short"] = True
-        print(f"[AR BLOCKED] {_final_min:.1f}min < {_AR_ABS_FLOOR_MIN:.0f}min absolute minimum")
-    elif _final_wc < _AR_HARD_WC_FLOOR:
-        ar_data["script_too_short"] = True
-        print(f"[AR BLOCKED] {_final_wc}w < {_AR_HARD_WC_FLOOR}w hard floor")
-    else:
-        ar_data.pop("script_too_short", None)
+    ar_data.pop("script_too_short", None)   # never block based on word count
+    if _final_wc < 50:
+        ar_data["script_too_short"] = True  # only flag truly empty scripts
+        print(f"[AR EMPTY] Script has {_final_wc}w — marking as empty, will skip render")
 
     ar_data["estimated_runtime_min"] = round(_final_min, 1)
 
