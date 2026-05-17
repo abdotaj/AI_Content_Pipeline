@@ -450,7 +450,7 @@ def run_pipeline() -> None:
         _AR_EXPAND_TARGET = 8_000
         if ar_wc < _AR_EXPAND_TARGET:
             _log("Scripts", f"AR {ar_wc}w below {_AR_EXPAND_TARGET}w target — expanding", "WARN")
-            send_message(f"[FAST] AR script {ar_wc}w (~{round(ar_wc/420,1)}min) — expanding to {_AR_EXPAND_TARGET}w...")
+            send_message(f"[FAST] AR script {ar_wc}w (~{round(ar_wc/190,1)}min) — expanding to {_AR_EXPAND_TARGET}w...")
             try:
                 _ar_expanded = _expand_arabic_script_to_min(ar_long["script"], target_min=_AR_EXPAND_TARGET)
                 _ar_expanded_wc = len(_ar_expanded.split())

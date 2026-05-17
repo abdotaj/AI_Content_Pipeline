@@ -875,11 +875,11 @@ def run_pipeline() -> None:
         ar_long["angle_title"] = en_long.get("angle_title", "")
         ar_long["angle_hook"]  = en_long.get("angle_hook", "")
         _log("Scripts", "Arabic script done", "OK")
-        # ── Expand AR script until 8000w target ─────────────────────────────
-        _AR_EXPAND_TARGET = 8_000
+        # ── Expand AR script until target (ANIMATION AR: 6500-10000w / 35-60min) ──
+        _AR_EXPAND_TARGET = 10_000
         if ar_wc < _AR_EXPAND_TARGET:
             _log("Scripts", f"AR {ar_wc}w below {_AR_EXPAND_TARGET}w target — expanding", "WARN")
-            send_message(f"[ANIM] AR script {ar_wc}w (~{round(ar_wc/420,1)}min) — expanding to {_AR_EXPAND_TARGET}w...")
+            send_message(f"[ANIM] AR script {ar_wc}w (~{round(ar_wc/190,1)}min) — expanding to {_AR_EXPAND_TARGET}w...")
             try:
                 _ar_expanded = _expand_arabic_script_to_min(ar_long["script"], target_min=_AR_EXPAND_TARGET)
                 _ar_expanded_wc = len(_ar_expanded.split())
@@ -887,7 +887,7 @@ def run_pipeline() -> None:
                     ar_long["script"] = _ar_expanded
                     ar_wc = _ar_expanded_wc
                     ar_long["chapters"] = generate_chapters(ar_wc, language="arabic", angle_title=en_long.get("angle_title", ""))
-                    _log("Scripts", f"AR expanded: {ar_wc}w (~{round(ar_wc/420,1)}min)", "OK")
+                    _log("Scripts", f"AR expanded: {ar_wc}w (~{round(ar_wc/190,1)}min)", "OK")
                 else:
                     _log("Scripts", f"AR expansion no improvement ({_ar_expanded_wc}w) — proceeding with {ar_wc}w", "WARN")
             except Exception as _exp_e:
@@ -937,8 +937,8 @@ def run_pipeline() -> None:
     _ar_wc_display   = len(ar_long.get("script", "").split())
     _ar_est_min_disp = round(_ar_wc_display / 420, 1)
     _ar_status       = (
-        f"⚠️ SHORT (~{_ar_est_min_disp}min, target 8000w)"
-        if _ar_wc_display < 8_000
+        f"⚠️ SHORT (~{_ar_est_min_disp}min, target 10000w/60min)"
+        if _ar_wc_display < 10_000
         else f"~{_ar_est_min_disp} min"
     )
     while True:

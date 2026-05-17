@@ -27,10 +27,12 @@ import os
 
 PIPELINE_MODE: str = os.getenv("PIPELINE_MODE", "fast").lower().strip()
 
-# ── Speech rate ───────────────────────────────────────────────────────────────
-WORDS_PER_MINUTE: int = 156         # English TTS narration pace (used for EN script duration estimates)
-WORDS_PER_MINUTE_EN: int = 163      # English TTS slightly faster (alt estimate)
-WORDS_PER_MINUTE_AR: int = 420      # Arabic OpenAI TTS nova@1.0x — measured ~420-500 WPM in production
+# ── Speech rate — calibrated from production (OpenAI TTS) ─────────────────────
+# Arabic Nova 1.0:   ~190 WPM  (170-210 range across content types)
+# English Alloy 1.0: ~160 WPM  (155-165 range, very consistent)
+WORDS_PER_MINUTE: int = 160         # English TTS (Alloy 1.0) calibrated
+WORDS_PER_MINUTE_EN: int = 160      # English TTS (Alloy 1.0) calibrated
+WORDS_PER_MINUTE_AR: int = 190      # Arabic TTS (Nova 1.0) calibrated
 
 # ── Preferred video duration range (guidance only, not enforced) ──────────────
 # Topics with deeper investigation naturally run longer — that is correct.
@@ -45,7 +47,7 @@ TARGET_VIDEO_MINUTES_MAX: int = 40    # soft advisory — no trimming applied
 #   11.5 min × 156 WPM = 1,800 words ← preferred production minimum
 #   NO upper ceiling — the story determines the length.
 #
-SCRIPT_WORD_FLOOR: int = 1_560    # hard abort threshold — below this = aborted
+SCRIPT_WORD_FLOOR: int = 1_600    # hard abort threshold — 10 min × 160 WPM
 SCRIPT_WORD_MIN:   int = 1_800    # preferred minimum; log note if below (not an error)
 
 # ── GitHub Actions job timeouts ───────────────────────────────────────────────
