@@ -24,11 +24,15 @@ speech.js
 *.js
 # Binary audio assets — downloaded at runtime, not committed
 assets/music/*.mp3
-# Video files — never commit, generated at runtime or too large for git
+# Video files — block generated/output videos but allow topic archive footage
 *.mp4
 *.mov
 *.avi
 output_videos/
-content/*/videos/
+# Allow manually curated archive videos in content/<topic>/videos/
+!content/*/videos/
+!content/*/videos/*.mp4
+!content/*/videos/*.mov
+!content/*/videos/*.avi
 temp_clips/
 *TEMP_MPY_wvf_snd*
