@@ -1130,8 +1130,13 @@ def save_script_from_telegram(max_age_hours: int = 24) -> str | None:
             print(f"[Notify] Failed to download script document: {e}")
             continue
 
-        if "TITLE:" not in text or "---" not in text:
-            print(f"[Notify] Document {name!r} missing TITLE:/--- markers — skipping")
+        has_title = "TITLE:" in text.upper()
+        has_sep   = any(
+            len(ln.strip()) >= 3 and all(c in '-─━_' for c in ln.strip())
+            for ln in text.splitlines()
+        )
+        if not has_title or not has_sep:
+            print(f"[Notify] Document {name!r} missing TITLE:/separator markers — skipping")
             continue
 
         # Extract TOPIC for filename slug

@@ -249,11 +249,16 @@ def _load_script_injection() -> dict | None:
             ar_lines:   list[str] = []
             past_sep = False
             in_ar    = False
+
+            def _is_sep(s: str, chars: str) -> bool:
+                s = s.strip()
+                return len(s) >= 3 and all(c in chars for c in s)
+
             for line in lines:
-                if line.strip() == "---":
+                if not past_sep and _is_sep(line, '-─━_'):
                     past_sep = True
                     continue
-                if past_sep and line.strip() == "===":
+                if past_sep and not in_ar and _is_sep(line, '='):
                     in_ar = True
                     continue
                 if in_ar:
