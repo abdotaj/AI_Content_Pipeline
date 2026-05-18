@@ -250,15 +250,18 @@ def _load_script_injection() -> dict | None:
             past_sep = False
             in_ar    = False
 
-            def _is_sep(s: str, chars: str) -> bool:
+            def _is_sep(s: str) -> bool:
+                # Any line of 3+ repeated horizontal-rule chars (---, ─────, ===, ════, ━━━)
                 s = s.strip()
-                return len(s) >= 3 and all(c in chars for c in s)
+                return len(s) >= 3 and all(c in '-─━_=' for c in s)
 
             for line in lines:
-                if not past_sep and _is_sep(line, '-─━_'):
+                # First separator → header/body boundary (start of EN script)
+                if not past_sep and _is_sep(line):
                     past_sep = True
                     continue
-                if past_sep and not in_ar and _is_sep(line, '='):
+                # Second separator → EN/AR boundary (start of AR script)
+                if past_sep and not in_ar and _is_sep(line):
                     in_ar = True
                     continue
                 if in_ar:
