@@ -8,7 +8,7 @@
 #
 # What FAST skips (redundant overhead, not quality):
 #   ✗  60-second Telegram topic-wait (requires topic_inject.json instead)
-#   ✗  3-minute photo-wait (images ready immediately)
+#   ✓  3-minute photo-wait (send images/videos via Telegram after topic)
 #   ✗  Part-2 image loading (single pass)
 #   ✗  Content-library retry loop (single attempt only)
 #   ✗  Failed-upload recovery (notify and move on)
@@ -58,10 +58,12 @@ from config_darkcrimed import (
 
 from agent.research_agent import research_topics, research_series, mark_covered, is_fictional
 from agent.script_agent   import write_script, translate_script, generate_chapters, write_short_script, generate_cinematic_shorts, clean_word_count, expand_script_runtime, _expand_arabic_script_to_min
-from agent.video_agent    import create_video, ensure_music_assets, cut_best_short, load_all_content
+from agent.video_agent    import create_video, ensure_music_assets, cut_best_short, load_all_content, process_user_images_smart
 from agent.notify_agent   import (
     send_message, send_video_to_telegram, send_daily_report,
     send_english_script_preview, send_arabic_script_preview, send_document,
+    check_telegram_for_images, check_telegram_for_videos,
+    save_script_from_telegram,
 )
 from agent.publish_agent  import upload_to_youtube
 from pipelines.pipeline_config import SCRIPT_WORD_FLOOR, SCRIPT_WORD_MIN, WORDS_PER_MINUTE
@@ -375,10 +377,15 @@ def run_pipeline() -> None:
     print(f"  PIPELINE_MODE = {os.getenv('PIPELINE_MODE','fast')}")
     print(f"{'='*60}\n")
 
+    pipeline_start_time = time.time()
     send_message(f"[FAST PIPELINE] Starting — {today}\nPreparing assets & searching for topic...")
     ensure_music_assets()
 
     # ── STEP 0: Script injection check ───────────────────────────────────────
+    # Pull any .txt script document the user sent via Telegram (last 24h),
+    # save it to content/scripts/, then load it via injection.
+    save_script_from_telegram(max_age_hours=24)
+
     # If content/scripts/ contains a .json or .txt file, consume it and skip
     # research_series + write_script entirely (zero Groq tokens consumed).
     _injected_script: dict | None = _load_script_injection()
@@ -772,7 +779,7 @@ def run_pipeline() -> None:
             except Exception as _re:
                 send_message(f"[FAST] Rewrite failed: {_re}")
 
-    # ── STEP 3: Content library (single attempt) ──────────────────────────────
+    # ── STEP 3: Content library + 3-minute Telegram photo/video wait ─────────
     print(f"\n{'='*50}\n  VIDEO\n{'='*50}\n", flush=True)
     _ctrl.update_stage("Media", "loading content library")
     _topic_for_media             = en_long.get("topic", "")
@@ -781,6 +788,45 @@ def run_pipeline() -> None:
     user_videos: list[dict]      = list(gh_videos)
     if gh_images or gh_videos:
         _log("Media", f"{len(gh_images)} images + {len(gh_videos)} videos loaded", "OK")
+
+    # Wait 3 minutes for the user to send photos/videos via Telegram
+    _ctrl.update_stage("Media", "waiting 3 min for Telegram images/videos")
+    send_message(
+        f"[FAST PIPELINE] Topic confirmed: {topic_text}\n\n"
+        f"📸 Send images or videos now — you have 3 minutes.\n"
+        f"Pipeline will continue automatically after the wait."
+    )
+    _log("Media", "Waiting 3 minutes for Telegram images/videos...")
+    time.sleep(180)
+
+    _tg_images = check_telegram_for_images(after_timestamp=pipeline_start_time)
+    _tg_videos = check_telegram_for_videos(after_timestamp=pipeline_start_time)
+
+    if _tg_videos:
+        _log("Media", f"Found {len(_tg_videos)} video(s) from Telegram", "OK")
+        user_videos = user_videos + _tg_videos
+
+    if _tg_images:
+        _log("Media", f"Found {len(_tg_images)} image(s) from Telegram — checking relevance...", "OK")
+        _series_name = en_long.get("series_name") or en_long.get("niche", "").split("behind")[-1].strip()
+        _use_now, _save_later, _ignored = process_user_images_smart(
+            _tg_images,
+            topic=topic_text,
+            series_name=_series_name,
+            part_number=1,
+        )
+        user_images = user_images + _use_now
+        send_message(
+            f"📸 Image check for: {topic_text}\n\n"
+            f"✅ Using now: {len(_use_now)}\n"
+            f"❌ Not relevant: {len(_ignored)}\n"
+            f"📚 Library images: {len(gh_images)}"
+        )
+        _log("Media", f"Telegram images: {len(_use_now)} used, {len(_ignored)} ignored", "OK")
+    else:
+        _log("Media", "No Telegram images — AI images will be generated", "INFO")
+
+    _check_cancel("after media wait")
 
     # ── STEP 4: Generate 4 videos (Arabic first) ─────────────────────────────
     _slug = _topic_slug(topic_text)

@@ -1061,3 +1061,120 @@ def send_document(file_path: str, caption: str = "") -> bool:
     except Exception as e:
         print(f"[Notify] send_document failed: {e}")
         return False
+
+
+def save_script_from_telegram(max_age_hours: int = 24) -> str | None:
+    """
+    Check Telegram for a .txt script document sent by the user and save it to
+    content/scripts/ for injection on the next pipeline run.
+
+    The .txt file must follow the bilingual injection format:
+        TITLE: ...
+        TITLE_AR: ...
+        TOPIC: ...
+        SERIES: ...
+        ---
+        [English script with [SECTION: ...] markers]
+        ===
+        [Arabic script with [SECTION: ...] markers]
+
+    Returns the saved file path, or None if no document was found.
+    """
+    import datetime
+    from pathlib import Path
+
+    current_time = time.time()
+    cutoff = current_time - (max_age_hours * 3600)
+
+    print(f"[Notify] Checking Telegram for script documents (last {max_age_hours}h)...")
+
+    try:
+        r = requests.get(f"{BASE_URL}/getUpdates", params={"limit": 100}, timeout=20)
+        updates = r.json().get("result", [])
+    except Exception as e:
+        print(f"[Notify] save_script_from_telegram failed: {e}")
+        return None
+
+    for update in reversed(updates):  # newest first
+        message  = update.get("message", {})
+        chat_id  = str(message.get("chat", {}).get("id", ""))
+        msg_time = message.get("date", 0)
+        doc      = message.get("document") or {}
+
+        if chat_id != str(TELEGRAM_CHAT_ID):
+            continue
+        if msg_time < cutoff:
+            continue
+        if not doc:
+            continue
+
+        mime = doc.get("mime_type", "")
+        name = doc.get("file_name", "")
+
+        if mime != "text/plain" and not name.lower().endswith(".txt"):
+            continue
+
+        file_id = doc.get("file_id")
+        if not file_id:
+            continue
+
+        # Download file content
+        try:
+            r2 = requests.get(f"{BASE_URL}/getFile", params={"file_id": file_id}, timeout=15)
+            tg_path = r2.json()["result"]["file_path"]
+            file_url = f"https://api.telegram.org/file/bot{TELEGRAM_BOT_TOKEN}/{tg_path}"
+            resp = requests.get(file_url, timeout=60)
+            resp.raise_for_status()
+            text = resp.text
+        except Exception as e:
+            print(f"[Notify] Failed to download script document: {e}")
+            continue
+
+        if "TITLE:" not in text or "---" not in text:
+            print(f"[Notify] Document {name!r} missing TITLE:/--- markers — skipping")
+            continue
+
+        # Extract TOPIC for filename slug
+        topic_slug = "script"
+        for line in text.splitlines():
+            if line.startswith("TOPIC:"):
+                raw = line.replace("TOPIC:", "").strip()
+                topic_slug = raw.lower().replace(" ", "_").replace("/", "-")[:40]
+                break
+
+        # Save to content/scripts/
+        date_str    = datetime.date.today().strftime("%Y-%m-%d")
+        scripts_dir = Path("content/scripts")
+        scripts_dir.mkdir(parents=True, exist_ok=True)
+        out_path    = scripts_dir / f"{topic_slug}_{date_str}.txt"
+
+        counter = 1
+        while out_path.exists():
+            out_path = scripts_dir / f"{topic_slug}_{date_str}_{counter}.txt"
+            counter += 1
+
+        out_path.write_text(text, encoding="utf-8")
+        print(f"[Notify] Script saved: {out_path}")
+
+        # Mark this update as consumed so it won't be reprocessed
+        update_id = update.get("update_id", 0)
+        try:
+            requests.get(f"{BASE_URL}/getUpdates", params={"offset": update_id + 1}, timeout=10)
+        except Exception:
+            pass
+
+        parts = text.split("===", 1)
+        en_words = len(parts[0].split()) if parts else 0
+        ar_words = len(parts[1].split()) if len(parts) > 1 else 0
+
+        send_message(
+            f"Script received and saved!\n\n"
+            f"File: {out_path.name}\n"
+            f"EN words (approx): {en_words}\n"
+            f"AR words (approx): {ar_words}\n\n"
+            f"Will be used on the next pipeline run."
+        )
+        return str(out_path)
+
+    print(f"[Notify] No script documents found in last {max_age_hours}h")
+    return None
