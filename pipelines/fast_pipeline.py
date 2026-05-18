@@ -394,8 +394,11 @@ def run_pipeline() -> None:
     # If content/scripts/ contains a .json or .txt file, consume it and skip
     # research_series + write_script entirely (zero Groq tokens consumed).
     _injected_script: dict | None = _load_script_injection()
+
+    # ── STEP 0b: Build topic directly from injection (skip all research) ──────
+    topic = None
     if _injected_script:
-        _inj_topic = _injected_script["topic"]
+        _inj_topic  = _injected_script["topic"]
         _log("Scripts", f"[INJECT] Script loaded: '{_injected_script['title']}'", "OK")
         send_message(
             f"[FAST] Script injection detected!\n"
@@ -404,68 +407,65 @@ def run_pipeline() -> None:
             f"Words: {len(_injected_script['script'].split())}\n\n"
             f"Skipping research + script generation. Starting from translation..."
         )
+        topic = {
+            "topic":        _inj_topic,
+            "niche":        _injected_script.get("niche", f"Real story behind {_inj_topic}"),
+            "search_query": _inj_topic,
+            "series_name":  _injected_script.get("series_name"),
+            "manual_topic": True,
+            "research":     {},
+        }
 
-    # ── STEP 1: Topic selection ───────────────────────────────────────────────
-    print(f"\n{'='*50}\n  RESEARCH\n{'='*50}\n", flush=True)
-    _ctrl.update_stage("Research", "selecting topic")
-
-    # Priority 1: topic_inject.json (created by create_topic.py — consumed once)
-    topic = None
-    _inject_file = os.path.join(_ROOT, "topic_inject.json")
-    if os.path.exists(_inject_file):
-        try:
-            with open(_inject_file, encoding="utf-8") as _f:
-                _inject = json.load(_f)
-            os.remove(_inject_file)
-            _inject_text = _inject.get("topic", "").strip()
-            if _inject_text:
-                print(f"[FAST] topic_inject.json consumed: '{_inject_text}'")
-                _log("Research", f"Inject topic: {_inject_text}")
-                topic = {
-                    "topic":         _inject_text,
-                    "niche":         f"Real story behind {_inject.get('show') or _inject_text}",
-                    "angle":         "",
-                    "keywords":      [_inject_text],
-                    "search_query":  _inject_text,
-                    "series_name":   _inject.get("show") or None,
-                    "manual_topic":  True,
-                    "force_rewrite": bool(_inject.get("force_rewrite", False)),
-                    "user_note":     _inject.get("note", ""),
-                }
-        except Exception as _ie:
-            print(f"[FAST] topic_inject.json read error (ignored): {_ie}")
-
+    # ── STEP 1: Topic selection (skipped when script is injected) ────────────
     if topic is None:
-        # Priority 2: auto-research via DuckDuckGo + NICHES
-        _log("Research", "No topic_inject.json — running auto-research", "INFO")
-        _auto_candidates: list = []
-        try:
-            _auto_candidates = research_topics(count=4)
-        except Exception as _re:
-            _log("Research", f"Auto-research failed (non-fatal): {_re}", "WARN")
+        print(f"\n{'='*50}\n  RESEARCH\n{'='*50}\n", flush=True)
+        _ctrl.update_stage("Research", "selecting topic")
 
-        # Always show Telegram menu — user picks or types; timeout auto-selects if candidates exist
-        _log("Research", f"Showing topic menu ({len(_auto_candidates)} candidates)", "INFO")
-        topic = _wait_for_manual_topic_fast(candidates=_auto_candidates)
+        # Priority 1: topic_inject.json (created by create_topic.py — consumed once)
+        _inject_file = os.path.join(_ROOT, "topic_inject.json")
+        if os.path.exists(_inject_file):
+            try:
+                with open(_inject_file, encoding="utf-8") as _f:
+                    _inject = json.load(_f)
+                os.remove(_inject_file)
+                _inject_text = _inject.get("topic", "").strip()
+                if _inject_text:
+                    print(f"[FAST] topic_inject.json consumed: '{_inject_text}'")
+                    _log("Research", f"Inject topic: {_inject_text}")
+                    topic = {
+                        "topic":         _inject_text,
+                        "niche":         f"Real story behind {_inject.get('show') or _inject_text}",
+                        "angle":         "",
+                        "keywords":      [_inject_text],
+                        "search_query":  _inject_text,
+                        "series_name":   _inject.get("show") or None,
+                        "manual_topic":  True,
+                        "force_rewrite": bool(_inject.get("force_rewrite", False)),
+                        "user_note":     _inject.get("note", ""),
+                    }
+            except Exception as _ie:
+                print(f"[FAST] topic_inject.json read error (ignored): {_ie}")
+
         if topic is None:
-            if _auto_candidates:
-                topic = _auto_candidates[0]
-                _log("Research", f"Timeout — auto-selected first: {topic.get('topic','?')}", "WARN")
-                send_message(f"[FAST PIPELINE] No reply — auto-selected:\n{topic.get('topic','?')}\n\nStarting...")
-            elif _injected_script:
-                # Script injection provides its own topic — no selection needed
-                topic = {
-                    "topic":        _injected_script["topic"],
-                    "niche":        _injected_script.get("niche", ""),
-                    "search_query": _injected_script["topic"],
-                    "series_name":  _injected_script.get("series_name"),
-                    "manual_topic": True,
-                    "research":     {},
-                }
-                _log("Research", f"[INJECT] Topic from script file: '{topic['topic']}'", "OK")
-            else:
-                _log("Research", "No topic selected and no candidates — pipeline stopped", "WARN")
-                return
+            # Priority 2: auto-research via DuckDuckGo + NICHES
+            _log("Research", "No topic_inject.json — running auto-research", "INFO")
+            _auto_candidates: list = []
+            try:
+                _auto_candidates = research_topics(count=4)
+            except Exception as _re:
+                _log("Research", f"Auto-research failed (non-fatal): {_re}", "WARN")
+
+            # Always show Telegram menu — user picks or types; timeout auto-selects if candidates exist
+            _log("Research", f"Showing topic menu ({len(_auto_candidates)} candidates)", "INFO")
+            topic = _wait_for_manual_topic_fast(candidates=_auto_candidates)
+            if topic is None:
+                if _auto_candidates:
+                    topic = _auto_candidates[0]
+                    _log("Research", f"Timeout — auto-selected first: {topic.get('topic','?')}", "WARN")
+                    send_message(f"[FAST PIPELINE] No reply — auto-selected:\n{topic.get('topic','?')}\n\nStarting...")
+                else:
+                    _log("Research", "No topic selected and no candidates — pipeline stopped", "WARN")
+                    return
 
     topic_text  = topic.get("topic", "")
     topic_niche = topic.get("niche", "")
@@ -474,23 +474,6 @@ def run_pipeline() -> None:
         _log("Research", f"Fictional topic blocked: '{topic_text}'", "WARN")
         send_message(f"[FAST] Fictional topic blocked: '{topic_text}'")
         return
-
-    # Topic confirmed — set in controller and start listener
-    # When a script is injected, override topic from the file and skip research
-    if _injected_script:
-        topic_text  = _injected_script["topic"]
-        topic_niche = _injected_script.get("niche", f"Real story behind {topic_text}")
-        if topic is None:
-            topic = {
-                "topic":        topic_text,
-                "niche":        topic_niche,
-                "search_query": topic_text,
-                "series_name":  _injected_script.get("series_name"),
-                "manual_topic": True,
-                "research":     {},
-            }
-        else:
-            topic["research"] = {}
 
     _ctrl.set_topic(topic_text)
     _ctrl.start()
