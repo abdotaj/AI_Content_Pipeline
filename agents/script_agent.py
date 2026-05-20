@@ -1212,27 +1212,118 @@ ORIGINAL SCRIPT:
 {script}"""
 
 
-_UPGRADE_ARABIC_PROMPT = """أنت محرر نصوص وثائقية. مهمتك تعديلات دقيقة فقط — لا إعادة كتابة.
+_UPGRADE_ARABIC_PROMPT = """أنت محرر لغوي عربي ومخرج تعليق صوتي وثائقي احترافي ومتخصص في تحسين النصوص العربية للـ TTS.
 
-الحفاظ على:
-- جميع الحقائق والأسماء والتواريخ — بدون تغيير
-- ترتيب الأحداث الأصلي — لا تعيد الترتيب
-- الصياغة الأصلية القوية — لا تمسّها
-- جميع علامات [SECTION:] — كما هي
-- طول النص الإجمالي — لا تضف ولا تحذف فقرات
+مهمتك:
+تحويل النص التالي إلى نسخة احترافية جاهزة مباشرة للتعليق الصوتي السينمائي العربي.
 
-فقط هذه التعديلات الثلاثة:
+قاعدة إلزامية للبنية: احتفظ بجميع علامات [SECTION:] كما هي تمامًا — لا تحذفها ولا تغيّرها أبدًا.
 
-1. بنية الجمل — فقط إذا كانت الجملة الأولى تبدأ بـ "في عصر" أو "هذه قصة" أو "وُلد" — أعد صياغة تلك الجملة فقط لتبدأ بتوتر أو فعل
+━━━━━━━━━━━━━━━
+[1] التصحيح اللغوي
+━━━━━━━━━━━━━━━
 
-2. الشرح إلى فعل — إذا كانت الجملة تصف حالة فقط بدون فعل حركي، حوّلها إلى ما فعله الشخص فعلاً
-   - لا تغيّر الجمل المحيطة
+قم بتصحيح:
+- الأخطاء النحوية
+- الأخطاء الإملائية
+- علامات الترقيم
+- الصياغة الركيكة
+- الجمل غير الطبيعية صوتيًا
 
-3. جملة توتر واحدة — إذا كانت الفقرة خالية من أي سؤال أو تصعيد، أضف جملة قصيرة واحدة في النهاية تطرح سؤالاً أو تكشف تداعية
+واجعل اللغة:
+- عربية فصحى حديثة
+- احترافية
+- وثائقية
+- سهلة الاستماع
 
-أعد النص الكامل مع هذه التعديلات الدقيقة فقط.
+━━━━━━━━━━━━━━━
+[2] تحويل النص إلى أسلوب منطوق
+━━━━━━━━━━━━━━━
 
-النص الأصلي:
+حوّل النص من:
+"أسلوب مقروء"
+إلى:
+"أسلوب مسموع سينمائي"
+
+القواعد:
+- اجعل الجمل أقصر
+- حسّن الإيقاع السمعي
+- أضف pauses طبيعية باستخدام: …
+- اجعل الانتقالات سلسة
+- حسّن لحظات التشويق
+- اجعل السرد طبيعيًا للـ TTS
+
+━━━━━━━━━━━━━━━
+[3] تحسين النطق للـ TTS
+━━━━━━━━━━━━━━━
+
+استخدم أسلوب مشابه لـ Mishkal Arabic Tashkeel
+
+لإضافة:
+- تشكيل جزئي ذكي
+- ضبط الكلمات التي قد يخطئ TTS في نطقها
+- ضبط الأسماء العربية
+- ضبط المصطلحات الحساسة
+
+لكن:
+- لا تستخدم تشكيلًا كاملًا لكل النص
+- استخدم التشكيل فقط عند الحاجة
+- حافظ على طبيعية النطق
+
+ركّز على:
+- أسماء الأشخاص
+- أسماء الدول
+- المصطلحات العسكرية
+- الكلمات متعددة النطق
+- الكلمات الصعبة صوتيًا
+
+أمثلة:
+- مُحَمَّد
+- الدَّعم السَّريع
+- فاغنر
+- حُمَيْدتي
+
+━━━━━━━━━━━━━━━
+[4] معالجة الكلمات الأجنبية
+━━━━━━━━━━━━━━━
+
+إذا وُجدت كلمات إنجليزية أو أجنبية:
+- اكتبها بالعربية صوتيًا إن أمكن
+- أو حسّن كتابتها لتصبح واضحة للـ TTS
+
+مثال:
+"Wagner Group"
+←
+"مجموعة فاغنر"
+
+━━━━━━━━━━━━━━━
+[5] تحسين الأداء الصوتي
+━━━━━━━━━━━━━━━
+
+اجعل النبرة:
+- درامية
+- وثائقية
+- سينمائية
+- طبيعية
+
+وأضف:
+- pauses
+- أسطر قصيرة
+- لحظات صمت
+- إيقاع سرد احترافي
+
+━━━━━━━━━━━━━━━
+[6] قيود مهمة
+━━━━━━━━━━━━━━━
+
+- لا تغيّر الحقائق أو المعلومات
+- لا تختصر المحتوى
+- لا تضف شرحًا خارجيًا
+- لا تكتب ملاحظات
+- لا تستخدم رموز غير ضرورية
+- الناتج النهائي يجب أن يكون جاهزًا مباشرة للـ TTS
+
+النص:
 {script}"""
 
 
@@ -1296,6 +1387,51 @@ def upgrade_arabic_script(script: str) -> str:
     except Exception as e:
         print(f"[Upgrade] Arabic failed: {e}")
         return script
+
+
+_mishkal_vocalizer = None
+_mishkal_available = None
+
+
+def apply_mishkal_tashkeel(script: str) -> str:
+    """Add Arabic diacritics (tashkeel) via Mishkal. Preserves [SECTION:] markers.
+    Silent no-op if mishkal is not installed."""
+    global _mishkal_vocalizer, _mishkal_available
+
+    if _mishkal_available is False:
+        return script
+
+    try:
+        if _mishkal_vocalizer is None:
+            import mishkal.tashkeel as _msh
+            _mishkal_vocalizer = _msh.TashkeelClass()
+            _mishkal_available = True
+    except ImportError:
+        _mishkal_available = False
+        print("[Mishkal] Not installed — skipping tashkeel (pip install mishkal to enable)")
+        return script
+    except Exception as e:
+        _mishkal_available = False
+        print(f"[Mishkal] Init failed: {e} — skipping")
+        return script
+
+    import re as _re_msh
+    parts = _re_msh.split(r'(\[SECTION:[^\]]*\])', script)
+    out = []
+    for part in parts:
+        if _re_msh.match(r'\[SECTION:[^\]]*\]', part):
+            out.append(part)
+        elif part.strip():
+            try:
+                out.append(_mishkal_vocalizer.tashkeel(part))
+            except Exception:
+                out.append(part)
+        else:
+            out.append(part)
+
+    result = "".join(out)
+    print(f"[Mishkal] Tashkeel applied ({len(script)} → {len(result)} chars)")
+    return result
 
 
 title_format = "Dark Crime Decoded: {person} & {series} — {curiosity_hook}"
@@ -6457,6 +6593,7 @@ def translate_script(en_script: dict, research: dict | None = None) -> dict:
         ar_data["script"] = tts_readability_pass(ar_data["script"])
         ar_data["script"] = enforce_arabic_purity(ar_data["script"])
         ar_data["script"] = remove_arabic_filler_phrases(ar_data["script"])
+        ar_data["script"] = apply_mishkal_tashkeel(ar_data["script"])
 
         # ── Section marker guard — ensure all 3 structural sections survive cleanup ─
         # Runs AFTER all cleanup so guards cannot be stripped again.
@@ -7201,6 +7338,7 @@ def write_arabic_script(topic: dict, research: dict | None = None) -> dict:
         ar_data["script"] = tts_readability_pass(ar_data["script"])
         ar_data["script"] = enforce_arabic_purity(ar_data["script"])
         ar_data["script"] = remove_arabic_filler_phrases(ar_data["script"])
+        ar_data["script"] = apply_mishkal_tashkeel(ar_data["script"])
 
         # Section-marker guard — ensure all 3 structural sections survive cleanup
         import re as _re_ar
