@@ -1730,15 +1730,23 @@ def build_image_prompt(
 
     # ── Build AI enhancement prompt (shared by Tier 3 + 4) ───────────────────
     style_rule = f"\n- Match this visual style: {style_profile}" if style_profile else ""
+    # Detect Arabic input so we can instruct the LLM to translate entities to English
+    _has_arabic = any('؀' <= ch <= 'ۿ' for ch in first_200)
+    _arabic_note = (
+        "\n- The excerpt may be in Arabic. Translate all names, places, and events to "
+        "English in your output." if _has_arabic else ""
+    )
     ai_prompt = (
         "Read this script excerpt and write a specific visual image generation prompt "
         "(max 20 words) representing the exact subject.\n\n"
         f"Rules:\n- Name real places, real objects, real events\n- No human faces\n"
-        f"- Dark cinematic documentary style\n- Be specific not generic{style_rule}\n\n"
+        f"- Dark cinematic documentary style\n- Be specific not generic{style_rule}"
+        f"{_arabic_note}"
+        "\n- ALWAYS write the prompt in English regardless of input language\n\n"
         "Examples:\n"
         "GOOD: 'Burned village Darfur Sudan desert, smoke ruins, golden hour, cinematic aerial view'\n"
         "BAD: 'dark crime documentary background'\n\n"
-        f"Script excerpt: {first_200}\n\nReturn only the image prompt, nothing else."
+        f"Script excerpt: {first_200}\n\nReturn only the English image prompt, nothing else."
     )
 
     # ── Tier 3: Groq (skipped when unhealthy — NO blocking wait) ─────────────
@@ -4586,6 +4594,211 @@ def _search_vimeo_free(query: str, max_results: int = 5) -> list[str]:
         return []
 
 
+# ── OpenVerse (WordPress CC Search — no API key, aggregates Flickr + Wikimedia) ──
+
+def _search_openverse_images(query: str, max_results: int = 5) -> list[str]:
+    """
+    Search OpenVerse (openverse.org) for CC-licensed images.
+    Free, no API key. Aggregates Flickr, Wikimedia Commons, and 20+ other sources.
+    Returns direct image URLs.
+    """
+    try:
+        r = requests.get(
+            "https://api.openverse.org/v1/images/",
+            params={
+                "q": query,
+                "page_size": max_results,
+                "license_type": "commercial,modification",  # CC licenses safe for YouTube
+                "mature": "false",
+            },
+            headers={"User-Agent": "DarkCrimeDecoded/1.0 (documentary content pipeline)"},
+            timeout=15,
+        )
+        if r.status_code != 200:
+            print(f"[Image] OpenVerse {r.status_code} for '{query}'")
+            return []
+        results = r.json().get("results", [])
+        urls = [item["url"] for item in results if item.get("url")]
+        if urls:
+            print(f"[Image] OpenVerse: {len(urls)} result(s) for '{query}'")
+        return urls
+    except Exception as e:
+        print(f"[Image] OpenVerse error for '{query}': {e}")
+        return []
+
+
+def _search_openverse_videos(query: str, max_results: int = 5) -> list[str]:
+    """
+    Search OpenVerse for CC-licensed video clips.
+    Same free endpoint, no API key.
+    """
+    try:
+        r = requests.get(
+            "https://api.openverse.org/v1/audio/",  # OpenVerse audio has some video sources too
+            params={"q": query, "page_size": max_results, "mature": "false"},
+            headers={"User-Agent": "DarkCrimeDecoded/1.0"},
+            timeout=15,
+        )
+        # OpenVerse doesn't have a dedicated video endpoint — fall back to images
+        # that have video mime types
+        r2 = requests.get(
+            "https://api.openverse.org/v1/images/",
+            params={
+                "q": query,
+                "page_size": max_results,
+                "mature": "false",
+                "extension": "mp4,webm,ogv",
+            },
+            headers={"User-Agent": "DarkCrimeDecoded/1.0"},
+            timeout=15,
+        )
+        if r2.status_code == 200:
+            results = r2.json().get("results", [])
+            urls = [item["url"] for item in results if item.get("url")]
+            if urls:
+                print(f"[Stock] OpenVerse video: {len(urls)} result(s) for '{query}'")
+            return urls
+        return []
+    except Exception as e:
+        print(f"[Stock] OpenVerse video error for '{query}': {e}")
+        return []
+
+
+# ── Library of Congress (loc.gov) — free, no API key, massive US historical archive ──
+
+_LOC_MEDIA_TYPES = {
+    "photo": "still image",
+    "video": "moving image",
+}
+
+def _search_loc_images(query: str, max_results: int = 5) -> list[str]:
+    """
+    Search Library of Congress (loc.gov) for public domain historical images.
+    Free, no API key. Best for US crime/law enforcement/political history 1860s–1990s.
+    Returns direct image URLs.
+    """
+    try:
+        r = requests.get(
+            "https://www.loc.gov/search/",
+            params={
+                "q": query,
+                "fo": "json",
+                "fa": "online-format:image",
+                "c": max_results * 3,
+                "sp": 1,
+            },
+            headers={"User-Agent": "DarkCrimeDecoded/1.0"},
+            timeout=15,
+        )
+        if r.status_code != 200:
+            print(f"[Image] LoC {r.status_code} for '{query}'")
+            return []
+        results = r.json().get("results", [])
+        urls = []
+        for item in results:
+            # Prefer JPEG thumbnail or image_url
+            for field in ("image_url", "thumbnail"):
+                val = item.get(field)
+                if isinstance(val, list):
+                    val = val[0] if val else None
+                if val and isinstance(val, str) and val.startswith("http"):
+                    urls.append(val)
+                    break
+            if len(urls) >= max_results:
+                break
+        if urls:
+            print(f"[Image] Library of Congress: {len(urls)} result(s) for '{query}'")
+        return urls
+    except Exception as e:
+        print(f"[Image] LoC error for '{query}': {e}")
+        return []
+
+
+def _search_loc_videos(query: str, max_results: int = 5) -> list[str]:
+    """
+    Search Library of Congress for public domain moving images.
+    Returns direct video/stream URLs when available.
+    """
+    try:
+        r = requests.get(
+            "https://www.loc.gov/search/",
+            params={
+                "q": query,
+                "fo": "json",
+                "fa": "online-format:video",
+                "c": max_results * 3,
+                "sp": 1,
+            },
+            headers={"User-Agent": "DarkCrimeDecoded/1.0"},
+            timeout=15,
+        )
+        if r.status_code != 200:
+            return []
+        results = r.json().get("results", [])
+        urls = []
+        for item in results:
+            # Resources may have streaming links
+            for res in item.get("resources", []):
+                url = res.get("url") or res.get("stream") or ""
+                if url and any(url.endswith(ext) for ext in (".mp4", ".mov", ".webm")):
+                    urls.append(url)
+                    break
+            if len(urls) >= max_results:
+                break
+        if urls:
+            print(f"[Stock] Library of Congress video: {len(urls)} result(s) for '{query}'")
+        return urls
+    except Exception as e:
+        print(f"[Stock] LoC video error for '{query}': {e}")
+        return []
+
+
+# ── Flickr CC (requires FLICKR_API_KEY env var — free account at flickr.com/services/api) ──
+
+def _search_flickr_images(query: str, max_results: int = 5) -> list[str]:
+    """
+    Search Flickr for CC-licensed photos.
+    Requires FLICKR_API_KEY (free). Best source for real documentary-style news photos.
+    Returns direct image URLs sized to 1024px wide (Large).
+    """
+    api_key = os.getenv("FLICKR_API_KEY", "").strip()
+    if not api_key or api_key.startswith("YOUR_"):
+        return []
+    try:
+        r = requests.get(
+            "https://www.flickr.com/services/rest/",
+            params={
+                "method": "flickr.photos.search",
+                "api_key": api_key,
+                "text": query,
+                "license": "1,2,3,4,5,6,9,10",  # All CC + public domain licenses
+                "sort": "relevance",
+                "per_page": max_results,
+                "format": "json",
+                "nojsoncallback": 1,
+                "extras": "url_l,url_c,url_b",  # Large, Medium 800, Large 1024
+                "safe_search": 1,
+                "content_type": 1,  # photos only
+            },
+            timeout=15,
+        )
+        if r.status_code != 200:
+            print(f"[Image] Flickr {r.status_code} for '{query}'")
+            return []
+        photos = r.json().get("photos", {}).get("photo", [])
+        urls = []
+        for p in photos:
+            url = p.get("url_b") or p.get("url_l") or p.get("url_c") or ""
+            if url:
+                urls.append(url)
+        if urls:
+            print(f"[Image] Flickr CC: {len(urls)} result(s) for '{query}'")
+        return urls
+    except Exception as e:
+        print(f"[Image] Flickr error for '{query}': {e}")
+        return []
+
+
 # ── Visual query helpers ─────────────────────────────────────────────────────
 
 _IRRELEVANT_QUERY_TERMS = frozenset({
@@ -4741,9 +4954,14 @@ def fetch_stock_videos(script_text: str, count: int, video_id: str, topic: str =
         # (src_name, search_fn, use_ytdlp, max_bytes_override)
         for src_name, src_fn, use_ytdlp, mb_override in [
             ("Internet Archive", _search_internet_archive, False, _ARCHIVE_VIDEO_MAX_BYTES),
+            ("Wikimedia Videos", _search_wikimedia_videos, False, _VIDEO_MAX_BYTES),
+            ("Library of Congress", _search_loc_videos,    False, _VIDEO_MAX_BYTES),
             ("YouTube CC",       _search_youtube_cc,       True,  None),
             ("Pexels",           _search_pexels_videos,    False, _VIDEO_MAX_BYTES),
             ("Pixabay",          _search_pixabay_videos,   False, _VIDEO_MAX_BYTES),
+            ("OpenVerse",        _search_openverse_videos, False, _VIDEO_MAX_BYTES),
+            ("Coverr",           _search_coverr,           False, _VIDEO_MAX_BYTES),
+            ("Vimeo CC",         _search_vimeo_free,       False, _VIDEO_MAX_BYTES),
         ]:
             urls = src_fn(query)
             if not urls:
@@ -5105,6 +5323,33 @@ def fetch_real_images(script_text: str, count: int, video_id: str,
                 if _saved:
                     print(f"[Image] chunk {ci}: Pixabay photo '{_query}'")
                     _kind = "real-pixabay"
+
+        # Step 5b: OpenVerse CC (aggregates Flickr + Wikimedia + 20 sources, no key)
+        if not _saved and _query:
+            _ov_imgs = _search_openverse_images(_query, max_results=3)
+            if _ov_imgs:
+                _saved = _download_first_valid(_ov_imgs, out_path)
+                if _saved:
+                    print(f"[Image] chunk {ci}: OpenVerse CC '{_query}'")
+                    _kind = "real-openverse"
+
+        # Step 5c: Library of Congress (public domain US historical archive, no key)
+        if not _saved and _query:
+            _loc_imgs = _search_loc_images(_query, max_results=3)
+            if _loc_imgs:
+                _saved = _download_first_valid(_loc_imgs, out_path)
+                if _saved:
+                    print(f"[Image] chunk {ci}: Library of Congress '{_query}'")
+                    _kind = "real-loc"
+
+        # Step 5d: Flickr CC (free API key — set FLICKR_API_KEY in .env)
+        if not _saved and _query:
+            _flickr_imgs = _search_flickr_images(_query, max_results=3)
+            if _flickr_imgs:
+                _saved = _download_first_valid(_flickr_imgs, out_path)
+                if _saved:
+                    print(f"[Image] chunk {ci}: Flickr CC '{_query}'")
+                    _kind = "real-flickr"
 
         # Step 6: Pollinations AI photo (with prompt-hash cache to avoid duplicates)
         if not _saved:
