@@ -261,18 +261,18 @@ def clean_word_count(text: str) -> int:
 #   Arabic: FAST 30-40 min | ANIMATION 35-60 min | FULL 45-90 min
 #   English: FAST 10-15 min | ANIMATION 12-18 min | FULL 15-20 min
 # WPM calibration (measured from production, OpenAI TTS):
-#   Arabic Nova speed=1.1:  ~100 WPM  (range 91-121, measured from section-level logs)
+#   Arabic Nova speed=1.1:  ~185 WPM  (range 170-190, Nova voice at 1.1× speed)
 #   English Alloy 1.0: ~160 WPM (range 155-165, very consistent)
 _WORD_FLOORS = {
-    "fast":      {"english": 1_800, "arabic": 5_500},   # 10 min EN × 160 | 30 min AR × 190 (lower bounds)
-    "full":      {"english": 4_000, "arabic": 8_500},   # 15 min EN × 160 | 45 min AR × 190
-    "animation": {"english": 2_500, "arabic": 6_500},   # 12 min EN × 160 | 35 min AR × 190
+    "fast":      {"english": 1_800, "arabic": 5_500},   # 10 min EN × 160 | 30 min AR × 185 (lower bounds)
+    "full":      {"english": 4_000, "arabic": 8_500},   # 15 min EN × 160 | 45 min AR × 185
+    "animation": {"english": 2_500, "arabic": 6_500},   # 12 min EN × 160 | 35 min AR × 185
     "short":     {"english": 0,     "arabic": 0},
 }
 _WORD_CEILINGS = {
-    "fast":      {"english": 2_500,  "arabic":  8_000},  # 15 min EN × 160 | 40 min AR × 190 (upper bounds)
-    "full":      {"english": 6_500,  "arabic": 15_000},  # 20 min EN × 160 | 90 min AR × 190
-    "animation": {"english": 4_000,  "arabic": 10_000},  # 18 min EN × 160 | 60 min AR × 190 (approx)
+    "fast":      {"english": 2_500,  "arabic":  7_500},  # 15 min EN × 160 | 40 min AR × 185 (upper bounds)
+    "full":      {"english": 6_500,  "arabic": 16_500},  # 20 min EN × 160 | 90 min AR × 185
+    "animation": {"english": 4_000,  "arabic": 11_000},  # 18 min EN × 160 | 60 min AR × 185
     "short":     {"english": 500,    "arabic": 500},
 }
 # Legacy aliases — write_long_script_split and callers use fast/full English by default.
@@ -380,7 +380,7 @@ def _cap_script_max_words(script_text: str, max_words: int = LONG_SCRIPT_MAX_WOR
     return result
 
 
-_TTS_WPM = {"english": 160, "arabic": 100}   # Calibrated: Arabic Nova speed=1.1 ~100 WPM (range 91-121) | English Alloy 1.0 ~160 WPM
+_TTS_WPM = {"english": 160, "arabic": 185}   # Calibrated: Arabic Nova speed=1.1 ~185 WPM (range 170-190) | English Alloy 1.0 ~160 WPM
 
 # Runtime floors (minutes) by mode — ABSOLUTE MINIMUMS.
 # Any long video below 15 minutes is an automatic failure.
@@ -1765,7 +1765,7 @@ CHAPTER_LABELS_AR = [
 def generate_chapters(total_words: int, language: str = "english",
                       angle_title: str = "") -> str:
     """Generate YouTube chapter timestamps for 5-chapter structure."""
-    words_per_minute = 100 if language == "arabic" else 160
+    words_per_minute = 185 if language == "arabic" else 160
     total_seconds = (total_words / words_per_minute) * 60
 
     if language == "arabic":
@@ -1883,7 +1883,7 @@ def generate_chapters_from_script(
     Timestamps computed from word count using _CHAPTER_PROPORTIONS_5.
     """
     total_words = clean_word_count(script_text)
-    wpm = 100 if language == "arabic" else 156
+    wpm = 185 if language == "arabic" else 156
     total_seconds = (total_words / max(wpm, 1)) * 60
 
     llm_titles = None
@@ -5094,7 +5094,7 @@ def _expand_arabic_script_to_min(ar_script: str, target_min: int = 5000) -> str:
         if cur_wc >= target_min:
             break
         needed    = target_min - cur_wc
-        needed_min = round(needed / 100, 1)  # ~100 WPM Arabic TTS (Nova speed=1.1 calibrated)
+        needed_min = round(needed / 185, 1)  # ~185 WPM Arabic TTS (Nova speed=1.1 range 170-190)
         max_tok   = _tok_budgets[_attempt - 1]
         context   = _tail(result)
 
@@ -5170,7 +5170,7 @@ def _expand_arabic_script_to_min(ar_script: str, target_min: int = 5000) -> str:
 
 
 def estimate_arabic_duration(text: str) -> float:
-    """Estimate Arabic TTS duration in minutes (OpenAI TTS Nova speed=1.1 ~100 WPM calibrated)."""
+    """Estimate Arabic TTS duration in minutes (OpenAI TTS Nova speed=1.1 ~185 WPM)."""
     return clean_word_count(text) / _TTS_WPM["arabic"]
 
 
@@ -5745,7 +5745,7 @@ def _write_arabic_from_research(en_script: dict, ar_research: dict, target_minut
 
     # Section word budgets — derived from minutes target when available,
     # falling back to English word count ratios (legacy behaviour).
-    _AR_WPM = 100  # Nova speed=1.1 calibrated (range 91-121 WPM from production)
+    _AR_WPM = 185  # Nova speed=1.1 (range 170-190 WPM)
     if target_minutes and target_minutes > 0:
         _total_target_w = int(target_minutes * _AR_WPM)
         if _anim_mode:

@@ -1939,8 +1939,12 @@ def safe_download_image(url: str, output_path: str, timeout: int = 15) -> str | 
 
 def generate_ai_image(prompt: str, output_path: str, seed: int = None) -> str:
     """Fetch an AI-generated image from Pollinations with retry + dark fallback."""
+    global _pollinations_402_blocked
     import io
     from PIL import Image as PILImage
+
+    if _pollinations_402_blocked:
+        return None  # circuit breaker open — Pollinations 402'd this session
 
     output_path = output_path.replace(".jpg", ".png")
     encoded = requests.utils.quote(clean_prompt(prompt))
@@ -1974,9 +1978,10 @@ def generate_ai_image(prompt: str, output_path: str, seed: int = None) -> str:
                     time.sleep(20)
                     continue
             elif response.status_code in (402, 403):
-                # Payment required / forbidden — permanent for this session, skip immediately
+                # Payment required / forbidden — trip circuit breaker so remaining calls skip
                 _record_pollinations_result(False)
-                print(f"[Image] Pollinations {response.status_code} — skipping (no retry): {prompt[:60]}")
+                _pollinations_402_blocked = True
+                print(f"[Image] Pollinations {response.status_code} — circuit breaker tripped, all future Pollinations calls disabled: {prompt[:60]}")
                 return None
             elif response.status_code == 429:
                 _record_pollinations_result(False)
@@ -7064,7 +7069,7 @@ def _generate_cinematic_inserts(
     _img_dir = _get_images_dir()
     paths: list[str] = []
     topic_prompt = (
-        f"{topic} true crime investigation evidence cinematic dark documentary"
+        f"{_clean_topic_name(topic)} true crime investigation evidence cinematic dark documentary"
         if topic else ""
     )
     prompt_pool = ([topic_prompt] if topic_prompt else []) + _CINEMATIC_INSERT_PROMPTS
@@ -8016,13 +8021,15 @@ _WORKERS: dict[str, int] = {
     "script":        2,                      # LLM script generation — API rate-limited
 }
 
-# ── Adaptive 429 throttle ─────────────────────────────────────────────────────
-# Tracks Pollinations 429 count. When high, callers halve the worker pool.
-# Reset each pipeline run by the pipeline entry point.
+# ── Adaptive 429 throttle + 402 circuit breaker ──────────────────────────────
+# 402 = service-level block for this session (IP/key issue) — trip a hard breaker
+# so we don't waste 100+ requests after the first 402. Reset on each run start.
+# 429 tracking halves the worker pool when rate > 25%.
 import threading as _threading
 _pollinations_429_lock  = _threading.Lock()
 _pollinations_429_count = 0
 _pollinations_req_count = 0
+_pollinations_402_blocked = False   # circuit breaker — True after first 402
 
 
 def _record_pollinations_result(success: bool) -> None:
