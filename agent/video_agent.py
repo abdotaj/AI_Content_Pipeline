@@ -4281,20 +4281,50 @@ _VIDEO_MAX_BYTES = 80_000_000           # 80 MB  (general sources)
 _ARCHIVE_VIDEO_MAX_BYTES = 200_000_000  # 200 MB (Internet Archive — large archival files)
 
 
+def _ytdlp_clip_first15(url: str, output_path: str) -> str | None:
+    """Use yt-dlp to download only the first 15 seconds of a video URL.
+    Works on any URL yt-dlp supports (archive.org, YouTube, Vimeo, etc.).
+    Ignores total file size — only downloads the clip portion."""
+    import subprocess
+    if not _ensure_ytdlp():
+        return None
+    try:
+        cmd = [
+            "yt-dlp",
+            url,
+            "--download-sections", "*0:00-0:15",
+            "-f", "mp4[height<=720]/best[ext=mp4]/best",
+            "-o", output_path,
+            "--quiet",
+            "--no-warnings",
+            "--force-keyframes-at-cuts",
+        ]
+        subprocess.run(cmd, timeout=90, check=False)
+        if os.path.exists(output_path) and os.path.getsize(output_path) > _VIDEO_MIN_BYTES:
+            print(f"[Stock] yt-dlp clip (first 15s): {url[:60]}")
+            return output_path
+    except Exception as e:
+        print(f"[Stock] yt-dlp clip error for '{url[:60]}': {e}")
+    return None
+
+
 def _download_video_url(url: str, output_path: str,
                         max_bytes: int | None = None) -> str | None:
-    """Download one stock video URL with Content-Type + size validation."""
+    """Download one stock video URL with Content-Type + size validation.
+    Oversized videos are rescued via yt-dlp (first 15s clip) instead of skipped."""
     limit = max_bytes or _VIDEO_MAX_BYTES
     try:
         # Check Content-Type via HEAD before downloading the full file
         ct = ""
+        content_length = 0
         try:
             head = requests.head(url, timeout=8, headers={"User-Agent": "DarkCrimeDecoded/1.0"}, allow_redirects=True)
             ct = head.headers.get("Content-Type", "").lower()
             content_length = int(head.headers.get("Content-Length", 0) or 0)
             if content_length > limit:
-                print(f"[Stock] Skipping oversized video ({content_length // 1_000_000} MB): {url[:60]}")
-                return None
+                # Rescue via yt-dlp: download only the first 15s instead of skipping
+                print(f"[Stock] Oversized ({content_length // 1_000_000} MB) — trying yt-dlp clip: {url[:60]}")
+                return _ytdlp_clip_first15(url, output_path)
         except Exception:
             pass
 
@@ -4318,7 +4348,7 @@ def _download_video_url(url: str, output_path: str,
                     f.write(chunk)
                     downloaded += len(chunk)
                     if downloaded > limit:
-                        print(f"[Stock] Aborted oversized download (>{limit // 1_000_000} MB): {url[:60]}")
+                        print(f"[Stock] Stream limit hit (>{limit // 1_000_000} MB) — trying yt-dlp clip: {url[:60]}")
                         break
 
         size = os.path.getsize(output_path)
@@ -4327,7 +4357,7 @@ def _download_video_url(url: str, output_path: str,
                 os.remove(output_path)
             except OSError:
                 pass
-            return None
+            return _ytdlp_clip_first15(url, output_path)
         return output_path
     except Exception:
         return None
