@@ -3230,6 +3230,9 @@ def _groq_query_for_chunk(chunk_text: str, topic: str = "", for_video: bool = Fa
             messages=[{"role": "user", "content": prompt}],
             max_tokens=20, temperature=0.2,
         ).choices[0].message.content.strip().strip('"\'')
+        # Reject if Groq returned Arabic/non-Latin despite "English only" instruction
+        if any('؀' <= c <= 'ۿ' for c in result):
+            return None
         if 2 <= len(result.split()) <= 8:
             _provider_health.reset("groq")
             return result
@@ -3923,36 +3926,69 @@ def _fetch_gap_images(
     coverage_ratio: float,
     style_profile: str = "",
 ) -> list[str]:
-    """Fill a visual gap with priority: Wikimedia → OpenAI search → Pollinations AI.
-
-    Archive and YouTube CC are never used for gap-fill — only clean image sources.
-    """
+    """Fill a visual gap: fetch_real_images → DuckDuckGo bulk → Pollinations AI."""
     if needed <= 0:
         return []
 
+    _clean_t = _clean_topic_name(topic)  # "Richard Farley" not the full video title
     results: list[str] = []
 
-    # Priority 1: Wikimedia person photos + Commons
-    wiki_imgs = fetch_real_images(script_text, min(needed, 8), video_id, topic=topic, style_profile=style_profile)
+    # Priority 1: full real-image search per chunk (raised cap from 8 → 50)
+    wiki_imgs = fetch_real_images(script_text, min(needed, 50), video_id,
+                                   topic=_clean_t, style_profile=style_profile)
     results.extend(wiki_imgs)
     if len(results) >= needed:
         return results[:needed]
 
-    # Priority 2: OpenAI web search for real photos
+    # Priority 2: DuckDuckGo bulk — query variations on the clean topic name
+    remaining = needed - len(results)
+    if remaining > 0 and _clean_t:
+        _ddg_queries = [
+            _clean_t,
+            f"{_clean_t} crime",
+            f"{_clean_t} arrest",
+            f"{_clean_t} documentary",
+            f"{_clean_t} news",
+        ]
+        _ddg_seen: set[str] = set()
+        for _dq in _ddg_queries:
+            if len(results) >= needed:
+                break
+            _ddg_urls = _search_duckduckgo_images(_dq, max_results=10)
+            for _url in _ddg_urls:
+                if len(results) >= needed:
+                    break
+                if _url in _ddg_seen:
+                    continue
+                _ddg_seen.add(_url)
+                _out = os.path.join(IMAGES_DIR, f"{video_id}_ddg_{len(results)}.png")
+                _dl = download_real_image(_url, _out)
+                if _dl:
+                    results.append(_dl)
+
+    if len(results) >= needed:
+        return results[:needed]
+
+    # Priority 3: OpenAI web search
     remaining = needed - len(results)
     if remaining > 0:
-        ai_imgs = _fetch_openai_images_for_gap(topic, remaining, video_id)
+        ai_imgs = _fetch_openai_images_for_gap(_clean_t, remaining, video_id)
         results.extend(ai_imgs)
     if len(results) >= needed:
         return results[:needed]
 
-    # Priority 3: Pollinations AI generation in parallel (last resort)
+    # Priority 4: Pollinations AI — last resort with CLEAN topic name (not full video title)
     remaining = needed - len(results)
     if remaining > 0:
-        print(f"[Video] Gap-fill last resort: generating {remaining} Pollinations AI images in parallel")
+        print(f"[Video] Gap-fill last resort: generating {remaining} Pollinations AI images")
         style_hint = f", {style_profile}" if style_profile else ""
+        _poll_prompts = [
+            f"{_clean_t} crime investigation documentary cinematic dark{style_hint}",
+            f"{_clean_t} courtroom documentary cinematic{style_hint}",
+            f"{_clean_t} evidence forensic dark cinematic documentary{style_hint}",
+        ]
         _tasks = [
-            (f"{topic} cinematic documentary dark dramatic portrait{style_hint}",
+            (_poll_prompts[i % len(_poll_prompts)],
              os.path.join(IMAGES_DIR, f"{video_id}_gap_{i}.png"))
             for i in range(remaining)
         ]
@@ -3966,7 +4002,7 @@ def _fetch_gap_images(
             if r and os.path.exists(r):
                 results.append(r)
 
-    print(f"[Video] Gap-fill complete: {len(results)}/{needed} images (Wikimedia + OpenAI + Pollinations)")
+    print(f"[Video] Gap-fill complete: {len(results)}/{needed} images")
     return results[:needed]
 
 
@@ -5140,13 +5176,19 @@ def fetch_real_images(script_text: str, count: int, video_id: str,
 
     # ── Parallel chunk processing ─────────────────────────────────────────────
     # Each chunk is image-independent — run all searches simultaneously.
+    _clean_topic = _clean_topic_name(topic)  # "Richard Farley" not full title
+
     def _process_chunk(args: tuple):
         ci, chunk_text, out_path, ai_prompt_c, seed_val = args
         _saved = None
         _kind  = "none"
 
-        # Extract query once — reused across all steps
-        _query = _get_search_query_for_chunk(chunk_text)
+        # Extract query — always pass topic so era/theme returns "Richard Farley 1990s"
+        # not "crime 1990s". Force English: if query is Arabic, prepend clean topic.
+        _query = _get_search_query_for_chunk(chunk_text, topic=_clean_topic)
+        if _query and any('؀' <= c <= 'ۿ' for c in _query):
+            # query returned in Arabic — replace with English topic-based fallback
+            _query = _clean_topic or "true crime documentary"
 
         # Step 1: person photo (Wikimedia — highest priority)
         _person = _detect_person_in_chunk(chunk_text)
