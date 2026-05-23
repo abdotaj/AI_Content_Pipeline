@@ -2021,8 +2021,13 @@ def generate_ai_image(prompt: str, output_path: str, seed: int = None) -> str:
     return None
 
 
-def _is_dark_placeholder(path: str, threshold: int = 30) -> bool:
-    """Return True if image is a solid dark background (failed Pollinations response)."""
+def _is_dark_placeholder(path: str, threshold: int = 8) -> bool:
+    """Return True if image is a nearly-solid black background (corrupted/empty download).
+
+    threshold=8 catches only truly blank files. Crime documentary content uses dark
+    palettes (~15-40 mean) which must NOT be filtered. PIL gradient emergency fallbacks
+    use ~18-34 RGB, all safely above this threshold.
+    """
     try:
         from PIL import Image as _PILCheck
         import numpy as _np_check
@@ -2032,7 +2037,7 @@ def _is_dark_placeholder(path: str, threshold: int = 30) -> bool:
         sample = img.crop((max(0, cx - 50), max(0, cy - 50),
                            min(w, cx + 50), min(h, cy + 50)))
         arr = _np_check.array(sample, dtype=float)
-        return arr.mean() < threshold and arr.std() < 15
+        return arr.mean() < threshold and arr.std() < 3
     except Exception:
         return False
 
@@ -3018,6 +3023,7 @@ def _search_pexels_images(query: str, max_results: int = 5) -> list[str]:
     """Search Pexels photos and return direct image URLs (free licensed)."""
     api_key = os.getenv("PEXELS_API_KEY", "").strip()
     if not api_key or api_key.startswith("YOUR_"):
+        print("[Image] Pexels: no API key — skipping (set PEXELS_API_KEY secret)")
         return []
     try:
         r = requests.get(
@@ -3045,6 +3051,7 @@ def _search_pixabay_images(query: str, max_results: int = 5) -> list[str]:
     """Search Pixabay photos and return direct image URLs (free licensed)."""
     api_key = os.getenv("PIXABAY_API_KEY", "").strip()
     if not api_key or api_key.startswith("YOUR_"):
+        print("[Image] Pixabay: no API key — skipping (set PIXABAY_API_KEY secret)")
         return []
     try:
         r = requests.get(
