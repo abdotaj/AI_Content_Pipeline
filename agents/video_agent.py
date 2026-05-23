@@ -4945,8 +4945,11 @@ def _search_duckduckgo_images(query: str, max_results: int = 5) -> list[str]:
     """Search DuckDuckGo images — no API key, returns direct image URLs.
     Accesses Bing image index so finds thousands of results for any topic."""
     try:
-        from duckduckgo_search import DDGS
-        raw = DDGS().images(keywords=query, max_results=max_results * 3)
+        try:
+            from ddgs import DDGS
+        except ImportError:
+            from duckduckgo_search import DDGS
+        raw = DDGS().images(query, max_results=max_results * 3)
         urls = []
         _blocked = _BLOCKED_IMAGE_DOMAINS
         for r in (raw or []):
@@ -4971,8 +4974,11 @@ def _search_duckduckgo_videos(query: str, max_results: int = 5) -> list[str]:
     """Search DuckDuckGo videos — finds news clips, reels, short videos.
     Returns direct embed/source URLs; caller downloads via yt-dlp or direct HTTP."""
     try:
-        from duckduckgo_search import DDGS
-        raw = DDGS().videos(keywords=query, max_results=max_results * 4)
+        try:
+            from ddgs import DDGS
+        except ImportError:
+            from duckduckgo_search import DDGS
+        raw = DDGS().videos(query, max_results=max_results * 4)
         urls = []
         for r in (raw or []):
             # DDG video results have 'content' (embed page) and sometimes 'embed_url'

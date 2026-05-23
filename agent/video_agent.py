@@ -705,26 +705,18 @@ def _split_text(text: str, max_chars: int = 4000, max_words: int = None) -> list
         return False
 
     def _fits(current: str, addition: str) -> bool:
-        combined = (current + "
-
-" + addition).lstrip("
-")
+        combined = (current + "\n\n" + addition).lstrip("\n")
         return not _over_limit(combined)
 
     if not _over_limit(text):
         return [text]
 
     chunks: list[str] = []
-    paragraphs = text.split("
-
-")
+    paragraphs = text.split("\n\n")
     current = ""
     for para in paragraphs:
         if not current or _fits(current, para):
-            current = (current + "
-
-" + para).lstrip("
-")
+            current = (current + "\n\n" + para).lstrip("\n")
         else:
             if current:
                 chunks.append(current.strip())
@@ -4779,8 +4771,11 @@ def _search_duckduckgo_images(query: str, max_results: int = 5) -> list[str]:
     """Search DuckDuckGo images — no API key, returns direct image URLs.
     Accesses Bing image index so finds thousands of results for any topic."""
     try:
-        from duckduckgo_search import DDGS
-        raw = DDGS().images(keywords=query, max_results=max_results * 3)
+        try:
+            from ddgs import DDGS
+        except ImportError:
+            from duckduckgo_search import DDGS
+        raw = DDGS().images(query, max_results=max_results * 3)
         urls = []
         _blocked = _BLOCKED_IMAGE_DOMAINS
         for r in (raw or []):
@@ -4805,8 +4800,11 @@ def _search_duckduckgo_videos(query: str, max_results: int = 5) -> list[str]:
     """Search DuckDuckGo videos — finds news clips, reels, short videos.
     Returns direct embed/source URLs; caller downloads via yt-dlp or direct HTTP."""
     try:
-        from duckduckgo_search import DDGS
-        raw = DDGS().videos(keywords=query, max_results=max_results * 4)
+        try:
+            from ddgs import DDGS
+        except ImportError:
+            from duckduckgo_search import DDGS
+        raw = DDGS().videos(query, max_results=max_results * 4)
         urls = []
         for r in (raw or []):
             url = r.get("content", "") or r.get("embed_url", "")
