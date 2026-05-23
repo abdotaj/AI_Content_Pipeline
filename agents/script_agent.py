@@ -4682,17 +4682,8 @@ def format_for_tts_arabic(text: str) -> str:
             out_parts.append(part)
             continue
 
-        # Cleanup pass: Groq → OpenAI → as-is
-        if clean_word_count(part) > 20:
-            try:
-                cleaned = _groq_clean_arabic(part)
-            except Exception:
-                try:
-                    cleaned = _clean_arabic_with_openai(part)
-                except Exception:
-                    cleaned = part
-        else:
-            cleaned = part
+        # Skip LLM cleanup — it compresses Arabic content by 50%+ via max_tokens=2000 + "delete filler" prompt
+        cleaned = part
 
         lines_out: list[str] = []
         line_count_since_break = 0

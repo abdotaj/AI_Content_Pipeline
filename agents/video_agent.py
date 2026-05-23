@@ -546,9 +546,12 @@ def generate_voiceover_openai(text: str, language: str, output_path: str,
         return any(sig in s for sig in _SIGNALS) or ("429" in err_str and "quota" in s)
 
     try:
-        # Use 3500-char limit for Arabic (preprocessing can inflate length)
-        _max_chars = 3500 if language == "arabic" else 4000
-        chunks = _split_text(text, max_chars=_max_chars)
+        # Arabic: cap at 750 words per chunk (≈4000 chars) — each chunk = one OpenAI TTS API call
+        # English: cap at 4000 chars
+        if language == "arabic":
+            chunks = _split_text(text, max_chars=4000, max_words=750)
+        else:
+            chunks = _split_text(text, max_chars=4000)
         # Hard-cap: any chunk still > 4090 chars gets split at whitespace boundary
         _safe: list[str] = []
         for _c in chunks:
@@ -558,7 +561,7 @@ def generate_voiceover_openai(text: str, language: str, output_path: str,
             else:
                 _safe.append(_c)
         chunks = [c for c in _safe if c]
-        print(f"[Voice] OpenAI TTS: {len(chunks)} chunk(s)")
+        print(f"[Voice] OpenAI TTS: {len(chunks)} chunk(s) for {language}")
 
         audio_files: list[str] = []
         base = output_path.replace(".mp3", "")
@@ -689,35 +692,56 @@ def _merge_chunks_pydub(chunk_files: list[str], output_path: str) -> bool:
         return False
 
 
-def _split_text(text: str, max_chars: int = 4000) -> list[str]:
-    """Split text preserving complete paragraphs; no content is ever dropped.
+def _split_text(text: str, max_chars: int = 4000, max_words: int = None) -> list[str]:
+    """Split text into TTS-safe chunks; no content is ever dropped.
+    max_words: word-count cap per chunk (use ~750 for Arabic to stay under OpenAI 4096-char limit).
     Supports Arabic sentence delimiters (، ؟ .) so Arabic paragraphs split correctly."""
-    if len(text) <= max_chars:
+
+    def _over_limit(chunk: str) -> bool:
+        if len(chunk) > max_chars:
+            return True
+        if max_words and len(chunk.split()) >= max_words:
+            return True
+        return False
+
+    def _fits(current: str, addition: str) -> bool:
+        combined = (current + "
+
+" + addition).lstrip("
+")
+        return not _over_limit(combined)
+
+    if not _over_limit(text):
         return [text]
 
     chunks: list[str] = []
-    paragraphs = text.split("\n\n")
+    paragraphs = text.split("
+
+")
     current = ""
     for para in paragraphs:
-        if len(current) + len(para) + 2 <= max_chars:
-            current = (current + "\n\n" + para).lstrip("\n")
+        if not current or _fits(current, para):
+            current = (current + "
+
+" + para).lstrip("
+")
         else:
             if current:
                 chunks.append(current.strip())
             # Paragraph itself too large — split on sentence boundaries (Arabic + Latin)
-            if len(para) > max_chars:
+            if _over_limit(para):
                 sentences = (para
                              .replace(". ", ".|").replace("! ", "!|").replace("? ", "?|")
                              .replace("، ", "،|").replace("؟ ", "؟|").replace("۔ ", "۔|")
                              .split("|"))
                 sub = ""
                 for sent in sentences:
-                    if len(sub) + len(sent) + 1 <= max_chars:
-                        sub = (sub + " " + sent).lstrip()
+                    test = (sub + " " + sent).lstrip() if sub else sent
+                    if not _over_limit(test):
+                        sub = test
                     else:
                         if sub:
                             chunks.append(sub.strip())
-                        # Hard-truncate sentences that individually exceed the limit
                         sub = sent[:max_chars] if len(sent) > max_chars else sent
                 current = sub
             else:
@@ -729,7 +753,7 @@ def _split_text(text: str, max_chars: int = 4000) -> list[str]:
     chunked_words = sum(len(c.split()) for c in chunks)
     print(f"[TTS] Chunks: {len(chunks)} | Original: {original_words} words | Chunked: {chunked_words} words")
     if chunked_words < original_words * 0.95:
-        print("[TTS] âš ï¸ Content lost in chunking!")
+        print("[TTS] WARNING: Content lost in chunking!")
     return chunks
 
 
