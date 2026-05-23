@@ -705,26 +705,18 @@ def _split_text(text: str, max_chars: int = 4000, max_words: int = None) -> list
         return False
 
     def _fits(current: str, addition: str) -> bool:
-        combined = (current + "
-
-" + addition).lstrip("
-")
+        combined = (current + "\n\n" + addition).lstrip("\n")
         return not _over_limit(combined)
 
     if not _over_limit(text):
         return [text]
 
     chunks: list[str] = []
-    paragraphs = text.split("
-
-")
+    paragraphs = text.split("\n\n")
     current = ""
     for para in paragraphs:
         if not current or _fits(current, para):
-            current = (current + "
-
-" + para).lstrip("
-")
+            current = (current + "\n\n" + para).lstrip("\n")
         else:
             if current:
                 chunks.append(current.strip())
@@ -2916,32 +2908,32 @@ def build_documentary_visual_pool(
                         _from_real = True
                         print(f"[VisualSearch] found pool image: type={ev_type}")
 
-        # ── Step 2b: DuckDuckGo — broad web image search (finds thousands per topic)
+        # ── Steps 2b/2c: all real sources × all scene queries ───────────────
+        # For each query (most-specific → generic), try every source before
+        # moving to the next query. This maximises hits without burning AI quota.
         if not saved and scene_queries:
-            for q in scene_queries[:3]:
-                ddg_urls = _search_duckduckgo_images(q, max_results=4)
-                if ddg_urls:
-                    saved = _download_first_valid(ddg_urls, out_path)
-                    if saved:
-                        _from_real = True
-                        print(f"[VisualSearch] DuckDuckGo hit: '{q}'")
-                        break
-
-        # ── Step 2c: Pexels / Pixabay / OpenVerse ────────────────────────
-        if not saved and scene_queries:
-            _sq = scene_queries[0]
-            for _search_fn in (_search_pexels_images, _search_pixabay_images,
-                               _search_openverse_images, _search_loc_images):
-                try:
-                    _stock_urls = _search_fn(_sq, max_results=3)
-                    if _stock_urls:
-                        saved = _download_first_valid(_stock_urls, out_path)
-                        if saved:
-                            _from_real = True
-                            print(f"[VisualSearch] stock hit via {_search_fn.__name__}: '{_sq}'")
-                            break
-                except Exception:
-                    pass
+            _real_sources = [
+                ("DDG",       lambda q: _search_duckduckgo_images(q, max_results=5)),
+                ("Flickr",    lambda q: _search_flickr_images(q, max_results=4)),
+                ("Pexels",    lambda q: _search_pexels_images(q, max_results=4)),
+                ("Pixabay",   lambda q: _search_pixabay_images(q, max_results=4)),
+                ("OpenVerse", lambda q: _search_openverse_images(q, max_results=4)),
+                ("LoC",       lambda q: _search_loc_images(q, max_results=4)),
+            ]
+            for q in scene_queries:
+                for src_name, src_fn in _real_sources:
+                    try:
+                        _urls = src_fn(q)
+                        if _urls:
+                            saved = _download_first_valid(_urls, out_path)
+                            if saved:
+                                _from_real = True
+                                print(f"[VisualSearch] {src_name} hit: '{q}'")
+                                break
+                    except Exception:
+                        pass
+                if saved:
+                    break
 
         # ── Step 3: AI generation with sanitized prompt ─────────────────
         if not saved:
@@ -5514,14 +5506,38 @@ def fetch_real_images(script_text: str, count: int, video_id: str,
                         _kind = "real-ddg"
                         break
 
-        # Step 3: Pexels photos (real licensed photos)
-        if not _saved and _query:
-            _pex_imgs = _search_pexels_images(_query, max_results=3)
-            if _pex_imgs:
-                _saved = _download_first_valid(_pex_imgs, out_path)
+        # Steps 3-5d: all stock sources × all query variants ─────────────
+        # Build query list: specific → generic, then try every source for each.
+        if not _saved:
+            _words = (_query or "").split()
+            _q_short = " ".join(_words[:3]) if len(_words) > 3 else None
+            _chunk_queries = list(dict.fromkeys(filter(None, [
+                _query,                                         # full specific query
+                _q_short,                                       # first 3 words
+                _clean_topic,                                   # person/topic name alone
+                f"{_clean_topic} crime" if _clean_topic else None,
+            ])))
+            _stock_sources = [
+                ("Pexels",    lambda q: _search_pexels_images(q, max_results=4)),
+                ("Pixabay",   lambda q: _search_pixabay_images(q, max_results=4)),
+                ("OpenVerse", lambda q: _search_openverse_images(q, max_results=4)),
+                ("LoC",       lambda q: _search_loc_images(q, max_results=4)),
+                ("Flickr",    lambda q: _search_flickr_images(q, max_results=4)),
+            ]
+            for _cq in _chunk_queries:
+                for _sname, _sfn in _stock_sources:
+                    try:
+                        _simgs = _sfn(_cq)
+                        if _simgs:
+                            _saved = _download_first_valid(_simgs, out_path)
+                            if _saved:
+                                print(f"[Image] chunk {ci}: {_sname} '{_cq}'")
+                                _kind = f"real-{_sname.lower()}"
+                                break
+                    except Exception:
+                        pass
                 if _saved:
-                    print(f"[Image] chunk {ci}: Pexels photo '{_query}'")
-                    _kind = "real-pexels"
+                    break
 
         # Step 4: Pexels video clip (assembler handles .mp4 natively)
         if not _saved and _query:
@@ -5532,42 +5548,6 @@ def fetch_real_images(script_text: str, count: int, video_id: str,
                 if _saved:
                     print(f"[Image] chunk {ci}: Pexels video '{_query}'")
                     _kind = "real-pexels-video"
-
-        # Step 5: Pixabay photos (real licensed photos)
-        if not _saved and _query:
-            _pix_imgs = _search_pixabay_images(_query, max_results=3)
-            if _pix_imgs:
-                _saved = _download_first_valid(_pix_imgs, out_path)
-                if _saved:
-                    print(f"[Image] chunk {ci}: Pixabay photo '{_query}'")
-                    _kind = "real-pixabay"
-
-        # Step 5b: OpenVerse CC (aggregates Flickr + Wikimedia + 20 sources, no key)
-        if not _saved and _query:
-            _ov_imgs = _search_openverse_images(_query, max_results=3)
-            if _ov_imgs:
-                _saved = _download_first_valid(_ov_imgs, out_path)
-                if _saved:
-                    print(f"[Image] chunk {ci}: OpenVerse CC '{_query}'")
-                    _kind = "real-openverse"
-
-        # Step 5c: Library of Congress (public domain US historical archive, no key)
-        if not _saved and _query:
-            _loc_imgs = _search_loc_images(_query, max_results=3)
-            if _loc_imgs:
-                _saved = _download_first_valid(_loc_imgs, out_path)
-                if _saved:
-                    print(f"[Image] chunk {ci}: Library of Congress '{_query}'")
-                    _kind = "real-loc"
-
-        # Step 5d: Flickr CC (free API key — set FLICKR_API_KEY in .env)
-        if not _saved and _query:
-            _flickr_imgs = _search_flickr_images(_query, max_results=3)
-            if _flickr_imgs:
-                _saved = _download_first_valid(_flickr_imgs, out_path)
-                if _saved:
-                    print(f"[Image] chunk {ci}: Flickr CC '{_query}'")
-                    _kind = "real-flickr"
 
         # Step 6: Pollinations AI photo (with prompt-hash cache to avoid duplicates)
         if not _saved:
