@@ -230,12 +230,14 @@ def _load_script_injection() -> dict | None:
         if chosen.endswith(".json"):
             with open(src, encoding="utf-8") as _f:
                 data = json.load(_f)
-            title       = data.get("title", "").strip()
-            title_ar    = data.get("title_ar", "").strip()
-            topic_text  = data.get("topic", "").strip() or title
-            series_name = data.get("series_name", "").strip() or None
-            script_body = data.get("script", "").strip()
-            script_ar   = data.get("script_ar", "").strip()
+            title            = data.get("title", "").strip()
+            title_ar         = data.get("title_ar", "").strip()
+            topic_text       = data.get("topic", "").strip() or title
+            series_name      = data.get("series_name", "").strip() or None
+            script_body      = data.get("script", "").strip()
+            script_ar        = data.get("script_ar", "").strip()
+            short_script_en  = data.get("short_script_en", "").strip()
+            short_script_ar  = data.get("short_script_ar", "").strip()
         else:
             # TXT: TITLE: ... / TITLE_AR: ... / TOPIC: ... / --- / EN body / === / AR body
             raw = Path(src).read_text(encoding="utf-8")
@@ -244,7 +246,9 @@ def _load_script_injection() -> dict | None:
             title_ar = ""
             topic_text = ""
             series_name = None
-            script_ar   = ""
+            script_ar        = ""
+            short_script_en  = ""
+            short_script_ar  = ""
             body_lines: list[str] = []
             ar_lines:   list[str] = []
             past_sep = False
@@ -294,16 +298,18 @@ def _load_script_injection() -> dict | None:
         print(f"[ScriptInject] Consumed '{chosen}' → _used/{ts}_{chosen}")
 
         return {
-            "title":       title,
-            "title_ar":    title_ar,
-            "topic":       topic_text,
-            "series_name": series_name,
-            "script":      script_body,
-            "script_ar":   script_ar,   # non-empty → skip translate_script()
-            "language":    "english",
-            "niche":       f"Real story behind {series_name or topic_text}",
-            "research":    {},
-            "_injected":   True,
+            "title":            title,
+            "title_ar":         title_ar,
+            "topic":            topic_text,
+            "series_name":      series_name,
+            "script":           script_body,
+            "script_ar":        script_ar,          # non-empty → skip translate_script()
+            "short_script_en":  short_script_en,    # non-empty → skip write_short_script()
+            "short_script_ar":  short_script_ar,
+            "language":         "english",
+            "niche":            f"Real story behind {series_name or topic_text}",
+            "research":         {},
+            "_injected":        True,
         }
     except Exception as _e:
         print(f"[ScriptInject] Failed to load '{chosen}': {_e}")
@@ -662,10 +668,23 @@ def run_pipeline() -> None:
     _en_short_script_text = ""
     _ar_short_script_text = ""
 
+    _injected_en_short = en_long.get("short_script_en", "").strip()
+    _injected_ar_short = ar_long.get("short_script_ar", "").strip() or en_long.get("short_script_ar", "").strip()
+
     if _anim_mode_fp:
         _log("Shorts", "Animation mode — promo short script skipped", "INFO")
         en_long.setdefault("short_script_en", "")
         ar_long.setdefault("short_script_ar", "")
+    elif _injected_en_short:
+        _log("Shorts", "Injected short scripts found — skipping write_short_script()", "OK")
+        _en_short_script_text = _injected_en_short
+        _ar_short_script_text = _injected_ar_short
+        en_long["short_script_en"] = _en_short_script_text
+        ar_long["short_script_ar"] = _ar_short_script_text
+        _sw_en = len(_en_short_script_text.split())
+        _sw_ar = len(_ar_short_script_text.split())
+        _log("Shorts", f"EN short (injected): {_sw_en}w", "OK")
+        _log("Shorts", f"AR short (injected): {_sw_ar}w", "OK")
     else:
         _ctrl.update_stage("Shorts", "generating promo short scripts")
         _log("Shorts", "Starting promo short script generation")

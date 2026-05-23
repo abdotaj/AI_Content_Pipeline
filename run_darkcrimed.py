@@ -65,6 +65,72 @@ from agent.publish_agent  import upload_to_youtube
 from agents.content_agent import ingest_content_files
 from pipelines.approval import wait_for_approval
 
+
+def _load_injected_script() -> dict | None:
+    """Check content/scripts/ for a queued .json or .txt script file and return it."""
+    import datetime as _dt
+    _scripts_dir = os.path.join(os.path.dirname(__file__), "content", "scripts")
+    _used_dir    = os.path.join(_scripts_dir, "_used")
+    os.makedirs(_scripts_dir, exist_ok=True)
+    os.makedirs(_used_dir, exist_ok=True)
+    candidates = sorted([
+        f for f in os.listdir(_scripts_dir)
+        if f.endswith((".json", ".txt"))
+        and not f.startswith("TEMPLATE")
+        and os.path.isfile(os.path.join(_scripts_dir, f))
+    ])
+    if not candidates:
+        return None
+    src = os.path.join(_scripts_dir, candidates[0])
+    try:
+        if candidates[0].endswith(".json"):
+            with open(src, encoding="utf-8") as _f:
+                data = json.load(_f)
+            result = {
+                "title":           data.get("title", "").strip(),
+                "title_ar":        data.get("title_ar", "").strip(),
+                "topic":           (data.get("topic", "").strip() or data.get("title", "").strip()),
+                "series_name":     (data.get("series_name", "").strip() or None),
+                "script":          data.get("script", "").strip(),
+                "script_ar":       data.get("script_ar", "").strip(),
+                "short_script_en": data.get("short_script_en", "").strip(),
+                "short_script_ar": data.get("short_script_ar", "").strip(),
+            }
+        else:
+            raw = Path(src).read_text(encoding="utf-8")
+            lines = raw.splitlines()
+            result = {"title": "", "title_ar": "", "topic": "", "series_name": None,
+                      "script": "", "script_ar": "", "short_script_en": "", "short_script_ar": ""}
+            body, ar, past_sep, in_ar = [], [], False, False
+            def _sep(s):
+                s = s.strip(); return len(s) >= 3 and all(c in '-─━_=' for c in s)
+            for line in lines:
+                if not past_sep and _sep(line):
+                    past_sep = True; continue
+                if past_sep and not in_ar and _sep(line):
+                    in_ar = True; continue
+                if in_ar: ar.append(line)
+                elif past_sep: body.append(line)
+                elif line.upper().startswith("TITLE_AR:"): result["title_ar"] = line.split(":", 1)[1].strip()
+                elif line.upper().startswith("TITLE:"): result["title"] = line.split(":", 1)[1].strip()
+                elif line.upper().startswith("TOPIC:"): result["topic"] = line.split(":", 1)[1].strip()
+                elif line.upper().startswith("SERIES:"): result["series_name"] = line.split(":", 1)[1].strip() or None
+            result["script"]    = "\n".join(body).strip()
+            result["script_ar"] = "\n".join(ar).strip()
+            if not result["topic"]:
+                result["topic"] = result["title"]
+        if not result.get("script"):
+            return None
+        ts   = _dt.datetime.now().strftime("%Y%m%d_%H%M")
+        dest = os.path.join(_used_dir, f"{ts}_{candidates[0]}")
+        os.rename(src, dest)
+        print(f"[ScriptInject] Consumed '{candidates[0]}' → _used/{ts}_{candidates[0]}")
+        return result
+    except Exception as _e:
+        print(f"[ScriptInject] Failed to load '{candidates[0]}': {_e}")
+        return None
+
+
 # SHORT_MODE controls how the daily short videos are generated.
 # "script" (default) — TTS + full video assembly from the optimized short script.
 # "cut"              — cut the best chapter clip from the finished long video.
@@ -528,85 +594,153 @@ def run_pipeline():
         # Failure of one language does NOT abort the other.
         #   • English: write_script(topic, "english") — standard path
         #   • Arabic:  write_arabic_script(topic, research) — native, no EN dependency
+        #
+        # Injection override: if content/scripts/ has a .json or .txt file,
+        # consume it and skip write_script() / write_arabic_script() entirely.
         # ══════════════════════════════════════════════════════════════════════
         print("\n[2/5] Writing scripts (EN + AR independently)...")
 
+        # ── Script injection check ─────────────────────────────────────────────
+        _inj: dict | None = None
+        try:
+            _inj = _load_injected_script()
+            if _inj:
+                _log("Scripts", f"[INJECT] Pre-written script: '{_inj.get('title','?')}' — skipping generation", "OK")
+                send_message(
+                    f"[Pipeline] Script injection detected!\n"
+                    f"Title: {_inj.get('title','?')}\n"
+                    f"Words EN: {len(_inj.get('script','').split())} | AR: {len(_inj.get('script_ar','').split())}\n"
+                    f"Skipping research + script generation."
+                )
+                topic.update({
+                    "topic":       _inj.get("topic", topic.get("topic", "")),
+                    "series_name": _inj.get("series_name") or topic.get("series_name"),
+                })
+        except Exception as _inj_e:
+            print(f"[ScriptInject] check failed (non-fatal): {_inj_e}")
+            _inj = None
+
         # ── 2A: English pipeline ───────────────────────────────────────────────
         en_long = None
-        try:
-            en_long = write_script(topic, language="english")
-            _log("Scripts", f"EN done: '{en_long.get('title','?')}' | "
-                 f"{len(en_long.get('script','').split())}w", "OK")
-        except Exception as _en_e:
-            _log("Scripts", f"EN script failed: {_en_e}", "ERROR")
-            send_message(f"[Pipeline] English script failed: {_en_e}")
-            # Create minimal fallback so Arabic can still proceed
+        if _inj and _inj.get("script"):
             en_long = {
-                "topic":           topic.get("topic", ""),
-                "title":           topic.get("topic", ""),
-                "script":          "",
+                "title":           _inj["title"],
+                "title_ar":        _inj.get("title_ar", ""),
+                "topic":           _inj.get("topic", topic.get("topic", "")),
+                "script":          _inj["script"],
                 "language":        "english",
-                "series_name":     topic.get("series_name", ""),
-                "series_type":     topic.get("series_type", ""),
+                "series_name":     _inj.get("series_name") or topic.get("series_name", ""),
+                "short_script_en": _inj.get("short_script_en", ""),
+                "short_script_ar": _inj.get("short_script_ar", ""),
                 "on_screen_texts": [],
                 "caption":         "",
                 "hashtags":        "",
                 "chapters":        "",
                 "hook":            "",
                 "keywords":        topic.get("keywords", []),
-                "short_script_en": "",
-                "script_failed":   True,
+                "_injected":       True,
             }
+            _log("Scripts", f"EN (injected): '{en_long['title']}' | {len(en_long['script'].split())}w", "OK")
+        else:
+            try:
+                en_long = write_script(topic, language="english")
+                _log("Scripts", f"EN done: '{en_long.get('title','?')}' | "
+                     f"{len(en_long.get('script','').split())}w", "OK")
+            except Exception as _en_e:
+                _log("Scripts", f"EN script failed: {_en_e}", "ERROR")
+                send_message(f"[Pipeline] English script failed: {_en_e}")
+                # Create minimal fallback so Arabic can still proceed
+                en_long = {
+                    "topic":           topic.get("topic", ""),
+                    "title":           topic.get("topic", ""),
+                    "script":          "",
+                    "language":        "english",
+                    "series_name":     topic.get("series_name", ""),
+                    "series_type":     topic.get("series_type", ""),
+                    "on_screen_texts": [],
+                    "caption":         "",
+                    "hashtags":        "",
+                    "chapters":        "",
+                    "hook":            "",
+                    "keywords":        topic.get("keywords", []),
+                    "short_script_en": "",
+                    "script_failed":   True,
+                }
 
     _stage("Scripts EN done")
 
     # ── 2B: Arabic pipeline (independent — no en_long dependency) ─────────────
     ar_long = None
     _research = topic.get("research", {}) if topic else {}
-    try:
-        ar_long = write_arabic_script(topic, _research)
-        # Regenerate chapters using actual Arabic word count
-        _ar_wc = len(ar_long.get("script", "").split())
-        if _ar_wc > 0:
-            ar_long["chapters"] = generate_chapters(
-                _ar_wc, language="arabic",
-                angle_title=en_long.get("angle_title", "") if en_long else "",
-            )
-        # Forward angle fields from English if available (best-effort)
-        if en_long:
-            ar_long.setdefault("angle_title", en_long.get("angle_title", ""))
-            ar_long.setdefault("angle_hook",  en_long.get("angle_hook",  ""))
-        _log("Scripts", f"AR done: '{ar_long.get('title','?')}' | "
-             f"{_ar_wc}w | path={ar_long.get('arabic_path','?')}", "OK")
-    except Exception as _ar_e:
-        _log("Scripts", f"AR script failed: {_ar_e}", "ERROR")
-        send_message(f"[Pipeline] Arabic script failed (non-fatal — EN will still run): {_ar_e}")
-        ar_long = None   # Arabic render will be skipped below
+    _inj_ar = (_inj or {}).get("script_ar", "").strip()
+    if _inj and _inj_ar:
+        ar_long = {
+            "title":           (_inj.get("title_ar") or _inj.get("title", "")),
+            "topic":           _inj.get("topic", topic.get("topic", "")),
+            "script":          _inj_ar,
+            "language":        "arabic",
+            "series_name":     _inj.get("series_name") or topic.get("series_name", ""),
+            "short_script_ar": _inj.get("short_script_ar", ""),
+            "on_screen_texts": [],
+            "caption":         "",
+            "hashtags":        "",
+            "chapters":        "",
+            "hook":            "",
+            "keywords":        topic.get("keywords", []),
+            "_injected":       True,
+        }
+        _log("Scripts", f"AR (injected): '{ar_long['title']}' | {len(ar_long['script'].split())}w", "OK")
+    else:
+        try:
+            ar_long = write_arabic_script(topic, _research)
+            # Regenerate chapters using actual Arabic word count
+            _ar_wc = len(ar_long.get("script", "").split())
+            if _ar_wc > 0:
+                ar_long["chapters"] = generate_chapters(
+                    _ar_wc, language="arabic",
+                    angle_title=en_long.get("angle_title", "") if en_long else "",
+                )
+            # Forward angle fields from English if available (best-effort)
+            if en_long:
+                ar_long.setdefault("angle_title", en_long.get("angle_title", ""))
+                ar_long.setdefault("angle_hook",  en_long.get("angle_hook",  ""))
+            _log("Scripts", f"AR done: '{ar_long.get('title','?')}' | "
+                 f"{_ar_wc}w | path={ar_long.get('arabic_path','?')}", "OK")
+        except Exception as _ar_e:
+            _log("Scripts", f"AR script failed: {_ar_e}", "ERROR")
+            send_message(f"[Pipeline] Arabic script failed (non-fatal — EN will still run): {_ar_e}")
+            ar_long = None   # Arabic render will be skipped below
 
     # ── 2C: Short scripts (independent per language) ───────────────────────────
     _anim_mode_dc = os.getenv("PIPELINE_MODE", "").lower() == "animation"
     if not _anim_mode_dc:
-        # English short — from English long script only
+        # English short — use injected if available, otherwise generate
         if en_long and not en_long.get("script_failed"):
-            try:
-                _en_short_data = write_short_script(en_long)
-                en_long["short_script_en"] = _en_short_data.get("short_script_en", "")
-                _log("Scripts", "EN short done", "OK")
-            except Exception as _es_e:
-                _log("Scripts", f"EN short failed (non-fatal): {_es_e}", "WARN")
-                en_long.setdefault("short_script_en", "")
+            if en_long.get("short_script_en"):
+                _log("Scripts", f"EN short (injected): {len(en_long['short_script_en'].split())}w", "OK")
+            else:
+                try:
+                    _en_short_data = write_short_script(en_long)
+                    en_long["short_script_en"] = _en_short_data.get("short_script_en", "")
+                    _log("Scripts", "EN short done", "OK")
+                except Exception as _es_e:
+                    _log("Scripts", f"EN short failed (non-fatal): {_es_e}", "WARN")
+                    en_long.setdefault("short_script_en", "")
         else:
             en_long.setdefault("short_script_en", "")
 
-        # Arabic short — from Arabic long script INDEPENDENTLY
+        # Arabic short — use injected if available, otherwise generate independently
         if ar_long and not ar_long.get("script_too_short"):
-            try:
-                _ar_short_data = write_arabic_short(ar_long)
-                ar_long["short_script_ar"] = _ar_short_data.get("short_script_ar", "")
-                _log("Scripts", "AR short done (independent)", "OK")
-            except Exception as _as_e:
-                _log("Scripts", f"AR short failed (non-fatal): {_as_e}", "WARN")
-                ar_long.setdefault("short_script_ar", "")
+            if ar_long.get("short_script_ar"):
+                _log("Scripts", f"AR short (injected): {len(ar_long['short_script_ar'].split())}w", "OK")
+            else:
+                try:
+                    _ar_short_data = write_arabic_short(ar_long)
+                    ar_long["short_script_ar"] = _ar_short_data.get("short_script_ar", "")
+                    _log("Scripts", "AR short done (independent)", "OK")
+                except Exception as _as_e:
+                    _log("Scripts", f"AR short failed (non-fatal): {_as_e}", "WARN")
+                    ar_long.setdefault("short_script_ar", "")
         elif ar_long:
             ar_long.setdefault("short_script_ar", "")
     else:

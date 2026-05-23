@@ -7,13 +7,15 @@ on:
         description: 'Which channel to run (darkcrimed)'
         required: false
         default: 'darkcrimed'
+      pipeline_mode:
+        description: 'Pipeline mode: fast | full | animation'
+        required: false
+        default: 'full'
 
 jobs:
   # ── Job 1: Dark Crime Decoded ────────────────────────────────────────────
   dark-crime-pipeline:
-    if: >
-      github.event_name == 'workflow_dispatch' && github.event.inputs.channel == 'darkcrimed' ||
-      github.event_name == 'schedule'
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.channel == 'darkcrimed'
     runs-on: ubuntu-latest
     timeout-minutes: 480
     concurrency:
@@ -93,7 +95,7 @@ jobs:
           PYTHONUNBUFFERED:                  "1"
           VIDEOS_PER_DAY:                    "1"
           ENABLE_PREMIUM_INTRO:              "0"
-          PIPELINE_MODE:                     ${{ github.event_name == 'schedule' && github.event.schedule == '0 4 1-31/3 * *' && 'full' || github.event_name == 'schedule' && github.event.schedule == '0 4 2-31/3 * *' && 'animation' || 'fast' }}
+          PIPELINE_MODE:                     ${{ github.event.inputs.pipeline_mode || 'full' }}
           ANTHROPIC_API_KEY:                 ${{ secrets.ANTHROPIC_API_KEY }}
           GROQ_API_KEY:                      ${{ secrets.GROQ_API_KEY }}
           OPENAI_API_KEY:                    ${{ secrets.OPENAI_API_KEY }}
