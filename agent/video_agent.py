@@ -5358,93 +5358,87 @@ def fetch_real_images(script_text: str, count: int, video_id: str,
     # AI fallback prompts (one per chunk)
     ai_prompts = generate_image_prompts(script_text, remaining, style_profile=style_profile)
 
-    # Split script into equal word-chunks for remaining images
-    chunk_size = max(1, len(words) // remaining)
-    chunks = [
-        " ".join(words[i * chunk_size: (i + 1) * chunk_size if i < remaining - 1 else len(words)])
-        for i in range(remaining)
-    ]
+    # ── Event-driven image planning (same as full pipeline) ──────────────────
+    _clean_topic = _clean_topic_name(topic)
+    _runtime_est = len(words) / 145.0 * 60
+    events = extract_visual_events(script_text, topic=topic, runtime_secs=_runtime_est)
+
+    if len(events) > remaining:
+        _step = len(events) / remaining
+        events = [events[int(i * _step)] for i in range(remaining)]
+    elif len(events) < remaining:
+        events = events + [events[-1]] * (remaining - len(events)) if events else []
+
+    for _idx, _ev in enumerate(events):
+        _ev["idx"] = _idx
 
     image_paths: list[str] = list(preloaded_paths)
     real_count   = len(preloaded_paths)
     ai_count     = 0
 
-    # ── Parallel chunk processing ─────────────────────────────────────────────
-    # Each chunk is image-independent — run all searches simultaneously.
-    _clean_topic = _clean_topic_name(topic)  # "Richard Farley" not full title
-
     def _process_chunk(args: tuple):
-        ci, chunk_text, out_path, ai_prompt_c, seed_val = args
+        ci, ev, out_path, ai_prompt_c, seed_val = args
         _saved = None
         _kind  = "none"
 
-        # Extract query — always pass topic so era/theme returns "Richard Farley 1990s"
-        # not "crime 1990s". Force English: if query is Arabic, prepend clean topic.
-        _query = _get_search_query_for_chunk(chunk_text, topic=_clean_topic)
-        if _query and any('؀' <= c <= 'ۿ' for c in _query):
-            # query returned in Arabic — replace with English topic-based fallback
-            _query = _clean_topic or "true crime documentary"
+        chunk_text = ev.get("chunk", "")
+        ev_type    = ev.get("type", "atmosphere")
+        _scene_qs  = _build_scene_search_queries(chunk_text, _clean_topic, ev_type)
+        _arabic_q  = chunk_text[:80] if any('؀' <= c <= 'ۿ' for c in chunk_text) else None
 
-        # Step 1: person photo (Wikimedia — highest priority)
-        _person = _detect_person_in_chunk(chunk_text)
-        if _person:
-            _photo_url = _search_wikimedia_person_photo(_person)
-            if _photo_url:
-                _saved = _download_first_valid([_photo_url], out_path)
-                if _saved:
-                    print(f"[Image] chunk {ci}: Wikimedia person photo '{_person}'")
-                    _kind = "real-person"
-
-        # Step 2: Wikimedia Commons + OpenAI web search
-        if not _saved and _query:
-            _wiki = _search_wikimedia_commons(_query) or _wikimedia_image_results(_query)
-            if not _wiki and len(_query.split()) > 3:
-                _sq = " ".join(_query.split()[:3])
-                _wiki = _search_wikimedia_commons(_sq) or _wikimedia_image_results(_sq)
-            if _wiki:
-                _saved = _download_first_valid(_wiki, out_path)
-                if _saved:
-                    print(f"[Image] chunk {ci}: real photo (Wikimedia) '{_query}'")
-                    _kind = "real-wiki"
-            if not _saved:
-                _oai = _search_images_openai(_query)
-                if _oai:
-                    _saved = _download_first_valid(_oai, out_path)
+        # Step 1: portrait — Wikipedia person photo first
+        if ev_type == "portrait":
+            _person = _detect_person_in_chunk(chunk_text) or _clean_topic
+            if _person:
+                _photo_url = _search_wikimedia_person_photo(_person)
+                if _photo_url:
+                    _saved = _download_first_valid([_photo_url], out_path)
                     if _saved:
-                        print(f"[Image] chunk {ci}: real photo (OpenAI search) '{_query}'")
-                        _kind = "real-oai"
+                        print(f"[Image] chunk {ci}: Wikimedia person photo '{_person}'")
+                        _kind = "real-person"
 
-        # Step 2b: DuckDuckGo — supports English AND Arabic queries
+        # Step 2: Wikimedia Commons — all scene queries
         if not _saved:
-            _ddg_queries = [q for q in [_query, chunk_text[:80] if any('؀' <= c <= 'ۿ' for c in chunk_text) else None] if q]
-            for _dq in _ddg_queries:
-                _ddg_imgs = _search_duckduckgo_images(_dq, max_results=4)
+            for _sq in _scene_qs:
+                _wiki = _search_wikimedia_commons(_sq) or _wikimedia_image_results(_sq)
+                if _wiki:
+                    _saved = _download_first_valid(_wiki, out_path)
+                    if _saved:
+                        print(f"[Image] chunk {ci}: Wikimedia '{_sq}'")
+                        _kind = "real-wiki"
+                        break
+
+        # Step 2b: OpenAI web search (top query)
+        if not _saved and _scene_qs:
+            _oai = _search_images_openai(_scene_qs[0])
+            if _oai:
+                _saved = _download_first_valid(_oai, out_path)
+                if _saved:
+                    print(f"[Image] chunk {ci}: OpenAI search '{_scene_qs[0]}'")
+                    _kind = "real-oai"
+
+        # Step 2c: DuckDuckGo — all scene queries + Arabic chunk text
+        if not _saved:
+            _ddg_qs = list(dict.fromkeys(filter(None, _scene_qs + [_arabic_q])))
+            for _dq in _ddg_qs:
+                _ddg_imgs = _search_duckduckgo_images(_dq, max_results=5)
                 if _ddg_imgs:
                     _saved = _download_first_valid(_ddg_imgs, out_path)
                     if _saved:
-                        print(f"[Image] chunk {ci}: DuckDuckGo image '{_dq[:60]}'")
+                        print(f"[Image] chunk {ci}: DDG '{_dq[:60]}'")
                         _kind = "real-ddg"
                         break
 
-        # Steps 3-5: all stock sources × all query variants ──────────────
-        # Build query list: specific → generic, then try every source for each.
+        # Step 3: all stock sources × all scene queries
         if not _saved:
-            _words = (_query or "").split()
-            _q_short = " ".join(_words[:3]) if len(_words) > 3 else None
-            _chunk_queries = list(dict.fromkeys(filter(None, [
-                _query,
-                _q_short,
-                _clean_topic,
-                f"{_clean_topic} crime" if _clean_topic else None,
-            ])))
             _stock_sources = [
                 ("Pexels",    lambda q: _search_pexels_images(q, max_results=4)),
                 ("Pixabay",   lambda q: _search_pixabay_images(q, max_results=4)),
+                ("Flickr",    lambda q: _search_flickr_images(q, max_results=4)),
                 ("OpenVerse", lambda q: _search_openverse_images(q, max_results=4)),
                 ("LoC",       lambda q: _search_loc_images(q, max_results=4)),
-                ("Flickr",    lambda q: _search_flickr_images(q, max_results=4)),
             ]
-            for _cq in _chunk_queries:
+            for _cq in _scene_qs:
                 for _sname, _sfn in _stock_sources:
                     try:
                         _simgs = _sfn(_cq)
@@ -5460,13 +5454,13 @@ def fetch_real_images(script_text: str, count: int, video_id: str,
                     break
 
         # Step 4: Pexels video clip (assembler handles .mp4 natively)
-        if not _saved and _query:
-            _pex_vids = _search_pexels_videos(_query, per_page=5)
+        if not _saved and _scene_qs:
+            _pex_vids = _search_pexels_videos(_scene_qs[0], per_page=5)
             if _pex_vids:
                 _vid_out = out_path.replace(".png", "_pv.mp4")
                 _saved = _download_first_valid_video(_pex_vids, _vid_out)
                 if _saved:
-                    print(f"[Image] chunk {ci}: Pexels video '{_query}'")
+                    print(f"[Image] chunk {ci}: Pexels video '{_scene_qs[0]}'")
                     _kind = "real-pexels-video"
 
         # Step 6: Pollinations AI photo (with prompt-hash cache to avoid duplicates)
@@ -5489,8 +5483,8 @@ def fetch_real_images(script_text: str, count: int, video_id: str,
 
         # Step 7: Pollinations animation/illustration (gap-filler of last resort)
         if not _saved:
-            _q_words  = (_query or "").split()[:3]
-            _t_words  = topic.split()[:2] if topic else []
+            _q_words  = (_scene_qs[0] if _scene_qs else _clean_topic or "").split()[:3]
+            _t_words  = (_clean_topic or topic or "").split()[:2]
             _anim_prompt = (
                 f"{' '.join(_t_words + _q_words)} documentary illustration "
                 f"cinematic art style dark atmospheric{_IMAGE_PROMPT_SUFFIX}"
@@ -5504,11 +5498,11 @@ def fetch_real_images(script_text: str, count: int, video_id: str,
         return ci, _saved, _kind
 
     _chunk_tasks = [
-        (i, chunks[i],
-         os.path.join(_img_dir, f"{video_id}_img_{i}.png"),
+        (ev["idx"], ev,
+         os.path.join(_img_dir, f"{video_id}_img_{ev['idx']}.png"),
          ai_prompts[i] if i < len(ai_prompts) else fallback_base,
-         seed + i)
-        for i in range(len(chunks))
+         seed + ev["idx"])
+        for i, ev in enumerate(events)
     ]
     _n_search_workers = min(len(_chunk_tasks), _WORKERS["search"])
     print(f"[QUEUE] Image generation: {len(_chunk_tasks)} pending | workers={_n_search_workers} | mode=parallel-search")
