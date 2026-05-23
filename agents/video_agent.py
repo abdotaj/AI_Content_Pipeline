@@ -2736,7 +2736,7 @@ def extract_visual_events(
         return []
 
     runtime_min = max(runtime_secs / 60, 1.0) if runtime_secs > 0 else len(words) / 150.0
-    n_events    = max(30, min(120, int(runtime_min * 12)))
+    n_events    = max(30, min(400, int(runtime_min * 7)))  # 7 unique images/min
     chunk_size  = max(8, len(words) // n_events)
 
     chunks: list[str] = []
@@ -7006,7 +7006,7 @@ def assemble_video_with_hook(
         fi = 0.0 if first_clip else 0.2   # no fade-in on opening shot
         if _is_video_file(src_path):
             try:
-                v = VideoFileClip(src_path)
+                v = VideoFileClip(src_path).without_audio()  # mute — TTS voice is the only audio
             except Exception as _vfe:
                 print(f"[Video] VideoFileClip failed ({os.path.basename(src_path)}): {_vfe} — using image fallback")
                 frame = _load_frame(src_path)
@@ -7193,7 +7193,7 @@ def plan_visual_requirements(runtime_secs: float, is_short: bool = False) -> dic
         return {"n_unique": 6, "n_target": 6, "clips_per_min": 8.0,
                 "insert_count": 0, "runtime_min": 0.0}
     runtime_min   = max(runtime_secs / 60, 0.1)
-    n_unique      = max(60, min(120, int(runtime_min * 12)))
+    n_unique      = max(60, min(400, int(runtime_min * 7)))  # 7 unique images/min
     clips_per_min = round(n_unique * 2 / runtime_min, 1)
     print(f"[FULL] Visual plan: {n_unique} unique semantic events | "
           f"~{clips_per_min} cuts/min for {runtime_min:.1f}min documentary")
@@ -7631,7 +7631,7 @@ def assemble_short_video(audio_path: str, image_paths: list[str], output_path: s
     def _media_clip(src_path: str, dur: float, zoom_in: bool = True):
         if _is_video_file(src_path):
             try:
-                v = VideoFileClip(src_path)
+                v = VideoFileClip(src_path).without_audio()  # mute — TTS voice is the only audio
             except Exception as _vfe:
                 print(f"[Video] VideoFileClip failed ({os.path.basename(src_path)}): {_vfe} — using image fallback")
                 return _zoom_clip(_load_frame(src_path), 1.00, 1.08 if zoom_in else 1.00, dur)
@@ -8768,8 +8768,8 @@ def assign_clips_to_script(
 # FAST_VISUALS_PER_MIN: unique image transitions per minute.
 # At 4 clip-variants per image and ~5 s per clip → 12 clips/min / 4 = 3 images/min.
 # Increased from 8→12 to improve visual rhythm and reduce portrait dominance.
-_FAST_VISUALS_PER_MIN: int = 12  # clip transitions per minute (was 8)
-_FAST_IMAGES_PER_MIN: float = _FAST_VISUALS_PER_MIN / 4.0  # = 3.0
+_FAST_VISUALS_PER_MIN: int = 28  # clip transitions per minute (7 images × 4 clips each)
+_FAST_IMAGES_PER_MIN: float = 7.0  # unique images per minute target
 
 # ── Story-phase visual style engine ──────────────────────────────────────────
 # Maps ACT section labels → visual style keywords injected into image prompts.
@@ -8971,9 +8971,9 @@ def run_fast_pipeline(
         n_images = 6
     elif _real_audio_secs > 0:
         _density_floor = _math.ceil(_real_audio_secs / 60 * _FAST_IMAGES_PER_MIN)
-        n_images = max(25, min(120, _density_floor))
+        n_images = max(25, min(400, _density_floor))
         print(f"[FAST] Visual density: {n_images} images for {_real_audio_secs/60:.1f}min "
-              f"({_FAST_VISUALS_PER_MIN} clips/min target)")
+              f"({_FAST_IMAGES_PER_MIN:.0f} images/min target)")
     else:
         n_images = calculate_unique_images(is_short=False)
 
@@ -9240,6 +9240,8 @@ def run_full_pipeline(
 ) -> str:
     """Rich cinematic pipeline. Composes all shared helpers freely."""
     import traceback
+    global _OPENAI_QUOTA_EXCEEDED
+    _OPENAI_QUOTA_EXCEEDED = False  # reset between pipeline runs so full gets a fresh TTS attempt
     title    = script_data.get("title", "")
     niche    = script_data.get("niche", "")
     language = script_data.get("language", "english")
@@ -9318,7 +9320,7 @@ def run_full_pipeline(
                     except ImportError:
                         def _grc(m): return {"min_seconds": 900.0, "max_seconds": 5400.0}  # type: ignore
                 _rc = _grc("full")
-                _est_min = len(script_data.get("script", "").split()) / (100.0 if language == "arabic" else 145.0)
+                _est_min = len(script_data.get("script", "").split()) / (185.0 if language == "arabic" else 145.0)
                 print(f"[AR AUDIO] Estimated: {_est_min:.1f}min")
                 print(f"[AR AUDIO] Rendered:  {_min:.1f}min")
                 _delta = _min - _est_min
@@ -9570,8 +9572,9 @@ def run_full_pipeline(
     # ── Emergency fallback — never assemble with < 8 visuals ──────────────
     # build_documentary_visual_pool() already handles this internally, but
     # guard here too in case user_content mode produced a thin pool.
-    if not is_short and len(all_image_paths) < 8:
-        print(f"[FULL] Pool too small ({len(all_image_paths)}) — activating emergency engine")
+    _em_threshold = max(8, n_images // 3)  # trigger if less than 33% of target reached
+    if not is_short and len(all_image_paths) < _em_threshold:
+        print(f"[FULL] Pool too small ({len(all_image_paths)}/{n_images}) — activating emergency engine")
         _em = _generate_emergency_visuals(
             max(20, n_images - len(all_image_paths)), IMAGES_DIR,
             is_short=False, topic=topic_str,
