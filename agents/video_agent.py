@@ -2128,10 +2128,11 @@ def _is_valid_image_url(url: str) -> bool:
         return False
     if any(p in u for p in _BLOCKED_URL_PATTERNS):
         return False
-    # Must end in a known image extension OR contain one in the path
+    # Accept if path ends with OR contains a known image extension
+    # (CDN URLs often embed extensions mid-path, e.g. /photo.jpg/1280px-photo.jpg)
     from urllib.parse import urlparse, unquote
     path = unquote(urlparse(url).path).lower()
-    return any(path.endswith(ext) for ext in _VALID_IMAGE_EXTS)
+    return any(ext in path for ext in _VALID_IMAGE_EXTS)
 
 
 def _check_image_bytes(data: bytes) -> bool:
@@ -2914,6 +2915,33 @@ def build_documentary_visual_pool(
                     if saved:
                         _from_real = True
                         print(f"[VisualSearch] found pool image: type={ev_type}")
+
+        # ── Step 2b: DuckDuckGo — broad web image search (finds thousands per topic)
+        if not saved and scene_queries:
+            for q in scene_queries[:3]:
+                ddg_urls = _search_duckduckgo_images(q, max_results=4)
+                if ddg_urls:
+                    saved = _download_first_valid(ddg_urls, out_path)
+                    if saved:
+                        _from_real = True
+                        print(f"[VisualSearch] DuckDuckGo hit: '{q}'")
+                        break
+
+        # ── Step 2c: Pexels / Pixabay / OpenVerse ────────────────────────
+        if not saved and scene_queries:
+            _sq = scene_queries[0]
+            for _search_fn in (_search_pexels_images, _search_pixabay_images,
+                               _search_openverse_images, _search_loc_images):
+                try:
+                    _stock_urls = _search_fn(_sq, max_results=3)
+                    if _stock_urls:
+                        saved = _download_first_valid(_stock_urls, out_path)
+                        if saved:
+                            _from_real = True
+                            print(f"[VisualSearch] stock hit via {_search_fn.__name__}: '{_sq}'")
+                            break
+                except Exception:
+                    pass
 
         # ── Step 3: AI generation with sanitized prompt ─────────────────
         if not saved:
@@ -4845,6 +4873,32 @@ def _search_flickr_images(query: str, max_results: int = 5) -> list[str]:
         return []
 
 
+def _search_duckduckgo_images(query: str, max_results: int = 5) -> list[str]:
+    """Search DuckDuckGo images — no API key, returns direct image URLs.
+    Accesses Bing image index so finds thousands of results for any topic."""
+    try:
+        from duckduckgo_search import DDGS
+        raw = DDGS().images(keywords=query, max_results=max_results * 3)
+        urls = []
+        _blocked = _BLOCKED_IMAGE_DOMAINS
+        for r in (raw or []):
+            url = r.get("image", "")
+            if not url or not url.startswith("http"):
+                continue
+            u_low = url.lower()
+            if any(d in u_low for d in _blocked):
+                continue
+            urls.append(url)
+            if len(urls) >= max_results:
+                break
+        if urls:
+            print(f"[Image] DuckDuckGo: {len(urls)} result(s) for '{query}'")
+        return urls
+    except Exception as e:
+        print(f"[Image] DuckDuckGo images error for '{query}': {e}")
+        return []
+
+
 # ── Visual query helpers ─────────────────────────────────────────────────────
 
 _IRRELEVANT_QUERY_TERMS = frozenset({
@@ -5341,6 +5395,17 @@ def fetch_real_images(script_text: str, count: int, video_id: str,
                     if _saved:
                         print(f"[Image] chunk {ci}: real photo (OpenAI search) '{_query}'")
                         _kind = "real-oai"
+
+        # Step 2b: DuckDuckGo — broad web image search (no key, finds thousands per topic)
+        if not _saved and _query:
+            _ddg_imgs = _search_duckduckgo_images(_query, max_results=4)
+            if not _ddg_imgs and len(_query.split()) > 2:
+                _ddg_imgs = _search_duckduckgo_images(" ".join(_query.split()[:3]), max_results=4)
+            if _ddg_imgs:
+                _saved = _download_first_valid(_ddg_imgs, out_path)
+                if _saved:
+                    print(f"[Image] chunk {ci}: DuckDuckGo image '{_query}'")
+                    _kind = "real-ddg"
 
         # Step 3: Pexels photos (real licensed photos)
         if not _saved and _query:
