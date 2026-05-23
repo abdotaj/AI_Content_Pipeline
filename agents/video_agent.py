@@ -4935,6 +4935,31 @@ def _search_duckduckgo_images(query: str, max_results: int = 5) -> list[str]:
         return []
 
 
+def _search_duckduckgo_videos(query: str, max_results: int = 5) -> list[str]:
+    """Search DuckDuckGo videos — finds news clips, reels, short videos.
+    Returns direct embed/source URLs; caller downloads via yt-dlp or direct HTTP."""
+    try:
+        from duckduckgo_search import DDGS
+        raw = DDGS().videos(keywords=query, max_results=max_results * 4)
+        urls = []
+        for r in (raw or []):
+            # DDG video results have 'content' (embed page) and sometimes 'embed_url'
+            url = r.get("content", "") or r.get("embed_url", "")
+            if not url or not url.startswith("http"):
+                continue
+            if _is_blacklisted_source(url):
+                continue
+            urls.append(url)
+            if len(urls) >= max_results:
+                break
+        if urls:
+            print(f"[Stock] DuckDuckGo videos: {len(urls)} result(s) for '{query}'")
+        return urls
+    except Exception as e:
+        print(f"[Stock] DuckDuckGo videos error for '{query}': {e}")
+        return []
+
+
 # ── Visual query helpers ─────────────────────────────────────────────────────
 
 _IRRELEVANT_QUERY_TERMS = frozenset({
@@ -5092,7 +5117,8 @@ def fetch_stock_videos(script_text: str, count: int, video_id: str, topic: str =
             ("Internet Archive", _search_internet_archive, False, _ARCHIVE_VIDEO_MAX_BYTES),
             ("Wikimedia Videos", _search_wikimedia_videos, False, _VIDEO_MAX_BYTES),
             ("Library of Congress", _search_loc_videos,    False, _VIDEO_MAX_BYTES),
-            ("YouTube CC",       _search_youtube_cc,       True,  None),
+            ("DuckDuckGo",       _search_duckduckgo_videos, True, None),
+            ("YouTube CC",       _search_youtube_cc,        True, None),
             ("Pexels",           _search_pexels_videos,    False, _VIDEO_MAX_BYTES),
             ("Pixabay",          _search_pixabay_videos,   False, _VIDEO_MAX_BYTES),
             ("OpenVerse",        _search_openverse_videos, False, _VIDEO_MAX_BYTES),
@@ -5438,16 +5464,17 @@ def fetch_real_images(script_text: str, count: int, video_id: str,
                         print(f"[Image] chunk {ci}: real photo (OpenAI search) '{_query}'")
                         _kind = "real-oai"
 
-        # Step 2b: DuckDuckGo — broad web image search (no key, finds thousands per topic)
-        if not _saved and _query:
-            _ddg_imgs = _search_duckduckgo_images(_query, max_results=4)
-            if not _ddg_imgs and len(_query.split()) > 2:
-                _ddg_imgs = _search_duckduckgo_images(" ".join(_query.split()[:3]), max_results=4)
-            if _ddg_imgs:
-                _saved = _download_first_valid(_ddg_imgs, out_path)
-                if _saved:
-                    print(f"[Image] chunk {ci}: DuckDuckGo image '{_query}'")
-                    _kind = "real-ddg"
+        # Step 2b: DuckDuckGo — supports English AND Arabic queries
+        if not _saved:
+            _ddg_queries = [q for q in [_query, chunk_text[:80] if any('؀' <= c <= 'ۿ' for c in chunk_text) else None] if q]
+            for _dq in _ddg_queries:
+                _ddg_imgs = _search_duckduckgo_images(_dq, max_results=4)
+                if _ddg_imgs:
+                    _saved = _download_first_valid(_ddg_imgs, out_path)
+                    if _saved:
+                        print(f"[Image] chunk {ci}: DuckDuckGo image '{_dq[:60]}'")
+                        _kind = "real-ddg"
+                        break
 
         # Step 3: Pexels photos (real licensed photos)
         if not _saved and _query:
