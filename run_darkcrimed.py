@@ -753,9 +753,11 @@ def run_pipeline():
 
     # ── STEP 3: Send scripts to Telegram for review (non-blocking) ────────────
     print("\n[3/5] Sending scripts to Telegram for review...")
+    _dc_mode_label = os.getenv("PIPELINE_MODE", "fast").lower()
+    _long_dur_label = {"fast": "30-40 min", "animation": "35-60 min", "full": "45-90 min"}.get(_dc_mode_label, "30-40 min")
     for fn, script, label in [
-        (send_arabic_script_preview,  ar_long,  "Arabic LONG script (10-14 min)"),
-        (send_english_script_preview, en_long,  "English LONG script (10-14 min)"),
+        (send_arabic_script_preview,  ar_long,  f"Arabic LONG script ({_long_dur_label})"),
+        (send_english_script_preview, en_long,  f"English LONG script ({_long_dur_label})"),
     ]:
         try:
             fn(script, label=label)

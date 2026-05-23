@@ -1812,48 +1812,28 @@ def build_image_prompt(
     return f"{template}{style_suffix}{_IMAGE_PROMPT_SUFFIX}"
 
 
-SCENE_PROMPTS: dict[str, list[str]] = {
-    "hemedti": [
-        "Aerial cinematic shot of Darfur desert Sudan, burned villages smoke rising, documentary realism, vertical 9:16",
-        "Sudanese military commander portrait, RSF uniform, dark dramatic lighting, cinematic vertical 9:16",
-        "Chad Sudan border region landscape, camel traders, desert market 1980s, cinematic documentary",
-        "Gold mine illegal operation in African desert, armed guards, aerial view cinematic vertical",
-        "Khartoum city Sudan aerial view, military presence, dramatic documentary style vertical 9:16",
-        "International Criminal Court ICC building Den Haag, dramatic lighting documentary vertical 9:16",
-        "Darfur genocide memorial, survivors, dramatic documentary style vertical 9:16 cinematic",
-        "UAE Dubai skyline night, gold trading deal, cinematic documentary vertical 9:16",
-        "Colombian mercenaries military training, documentary style dramatic vertical 9:16",
-        "Sudan civil war 2023, destroyed buildings, documentary realism cinematic vertical 9:16",
-        "Janjaweed militia horseback Sudan desert, historical dramatic cinematic vertical 9:16",
-        "African Union UN peacekeepers Darfur, documentary cinematic vertical 9:16",
-    ],
-}
-
-
-def get_scene_prompts(topic: str, research: dict) -> list[str] | None:
-    """Return hardcoded scene prompts for known topics, or None for generic handling."""
-    topic_lower = topic.lower()
-    for key, prompts in SCENE_PROMPTS.items():
-        if key in topic_lower:
-            return prompts
-    return None
-
-
 def generate_image_prompts(script_text: str, count: int, topic: str = "", research: dict | None = None, style_profile: str = "") -> list[str]:
-    """Split script into [count] equal chunks, call OpenAI once per chunk.
+    """Split script into [count] equal chunks, build one image prompt per chunk.
     Returns list of [count] specific image prompts.
     Falls back gracefully per chunk if AI is unavailable.
     Deduplicates similar adjacent chunks to cut AI calls by 50–80 %.
     """
     import re
 
-    # Use hardcoded scene prompts for known topics
-    if topic:
-        scene = get_scene_prompts(topic, research or {})
-        if scene:
-            result = (scene * ((count // len(scene)) + 1))[:count]
-            print(f"[Image] Using {len(result)} scene-based prompts for topic: {topic}")
-            return result
+    # ── ViMax storyboard (Ollama local → Groq fallback) ───────────────────────
+    # Generates shot-specific image prompts from the actual script content.
+    # Falls back silently to the per-chunk system below if unavailable.
+    try:
+        from agents.vimax_bridge import generate_storyboard_prompts as _vimax
+        _lang = "arabic" if any(
+            "؀" <= c <= "ۿ" for c in script_text[:200]
+        ) else "english"
+        _vimax_prompts = _vimax(script_text, topic=topic, language=_lang, num_shots=count)
+        if _vimax_prompts:
+            print(f"[Image] ViMax storyboard: {len(_vimax_prompts)} shot prompts")
+            return _vimax_prompts
+    except Exception as _ve:
+        print(f"[Image] ViMax bridge skipped (non-fatal): {_ve}")
 
     # Strip [SECTION: ...] markers so they don't pollute chunk text
     clean = re.sub(r'\[SECTION:[^\]]+\]\s*', '', script_text).strip()
