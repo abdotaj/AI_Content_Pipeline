@@ -766,9 +766,9 @@ def run_pipeline():
                 _log("VideoGen", f"[AR SKIP] Script empty ({_ar_wc_pre}w) — skipping Arabic render", "ERROR")
             else:
                 if _ar_wc_pre < 8_000:
-                    _log("VideoGen", f"[AR SHORT] {_ar_wc_pre}w (~{round(_ar_wc_pre/175,1)}min) below 8000w target — rendering anyway", "WARN")
+                    _log("VideoGen", f"[AR SHORT] {_ar_wc_pre}w (~{round(_ar_wc_pre/100,1)}min) below 8000w target — rendering anyway", "WARN")
                 else:
-                    _log("VideoGen", f"[AR AUDIO] Script: {_ar_wc_pre}w | est. ~{round(_ar_wc_pre/175,1)}min")
+                    _log("VideoGen", f"[AR AUDIO] Script: {_ar_wc_pre}w | est. ~{round(_ar_wc_pre/100,1)}min")
                 ar_long_id   = f"{today}_{_slug}_arabic_long"
                 ar_long_path = _make_video(ar_long, ar_long_id, stats, user_images=user_images, user_videos=user_videos)
         else:
@@ -824,7 +824,13 @@ def run_pipeline():
             f"fallback expansion ({_ar_rebuild}/{_ar_max_rb})..."
         )
         from agent.script_agent import expand_arabic_runtime as _ear
+        _ar_wc_pre = len(ar_long["script"].split())
         ar_long["script"] = _ear(ar_long["script"], target_min=_AR_TGT_MIN, topic=_topic_text_ar)
+        _ar_wc_post = len(ar_long["script"].split())
+        if _ar_wc_post <= _ar_wc_pre:
+            _log("VideoGen", f"[AR EXPANSION] Expansion added 0 words (content refused or rate-limited) — accepting {_ar_mins:.1f}min video", "WARN")
+            send_message(f"[Pipeline] AR expansion failed (0 words added) — accepting {_ar_mins:.1f}min video and continuing")
+            break
         _slug_rb     = _topic_slug(_topic_for_dedup)
         ar_long_id   = f"{today}_{_slug_rb}_arabic_long_rb{_ar_rebuild}"
         ar_long_path = _make_video(ar_long, ar_long_id, stats, user_images=user_images, user_videos=user_videos)

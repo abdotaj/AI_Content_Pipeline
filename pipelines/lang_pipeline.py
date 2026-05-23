@@ -527,9 +527,15 @@ def run_lang_pipeline(language: str, mode: str) -> None:
                 f"fallback expansion ({_ar_rebuild}/{_ar_max_rb})..."
             )
             from agent.script_agent import expand_arabic_runtime as _ear
+            _ar_wc_pre = len(long_script["script"].split())
             long_script["script"] = _ear(
                 long_script["script"], target_min=_AR_TGT_MIN, topic=topic_text
             )
+            _ar_wc_post = len(long_script["script"].split())
+            if _ar_wc_post <= _ar_wc_pre:
+                _log("VideoGen", f"[AR EXPANSION] Expansion added 0 words (content refused or rate-limited) — accepting {_ar_mins:.1f}min video", "WARN")
+                send_message(f"{_label} AR expansion failed (0 words added) — accepting {_ar_mins:.1f}min video and continuing")
+                break
             _rb_id = f"{_video_id}_rb{_ar_rebuild}"
             if _mode == "animation":
                 long_path = _make_animation_video(

@@ -9269,7 +9269,7 @@ def run_full_pipeline(
                     except ImportError:
                         def _grc(m): return {"min_seconds": 900.0, "max_seconds": 5400.0}  # type: ignore
                 _rc = _grc("full")
-                _est_min = len(script_data.get("script", "").split()) / (175.0 if language == "arabic" else 145.0)
+                _est_min = len(script_data.get("script", "").split()) / (100.0 if language == "arabic" else 145.0)
                 print(f"[AR AUDIO] Estimated: {_est_min:.1f}min")
                 print(f"[AR AUDIO] Rendered:  {_min:.1f}min")
                 _delta = _min - _est_min

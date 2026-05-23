@@ -879,7 +879,7 @@ def run_pipeline() -> None:
         _AR_EXPAND_TARGET = 10_000
         if ar_wc < _AR_EXPAND_TARGET:
             _log("Scripts", f"AR {ar_wc}w below {_AR_EXPAND_TARGET}w target — expanding", "WARN")
-            send_message(f"[ANIM] AR script {ar_wc}w (~{round(ar_wc/175,1)}min) — expanding to {_AR_EXPAND_TARGET}w...")
+            send_message(f"[ANIM] AR script {ar_wc}w (~{round(ar_wc/100,1)}min) — expanding to {_AR_EXPAND_TARGET}w...")
             try:
                 _ar_expanded = _expand_arabic_script_to_min(ar_long["script"], target_min=_AR_EXPAND_TARGET)
                 _ar_expanded_wc = len(_ar_expanded.split())
@@ -887,7 +887,7 @@ def run_pipeline() -> None:
                     ar_long["script"] = _ar_expanded
                     ar_wc = _ar_expanded_wc
                     ar_long["chapters"] = generate_chapters(ar_wc, language="arabic", angle_title=en_long.get("angle_title", ""))
-                    _log("Scripts", f"AR expanded: {ar_wc}w (~{round(ar_wc/175,1)}min)", "OK")
+                    _log("Scripts", f"AR expanded: {ar_wc}w (~{round(ar_wc/100,1)}min)", "OK")
                 else:
                     _log("Scripts", f"AR expansion no improvement ({_ar_expanded_wc}w) — proceeding with {ar_wc}w", "WARN")
             except Exception as _exp_e:
@@ -935,7 +935,7 @@ def run_pipeline() -> None:
 
     # ── Approval gate 1: Scripts ─────────────────────────────────────────────
     _ar_wc_display   = len(ar_long.get("script", "").split())
-    _ar_est_min_disp = round(_ar_wc_display / 175, 1)
+    _ar_est_min_disp = round(_ar_wc_display / 100, 1)
     _ar_status       = (
         f"⚠️ SHORT (~{_ar_est_min_disp}min, target 10000w/60min)"
         if _ar_wc_display < 10_000
@@ -1013,7 +1013,7 @@ def run_pipeline() -> None:
             _log("AnimGen", f"[AR PASSED] {_ar_mins:.1f}min — {_ar_status}", "OK")
             break
         if _ar_is_timeout_fallback:
-            _ar_est = round(len(ar_long.get("script", "").split()) / 175, 1)
+            _ar_est = round(len(ar_long.get("script", "").split()) / 100, 1)
             _log("AnimGen", f"[AR TIMEOUT] Render timed out — script ~{_ar_est}min estimated. Increase render timeout.", "ERROR")
             send_message(f"[ANIM] AR render timed out — script is {_ar_est}min, CI render needs >120min. Fallback clip retained.")
             break
@@ -1025,7 +1025,13 @@ def run_pipeline() -> None:
         _log("AnimGen", f"[AR EXPANSION] {_ar_status}: {_ar_mins:.1f}min — fallback expansion ({_ar_rebuild}/{_ar_max_rb})", "WARN")
         send_message(f"[ANIM] Arabic {_ar_status}: {_ar_mins:.1f}min | target 35min — fallback expansion ({_ar_rebuild}/{_ar_max_rb})...")
         from agent.script_agent import expand_arabic_runtime as _ear
+        _ar_wc_pre = len(ar_long["script"].split())
         ar_long["script"] = _ear(ar_long["script"], target_min=47.5, topic=topic_text)
+        _ar_wc_post = len(ar_long["script"].split())
+        if _ar_wc_post <= _ar_wc_pre:
+            _log("AnimGen", f"[AR EXPANSION] Expansion added 0 words (content refused or rate-limited) — accepting {_ar_mins:.1f}min video", "WARN")
+            send_message(f"[ANIM] AR expansion failed (0 words added) — accepting {_ar_mins:.1f}min video and continuing")
+            break
         ar_long_path = _make_animation_video(ar_long, topic.get("research", {}), FINAL_DIR, stats, "AR long")
         _ar_is_timeout_fallback = bool(ar_long_path and "_fb." in os.path.basename(ar_long_path))
 

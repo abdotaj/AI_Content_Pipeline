@@ -631,7 +631,7 @@ def run_pipeline() -> None:
         _AR_EXPAND_TARGET = 8_000
         if ar_wc < _AR_EXPAND_TARGET:
             _log("Scripts", f"AR {ar_wc}w below {_AR_EXPAND_TARGET}w target — expanding", "WARN")
-            send_message(f"[FAST] AR script {ar_wc}w (~{round(ar_wc/175,1)}min) — expanding to {_AR_EXPAND_TARGET}w...")
+            send_message(f"[FAST] AR script {ar_wc}w (~{round(ar_wc/100,1)}min) — expanding to {_AR_EXPAND_TARGET}w...")
             try:
                 _ar_expanded = _expand_arabic_script_to_min(ar_long["script"], target_min=_AR_EXPAND_TARGET)
                 _ar_expanded_wc = len(_ar_expanded.split())
@@ -639,7 +639,7 @@ def run_pipeline() -> None:
                     ar_long["script"] = _ar_expanded
                     ar_wc = _ar_expanded_wc
                     ar_long["chapters"] = generate_chapters(ar_wc, language="arabic", angle_title=en_long.get("angle_title", ""))
-                    _log("Scripts", f"AR expanded: {ar_wc}w (~{round(ar_wc/175,1)}min)", "OK")
+                    _log("Scripts", f"AR expanded: {ar_wc}w (~{round(ar_wc/100,1)}min)", "OK")
                 else:
                     _log("Scripts", f"AR expansion no improvement ({_ar_expanded_wc}w) — proceeding with {ar_wc}w", "WARN")
             except Exception as _exp_e:
@@ -877,7 +877,13 @@ def run_pipeline() -> None:
         _log("VideoGen", f"[AR EXPANSION] Runtime {_ar_mins:.1f}min < 30min — auto-rebuilding (attempt {_ar_rebuild}/{_ar_max_rb})", "WARN")
         send_message(f"[FAST] Arabic FAIL: {_ar_mins:.1f}min < 30min — fallback expansion ({_ar_rebuild}/{_ar_max_rb})...")
         from agent.script_agent import expand_arabic_runtime as _ear
+        _ar_wc_pre = len(ar_long["script"].split())
         ar_long["script"] = _ear(ar_long["script"], target_min=35.0, topic=topic_text)
+        _ar_wc_post = len(ar_long["script"].split())
+        if _ar_wc_post <= _ar_wc_pre:
+            _log("VideoGen", f"[AR EXPANSION] Expansion added 0 words (content refused or rate-limited) — accepting {_ar_mins:.1f}min video", "WARN")
+            send_message(f"[FAST] AR expansion failed (0 words added) — accepting {_ar_mins:.1f}min video and continuing")
+            break
         ar_long_path = _make_video(ar_long, f"{today}_{_slug}_arabic_long_rb{_ar_rebuild}", stats, user_images=user_images, user_videos=user_videos)
         _ar_is_timeout_fallback = bool(ar_long_path and "_fb." in os.path.basename(ar_long_path))
 
