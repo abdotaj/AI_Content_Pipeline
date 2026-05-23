@@ -3319,6 +3319,17 @@ def _load_user_images_from_folders(topic: str = "") -> list[dict]:
                         sidecar_caption = _sf.read().strip()
                 except Exception:
                     pass
+            # Quality gate: reject images too small to upscale to 1080p cleanly
+            try:
+                from PIL import Image as _PQIL
+                _qw, _qh = _PQIL.open(path).size
+                if _qw < 480 or _qh < 270:
+                    print(f"[Image] SKIP too small ({_qw}×{_qh}): {fname} — min 480×270")
+                    continue
+            except Exception as _qe:
+                print(f"[Image] SKIP unreadable: {fname} — {_qe}")
+                continue
+
             caption = sidecar_caption or stem or topic or "documentary scene"
             tags = (
                 [w.lower() for w in sidecar_caption.split() if len(w) > 3]
@@ -3455,6 +3466,24 @@ def load_all_content(
         print(f'[GitHub] Valid videos: {len(valid)} / {len(raw)} total ({skipped} skipped - LFS pointers)')
         return [_make_video_dict(p) for p in valid]
 
+    def _filter_images_by_quality(paths: list[str]) -> list[str]:
+        """Reject images too small to upscale to 1080p without visible pixelation."""
+        try:
+            from PIL import Image as _PQIL
+        except ImportError:
+            return paths
+        good: list[str] = []
+        for p in paths:
+            try:
+                w, h = _PQIL.open(p).size
+                if w >= 480 and h >= 270:
+                    good.append(p)
+                else:
+                    print(f'[GitHub] SKIP low-res image ({w}×{h}): {os.path.basename(p)}')
+            except Exception as _e:
+                print(f'[GitHub] SKIP unreadable image: {os.path.basename(p)} — {_e}')
+        return good
+
     topic_folder  = find_content_folder(topic)
     shared_folder = 'content/_shared'
 
@@ -3465,7 +3494,7 @@ def load_all_content(
 
     # Topic-specific
     if topic_folder and os.path.exists(topic_folder):
-        images += _scan_paths(f'{topic_folder}/images', _img_exts)
+        images += _filter_images_by_quality(_scan_paths(f'{topic_folder}/images', _img_exts))
         videos += _scan_and_validate_videos(f'{topic_folder}/videos')
         long_p  = f'{topic_folder}/music/documentary_long.mp3'
         short_p = f'{topic_folder}/music/documentary_short.mp3'
@@ -3476,7 +3505,7 @@ def load_all_content(
 
     # Shared supplement
     if os.path.exists(shared_folder):
-        images += _scan_paths(f'{shared_folder}/images', _img_exts)
+        images += _filter_images_by_quality(_scan_paths(f'{shared_folder}/images', _img_exts))
         videos += _scan_and_validate_videos(f'{shared_folder}/videos')
         if not music_long:
             shared_long = f'{shared_folder}/music/documentary_long.mp3'
@@ -5555,7 +5584,7 @@ def assemble_video(
         final, output_path, _clips_to_close,
         timeout_seconds=14400,
         fps=30, codec="libx264", audio_codec="aac", preset="ultrafast",
-        ffmpeg_params=["-threads", "0", "-pix_fmt", "yuv420p", "-movflags", "+faststart"],
+        ffmpeg_params=["-threads", "0", "-crf", "20", "-pix_fmt", "yuv420p", "-movflags", "+faststart"],
         temp_audiofile=temp_audio, logger=None,
     )
     for _ in range(5):
@@ -5774,6 +5803,7 @@ def cut_short_clip(video_path: str, output_path: str, duration: int = 90,
             audio_codec="aac",
             preset="ultrafast",
             ffmpeg_params=[
+                "-crf", "20",
                 "-pix_fmt", "yuv420p",
                 "-movflags", "+faststart",
             ],
@@ -6865,7 +6895,7 @@ def assemble_video_with_hook(
         final, output_path, _clips_to_close,
         timeout_seconds=14400,
         fps=24, codec="libx264", audio_codec="aac", preset="ultrafast",
-        ffmpeg_params=["-threads", "0", "-pix_fmt", "yuv420p", "-movflags", "+faststart"],
+        ffmpeg_params=["-threads", "0", "-crf", "20", "-pix_fmt", "yuv420p", "-movflags", "+faststart"],
         temp_audiofile=temp_audio, remove_temp=True, logger=None,
     )
     for _ in range(5):
@@ -7442,7 +7472,7 @@ def assemble_short_video(audio_path: str, image_paths: list[str], output_path: s
         final, output_path, _clips_to_close,
         timeout_seconds=1800,
         fps=30, codec="libx264", audio_codec="aac", preset="ultrafast",
-        ffmpeg_params=["-pix_fmt", "yuv420p", "-movflags", "+faststart"],
+        ffmpeg_params=["-crf", "20", "-pix_fmt", "yuv420p", "-movflags", "+faststart"],
         temp_audiofile=temp_audio, remove_temp=True, logger=None,
     )
     for _ in range(5):
