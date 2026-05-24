@@ -2709,6 +2709,27 @@ _VALID_EVENT_TYPES = {
 }
 
 
+def _is_arabic_text(text: str, sample: int = 300) -> bool:
+    """Return True if >25% of sampled characters are Arabic Unicode."""
+    sample_text = text[:sample]
+    ar_count = sum(1 for c in sample_text if '؀' <= c <= 'ۿ')
+    return ar_count > len(sample_text) * 0.25 if sample_text else False
+
+
+def _normalize_character_name(name: str, topic: str = "") -> str:
+    """Return English name for search/prompt use.
+
+    Checks _PERSON_ALIASES first, then falls back to topic clean-name if
+    the input looks like Arabic text.
+    """
+    key = name.lower().strip()
+    if key in _PERSON_ALIASES:
+        return _PERSON_ALIASES[key]
+    if _is_arabic_text(name):
+        return _clean_topic_name(topic or name) or name
+    return name
+
+
 def _extract_events_groq(
     script_text: str, topic: str, runtime_secs: float
 ) -> list[dict]:
@@ -2716,6 +2737,8 @@ def _extract_events_groq(
 
     Returns the same format as extract_visual_events — fallback to regex if fails.
     Consumes ~600-1500 tokens per call depending on script length.
+    Arabic scripts: instructs Groq to output English descriptions/chunks so
+    _detect_person_in_chunk and Pollinations prompts work correctly.
     """
     import json as _json, os as _os
     from collections import Counter as _Counter
@@ -2734,10 +2757,19 @@ def _extract_events_groq(
 
     # Truncate script to stay within Groq context limits
     excerpt = " ".join(words[:2000])
+    _arabic = _is_arabic_text(script_text)
+
+    _arabic_note = (
+        "\nIMPORTANT: The script is in Arabic. Write ALL description and chunk "
+        "values in English for image generation. Transliterate Arabic character "
+        "names to English (e.g., محمد → Muhammad, عمر → Omar).\n"
+        if _arabic else ""
+    )
 
     prompt = (
         f"You are a visual story planner for a true crime YouTube video.\n"
-        f"Topic: {topic}\n\n"
+        f"Topic: {topic}\n"
+        f"{_arabic_note}\n"
         f"Extract exactly {n_events} visual events from this script. "
         f"Each event is a distinct narrative moment — a compelling visual shot.\n\n"
         f"Rules:\n"
@@ -2747,8 +2779,8 @@ def _extract_events_groq(
         f"- First 20% pos: portrait/childhood/location (establish characters)\n"
         f"- Middle 50% pos: evidence/atmosphere/location/interrogation (tension)\n"
         f"- Last 30% pos: courtroom/prison/newspaper/atmosphere (resolution)\n"
-        f"- description: 1 vivid cinematic sentence\n"
-        f"- chunk: key phrase (max 80 chars) from the script\n\n"
+        f"- description: 1 vivid cinematic sentence IN ENGLISH\n"
+        f"- chunk: key phrase (max 80 chars) IN ENGLISH\n\n"
         f"Return ONLY a JSON array of exactly {n_events} objects:\n"
         f'[{{"idx":0,"pos":0.0,"type":"portrait","description":"...","chunk":"..."}},...]\n\n'
         f"SCRIPT:\n{excerpt}"
@@ -2929,6 +2961,11 @@ def build_documentary_visual_pool(
         )
 
     _img_dir = _get_images_dir()
+
+    # Pre-warm canonical portrait for every character before the event loop.
+    # Works for both English and Arabic scripts.
+    _prefetch_character_portraits(script_text, topic, _img_dir)
+
     events   = extract_visual_events(script_text, topic=topic, runtime_secs=runtime_secs)
     if not events:
         return fetch_real_images(
@@ -3227,32 +3264,145 @@ def _get_or_generate_character_portrait(
 ) -> tuple[str, str] | None:
     """Return (portrait_path, appearance_prompt) for *name*, generating once per run.
 
-    The appearance_prompt is embedded in subsequent scene prompts so Pollinations
-    renders the correct subject appearance even in non-portrait shots.
+    Uses all available sources — Wikipedia REST, DDG real photos, Pollinations AI —
+    and picks the best by file size. Supports multiple characters: each name gets its
+    own cache entry. Arabic names are normalised to English before searching.
+
+    The appearance_prompt is embedded in subsequent AI scene prompts for visual
+    consistency across all shots featuring this character.
     """
-    key = name.lower().strip()
+    # Normalise to English so search APIs and Pollinations work correctly
+    english_name = _normalize_character_name(name, topic)
+    key = english_name.lower().strip()
+
     cached = _character_portrait_cache.get(key)
     if cached:
         path, appearance = cached
         if os.path.exists(path):
-            print(f"[Portrait] Cache hit: '{name}' → {os.path.basename(path)}")
+            print(f"[Portrait] Cache hit: '{english_name}' → {os.path.basename(path)}")
             return cached
 
     slug = re.sub(r"[^a-z0-9]", "_", key)[:40]
     out_path = os.path.join(output_dir, f"char_portrait_{slug}.png")
 
-    _clean = _clean_topic_name((topic or name).strip())
+    _clean = _clean_topic_name((topic or english_name).strip())
     appearance_prompt = (
-        f"{name} {_clean} dramatic cinematic portrait storytelling "
+        f"{english_name} {_clean} dramatic cinematic portrait storytelling "
         f"film noir atmospheric moody character close-up dark lighting"
         f"{_IMAGE_PROMPT_SUFFIX}"
     )
-    result = generate_ai_image(appearance_prompt, out_path, seed=abs(hash(key)) % 9999)
-    if result:
-        _character_portrait_cache[key] = (result, appearance_prompt)
-        print(f"[Portrait] Generated canonical portrait: '{name}' → {os.path.basename(result)}")
-        return result, appearance_prompt
+
+    _cands: list[str] = []
+
+    # 1. Wikipedia REST — real historical/news photo (highest credibility)
+    _wm_url = _search_wikimedia_person_photo(english_name)
+    if _wm_url:
+        _rp = _download_first_valid([_wm_url], out_path.replace(".png", "_rp.png"))
+        if _rp:
+            _cands.append(_rp)
+            print(f"[Portrait] Wikipedia real: '{english_name}'")
+
+    # 2. DDG real photos — news/archive images
+    _ddg = _search_duckduckgo_images(f"{english_name} photo portrait", max_results=5)
+    if _ddg:
+        _dp = _download_first_valid(_ddg, out_path.replace(".png", "_dp.png"))
+        if _dp:
+            _cands.append(_dp)
+            print(f"[Portrait] DDG real: '{english_name}'")
+
+    # 3. Pollinations AI storytelling portrait — always generated for cinematic fallback
+    _ap = generate_ai_image(appearance_prompt, out_path.replace(".png", "_ap.png"),
+                            seed=abs(hash(key)) % 9999)
+    if _ap:
+        _cands.append(_ap)
+        print(f"[Portrait] Pollinations AI: '{english_name}'")
+
+    best = _best_image_from_candidates(_cands)
+    if best:
+        shutil.copy2(best, out_path)
+        _character_portrait_cache[key] = (out_path, appearance_prompt)
+        print(
+            f"[Portrait] Canonical portrait: '{english_name}' "
+            f"({os.path.getsize(out_path)//1024}KB from {len(_cands)} candidates)"
+        )
+        for _tmp in _cands:
+            try: os.remove(_tmp)
+            except: pass
+        return out_path, appearance_prompt
     return None
+
+
+def _extract_all_characters(script_text: str, topic: str) -> list[str]:
+    """Extract all named characters from script using Groq — returns English names.
+
+    Arabic scripts: Groq transliterates names to English automatically.
+    Fallback: scans script for entries in _KNOWN_CRIME_PERSONS.
+    """
+    import json as _json, os as _os
+    _key = _os.getenv("GROQ_API_KEY", "")
+    _arabic = _is_arabic_text(script_text)
+
+    if not _key:
+        clean = re.sub(r'\[SECTION:[^\]]+\]\s*', '', script_text).lower()
+        return [n for n in _KNOWN_CRIME_PERSONS if n in clean]
+
+    excerpt = script_text[:3000]
+    _arabic_note = (
+        "The script is in Arabic — transliterate all character names to English. "
+        if _arabic else ""
+    )
+    prompt = (
+        f"Extract all named characters (real people) from this true crime script.\n"
+        f"Topic: {topic}\n"
+        f"{_arabic_note}"
+        f"Return ONLY a JSON array of English name strings, most important first.\n"
+        f"Maximum 8 names. No explanation.\n"
+        f'Example: ["Pablo Escobar", "Carlos Lehder"]\n\n'
+        f"SCRIPT:\n{excerpt}"
+    )
+    try:
+        from groq import Groq as _Groq
+        _gc = _Groq(api_key=_key)
+        resp = _gc.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2,
+            max_tokens=200,
+        )
+        raw = resp.choices[0].message.content.strip()
+        if "```" in raw:
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+            raw = raw.strip()
+        names = _json.loads(raw)
+        result = [n.strip() for n in names if isinstance(n, str) and n.strip()]
+        print(f"[CharacterExtractor] Found {len(result)} characters: {result}")
+        return result
+    except Exception as _ex:
+        print(f"[CharacterExtractor] Groq failed ({_ex}) — scanning known persons")
+        clean = re.sub(r'\[SECTION:[^\]]+\]\s*', '', script_text).lower()
+        return [n for n in _KNOWN_CRIME_PERSONS if n in clean]
+
+
+def _prefetch_character_portraits(
+    script_text: str, topic: str, output_dir: str
+) -> None:
+    """Pre-generate canonical portraits for all characters before image gen loop.
+
+    Runs once at the start of build_documentary_visual_pool so every subsequent
+    portrait event hits the cache instead of re-searching.
+    Works for both English and Arabic scripts.
+    """
+    names = _extract_all_characters(script_text, topic)
+    if not names:
+        return
+    print(f"[Portrait] Pre-warming {len(names)} character portraits: {names}")
+    for name in names:
+        try:
+            _get_or_generate_character_portrait(name, topic, output_dir)
+        except Exception as _ex:
+            print(f"[Portrait] Pre-warm failed for '{name}': {_ex}")
 
 
 def _inject_character_appearance(base_prompt: str, name: str) -> str:
@@ -3260,13 +3410,14 @@ def _inject_character_appearance(base_prompt: str, name: str) -> str:
 
     Called for non-portrait events where the subject appears, so Pollinations
     renders a visually consistent character across all shots.
+    Handles Arabic names via _normalize_character_name.
     """
-    key = name.lower().strip()
+    english_name = _normalize_character_name(name)
+    key = english_name.lower().strip()
     cached = _character_portrait_cache.get(key)
     if not cached:
         return base_prompt
     _, appearance = cached
-    # Extract just the descriptive core (strip suffix noise) and append briefly
     core = appearance.split(",")[0].strip()[:80]
     return f"{base_prompt}, featuring {core}"
 
