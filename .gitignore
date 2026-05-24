@@ -36,3 +36,5 @@ output_videos/
 !content/*/videos/*.avi
 temp_clips/
 *TEMP_MPY_wvf_snd*
+# External reference repos — cloned locally, not part of this project
+ViMax/

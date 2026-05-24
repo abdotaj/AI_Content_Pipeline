@@ -1,0 +1,107 @@
+● Requirements to build local character animation
+
+  ---
+  Hardware (minimum vs recommended)
+
+  ┌───────────┬───────────────┬──────────────────┐
+  │ Component │    Minimum    │   Recommended    │
+  ├───────────┼───────────────┼──────────────────┤
+  │ GPU VRAM  │ 8 GB          │ 12-16 GB         │
+  ├───────────┼───────────────┼──────────────────┤
+  │ RAM       │ 16 GB         │ 32 GB            │
+  ├───────────┼───────────────┼──────────────────┤
+  │ Storage   │ 50 GB free    │ 100 GB free      │
+  ├───────────┼───────────────┼──────────────────┤
+  │ OS        │ Windows 10/11 │ Windows 11       │
+  ├───────────┼───────────────┼──────────────────┤
+  │ GPU brand │ NVIDIA only   │ NVIDIA RTX 3080+ │
+  └───────────┴───────────────┴──────────────────┘
+
+  AMD/Intel GPUs will not work — AnimateDiff requires CUDA.
+
+  ---
+  Software to install
+
+  1. Python 3.10+ (you have this)
+  2. ComfyUI — local inference server
+  3. CUDA Toolkit 11.8 or 12.1 — NVIDIA driver layer
+  4. Git (you have this)
+
+  ---
+  Models to download (~30-60 GB total)
+
+  ┌───────────────────────────┬────────┬───────────────────────────────────┐
+  │           Model           │  Size  │              Purpose              │
+  ├───────────────────────────┼────────┼───────────────────────────────────┤
+  │ SD 1.5 base checkpoint    │ 4 GB   │ Base image generation             │
+  ├───────────────────────────┼────────┼───────────────────────────────────┤
+  │ AnimateDiff motion module │ 1.7 GB │ Adds motion to images             │
+  ├───────────────────────────┼────────┼───────────────────────────────────┤
+  │ IP-Adapter FaceID         │ 1 GB   │ Locks character face across clips │
+  ├───────────────────────────┼────────┼───────────────────────────────────┤
+  │ Motion LoRA (walking)     │ 200 MB │ Controls walking motion           │
+  ├───────────────────────────┼────────┼───────────────────────────────────┤
+  │ Motion LoRA (turning)     │ 200 MB │ Controls turning motion           │
+  ├───────────────────────────┼────────┼───────────────────────────────────┤
+  │ ControlNet OpenPose       │ 1.4 GB │ Controls body pose per frame      │
+  └───────────────────────────┴────────┴───────────────────────────────────┘
+
+  All free downloads from HuggingFace and CivitAI.
+
+  ---
+  What you need to provide
+
+  1. A reference photo of the subject (Bundy, Escobar, etc.)
+     — clear face, front-facing, good lighting
+     — the model locks onto this face for all clips
+
+  2. Scene description per clip
+     — "1970s hallway, fluorescent lighting, linoleum floor"
+     — same location prompt for visual consistency
+
+  3. Motion per clip
+     — walking toward camera
+     — turning left
+     — sitting down
+     — etc.
+
+  ---
+  Realistic output you'll get
+
+  Per clip:
+    - 16-32 frames
+    - 2-4 seconds at 8fps
+    - 512x512 or 768x512 resolution (upscalable)
+    - Generation time: 30-90 seconds per clip on RTX 3080
+
+  Per video (10 clips):
+    - ~30-40 seconds of animation
+    - Total generation: 10-15 minutes
+    - Stitched with MoviePy (you already have this)
+
+  ---
+  What you won't get (be realistic)
+
+  - Not photorealistic — stylized/semi-realistic
+  - Face won't be 100% identical every frame — close but not perfect
+  - Complex multi-step motion (walk + turn + sit) needs to be separate clips
+  - Lip sync requires a separate model (SadTalker) on top
+
+  ---
+  Decision point before building
+
+  Check your GPU first:
+
+  # Run this in Python to check
+  import subprocess
+  subprocess.run(["nvidia-smi"], shell=True)
+
+  If output shows:
+  - 8 GB VRAM → works, limited quality
+  - 12 GB VRAM → good, full AnimateDiff
+  - 16 GB+ VRAM → excellent, can do SVD too
+  - No NVIDIA GPU → need external server (Replicate/RunPod)
+
+  ---
+  When you're ready, the agent build is about 2-3 days of setup (ComfyUI + models) then 1 day of Python agent code. Come
+   back with your nvidia-smi output and we go from there.
