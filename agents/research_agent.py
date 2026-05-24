@@ -16,6 +16,21 @@ try:
 except ImportError:
     from duckduckgo_search import DDGS
 
+
+def _ddgs_proxy() -> str | None:
+    """Return proxy URL for DDGS if configured, else None.
+    Set DDG_PROXY in GitHub Secrets to bypass GitHub Actions IP blocks.
+    Supports http://user:pass@host:port and socks5://host:port formats.
+    Also respects standard HTTPS_PROXY / https_proxy env vars.
+    """
+    import os as _os
+    return (
+        _os.getenv("DDG_PROXY")
+        or _os.getenv("HTTPS_PROXY")
+        or _os.getenv("https_proxy")
+        or None
+    )
+
 import groq as groq_lib
 from groq import Groq
 import os
@@ -1336,7 +1351,7 @@ def fetch_wikipedia_arabic(query: str) -> str | None:
 def web_search(query: str, max_results: int = 5) -> str:
     """Search DuckDuckGo and return concatenated snippet text."""
     try:
-        with DDGS() as ddgs:
+        with DDGS(proxy=_ddgs_proxy()) as ddgs:
             results = list(ddgs.text(query, max_results=max_results))
         return " ".join(r.get("body", "") for r in results)[:3000] or "(no results)"
     except Exception as e:
@@ -1973,7 +1988,7 @@ def research_series(topic: str, series_name: str | None = None, user_note: str |
 
     # ── STEP 2: DuckDuckGo (additional details) ────────────
     try:
-        with DDGS() as ddgs:
+        with DDGS(proxy=_ddgs_proxy()) as ddgs:
             ddg_real = list(ddgs.text(
                 f"{topic} real true story historical facts biography",
                 max_results=5

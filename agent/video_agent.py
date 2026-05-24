@@ -2526,6 +2526,23 @@ _wikimedia_query_cache: dict[str, list[str]] = {}
 _DDG_SEARCH_CACHE: dict[str, list[str]] = {}
 
 
+def _ddgs_proxy() -> str | None:
+    """Return proxy URL for DDGS if configured, else None.
+
+    GitHub Actions IPs are often blocked by DDG. Set DDG_PROXY in GitHub Secrets
+    to route through a proxy. Supports HTTP and SOCKS5 formats:
+      http://user:pass@host:port
+      socks5://user:pass@host:port
+    Falls back to standard HTTPS_PROXY / https_proxy env vars.
+    """
+    return (
+        os.getenv("DDG_PROXY")
+        or os.getenv("HTTPS_PROXY")
+        or os.getenv("https_proxy")
+        or None
+    )
+
+
 # Short event-type context word to combine with the person name
 _TYPE_CONTEXT: dict[str, str] = {
     "courtroom":     "courtroom",
@@ -5510,7 +5527,8 @@ def _search_duckduckgo_images(query: str, max_results: int = 5) -> list[str]:
             from ddgs import DDGS
         except ImportError:
             from duckduckgo_search import DDGS
-        raw = DDGS().images(query, max_results=max_results * 3)
+        _proxy = _ddgs_proxy()
+        raw = DDGS(proxy=_proxy).images(query, max_results=max_results * 3)
         urls = []
         _blocked = _BLOCKED_IMAGE_DOMAINS
         for r in (raw or []):
@@ -5540,7 +5558,8 @@ def _search_duckduckgo_videos(query: str, max_results: int = 5) -> list[str]:
             from ddgs import DDGS
         except ImportError:
             from duckduckgo_search import DDGS
-        raw = DDGS().videos(query, max_results=max_results * 4)
+        _proxy = _ddgs_proxy()
+        raw = DDGS(proxy=_proxy).videos(query, max_results=max_results * 4)
         urls = []
         for r in (raw or []):
             # DDG video results have 'content' (embed page) and sometimes 'embed_url'
