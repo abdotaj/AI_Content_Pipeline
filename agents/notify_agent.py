@@ -338,6 +338,8 @@ def send_english_script_preview(script: dict, label: str = "ENGLISH SCRIPT") -> 
             f"WHAT WE FOUND:\n{expanded_lines or '(see script above)'}\n"
         )
     sources_block = _format_sources_block(script)
+    hashtags = script.get("hashtags", "").strip()
+    hashtag_line = f"─────────────────\n{hashtags}\n" if hashtags else ""
     msg = (
         f"{label}\n\n"
         f"Title: {script.get('title', '')}\n"
@@ -345,6 +347,7 @@ def send_english_script_preview(script: dict, label: str = "ENGLISH SCRIPT") -> 
         f"{discovery_block}"
         f"{body}\n"
         f"{sources_block}"
+        f"{hashtag_line}"
         f"─────────────────\n"
         f"Generating video automatically..."
     )
@@ -374,12 +377,15 @@ def send_arabic_script_preview(script: dict, label: str = "النص العربي
         for q in search_queries[:4]:
             sources_lines.append(f'  🔍 "{q}"')
     sources_block = ("─────────────────\n" + "\n".join(sources_lines) + "\n") if sources_lines else ""
+    hashtags = script.get("hashtags", "").strip()
+    hashtag_line = f"─────────────────\n{hashtags}\n" if hashtags else ""
     msg = (
         f"{label}\n\n"
         f"العنوان: {script.get('title', '')}\n"
         f"─────────────────\n"
         f"{body}\n"
         f"{sources_block}"
+        f"{hashtag_line}"
         f"─────────────────\n"
         f"جاري إنشاء الفيديو تلقائياً..."
     )
