@@ -2940,25 +2940,67 @@ def extract_visual_events(
 ) -> list[dict]:
     """Parse script into unique visual events — one per narrative moment.
 
-    Tries Groq-based semantic extraction first (storytelling-aware, true crime
-    optimised), falls back to word-chunk regex classifier on failure.
+    Strategy: character/scene/static first (LLM semantic, up to 60 events),
+    then supplement with script-derived dynamic events (regex chunker) to hit
+    time-density target. For long videos this produces mixed pools like:
+      60 semantic (portrait/evidence/courtroom) + 340 regex (atmosphere/evidence)
+    giving 400 total events at 8s/clip for 81-min documentary.
 
     Each event: idx, position (0-1), type, prompt, chunk.
     """
-    events = _extract_events_groq(script_text, topic, runtime_secs)
-    if events:
-        return events
-
-    # ── Regex fallback: word-chunk classifier ────────────────────────────────
     import re as _re
     from collections import Counter as _Counter
+
     clean = _re.sub(r'\[SECTION:[^\]]+\]\s*', '', script_text).strip()
     words = clean.split()
     if not words:
         return []
 
-    runtime_min = max(runtime_secs / 60, 1.0) if runtime_secs > 0 else len(words) / 150.0
-    n_events    = max(30, min(400, int(runtime_min * 7)))
+    runtime_min   = max(runtime_secs / 60, 1.0) if runtime_secs > 0 else len(words) / 150.0
+    n_total_target = max(30, min(400, int(runtime_min * 7)))
+
+    # Step 1: LLM semantic extraction — high-quality character/scene events (≤60)
+    semantic = _extract_events_groq(script_text, topic, runtime_secs)
+
+    # Step 2: Regex supplement — fill remaining density quota for long videos
+    n_supplement = n_total_target - len(semantic)
+    if n_supplement > 0:
+        n_events   = n_supplement
+        chunk_size = max(8, len(words) // max(n_events, 1))
+        chunks_sup: list[str] = []
+        for i in range(n_events):
+            start = i * chunk_size
+            end   = (i + 1) * chunk_size if i < n_events - 1 else len(words)
+            if start >= len(words):
+                break
+            chunks_sup.append(" ".join(words[start:end]))
+        regex_events: list[dict] = []
+        for i, chunk in enumerate(chunks_sup):
+            pos    = i / max(len(chunks_sup) - 1, 1)
+            vtype, ev_prompt = _classify_visual_event(chunk.lower(), pos, topic)
+            regex_events.append({
+                "idx":    len(semantic) + i,
+                "pos":    pos,
+                "type":   vtype,
+                "prompt": ev_prompt,
+                "chunk":  chunk[:80],
+            })
+        combined = semantic + regex_events
+        for i, ev in enumerate(combined):
+            ev["idx"] = i
+        _dist = _Counter(ev["type"] for ev in combined)
+        print(
+            f"[EventExtractor] {len(semantic)} semantic + {len(regex_events)} regex = "
+            f"{len(combined)} total — " +
+            " | ".join(f"{t}:{c}" for t, c in sorted(_dist.items()))
+        )
+        return combined
+
+    if semantic:
+        return semantic
+
+    # ── Pure regex fallback: LLM failed entirely ──────────────────────────────
+    n_events    = n_total_target
     chunk_size  = max(8, len(words) // n_events)
 
     chunks: list[str] = []
