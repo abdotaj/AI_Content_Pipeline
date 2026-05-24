@@ -9,6 +9,7 @@ import random
 import asyncio
 import subprocess
 import shutil
+import tempfile
 import requests
 from pathlib import Path
 try:
@@ -7992,35 +7993,94 @@ def assemble_video_with_hook(
 
     print(f"[Video] Main: {len(final_main)} slow cuts in {accumulated:.1f}s")
 
-    try:
-        all_clips = hook_clips + final_main
-        final = concatenate_videoclips(_smooth_transitions(all_clips), method="compose")
-        if final.duration > total_duration:
-            final = final.subclip(0, total_duration)
-        final = final.set_audio(audio)
-    except Exception as e:
-        print(f"[Video] CRASH assembling hook video: {e}")
-        traceback.print_exc()
-        for clip in [audio] + hook_clips + final_main:
-            try: clip.close()
-            except Exception: pass
-        return ""
+    # ── OOM-safe render: batch-write 50-clip segments → ffmpeg concat + mux ──────
+    # Keeping 700+ in-memory VideoClip lambdas open for concatenate_videoclips
+    # exhausts the 7 GB GitHub Actions runner (OOM kill, no traceback).
+    # Fix: write batches of 50 clips to silent temp MP4s, then join all segments
+    # + mux audio in one ffmpeg concat pass (stream copy ≈ 5 s, no re-encode).
+    all_clips = hook_clips + final_main
 
-    _clips_to_close = [audio, final] + hook_clips + final_main
-    _ok = _write_video_safe(
-        final, output_path, _clips_to_close,
-        timeout_seconds=14400,
-        fps=24, codec="libx264", audio_codec="aac", preset="ultrafast",
-        ffmpeg_params=["-threads", "0", "-crf", "20", "-pix_fmt", "yuv420p", "-movflags", "+faststart"],
-        temp_audiofile=temp_audio, remove_temp=True, logger=None,
-    )
-    for _ in range(5):
-        try:
-            if os.path.exists(temp_audio):
-                os.remove(temp_audio)
+    # Trim to total_duration
+    _acc = 0.0
+    _trimmed: list = []
+    for _c in all_clips:
+        if _acc >= total_duration:
             break
-        except OSError:
-            time.sleep(0.5)
+        _rem = total_duration - _acc
+        if _c.duration > _rem:
+            _c = _c.subclip(0, _rem)
+        _trimmed.append(_c)
+        _acc += _c.duration
+    all_clips = _trimmed
+
+    _tmp_dir = tempfile.mkdtemp(prefix="dcp_render_")
+    _batch_files: list = []
+    _BATCH = 50  # clips per segment — peak RAM stays ≤ ~500 MB
+
+    _ok = False
+    try:
+        _n_batches = max(1, -(-len(all_clips) // _BATCH))  # ceiling division
+        for _bi in range(0, len(all_clips), _BATCH):
+            _batch = all_clips[_bi: _bi + _BATCH]
+            _batch_path = os.path.join(_tmp_dir, f"seg_{_bi:04d}.mp4")
+            print(f"[Video] Segment {_bi // _BATCH + 1}/{_n_batches}"
+                  f" ({len(_batch)} clips) → {os.path.basename(_batch_path)}")
+            try:
+                _seg = concatenate_videoclips(
+                    _smooth_transitions(_batch), method="compose"
+                )
+                _seg.write_videofile(
+                    _batch_path, fps=24, codec="libx264", audio=False,
+                    preset="ultrafast", logger=None,
+                    ffmpeg_params=["-threads", "0", "-crf", "20", "-pix_fmt", "yuv420p"],
+                )
+                _seg.close()
+            except Exception as _be:
+                print(f"[Video] Segment write error: {_be}")
+                traceback.print_exc()
+                raise
+            finally:
+                for _c in _batch:
+                    try: _c.close()
+                    except Exception: pass
+            _batch_files.append(_batch_path)
+
+        audio.close()
+
+        # Build ffmpeg concat list and join segments + mux audio (stream copy)
+        _list_path = os.path.join(_tmp_dir, "concat.txt")
+        with open(_list_path, "w") as _lf:
+            for _bp in _batch_files:
+                _lf.write(f"file '{_bp}'\n")
+
+        print(f"[Video] ffmpeg concat: {len(_batch_files)} segments → {os.path.basename(output_path)}")
+        _cmd = [
+            "ffmpeg", "-y",
+            "-f", "concat", "-safe", "0", "-i", _list_path,
+            "-i", audio_path,
+            "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
+            "-shortest", "-movflags", "+faststart",
+            output_path,
+        ]
+        _res = subprocess.run(_cmd, capture_output=True, text=True)
+        if _res.returncode != 0:
+            print(f"[Video] ffmpeg concat FAILED:\n{_res.stderr[-3000:]}")
+        else:
+            _ok = True
+
+    except Exception as _e:
+        print(f"[Video] CRASH in batch render: {_e}")
+        traceback.print_exc()
+    finally:
+        shutil.rmtree(_tmp_dir, ignore_errors=True)
+        for _ in range(5):
+            try:
+                if os.path.exists(temp_audio):
+                    os.remove(temp_audio)
+                break
+            except OSError:
+                time.sleep(0.5)
+
     if not _ok:
         return ""
 
