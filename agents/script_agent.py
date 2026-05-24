@@ -3983,6 +3983,8 @@ def _write_darkcrimed_script(topic: dict) -> dict:
             "part_number":     part_number,
             "user_discovery":          research.get("user_discovery", ""),
             "user_discovery_expanded": research.get("user_discovery_expanded", []),
+            "source_urls":             research.get("source_urls", []),
+            "search_queries":          research.get("search_queries", []),
         }
         print(f"[Script] Written (documentary english): '{script_data['title']}'")
         return script_data
@@ -4346,6 +4348,9 @@ Return ONLY this JSON with no extra text:
     script_data["user_discovery_expanded"] = discovery_expanded
     # Carry show_characters forward so write_short_script can use them
     script_data["show_characters"]         = research.get("show_characters", [])
+    # Source references from research — passed through for Telegram preview + video overlays
+    script_data["source_urls"]    = research.get("source_urls", [])
+    script_data["search_queries"] = research.get("search_queries", [])
     _s = script_data["script"]
     _s = upgrade_script_for_retention(_s)
     _s = pick_best_hook(_s, topic=topic.get("topic", ""), series=_series_name_raw)

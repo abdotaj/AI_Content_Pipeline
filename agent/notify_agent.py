@@ -300,6 +300,27 @@ def send_script_preview(en_script: dict, ar_script: dict | None = None) -> None:
         send_arabic_script_preview(ar_script)
 
 
+def _format_sources_block(script: dict) -> str:
+    """Build a SOURCES & SEARCH block from script_data for Telegram previews."""
+    source_urls    = script.get("source_urls") or []
+    search_queries = script.get("search_queries") or []
+    lines = []
+    if source_urls:
+        lines.append("SOURCES & REFERENCES:")
+        for s in source_urls[:6]:  # cap at 6 to keep message concise
+            title = s.get("title", "").strip()
+            url   = s.get("url", "").strip()
+            if url:
+                lines.append(f"  - {title}\n    {url}" if title else f"  - {url}")
+    if search_queries:
+        lines.append("SEARCH QUERIES USED:")
+        for q in search_queries[:4]:
+            lines.append(f'  🔍 "{q}"')
+    if not lines:
+        return ""
+    return "─────────────────\n" + "\n".join(lines) + "\n"
+
+
 def send_english_script_preview(script: dict, label: str = "ENGLISH SCRIPT") -> None:
     """Send English script to Telegram. `label` appears as the message header."""
     body = _add_section_headers(
@@ -316,12 +337,14 @@ def send_english_script_preview(script: dict, label: str = "ENGLISH SCRIPT") -> 
             f"YOUR DISCOVERY:\n{user_discovery}\n\n"
             f"WHAT WE FOUND:\n{expanded_lines or '(see script above)'}\n"
         )
+    sources_block = _format_sources_block(script)
     msg = (
         f"{label}\n\n"
         f"Title: {script.get('title', '')}\n"
         f"─────────────────\n"
         f"{discovery_block}"
         f"{body}\n"
+        f"{sources_block}"
         f"─────────────────\n"
         f"Generating video automatically..."
     )
@@ -335,11 +358,28 @@ def send_arabic_script_preview(script: dict, label: str = "النص العربي
         script.get("script", ""),
         intro_label="مقدمة", main_label="القصة الرئيسية", conclusion_label="الخاتمة",
     )
+    # Build Arabic sources block (URLs are universal; labels in Arabic)
+    source_urls    = script.get("source_urls") or []
+    search_queries = script.get("search_queries") or []
+    sources_lines  = []
+    if source_urls:
+        sources_lines.append("المصادر والمراجع:")
+        for s in source_urls[:6]:
+            title = s.get("title", "").strip()
+            url   = s.get("url", "").strip()
+            if url:
+                sources_lines.append(f"  - {title}\n    {url}" if title else f"  - {url}")
+    if search_queries:
+        sources_lines.append("استعلامات البحث المستخدمة:")
+        for q in search_queries[:4]:
+            sources_lines.append(f'  🔍 "{q}"')
+    sources_block = ("─────────────────\n" + "\n".join(sources_lines) + "\n") if sources_lines else ""
     msg = (
         f"{label}\n\n"
         f"العنوان: {script.get('title', '')}\n"
         f"─────────────────\n"
         f"{body}\n"
+        f"{sources_block}"
         f"─────────────────\n"
         f"جاري إنشاء الفيديو تلقائياً..."
     )

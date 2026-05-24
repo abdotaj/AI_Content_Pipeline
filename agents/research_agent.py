@@ -1386,6 +1386,28 @@ def web_search(query: str, max_results: int = 5) -> str:
     return "(no results)"
 
 
+def web_search_with_sources(query: str, max_results: int = 5) -> tuple[str, list[dict]]:
+    """Like web_search but also returns source dicts [{title, url}] for the hits."""
+    import os as _os, time as _time
+    _max_attempts = 3 if _os.getenv("DDG_PROXY_LIST") else 1
+    for _attempt in range(_max_attempts):
+        try:
+            with DDGS(proxy=_ddgs_proxy()) as ddgs:
+                results = list(ddgs.text(query, max_results=max_results))
+            text    = " ".join(r.get("body", "") for r in results)[:3000]
+            sources = [
+                {"title": r.get("title", "").strip(), "url": r.get("href", "").strip()}
+                for r in results if r.get("href", "").strip()
+            ]
+            return (text or "(no results)", sources)
+        except Exception as e:
+            if _attempt < _max_attempts - 1:
+                _time.sleep(1)
+            else:
+                return (f"(search error: {e})", [])
+    return ("(no results)", [])
+
+
 # ── Covered topics tracker ──────────────────────────────────
 
 def _load_covered() -> list[dict]:
@@ -1831,9 +1853,21 @@ def research_series_duckduckgo(topic: str) -> dict:
     """Fallback: search DuckDuckGo then use Groq to extract structured facts."""
     print(f"[Research] DuckDuckGo fallback for: {topic}")
 
-    raw_facts       = web_search(f"{topic} real true story historical facts biography", 5)
-    raw_inspiration = web_search(f"{topic} true story inspiration how show adapted real events", 3)
-    raw_shocking    = web_search(f"{topic} shocking facts untold story documentary", 3)
+    _q1 = f"{topic} real true story historical facts biography"
+    _q2 = f"{topic} true story inspiration how show adapted real events"
+    _q3 = f"{topic} shocking facts untold story documentary"
+    raw_facts,       _src1 = web_search_with_sources(_q1, 5)
+    raw_inspiration, _src2 = web_search_with_sources(_q2, 3)
+    raw_shocking,    _src3 = web_search_with_sources(_q3, 3)
+
+    # Deduplicated source list for this fallback path
+    _seen: set = set()
+    _fallback_sources: list = []
+    for _s in _src1 + _src2 + _src3:
+        if _s["url"] and _s["url"] not in _seen:
+            _seen.add(_s["url"])
+            _fallback_sources.append(_s)
+    _fallback_queries = [_q1, _q2, _q3]
 
     prompt = f"""You are a true crime documentary researcher.
 Based on the search results below about "{topic}", extract verified facts.
@@ -1899,6 +1933,8 @@ Return ONLY this JSON:
         "research_facts":                facts_out,
         "research_inaccuracies":         wrong_out,
         "research_shocking":             shocking_out,
+        "source_urls":                   _fallback_sources,
+        "search_queries":                _fallback_queries,
         # Legacy fields for backward compatibility
         "real_story":                    raw_facts,
         "what_show_got_right":           facts_out[:3],
@@ -2099,10 +2135,28 @@ def research_series(topic: str, series_name: str | None = None, user_note: str |
             "real_life":    " ".join(r.get("body", "") for r in ddg_real_life),
             "user_note":    " ".join(r.get("body", "") for r in ddg_note),
         }
-        print(f"[Research] DuckDuckGo: {len(ddg_real)} results found")
+        # Collect source URLs + titles from all DDG result sets (deduplicated)
+        _seen_urls: set = set()
+        _raw_sources: list = []
+        for _r in ddg_real + ddg_inspiration + ddg_shocking + ddg_real_life + ddg_note:
+            _url = _r.get("href", "").strip()
+            _title = _r.get("title", "").strip()
+            if _url and _url not in _seen_urls:
+                _seen_urls.add(_url)
+                _raw_sources.append({"title": _title, "url": _url})
+        _ddg_source_urls = _raw_sources
+        _ddg_search_queries = [
+            f"{topic} real true story historical facts biography",
+            f"{series_name or topic} true story inspiration real events",
+            f"{topic} shocking facts untold story documentary",
+            f"{topic} what really happened real life story",
+        ]
+        print(f"[Research] DuckDuckGo: {len(ddg_real)} results found | {len(_ddg_source_urls)} unique sources")
     except Exception as e:
         print(f"[Research] DuckDuckGo failed: {e}")
         ddg_combined = {"real_story": "", "inspiration": "", "shocking": "", "real_life": "", "user_note": ""}
+        _ddg_source_urls = []
+        _ddg_search_queries = []
 
     if not person_wiki and not series_wiki and not any(ddg_combined.values()):
         print(f"[Research] All sources failed — using DuckDuckGo fallback")
@@ -2268,6 +2322,9 @@ Return ONLY valid JSON."""
         "is_show_topic":   _is_show,
         # Real vs fiction structured data for script_agent
         "real_vs_fiction": real_vs_fiction,
+        # Source references — URLs from DuckDuckGo + Wikipedia page title
+        "source_urls":     _ddg_source_urls,
+        "search_queries":  _ddg_search_queries,
         # Full structured block
         "wiki": {
             "real_person":         info.get("real_person"),

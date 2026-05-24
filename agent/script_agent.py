@@ -260,7 +260,7 @@ def clean_word_count(text: str) -> int:
 # Runtime targets (actual rendered audio — not WPM estimates):
 #   Arabic: FAST 30-40 min | ANIMATION 35-60 min | FULL 45-90 min
 #   English: FAST 10-15 min | ANIMATION 12-18 min | FULL 15-20 min
-# WPM calibration (measured from production, OpenAI TTS):
+# WPM calibration (measured from production, OpenAI TTS Nova at speed=1.1):
 #   Arabic Nova speed=1.1:  ~185 WPM  (range 170-190, Nova voice at 1.1× speed)
 #   English Alloy 1.0: ~160 WPM (range 155-165, very consistent)
 _WORD_FLOORS = {
@@ -1219,6 +1219,8 @@ _UPGRADE_ARABIC_PROMPT = """أنت محرر لغوي عربي ومخرج تعل�
 
 قاعدة إلزامية للبنية: احتفظ بجميع علامات [SECTION:] كما هي تمامًا — لا تحذفها ولا تغيّرها أبدًا.
 
+خطوات التنفيذ الإلزامية:
+
 ━━━━━━━━━━━━━━━
 [1] التصحيح اللغوي
 ━━━━━━━━━━━━━━━
@@ -1248,7 +1250,8 @@ _UPGRADE_ARABIC_PROMPT = """أنت محرر لغوي عربي ومخرج تعل�
 القواعد:
 - اجعل الجمل أقصر
 - حسّن الإيقاع السمعي
-- أضف pauses طبيعية باستخدام: …
+- أضف pauses طبيعية باستخدام:
+…
 - اجعل الانتقالات سلسة
 - حسّن لحظات التشويق
 - اجعل السرد طبيعيًا للـ TTS
@@ -3980,6 +3983,8 @@ def _write_darkcrimed_script(topic: dict) -> dict:
             "part_number":     part_number,
             "user_discovery":          research.get("user_discovery", ""),
             "user_discovery_expanded": research.get("user_discovery_expanded", []),
+            "source_urls":             research.get("source_urls", []),
+            "search_queries":          research.get("search_queries", []),
         }
         print(f"[Script] Written (documentary english): '{script_data['title']}'")
         return script_data
@@ -4343,6 +4348,9 @@ Return ONLY this JSON with no extra text:
     script_data["user_discovery_expanded"] = discovery_expanded
     # Carry show_characters forward so write_short_script can use them
     script_data["show_characters"]         = research.get("show_characters", [])
+    # Source references from research — passed through for Telegram preview + video overlays
+    script_data["source_urls"]    = research.get("source_urls", [])
+    script_data["search_queries"] = research.get("search_queries", [])
     _s = script_data["script"]
     _s = upgrade_script_for_retention(_s)
     _s = pick_best_hook(_s, topic=topic.get("topic", ""), series=_series_name_raw)
@@ -5668,7 +5676,7 @@ def _write_ar_section_chunked(
         if acc_wc >= target_words:
             break
         needed     = target_words - acc_wc
-        needed_min = round(needed / 100, 1)
+        needed_min = round(needed / 190, 1)
         tail       = " ".join(accumulated.split()[-200:])
         max_tok    = min(3000, max(1200, needed * 2))
 
@@ -7098,7 +7106,7 @@ def write_cinematic_short(
         ar_text = translate_to_arabic(en_text)
 
     ar_wc   = clean_word_count(ar_text)
-    ar_secs = round(ar_wc / _TTS_WPM.get("arabic", 100) * 60)
+    ar_secs = round(ar_wc / _TTS_WPM.get("arabic", 250) * 60)
     print(f"[Cinematic Short] AR '{label}': {ar_wc}w → ~{ar_secs}s")
 
     return {
