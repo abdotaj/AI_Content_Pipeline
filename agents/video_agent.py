@@ -8015,22 +8015,24 @@ def assemble_video_with_hook(
 
     _tmp_dir = tempfile.mkdtemp(prefix="dcp_render_")
     _batch_files: list = []
-    _BATCH = 50  # clips per segment — peak RAM stays ≤ ~500 MB
+    _BATCH = 50        # clips per segment — peak RAM stays ≤ ~500 MB
+    _BATCH_WORKERS = 2  # PIL C-extensions release GIL → true parallel on 2 cores
 
     _ok = False
     try:
         _n_batches = max(1, -(-len(all_clips) // _BATCH))  # ceiling division
-        for _bi in range(0, len(all_clips), _BATCH):
-            _batch = all_clips[_bi: _bi + _BATCH]
-            _batch_path = os.path.join(_tmp_dir, f"seg_{_bi:04d}.mp4")
+
+        # Each batch owns a distinct non-overlapping slice of clips — no shared state.
+        # _frame_cache numpy arrays are read-only at this point → thread-safe.
+        def _write_one_batch(args):
+            _bi, _batch = args
+            _bp = os.path.join(_tmp_dir, f"seg_{_bi:04d}.mp4")
             print(f"[Video] Segment {_bi // _BATCH + 1}/{_n_batches}"
-                  f" ({len(_batch)} clips) → {os.path.basename(_batch_path)}")
+                  f" ({len(_batch)} clips) → {os.path.basename(_bp)}")
             try:
-                _seg = concatenate_videoclips(
-                    _smooth_transitions(_batch), method="compose"
-                )
+                _seg = concatenate_videoclips(_smooth_transitions(_batch), method="compose")
                 _seg.write_videofile(
-                    _batch_path, fps=24, codec="libx264", audio=False,
+                    _bp, fps=24, codec="libx264", audio=False,
                     preset="ultrafast", logger=None,
                     ffmpeg_params=["-threads", "0", "-crf", "20", "-pix_fmt", "yuv420p"],
                 )
@@ -8043,7 +8045,20 @@ def assemble_video_with_hook(
                 for _c in _batch:
                     try: _c.close()
                     except Exception: pass
-            _batch_files.append(_batch_path)
+            return _bi, _bp
+
+        import concurrent.futures as _cf_seg
+        _batch_tasks = [
+            (_bi, all_clips[_bi: _bi + _BATCH])
+            for _bi in range(0, len(all_clips), _BATCH)
+        ]
+        _seg_results: dict = {}
+        with _cf_seg.ThreadPoolExecutor(max_workers=_BATCH_WORKERS) as _seg_pool:
+            _seg_futs = {_seg_pool.submit(_write_one_batch, t): t[0] for t in _batch_tasks}
+            for _sf in _cf_seg.as_completed(_seg_futs):
+                _bi_done, _bp_done = _sf.result()  # raises → aborts remaining batches
+                _seg_results[_bi_done] = _bp_done
+        _batch_files = [_seg_results[_bi] for _bi in sorted(_seg_results)]
 
         audio.close()
 
