@@ -436,15 +436,38 @@ def generate_voiceover_edgetts(script_text: str, filename: str, language: str = 
     return audio_path
 
 
+def _pyarabic_normalize(text: str) -> str:
+    """Normalize Arabic text with pyarabic before TTS. Silent no-op if not installed.
+
+    Fixes that mishkal tashkeel cannot handle:
+    - normalize_hamza: أ إ آ إ → consistent hamza form TTS expects
+    - strip_tatweel: removes ـ (kashida) that some TTS engines pause on or skip
+    - normalize_ligature: lam-alef variants (لا لأ لإ لآ) → canonical form
+    """
+    try:
+        import pyarabic.araby as _araby
+        text = _araby.normalize_hamza(text)
+        text = _araby.strip_tatweel(text)
+        text = _araby.normalize_ligature(text)
+        print("[AR] PyArabic normalization applied (hamza + tatweel + ligature)")
+    except ImportError:
+        print("[AR] pyarabic not installed — skipping normalization (pip install pyarabic)")
+    except Exception as _e:
+        print(f"[AR] PyArabic normalization failed (non-fatal): {_e}")
+    return text
+
+
 def preprocess_arabic_tts(text: str) -> str:
     """
     Full Arabic TTS preprocessing pipeline:
-      1. apply_arabic_pronunciation_fixes — selective tashkeel
-      2. expand_arabic_numbers — digits → spoken Arabic words
-      3. punctuation pacing — commas, ellipses for natural narration rhythm
+      1. pyarabic normalization — hamza variants, tatweel, ligature cleanup
+      2. apply_arabic_pronunciation_fixes — selective tashkeel
+      3. expand_arabic_numbers — digits → spoken Arabic words
+      4. punctuation pacing — commas, ellipses for natural narration rhythm
     """
     import re as _re
 
+    text = _pyarabic_normalize(text)
     text = apply_arabic_pronunciation_fixes(text)
     text = expand_arabic_numbers(text)
 
