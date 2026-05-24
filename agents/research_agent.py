@@ -1166,6 +1166,10 @@ def is_fictional(topic: str, series_name: str | None = None) -> bool:
     """Return True if the topic appears to be a purely fictional show/character."""
     topic_lower  = topic.lower()
     series_lower = (series_name or "").lower()
+    # "Real-life X that inspired Y" topics are real crime content, not fictional
+    _real_signals = ("real", "real-life", "inspired", "based on", "behind", "true story", "actual")
+    if any(sig in topic_lower for sig in _real_signals):
+        return False
     for show in FICTIONAL_SHOWS:
         if show in topic_lower or show in series_lower:
             return True
