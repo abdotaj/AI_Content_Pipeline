@@ -2703,6 +2703,84 @@ def _classify_visual_event(
             f"{_pfx}{_VE_ATMOSPHERE_POOL[_atmo_idx]}{_IMAGE_PROMPT_SUFFIX}")
 
 
+# ── Visual-planning LLM provider tracking ────────────────────────────────────
+_VIZ_GROQ_RL_UNTIL:  float = 0.0
+_VIZ_OAI_QL_UNTIL:   float = 0.0
+
+
+def _llm_json_call(prompt: str, max_tokens: int = 2500, label: str = "LLM") -> str:
+    """Call Groq → OpenAI gpt-4o-mini fallback for structured JSON extraction.
+
+    Returns the raw response text (JSON string). Empty string on total failure.
+    Both providers share per-run rate-limit tracking so a 429 from Groq
+    immediately routes the next call to OpenAI without wasted retries.
+    """
+    global _VIZ_GROQ_RL_UNTIL, _VIZ_OAI_QL_UNTIL
+    import os as _os, time as _time
+
+    # ── Groq ─────────────────────────────────────────────────────────────────
+    if _time.time() >= _VIZ_GROQ_RL_UNTIL:
+        _gkey = _os.getenv("GROQ_API_KEY", "")
+        if _gkey:
+            try:
+                from groq import Groq as _Groq
+                _gc = _Groq(api_key=_gkey)
+                resp = _gc.chat.completions.create(
+                    model="llama-3.3-70b-versatile",
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.3,
+                    max_tokens=max_tokens,
+                )
+                result = (resp.choices[0].message.content or "").strip()
+                if result:
+                    print(f"[{label}] Groq ✅ ({len(result)} chars)")
+                    return result
+            except Exception as _ex:
+                _err = str(_ex).lower()
+                if any(s in _err for s in ("rate_limit", "rate limit", "429", "too many requests")):
+                    _VIZ_GROQ_RL_UNTIL = _time.time() + 60
+                    print(f"[{label}] Groq 429 rate limit — OpenAI fallback (60s cooldown)")
+                else:
+                    print(f"[{label}] Groq error: {_ex}")
+    else:
+        _rem = int(_VIZ_GROQ_RL_UNTIL - _time.time())
+        print(f"[{label}] Groq cooling down {_rem}s — routing to OpenAI")
+
+    # ── OpenAI fallback ───────────────────────────────────────────────────────
+    if _time.time() < _VIZ_OAI_QL_UNTIL:
+        _rem = int(_VIZ_OAI_QL_UNTIL - _time.time())
+        print(f"[{label}] OpenAI quota cooldown {_rem}s — both providers unavailable")
+        return ""
+    _okey = _os.getenv("OPENAI_API_KEY", "")
+    if not _okey:
+        print(f"[{label}] No OPENAI_API_KEY configured — skipping OpenAI fallback")
+        return ""
+    try:
+        import requests as _req
+        _r = _req.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={"Authorization": f"Bearer {_okey}", "Content-Type": "application/json"},
+            json={"model": "gpt-4o-mini",
+                  "messages": [{"role": "user", "content": prompt}],
+                  "max_tokens": max_tokens, "temperature": 0.3},
+            timeout=60,
+        )
+        if _r.status_code == 200:
+            content = (_r.json()["choices"][0]["message"]["content"] or "").strip()
+            if content:
+                print(f"[{label}] OpenAI gpt-4o-mini ✅ ({len(content)} chars)")
+                return content
+        elif _r.status_code == 429:
+            _VIZ_OAI_QL_UNTIL = _time.time() + 300
+            print(f"[{label}] OpenAI 429 — cooldown 300s")
+        else:
+            print(f"[{label}] OpenAI HTTP {_r.status_code}: {_r.text[:200]}")
+    except Exception as _ex:
+        print(f"[{label}] OpenAI exception: {_ex}")
+
+    return ""
+
+
 _VALID_EVENT_TYPES = {
     "portrait", "childhood", "location", "evidence", "courtroom",
     "map", "newspaper", "cctv", "prison", "interrogation", "atmosphere",
@@ -2733,19 +2811,14 @@ def _normalize_character_name(name: str, topic: str = "") -> str:
 def _extract_events_groq(
     script_text: str, topic: str, runtime_secs: float
 ) -> list[dict]:
-    """Extract narrative visual events from script using Groq (single call).
+    """Extract narrative visual events via Groq → OpenAI fallback (single call).
 
-    Returns the same format as extract_visual_events — fallback to regex if fails.
-    Consumes ~600-1500 tokens per call depending on script length.
-    Arabic scripts: instructs Groq to output English descriptions/chunks so
-    _detect_person_in_chunk and Pollinations prompts work correctly.
+    Routes through _llm_json_call which handles Groq 429 → OpenAI gpt-4o-mini
+    transparently. Falls back to regex chunker if both providers fail.
+    Arabic: instructs the LLM to output English descriptions/chunks.
     """
-    import json as _json, os as _os
+    import json as _json
     from collections import Counter as _Counter
-
-    _key = _os.getenv("GROQ_API_KEY", "")
-    if not _key:
-        return []
 
     clean = re.sub(r'\[SECTION:[^\]]+\]\s*', '', script_text).strip()
     words = clean.split()
@@ -2754,10 +2827,8 @@ def _extract_events_groq(
 
     runtime_min = max(runtime_secs / 60, 1.0) if runtime_secs > 0 else len(words) / 150.0
     n_events = max(12, min(60, int(runtime_min * 7)))
-
-    # Truncate script to stay within Groq context limits
-    excerpt = " ".join(words[:2000])
-    _arabic = _is_arabic_text(script_text)
+    excerpt  = " ".join(words[:2000])
+    _arabic  = _is_arabic_text(script_text)
 
     _arabic_note = (
         "\nIMPORTANT: The script is in Arabic. Write ALL description and chunk "
@@ -2786,17 +2857,12 @@ def _extract_events_groq(
         f"SCRIPT:\n{excerpt}"
     )
 
+    raw = _llm_json_call(prompt, max_tokens=2500, label="EventExtractor")
+    if not raw:
+        print("[EventExtractor] Both providers failed — falling back to regex chunker")
+        return []
+
     try:
-        from groq import Groq as _Groq
-        _gc = _Groq(api_key=_key)
-        resp = _gc.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.3,
-            max_tokens=2500,
-        )
-        raw = resp.choices[0].message.content.strip()
-        # Strip markdown code fences
         if "```" in raw:
             raw = raw.split("```")[1]
             if raw.startswith("json"):
@@ -2822,13 +2888,12 @@ def _extract_events_groq(
 
         _dist = _Counter(ev["type"] for ev in events)
         print(
-            f"[EventExtractor] Groq: {len(events)} events — " +
+            f"[EventExtractor] {len(events)} events — " +
             " | ".join(f"{t}:{c}" for t, c in sorted(_dist.items()))
         )
         return events
-
     except Exception as _ex:
-        print(f"[EventExtractor] Groq failed ({_ex}) — falling back to regex chunker")
+        print(f"[EventExtractor] JSON parse failed ({_ex}) — regex fallback")
         return []
 
 
@@ -3333,24 +3398,19 @@ def _get_or_generate_character_portrait(
 
 
 def _extract_all_characters(script_text: str, topic: str) -> list[str]:
-    """Extract all named characters from script using Groq — returns English names.
+    """Extract all named characters via Groq → OpenAI fallback — returns English names.
 
-    Arabic scripts: Groq transliterates names to English automatically.
+    Routes through _llm_json_call so a Groq 429 silently retries via OpenAI.
+    Arabic: instructs the LLM to transliterate names to English.
     Fallback: scans script for entries in _KNOWN_CRIME_PERSONS.
     """
-    import json as _json, os as _os
-    _key = _os.getenv("GROQ_API_KEY", "")
+    import json as _json
     _arabic = _is_arabic_text(script_text)
-
-    if not _key:
-        clean = re.sub(r'\[SECTION:[^\]]+\]\s*', '', script_text).lower()
-        return [n for n in _KNOWN_CRIME_PERSONS if n in clean]
-
-    excerpt = script_text[:3000]
     _arabic_note = (
         "The script is in Arabic — transliterate all character names to English. "
         if _arabic else ""
     )
+    excerpt = script_text[:3000]
     prompt = (
         f"Extract all named characters (real people) from this true crime script.\n"
         f"Topic: {topic}\n"
@@ -3360,29 +3420,24 @@ def _extract_all_characters(script_text: str, topic: str) -> list[str]:
         f'Example: ["Pablo Escobar", "Carlos Lehder"]\n\n'
         f"SCRIPT:\n{excerpt}"
     )
-    try:
-        from groq import Groq as _Groq
-        _gc = _Groq(api_key=_key)
-        resp = _gc.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.2,
-            max_tokens=200,
-        )
-        raw = resp.choices[0].message.content.strip()
-        if "```" in raw:
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-            raw = raw.strip()
-        names = _json.loads(raw)
-        result = [n.strip() for n in names if isinstance(n, str) and n.strip()]
-        print(f"[CharacterExtractor] Found {len(result)} characters: {result}")
-        return result
-    except Exception as _ex:
-        print(f"[CharacterExtractor] Groq failed ({_ex}) — scanning known persons")
-        clean = re.sub(r'\[SECTION:[^\]]+\]\s*', '', script_text).lower()
-        return [n for n in _KNOWN_CRIME_PERSONS if n in clean]
+    raw = _llm_json_call(prompt, max_tokens=200, label="CharacterExtractor")
+    if raw:
+        try:
+            if "```" in raw:
+                raw = raw.split("```")[1]
+                if raw.startswith("json"):
+                    raw = raw[4:]
+                raw = raw.strip()
+            names = _json.loads(raw)
+            result = [n.strip() for n in names if isinstance(n, str) and n.strip()]
+            print(f"[CharacterExtractor] Found {len(result)} characters: {result}")
+            return result
+        except Exception as _ex:
+            print(f"[CharacterExtractor] JSON parse failed ({_ex}) — scanning known persons")
+
+    # Static fallback: scan script for known crime persons
+    clean = re.sub(r'\[SECTION:[^\]]+\]\s*', '', script_text).lower()
+    return [n for n in _KNOWN_CRIME_PERSONS if n in clean]
 
 
 def _prefetch_character_portraits(
