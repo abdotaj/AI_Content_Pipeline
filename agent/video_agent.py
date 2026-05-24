@@ -1746,15 +1746,23 @@ def build_image_prompt(
 
     # ── Build AI enhancement prompt (shared by Tier 3 + 4) ───────────────────
     style_rule = f"\n- Match this visual style: {style_profile}" if style_profile else ""
+    # Detect Arabic input so we can instruct the LLM to translate entities to English
+    _has_arabic = any('؀' <= ch <= 'ۿ' for ch in first_200)
+    _arabic_note = (
+        "\n- The excerpt may be in Arabic. Translate all names, places, and events to "
+        "English in your output." if _has_arabic else ""
+    )
     ai_prompt = (
         "Read this script excerpt and write a specific visual image generation prompt "
         "(max 20 words) representing the exact subject.\n\n"
         f"Rules:\n- Name real places, real objects, real events\n- No human faces\n"
-        f"- Dark cinematic documentary style\n- Be specific not generic{style_rule}\n\n"
+        f"- Dark cinematic documentary style\n- Be specific not generic{style_rule}"
+        f"{_arabic_note}"
+        "\n- ALWAYS write the prompt in English regardless of input language\n\n"
         "Examples:\n"
         "GOOD: 'Burned village Darfur Sudan desert, smoke ruins, golden hour, cinematic aerial view'\n"
         "BAD: 'dark crime documentary background'\n\n"
-        f"Script excerpt: {first_200}\n\nReturn only the image prompt, nothing else."
+        f"Script excerpt: {first_200}\n\nReturn only the English image prompt, nothing else."
     )
 
     # ── Tier 3: Groq (skipped when unhealthy — NO blocking wait) ─────────────
@@ -2025,9 +2033,10 @@ def generate_ai_image(prompt: str, output_path: str, seed: int = None) -> str:
 def _is_dark_placeholder(path: str, threshold: int = 8) -> bool:
     """Return True if image is a nearly-solid black background (corrupted/empty download).
 
-    threshold=8 catches only truly blank files. Crime documentary content uses dark
-    palettes (~15-40 mean) which must NOT be filtered. PIL gradient emergency fallbacks
-    use ~18-34 RGB, all safely above this threshold.
+    threshold=8 (mean < 8/255 ≈ 3% brightness) catches only truly blank files.
+    Crime documentary content intentionally uses dark palettes (~15-40 mean) which
+    must NOT be filtered. The PIL gradient emergency fallbacks use ~18-34 RGB,
+    all safely above this threshold.
     """
     try:
         from PIL import Image as _PILCheck
@@ -2512,6 +2521,10 @@ _AI_PROMPT_SUFFIX_CLEAN = ", photorealistic, vertical 9:16"
 # Cache: query string → list of Wikimedia URLs (per pipeline run, not persistent)
 _wikimedia_query_cache: dict[str, list[str]] = {}
 
+# Cache: DuckDuckGo image query → list of URLs (per pipeline run, not persistent)
+# Prevents the same DDG query from firing hundreds of times across parallel event workers.
+_DDG_SEARCH_CACHE: dict[str, list[str]] = {}
+
 
 # Short event-type context word to combine with the person name
 _TYPE_CONTEXT: dict[str, str] = {
@@ -2704,8 +2717,10 @@ def _classify_visual_event(
 
 
 # ── Visual-planning LLM provider tracking ────────────────────────────────────
-_VIZ_GROQ_RL_UNTIL:  float = 0.0
-_VIZ_OAI_QL_UNTIL:   float = 0.0
+# Separate from script_agent's tracking — these are short structured-JSON calls
+# (EventExtractor, CharacterExtractor) not long-form script generation.
+_VIZ_GROQ_RL_UNTIL:  float = 0.0   # epoch; Groq rate-limited until this time
+_VIZ_OAI_QL_UNTIL:   float = 0.0   # epoch; OpenAI quota-limited until this time
 
 
 def _llm_json_call(prompt: str, max_tokens: int = 2500, label: str = "LLM") -> str:
@@ -2771,7 +2786,7 @@ def _llm_json_call(prompt: str, max_tokens: int = 2500, label: str = "LLM") -> s
                 print(f"[{label}] OpenAI gpt-4o-mini ✅ ({len(content)} chars)")
                 return content
         elif _r.status_code == 429:
-            _VIZ_OAI_QL_UNTIL = _time.time() + 300
+            _VIZ_OAI_QL_UNTIL = _time.time() + 300  # 5-min cooldown
             print(f"[{label}] OpenAI 429 — cooldown 300s")
         else:
             print(f"[{label}] OpenAI HTTP {_r.status_code}: {_r.text[:200]}")
@@ -2857,44 +2872,67 @@ def _extract_events_groq(
         f"SCRIPT:\n{excerpt}"
     )
 
-    raw = _llm_json_call(prompt, max_tokens=2500, label="EventExtractor")
+    # max_tokens=4000 — 60 events × ~100 chars each ≈ 6000 chars → ~1500 tokens.
+    # Previous 2500 limit caused Groq to truncate mid-array at ~10K chars, triggering
+    # the 400-event regex fallback that spams identical DDG queries.
+    raw = _llm_json_call(prompt, max_tokens=4000, label="EventExtractor")
     if not raw:
         print("[EventExtractor] Both providers failed — falling back to regex chunker")
         return []
 
+    def _parse_events_raw(text: str) -> list[dict]:
+        if "```" in text:
+            text = text.split("```")[1]
+            if text.startswith("json"):
+                text = text[4:]
+            text = text.strip()
+        return _json.loads(text)
+
+    events_raw: list[dict] = []
     try:
-        if "```" in raw:
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-            raw = raw.strip()
-        events_raw: list[dict] = _json.loads(raw)
-
-        events: list[dict] = []
-        for e in events_raw:
-            vtype = e.get("type", "atmosphere")
-            if vtype not in _VALID_EVENT_TYPES:
-                vtype = "atmosphere"
-            desc  = e.get("description", e.get("chunk", ""))
-            pos   = float(e.get("pos", len(events) / max(len(events_raw) - 1, 1)))
-            _, ev_prompt = _classify_visual_event(desc.lower(), pos, topic)
-            events.append({
-                "idx":    int(e.get("idx", len(events))),
-                "pos":    pos,
-                "type":   vtype,
-                "prompt": ev_prompt,
-                "chunk":  e.get("chunk", desc)[:80],
-            })
-
-        _dist = _Counter(ev["type"] for ev in events)
-        print(
-            f"[EventExtractor] {len(events)} events — " +
-            " | ".join(f"{t}:{c}" for t, c in sorted(_dist.items()))
-        )
-        return events
+        events_raw = _parse_events_raw(raw)
     except Exception as _ex:
-        print(f"[EventExtractor] JSON parse failed ({_ex}) — regex fallback")
+        print(f"[EventExtractor] JSON parse failed ({_ex}) — attempting partial repair")
+        # Partial JSON repair: find last complete object and close the array.
+        # This handles Groq truncation mid-array (unterminated string / missing closing ]).
+        try:
+            _last = max(raw.rfind('},'), raw.rfind('}'))
+            if _last > 0:
+                _repaired = raw[:_last + 1].strip()
+                if not _repaired.startswith('['):
+                    _repaired = '[' + _repaired
+                _repaired += ']'
+                events_raw = _json.loads(_repaired)
+                print(f"[EventExtractor] Repaired partial JSON → {len(events_raw)} events recovered")
+        except Exception as _ex2:
+            print(f"[EventExtractor] Repair also failed ({_ex2}) — regex fallback")
+            return []
+
+    if not events_raw:
         return []
+
+    events: list[dict] = []
+    for e in events_raw:
+        vtype = e.get("type", "atmosphere")
+        if vtype not in _VALID_EVENT_TYPES:
+            vtype = "atmosphere"
+        desc  = e.get("description", e.get("chunk", ""))
+        pos   = float(e.get("pos", len(events) / max(len(events_raw) - 1, 1)))
+        _, ev_prompt = _classify_visual_event(desc.lower(), pos, topic)
+        events.append({
+            "idx":    int(e.get("idx", len(events))),
+            "pos":    pos,
+            "type":   vtype,
+            "prompt": ev_prompt,
+            "chunk":  e.get("chunk", desc)[:80],
+        })
+
+    _dist = _Counter(ev["type"] for ev in events)
+    print(
+        f"[EventExtractor] {len(events)} events — " +
+        " | ".join(f"{t}:{c}" for t, c in sorted(_dist.items()))
+    )
+    return events
 
 
 def extract_visual_events(
@@ -2968,37 +3006,56 @@ _TYPE_SEARCH_QUERIES: dict[str, str] = {
 def _prefetch_real_urls(events: list[dict], topic: str) -> dict[str, list[str]]:
     """Fetch Wikimedia URLs once per event type using multi-query strategy.
 
+    Search order: characters first (portrait) → static context (location, childhood,
+    map) → dynamic narrative (evidence, cctv, courtroom, interrogation, etc.).
+    This mirrors documentary visual rhythm: establish who → where → what happened.
+
     For each type, uses the first chunk of that type to generate an ordered
     query list (person+location, person+context, person+year, person alone,
     generic base), tries each until it collects enough URLs.
     Returns dict[type → [url, ...]] as a cycling real-image pool.
     """
+    # Ordered type tiers: characters → static context → dynamic narrative
+    _STATIC_TYPES  = ("portrait", "childhood", "location", "map")
+    _DYNAMIC_TYPES = ("evidence", "atmosphere", "newspaper", "cctv",
+                      "courtroom", "interrogation", "prison")
+
     # Take a representative chunk for each event type
     type_chunks: dict[str, str] = {}
     for ev in events:
         t = ev["type"]
-        if t not in type_chunks and t != "portrait":
+        if t not in type_chunks:
             type_chunks[t] = ev.get("chunk", "")
 
+    # Process in tier order so character/location searches always run first
+    ordered_types = (
+        [t for t in _STATIC_TYPES  if t in type_chunks] +
+        [t for t in _DYNAMIC_TYPES if t in type_chunks] +
+        [t for t in type_chunks    if t not in _STATIC_TYPES and t not in _DYNAMIC_TYPES]
+    )
+
     pool: dict[str, list[str]] = {}
-    for t, chunk in type_chunks.items():
+    for t in ordered_types:
+        chunk = type_chunks[t]
         queries = _build_scene_search_queries(chunk, topic, t)
         all_urls: list[str] = []
         for q in queries:
             if len(all_urls) >= 8:
                 break
-            urls = _wikimedia_image_results(q, max_results=4)
-            # Cache result so _gen_event workers don't repeat the API call
-            _wikimedia_query_cache[q] = urls
+            # Use Wikimedia cache so _gen_event workers never repeat this call
+            urls = _wikimedia_cached(q, max_results=4)
             all_urls.extend(urls)
         if not all_urls:
             # Internet Archive fallback using the best query
             q = queries[0] if queries else topic
             all_urls = _internet_archive_image_results(q, max_results=4)
+            if all_urls:
+                _wikimedia_query_cache[queries[0] if queries else topic] = all_urls
         pool[t] = list(dict.fromkeys(all_urls))  # deduplicate, preserve order
+        tier = "static" if t in _STATIC_TYPES else "dynamic"
         tag = "real" if all_urls else "none"
         top_q = queries[0] if queries else ""
-        print(f"[RealImages] prefetch {t}: {len(all_urls)} {tag} URLs (top='{top_q}')")
+        print(f"[RealImages] prefetch [{tier}] {t}: {len(all_urls)} {tag} URLs (top='{top_q}')")
     return pool
 
 
@@ -4646,56 +4703,6 @@ def _search_coverr(query: str, max_results: int = 5) -> list[str]:
         return []
 
 
-def _search_openverse_videos(query: str, max_results: int = 5) -> list[str]:
-    """Search OpenVerse for CC-licensed video clips. No API key required."""
-    try:
-        r2 = requests.get(
-            "https://api.openverse.org/v1/images/",
-            params={"q": query, "page_size": max_results, "mature": "false", "extension": "mp4,webm,ogv"},
-            headers={"User-Agent": "DarkCrimeDecoded/1.0"},
-            timeout=15,
-        )
-        if r2.status_code == 200:
-            results = r2.json().get("results", [])
-            urls = [item["url"] for item in results if item.get("url")]
-            if urls:
-                print(f"[Stock] OpenVerse video: {len(urls)} result(s) for '{query}'")
-            return urls
-        return []
-    except Exception as e:
-        print(f"[Stock] OpenVerse video error for '{query}': {e}")
-        return []
-
-
-def _search_loc_videos(query: str, max_results: int = 5) -> list[str]:
-    """Search Library of Congress for public domain moving images."""
-    try:
-        r = requests.get(
-            "https://www.loc.gov/search/",
-            params={"q": query, "fo": "json", "fa": "online-format:video", "c": max_results * 3, "sp": 1},
-            headers={"User-Agent": "DarkCrimeDecoded/1.0"},
-            timeout=15,
-        )
-        if r.status_code != 200:
-            return []
-        results = r.json().get("results", [])
-        urls = []
-        for item in results:
-            for res in item.get("resources", []):
-                url = res.get("url") or res.get("stream") or ""
-                if url and any(url.endswith(ext) for ext in (".mp4", ".mov", ".webm")):
-                    urls.append(url)
-                    break
-            if len(urls) >= max_results:
-                break
-        if urls:
-            print(f"[Stock] Library of Congress video: {len(urls)} result(s) for '{query}'")
-        return urls
-    except Exception as e:
-        print(f"[Stock] LoC video error for '{query}': {e}")
-        return []
-
-
 def _filter_relevant_results(urls: list[str], topic_keywords: list[str]) -> list[str]:
     """
     Basic relevance filter: keep URLs whose path/filename contains at least one
@@ -4783,6 +4790,7 @@ def _download_video_url(url: str, output_path: str,
                     f.write(chunk)
                     downloaded += len(chunk)
                     if downloaded > limit:
+                        # Downloaded enough — close and try yt-dlp clip instead
                         print(f"[Stock] Stream limit hit (>{limit // 1_000_000} MB) — trying yt-dlp clip: {url[:60]}")
                         break
 
@@ -4792,6 +4800,7 @@ def _download_video_url(url: str, output_path: str,
                 os.remove(output_path)
             except OSError:
                 pass
+            # Last resort: yt-dlp clip
             return _ytdlp_clip_first15(url, output_path)
         return output_path
     except Exception:
@@ -5210,18 +5219,31 @@ def _search_vimeo_free(query: str, max_results: int = 5) -> list[str]:
         return []
 
 
+# ── OpenVerse (WordPress CC Search — no API key, aggregates Flickr + Wikimedia) ──
+
 def _search_openverse_images(query: str, max_results: int = 5) -> list[str]:
-    """Search OpenVerse for CC-licensed images. Free, no API key."""
+    """
+    Search OpenVerse (openverse.org) for CC-licensed images.
+    Free, no API key. Aggregates Flickr, Wikimedia Commons, and 20+ other sources.
+    Returns direct image URLs.
+    """
     try:
         r = requests.get(
             "https://api.openverse.org/v1/images/",
-            params={"q": query, "page_size": max_results, "license_type": "commercial,modification", "mature": "false"},
-            headers={"User-Agent": "DarkCrimeDecoded/1.0"},
+            params={
+                "q": query,
+                "page_size": max_results,
+                "license_type": "commercial,modification",  # CC licenses safe for YouTube
+                "mature": "false",
+            },
+            headers={"User-Agent": "DarkCrimeDecoded/1.0 (documentary content pipeline)"},
             timeout=15,
         )
         if r.status_code != 200:
+            print(f"[Image] OpenVerse {r.status_code} for '{query}'")
             return []
-        urls = [item["url"] for item in r.json().get("results", []) if item.get("url")]
+        results = r.json().get("results", [])
+        urls = [item["url"] for item in results if item.get("url")]
         if urls:
             print(f"[Image] OpenVerse: {len(urls)} result(s) for '{query}'")
         return urls
@@ -5230,20 +5252,76 @@ def _search_openverse_images(query: str, max_results: int = 5) -> list[str]:
         return []
 
 
+def _search_openverse_videos(query: str, max_results: int = 5) -> list[str]:
+    """
+    Search OpenVerse for CC-licensed video clips.
+    Same free endpoint, no API key.
+    """
+    try:
+        r = requests.get(
+            "https://api.openverse.org/v1/audio/",  # OpenVerse audio has some video sources too
+            params={"q": query, "page_size": max_results, "mature": "false"},
+            headers={"User-Agent": "DarkCrimeDecoded/1.0"},
+            timeout=15,
+        )
+        # OpenVerse doesn't have a dedicated video endpoint — fall back to images
+        # that have video mime types
+        r2 = requests.get(
+            "https://api.openverse.org/v1/images/",
+            params={
+                "q": query,
+                "page_size": max_results,
+                "mature": "false",
+                "extension": "mp4,webm,ogv",
+            },
+            headers={"User-Agent": "DarkCrimeDecoded/1.0"},
+            timeout=15,
+        )
+        if r2.status_code == 200:
+            results = r2.json().get("results", [])
+            urls = [item["url"] for item in results if item.get("url")]
+            if urls:
+                print(f"[Stock] OpenVerse video: {len(urls)} result(s) for '{query}'")
+            return urls
+        return []
+    except Exception as e:
+        print(f"[Stock] OpenVerse video error for '{query}': {e}")
+        return []
+
+
+# ── Library of Congress (loc.gov) — free, no API key, massive US historical archive ──
+
+_LOC_MEDIA_TYPES = {
+    "photo": "still image",
+    "video": "moving image",
+}
+
 def _search_loc_images(query: str, max_results: int = 5) -> list[str]:
-    """Search Library of Congress for public domain historical images. No API key."""
+    """
+    Search Library of Congress (loc.gov) for public domain historical images.
+    Free, no API key. Best for US crime/law enforcement/political history 1860s–1990s.
+    Returns direct image URLs.
+    """
     try:
         r = requests.get(
             "https://www.loc.gov/search/",
-            params={"q": query, "fo": "json", "fa": "online-format:image", "c": max_results * 3, "sp": 1},
+            params={
+                "q": query,
+                "fo": "json",
+                "fa": "online-format:image",
+                "c": max_results * 3,
+                "sp": 1,
+            },
             headers={"User-Agent": "DarkCrimeDecoded/1.0"},
             timeout=15,
         )
         if r.status_code != 200:
+            print(f"[Image] LoC {r.status_code} for '{query}'")
             return []
         results = r.json().get("results", [])
         urls = []
         for item in results:
+            # Prefer JPEG thumbnail or image_url
             for field in ("image_url", "thumbnail"):
                 val = item.get(field)
                 if isinstance(val, list):
@@ -5261,8 +5339,53 @@ def _search_loc_images(query: str, max_results: int = 5) -> list[str]:
         return []
 
 
+def _search_loc_videos(query: str, max_results: int = 5) -> list[str]:
+    """
+    Search Library of Congress for public domain moving images.
+    Returns direct video/stream URLs when available.
+    """
+    try:
+        r = requests.get(
+            "https://www.loc.gov/search/",
+            params={
+                "q": query,
+                "fo": "json",
+                "fa": "online-format:video",
+                "c": max_results * 3,
+                "sp": 1,
+            },
+            headers={"User-Agent": "DarkCrimeDecoded/1.0"},
+            timeout=15,
+        )
+        if r.status_code != 200:
+            return []
+        results = r.json().get("results", [])
+        urls = []
+        for item in results:
+            # Resources may have streaming links
+            for res in item.get("resources", []):
+                url = res.get("url") or res.get("stream") or ""
+                if url and any(url.endswith(ext) for ext in (".mp4", ".mov", ".webm")):
+                    urls.append(url)
+                    break
+            if len(urls) >= max_results:
+                break
+        if urls:
+            print(f"[Stock] Library of Congress video: {len(urls)} result(s) for '{query}'")
+        return urls
+    except Exception as e:
+        print(f"[Stock] LoC video error for '{query}': {e}")
+        return []
+
+
+# ── Flickr CC (requires FLICKR_API_KEY env var — free account at flickr.com/services/api) ──
+
 def _search_flickr_images(query: str, max_results: int = 5) -> list[str]:
-    """Search Flickr for CC-licensed photos. Requires FLICKR_API_KEY env var."""
+    """
+    Search Flickr for CC-licensed photos.
+    Requires FLICKR_API_KEY (free). Best source for real documentary-style news photos.
+    Returns direct image URLs sized to 1024px wide (Large).
+    """
     api_key = os.getenv("FLICKR_API_KEY", "").strip()
     if not api_key or api_key.startswith("YOUR_"):
         return []
@@ -5273,22 +5396,26 @@ def _search_flickr_images(query: str, max_results: int = 5) -> list[str]:
                 "method": "flickr.photos.search",
                 "api_key": api_key,
                 "text": query,
-                "license": "1,2,3,4,5,6,9,10",
+                "license": "1,2,3,4,5,6,9,10",  # All CC + public domain licenses
                 "sort": "relevance",
                 "per_page": max_results,
                 "format": "json",
                 "nojsoncallback": 1,
-                "extras": "url_l,url_c,url_b",
+                "extras": "url_l,url_c,url_b",  # Large, Medium 800, Large 1024
                 "safe_search": 1,
-                "content_type": 1,
+                "content_type": 1,  # photos only
             },
             timeout=15,
         )
         if r.status_code != 200:
+            print(f"[Image] Flickr {r.status_code} for '{query}'")
             return []
         photos = r.json().get("photos", {}).get("photo", [])
-        urls = [p.get("url_b") or p.get("url_l") or p.get("url_c") or "" for p in photos]
-        urls = [u for u in urls if u]
+        urls = []
+        for p in photos:
+            url = p.get("url_b") or p.get("url_l") or p.get("url_c") or ""
+            if url:
+                urls.append(url)
         if urls:
             print(f"[Image] Flickr CC: {len(urls)} result(s) for '{query}'")
         return urls
@@ -5299,7 +5426,13 @@ def _search_flickr_images(query: str, max_results: int = 5) -> list[str]:
 
 def _search_duckduckgo_images(query: str, max_results: int = 5) -> list[str]:
     """Search DuckDuckGo images — no API key, returns direct image URLs.
-    Accesses Bing image index so finds thousands of results for any topic."""
+    Accesses Bing image index so finds thousands of results for any topic.
+    Results are cached per pipeline run so identical queries across parallel
+    event workers never hit the network more than once."""
+    # Per-run cache — prevents ~1200 redundant calls when 400 events share queries
+    cache_key = f"{query}|{max_results}"
+    if cache_key in _DDG_SEARCH_CACHE:
+        return _DDG_SEARCH_CACHE[cache_key]
     try:
         try:
             from ddgs import DDGS
@@ -5320,9 +5453,11 @@ def _search_duckduckgo_images(query: str, max_results: int = 5) -> list[str]:
                 break
         if urls:
             print(f"[Image] DuckDuckGo: {len(urls)} result(s) for '{query}'")
+        _DDG_SEARCH_CACHE[cache_key] = urls
         return urls
     except Exception as e:
         print(f"[Image] DuckDuckGo images error for '{query}': {e}")
+        _DDG_SEARCH_CACHE[cache_key] = []
         return []
 
 
@@ -5337,6 +5472,7 @@ def _search_duckduckgo_videos(query: str, max_results: int = 5) -> list[str]:
         raw = DDGS().videos(query, max_results=max_results * 4)
         urls = []
         for r in (raw or []):
+            # DDG video results have 'content' (embed page) and sometimes 'embed_url'
             url = r.get("content", "") or r.get("embed_url", "")
             if not url or not url.startswith("http"):
                 continue
@@ -5802,16 +5938,23 @@ def fetch_real_images(script_text: str, count: int, video_id: str,
     ai_prompts = generate_image_prompts(script_text, remaining, style_profile=style_profile)
 
     # ── Event-driven image planning (same as full pipeline) ──────────────────
+    # Use extract_visual_events to classify each script chunk by visual type
+    # (portrait/courtroom/evidence/crime_scene/etc.) and build typed search queries.
+    # This replaces mechanical equal-chunk splitting with script-aware planning.
     _clean_topic = _clean_topic_name(topic)
-    _runtime_est = len(words) / 145.0 * 60
+    _runtime_est = len(words) / 145.0 * 60  # rough seconds estimate
     events = extract_visual_events(script_text, topic=topic, runtime_secs=_runtime_est)
 
+    # Trim or pad events list to match remaining count
     if len(events) > remaining:
+        # Sample evenly across events to preserve narrative spread
         _step = len(events) / remaining
         events = [events[int(i * _step)] for i in range(remaining)]
     elif len(events) < remaining:
+        # Repeat last event for padding (Pollinations will vary by seed)
         events = events + [events[-1]] * (remaining - len(events)) if events else []
 
+    # Re-index after trim/pad
     for _idx, _ev in enumerate(events):
         _ev["idx"] = _idx
 
@@ -5826,8 +5969,12 @@ def fetch_real_images(script_text: str, count: int, video_id: str,
 
         chunk_text = ev.get("chunk", "")
         ev_type    = ev.get("type", "atmosphere")
-        _scene_qs  = _build_scene_search_queries(chunk_text, _clean_topic, ev_type)
-        _arabic_q  = chunk_text[:80] if any('؀' <= c <= 'ۿ' for c in chunk_text) else None
+
+        # Build ordered scene queries (most-specific → generic) using event type
+        _scene_qs = _build_scene_search_queries(chunk_text, _clean_topic, ev_type)
+
+        # Also try Arabic chunk text via DDG if script is Arabic
+        _arabic_q = chunk_text[:80] if any('؀' <= c <= 'ۿ' for c in chunk_text) else None
 
         # Step 1: portrait — canonical cache → real+AI candidates, pick best
         if ev_type == "portrait":
@@ -5915,7 +6062,7 @@ def fetch_real_images(script_text: str, count: int, video_id: str,
                         _kind = "real-ddg"
                         break
 
-        # Step 3: all stock sources × all scene queries
+        # Step 3: all stock sources × all scene queries (specific → generic)
         if not _saved:
             _stock_sources = [
                 ("Pexels",    lambda q: _search_pexels_images(q, max_results=4)),
@@ -7142,6 +7289,16 @@ def match_images_to_moments(
     gen_in_result  = sum(1 for r in result if r in set(gen_pool))
     real_in_result = len(result) - gen_in_result
     print(f"[Visual] Final: {real_in_result} real/archive + {gen_in_result} generated = {len(result)} slots")
+
+    # Append any images that weren't assigned to a moment so the full pool is available
+    # for the assembly coverage loop. Without this, match_images_to_moments caps at
+    # len(moments) and silently discards hundreds of valid archive images.
+    _used_set = set(result)
+    _unused = [p for p in ai_pool_all if p not in _used_set]
+    if _unused:
+        result.extend(_unused)
+        print(f"[Visual] Appended {len(_unused)} unused pool images → {len(result)} total for assembly")
+
     return result
 
 
@@ -9342,7 +9499,7 @@ def assign_clips_to_script(
 # FAST_VISUALS_PER_MIN: unique image transitions per minute.
 # At 4 clip-variants per image and ~5 s per clip → 12 clips/min / 4 = 3 images/min.
 # Increased from 8→12 to improve visual rhythm and reduce portrait dominance.
-_FAST_VISUALS_PER_MIN: int = 28  # clip transitions per minute (7 images x 4 clips each)
+_FAST_VISUALS_PER_MIN: int = 28  # clip transitions per minute (7 images × 4 clips each)
 _FAST_IMAGES_PER_MIN: float = 7.0  # unique images per minute target
 
 # ── Story-phase visual style engine ──────────────────────────────────────────
@@ -9547,7 +9704,7 @@ def run_fast_pipeline(
         _density_floor = _math.ceil(_real_audio_secs / 60 * _FAST_IMAGES_PER_MIN)
         n_images = max(25, min(400, _density_floor))
         print(f"[FAST] Visual density: {n_images} images for {_real_audio_secs/60:.1f}min "
-              f"({_FAST_VISUALS_PER_MIN} clips/min target)")
+              f"({_FAST_IMAGES_PER_MIN:.0f} images/min target)")
     else:
         n_images = calculate_unique_images(is_short=False)
 

@@ -2521,6 +2521,10 @@ _AI_PROMPT_SUFFIX_CLEAN = ", photorealistic, vertical 9:16"
 # Cache: query string → list of Wikimedia URLs (per pipeline run, not persistent)
 _wikimedia_query_cache: dict[str, list[str]] = {}
 
+# Cache: DuckDuckGo image query → list of URLs (per pipeline run, not persistent)
+# Prevents the same DDG query from firing hundreds of times across parallel event workers.
+_DDG_SEARCH_CACHE: dict[str, list[str]] = {}
+
 
 # Short event-type context word to combine with the person name
 _TYPE_CONTEXT: dict[str, str] = {
@@ -2868,44 +2872,67 @@ def _extract_events_groq(
         f"SCRIPT:\n{excerpt}"
     )
 
-    raw = _llm_json_call(prompt, max_tokens=2500, label="EventExtractor")
+    # max_tokens=4000 — 60 events × ~100 chars each ≈ 6000 chars → ~1500 tokens.
+    # Previous 2500 limit caused Groq to truncate mid-array at ~10K chars, triggering
+    # the 400-event regex fallback that spams identical DDG queries.
+    raw = _llm_json_call(prompt, max_tokens=4000, label="EventExtractor")
     if not raw:
         print("[EventExtractor] Both providers failed — falling back to regex chunker")
         return []
 
+    def _parse_events_raw(text: str) -> list[dict]:
+        if "```" in text:
+            text = text.split("```")[1]
+            if text.startswith("json"):
+                text = text[4:]
+            text = text.strip()
+        return _json.loads(text)
+
+    events_raw: list[dict] = []
     try:
-        if "```" in raw:
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-            raw = raw.strip()
-        events_raw: list[dict] = _json.loads(raw)
-
-        events: list[dict] = []
-        for e in events_raw:
-            vtype = e.get("type", "atmosphere")
-            if vtype not in _VALID_EVENT_TYPES:
-                vtype = "atmosphere"
-            desc  = e.get("description", e.get("chunk", ""))
-            pos   = float(e.get("pos", len(events) / max(len(events_raw) - 1, 1)))
-            _, ev_prompt = _classify_visual_event(desc.lower(), pos, topic)
-            events.append({
-                "idx":    int(e.get("idx", len(events))),
-                "pos":    pos,
-                "type":   vtype,
-                "prompt": ev_prompt,
-                "chunk":  e.get("chunk", desc)[:80],
-            })
-
-        _dist = _Counter(ev["type"] for ev in events)
-        print(
-            f"[EventExtractor] {len(events)} events — " +
-            " | ".join(f"{t}:{c}" for t, c in sorted(_dist.items()))
-        )
-        return events
+        events_raw = _parse_events_raw(raw)
     except Exception as _ex:
-        print(f"[EventExtractor] JSON parse failed ({_ex}) — regex fallback")
+        print(f"[EventExtractor] JSON parse failed ({_ex}) — attempting partial repair")
+        # Partial JSON repair: find last complete object and close the array.
+        # This handles Groq truncation mid-array (unterminated string / missing closing ]).
+        try:
+            _last = max(raw.rfind('},'), raw.rfind('}'))
+            if _last > 0:
+                _repaired = raw[:_last + 1].strip()
+                if not _repaired.startswith('['):
+                    _repaired = '[' + _repaired
+                _repaired += ']'
+                events_raw = _json.loads(_repaired)
+                print(f"[EventExtractor] Repaired partial JSON → {len(events_raw)} events recovered")
+        except Exception as _ex2:
+            print(f"[EventExtractor] Repair also failed ({_ex2}) — regex fallback")
+            return []
+
+    if not events_raw:
         return []
+
+    events: list[dict] = []
+    for e in events_raw:
+        vtype = e.get("type", "atmosphere")
+        if vtype not in _VALID_EVENT_TYPES:
+            vtype = "atmosphere"
+        desc  = e.get("description", e.get("chunk", ""))
+        pos   = float(e.get("pos", len(events) / max(len(events_raw) - 1, 1)))
+        _, ev_prompt = _classify_visual_event(desc.lower(), pos, topic)
+        events.append({
+            "idx":    int(e.get("idx", len(events))),
+            "pos":    pos,
+            "type":   vtype,
+            "prompt": ev_prompt,
+            "chunk":  e.get("chunk", desc)[:80],
+        })
+
+    _dist = _Counter(ev["type"] for ev in events)
+    print(
+        f"[EventExtractor] {len(events)} events — " +
+        " | ".join(f"{t}:{c}" for t, c in sorted(_dist.items()))
+    )
+    return events
 
 
 def extract_visual_events(
@@ -2979,37 +3006,56 @@ _TYPE_SEARCH_QUERIES: dict[str, str] = {
 def _prefetch_real_urls(events: list[dict], topic: str) -> dict[str, list[str]]:
     """Fetch Wikimedia URLs once per event type using multi-query strategy.
 
+    Search order: characters first (portrait) → static context (location, childhood,
+    map) → dynamic narrative (evidence, cctv, courtroom, interrogation, etc.).
+    This mirrors documentary visual rhythm: establish who → where → what happened.
+
     For each type, uses the first chunk of that type to generate an ordered
     query list (person+location, person+context, person+year, person alone,
     generic base), tries each until it collects enough URLs.
     Returns dict[type → [url, ...]] as a cycling real-image pool.
     """
+    # Ordered type tiers: characters → static context → dynamic narrative
+    _STATIC_TYPES  = ("portrait", "childhood", "location", "map")
+    _DYNAMIC_TYPES = ("evidence", "atmosphere", "newspaper", "cctv",
+                      "courtroom", "interrogation", "prison")
+
     # Take a representative chunk for each event type
     type_chunks: dict[str, str] = {}
     for ev in events:
         t = ev["type"]
-        if t not in type_chunks and t != "portrait":
+        if t not in type_chunks:
             type_chunks[t] = ev.get("chunk", "")
 
+    # Process in tier order so character/location searches always run first
+    ordered_types = (
+        [t for t in _STATIC_TYPES  if t in type_chunks] +
+        [t for t in _DYNAMIC_TYPES if t in type_chunks] +
+        [t for t in type_chunks    if t not in _STATIC_TYPES and t not in _DYNAMIC_TYPES]
+    )
+
     pool: dict[str, list[str]] = {}
-    for t, chunk in type_chunks.items():
+    for t in ordered_types:
+        chunk = type_chunks[t]
         queries = _build_scene_search_queries(chunk, topic, t)
         all_urls: list[str] = []
         for q in queries:
             if len(all_urls) >= 8:
                 break
-            urls = _wikimedia_image_results(q, max_results=4)
-            # Cache result so _gen_event workers don't repeat the API call
-            _wikimedia_query_cache[q] = urls
+            # Use Wikimedia cache so _gen_event workers never repeat this call
+            urls = _wikimedia_cached(q, max_results=4)
             all_urls.extend(urls)
         if not all_urls:
             # Internet Archive fallback using the best query
             q = queries[0] if queries else topic
             all_urls = _internet_archive_image_results(q, max_results=4)
+            if all_urls:
+                _wikimedia_query_cache[queries[0] if queries else topic] = all_urls
         pool[t] = list(dict.fromkeys(all_urls))  # deduplicate, preserve order
+        tier = "static" if t in _STATIC_TYPES else "dynamic"
         tag = "real" if all_urls else "none"
         top_q = queries[0] if queries else ""
-        print(f"[RealImages] prefetch {t}: {len(all_urls)} {tag} URLs (top='{top_q}')")
+        print(f"[RealImages] prefetch [{tier}] {t}: {len(all_urls)} {tag} URLs (top='{top_q}')")
     return pool
 
 
@@ -5380,7 +5426,13 @@ def _search_flickr_images(query: str, max_results: int = 5) -> list[str]:
 
 def _search_duckduckgo_images(query: str, max_results: int = 5) -> list[str]:
     """Search DuckDuckGo images — no API key, returns direct image URLs.
-    Accesses Bing image index so finds thousands of results for any topic."""
+    Accesses Bing image index so finds thousands of results for any topic.
+    Results are cached per pipeline run so identical queries across parallel
+    event workers never hit the network more than once."""
+    # Per-run cache — prevents ~1200 redundant calls when 400 events share queries
+    cache_key = f"{query}|{max_results}"
+    if cache_key in _DDG_SEARCH_CACHE:
+        return _DDG_SEARCH_CACHE[cache_key]
     try:
         try:
             from ddgs import DDGS
@@ -5401,9 +5453,11 @@ def _search_duckduckgo_images(query: str, max_results: int = 5) -> list[str]:
                 break
         if urls:
             print(f"[Image] DuckDuckGo: {len(urls)} result(s) for '{query}'")
+        _DDG_SEARCH_CACHE[cache_key] = urls
         return urls
     except Exception as e:
         print(f"[Image] DuckDuckGo images error for '{query}': {e}")
+        _DDG_SEARCH_CACHE[cache_key] = []
         return []
 
 
@@ -7235,6 +7289,16 @@ def match_images_to_moments(
     gen_in_result  = sum(1 for r in result if r in set(gen_pool))
     real_in_result = len(result) - gen_in_result
     print(f"[Visual] Final: {real_in_result} real/archive + {gen_in_result} generated = {len(result)} slots")
+
+    # Append any images that weren't assigned to a moment so the full pool is available
+    # for the assembly coverage loop. Without this, match_images_to_moments caps at
+    # len(moments) and silently discards hundreds of valid archive images.
+    _used_set = set(result)
+    _unused = [p for p in ai_pool_all if p not in _used_set]
+    if _unused:
+        result.extend(_unused)
+        print(f"[Visual] Appended {len(_unused)} unused pool images → {len(result)} total for assembly")
+
     return result
 
 
