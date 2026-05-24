@@ -2527,14 +2527,32 @@ _DDG_SEARCH_CACHE: dict[str, list[str]] = {}
 
 
 def _ddgs_proxy() -> str | None:
-    """Return proxy URL for DDGS if configured, else None.
+    """Return a randomly selected proxy URL for DDGS.
 
-    GitHub Actions IPs are often blocked by DDG. Set DDG_PROXY in GitHub Secrets
-    to route through a proxy. Supports HTTP and SOCKS5 formats:
-      http://user:pass@host:port
-      socks5://user:pass@host:port
-    Falls back to standard HTTPS_PROXY / https_proxy env vars.
+    Reads DDG_PROXY_LIST first (newline-separated, host:port:user:pass format):
+      45.39.73.121:5536:mxzwyene:kqg2qsljouvb
+      23.26.68.181:6164:mxzwyene:kqg2qsljouvb
+      ...
+    Picks one at random each call so load is distributed and a blocked IP
+    is automatically avoided on the next request.
+
+    Falls back to DDG_PROXY (single URL), then HTTPS_PROXY.
     """
+    proxy_list_raw = os.getenv("DDG_PROXY_LIST", "")
+    if proxy_list_raw:
+        proxies: list[str] = []
+        for line in proxy_list_raw.strip().splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split(":")
+            if len(parts) == 4:
+                host, port, user, pwd = parts
+                proxies.append(f"http://{user}:{pwd}@{host}:{port}")
+            elif line.startswith(("http://", "socks5://")):
+                proxies.append(line)
+        if proxies:
+            return random.choice(proxies)
     return (
         os.getenv("DDG_PROXY")
         or os.getenv("HTTPS_PROXY")
@@ -5516,9 +5534,7 @@ def _search_duckduckgo_images(query: str, max_results: int = 5) -> list[str]:
     Accesses Bing image index so finds thousands of results for any topic.
     Results are cached per pipeline run so identical queries across parallel
     event workers never hit the network more than once."""
-    # Per-run cache — prevents ~1200 redundant calls when 400 events share queries.
-    # Only cache successful (non-empty) results — errors/empty are NOT cached so
-    # a later call can retry (DDG may unblock after a short delay).
+    # Per-run cache — only caches successful results so errors allow retry.
     cache_key = f"{query}|{max_results}"
     if cache_key in _DDG_SEARCH_CACHE:
         return _DDG_SEARCH_CACHE[cache_key]
@@ -5527,56 +5543,80 @@ def _search_duckduckgo_images(query: str, max_results: int = 5) -> list[str]:
             from ddgs import DDGS
         except ImportError:
             from duckduckgo_search import DDGS
-        _proxy = _ddgs_proxy()
-        raw = DDGS(proxy=_proxy).images(query, max_results=max_results * 3)
-        urls = []
-        _blocked = _BLOCKED_IMAGE_DOMAINS
-        for r in (raw or []):
-            url = r.get("image", "")
-            if not url or not url.startswith("http"):
-                continue
-            u_low = url.lower()
-            if any(d in u_low for d in _blocked):
-                continue
-            urls.append(url)
-            if len(urls) >= max_results:
-                break
-        if urls:
-            print(f"[Image] DuckDuckGo: {len(urls)} result(s) for '{query}'")
-            _DDG_SEARCH_CACHE[cache_key] = urls  # cache only on success
-        return urls
-    except Exception as e:
-        print(f"[Image] DuckDuckGo images error for '{query}': {e}")
-        return []  # do NOT cache errors — allow retry on next call
+    except ImportError:
+        return []
+
+    # Retry up to 3 times, each time picking a different random proxy from the list
+    _max_attempts = 3 if os.getenv("DDG_PROXY_LIST") else 1
+    _last_err: Exception | None = None
+    for _attempt in range(_max_attempts):
+        try:
+            _proxy = _ddgs_proxy()
+            raw = DDGS(proxy=_proxy).images(query, max_results=max_results * 3)
+            urls: list[str] = []
+            _blocked = _BLOCKED_IMAGE_DOMAINS
+            for r in (raw or []):
+                url = r.get("image", "")
+                if not url or not url.startswith("http"):
+                    continue
+                if any(d in url.lower() for d in _blocked):
+                    continue
+                urls.append(url)
+                if len(urls) >= max_results:
+                    break
+            if urls:
+                print(f"[Image] DuckDuckGo: {len(urls)} result(s) for '{query}' "
+                      f"(proxy attempt {_attempt + 1})")
+                _DDG_SEARCH_CACHE[cache_key] = urls
+                return urls
+        except Exception as e:
+            _last_err = e
+            if _attempt < _max_attempts - 1:
+                time.sleep(1)  # brief pause before retrying with next proxy
+    if _last_err:
+        print(f"[Image] DuckDuckGo images failed for '{query}': {_last_err}")
+    return []
 
 
 def _search_duckduckgo_videos(query: str, max_results: int = 5) -> list[str]:
     """Search DuckDuckGo videos — finds news clips, reels, short videos.
-    Returns direct embed/source URLs; caller downloads via yt-dlp or direct HTTP."""
+    Returns direct embed/source URLs; caller downloads via yt-dlp or direct HTTP.
+    Retries up to 3× with different random proxies when DDG_PROXY_LIST is set."""
     try:
         try:
             from ddgs import DDGS
         except ImportError:
             from duckduckgo_search import DDGS
-        _proxy = _ddgs_proxy()
-        raw = DDGS(proxy=_proxy).videos(query, max_results=max_results * 4)
-        urls = []
-        for r in (raw or []):
-            # DDG video results have 'content' (embed page) and sometimes 'embed_url'
-            url = r.get("content", "") or r.get("embed_url", "")
-            if not url or not url.startswith("http"):
-                continue
-            if _is_blacklisted_source(url):
-                continue
-            urls.append(url)
-            if len(urls) >= max_results:
-                break
-        if urls:
-            print(f"[Stock] DuckDuckGo videos: {len(urls)} result(s) for '{query}'")
-        return urls
-    except Exception as e:
-        print(f"[Stock] DuckDuckGo videos error for '{query}': {e}")
+    except ImportError:
         return []
+
+    _max_attempts = 3 if os.getenv("DDG_PROXY_LIST") else 1
+    _last_err: Exception | None = None
+    for _attempt in range(_max_attempts):
+        try:
+            _proxy = _ddgs_proxy()
+            raw = DDGS(proxy=_proxy).videos(query, max_results=max_results * 4)
+            urls: list[str] = []
+            for r in (raw or []):
+                url = r.get("content", "") or r.get("embed_url", "")
+                if not url or not url.startswith("http"):
+                    continue
+                if _is_blacklisted_source(url):
+                    continue
+                urls.append(url)
+                if len(urls) >= max_results:
+                    break
+            if urls:
+                print(f"[Stock] DuckDuckGo videos: {len(urls)} result(s) for '{query}' "
+                      f"(proxy attempt {_attempt + 1})")
+                return urls
+        except Exception as e:
+            _last_err = e
+            if _attempt < _max_attempts - 1:
+                time.sleep(1)
+    if _last_err:
+        print(f"[Stock] DuckDuckGo videos failed for '{query}': {_last_err}")
+    return []
 
 
 # ── Visual query helpers ─────────────────────────────────────────────────────

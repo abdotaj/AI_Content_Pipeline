@@ -18,12 +18,27 @@ except ImportError:
 
 
 def _ddgs_proxy() -> str | None:
-    """Return proxy URL for DDGS if configured, else None.
-    Set DDG_PROXY in GitHub Secrets to bypass GitHub Actions IP blocks.
-    Supports http://user:pass@host:port and socks5://host:port formats.
-    Also respects standard HTTPS_PROXY / https_proxy env vars.
+    """Return a randomly selected proxy URL for DDGS.
+
+    Reads DDG_PROXY_LIST (newline-separated host:port:user:pass), picks randomly.
+    Falls back to DDG_PROXY (single URL) then HTTPS_PROXY.
     """
-    import os as _os
+    import os as _os, random as _random
+    proxy_list_raw = _os.getenv("DDG_PROXY_LIST", "")
+    if proxy_list_raw:
+        proxies: list[str] = []
+        for line in proxy_list_raw.strip().splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split(":")
+            if len(parts) == 4:
+                host, port, user, pwd = parts
+                proxies.append(f"http://{user}:{pwd}@{host}:{port}")
+            elif line.startswith(("http://", "socks5://")):
+                proxies.append(line)
+        if proxies:
+            return _random.choice(proxies)
     return (
         _os.getenv("DDG_PROXY")
         or _os.getenv("HTTPS_PROXY")
@@ -1349,13 +1364,22 @@ def fetch_wikipedia_arabic(query: str) -> str | None:
 # ── DuckDuckGo search helper (fallback) ────────────────────
 
 def web_search(query: str, max_results: int = 5) -> str:
-    """Search DuckDuckGo and return concatenated snippet text."""
-    try:
-        with DDGS(proxy=_ddgs_proxy()) as ddgs:
-            results = list(ddgs.text(query, max_results=max_results))
-        return " ".join(r.get("body", "") for r in results)[:3000] or "(no results)"
-    except Exception as e:
-        return f"(search error: {e})"
+    """Search DuckDuckGo and return concatenated snippet text.
+    Retries up to 3× with different random proxies when DDG_PROXY_LIST is set."""
+    import os as _os, time as _time
+    _max_attempts = 3 if _os.getenv("DDG_PROXY_LIST") else 1
+    for _attempt in range(_max_attempts):
+        try:
+            with DDGS(proxy=_ddgs_proxy()) as ddgs:
+                results = list(ddgs.text(query, max_results=max_results))
+            text = " ".join(r.get("body", "") for r in results)[:3000]
+            return text or "(no results)"
+        except Exception as e:
+            if _attempt < _max_attempts - 1:
+                _time.sleep(1)
+            else:
+                return f"(search error: {e})"
+    return "(no results)"
 
 
 # ── Covered topics tracker ──────────────────────────────────
