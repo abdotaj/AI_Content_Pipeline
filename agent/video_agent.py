@@ -2132,8 +2132,16 @@ _IMAGE_MAGIC = {
     b"\x47\x49\x46\x38":    "gif",
 }
 _IMAGE_MIN_BYTES = 5_000    # 5 KB — archive/newspaper scans can be small
-_BLOCKED_IMAGE_DOMAINS = {"pinterest.com", "instagram.com", "facebook.com", "twitter.com", "x.com"}
-_BLOCKED_URL_PATTERNS  = {".html", ".php", ".aspx", "/blog/", "/article/", "/post/"}
+_BLOCKED_IMAGE_DOMAINS = {
+    "pinterest.com", "instagram.com", "facebook.com", "twitter.com", "x.com",
+    # Amateur art / painting platforms — low quality, wrong aesthetic for crime docs
+    "deviantart.com", "redbubble.com", "saatchiart.com", "fine-art-america.com",
+    "pixels.com", "society6.com", "artpal.com", "artfinder.com", "artplode.com",
+    "ugallery.com", "artmajeur.com", "artbynumbers.com", "paintingvalley.com",
+    "1zoom.me", "arts-wallpapers.com", "wallpapersafari.com",
+}
+_BLOCKED_URL_PATTERNS  = {".html", ".php", ".aspx", "/blog/", "/article/", "/post/",
+                           "/painting/", "/artwork/", "/fine-art/"}
 # Child/cartoon content — must never appear in crime documentary videos
 _BLOCKED_CHILD_PATTERNS = {
     "clipart", "cartoon", "/kids/", "/children/", "/child/", "illustration",
@@ -2142,7 +2150,10 @@ _BLOCKED_CHILD_PATTERNS = {
     "freepik.com", "flaticon", "vecteezy", "dreamstime.com/stock-image-kids",
     "depositphotos.com/stock-illustration",
 }
-_CRIME_NEGATIVE_TERMS = "-cartoon -illustration -drawing -clipart -vector -anime -kids -children -coloring"
+_CRIME_NEGATIVE_TERMS = (
+    "-cartoon -illustration -drawing -clipart -vector -anime -kids -children "
+    "-coloring -painting -artwork -watercolor -sketch -doodle"
+)
 _VALID_IMAGE_EXTS      = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".jfif"}
 
 
@@ -2209,6 +2220,32 @@ def download_real_image(url: str, output_path: str) -> str | None:
 
         img = PILImage.open(io.BytesIO(r.content)).convert("RGB")
         w, h = img.size
+
+        # Reject low-resolution images — amateur art scans and wallpaper sites
+        # often serve tiny images that look terrible stretched to 1080×1920
+        if w < 400 or h < 300:
+            print(f"[Image] Rejected low-res ({w}×{h}): {url[:80]}")
+            return None
+
+        # Painting / illustration detection via color-variety score.
+        # Real photographs have high color variety (camera noise, gradients, textures).
+        # Flat paintings, digital art, and wallpapers have large uniform regions
+        # → fewer unique colors in a downscaled sample.
+        # Threshold: <150 unique colors in a 64×64 sample → reject as non-photographic.
+        try:
+            import numpy as _np
+            _sample = img.resize((64, 64), PILImage.LANCZOS)
+            _arr = _np.array(_sample).reshape(-1, 3)
+            # Quantize each channel to 5-bit to group near-identical colors
+            _quantized = (_arr >> 3).astype("uint8")
+            _unique_colors = len(set(map(tuple, _quantized.tolist())))
+            if _unique_colors < 150:
+                print(f"[Image] Rejected non-photographic image "
+                      f"({_unique_colors} unique colors — likely painting/illustration): {url[:80]}")
+                return None
+        except Exception:
+            pass  # skip detection on error — don't block valid images
+
         target_ratio = 9 / 16
         if w / h > target_ratio:
             new_w = int(h * target_ratio)
@@ -8009,21 +8046,40 @@ def assemble_video_with_hook(
 
     # Narrative order preserved — no shuffle
 
-    # Loop main clips until they cover main_duration + buffer.
-    # Round-robin through deduplicated paths so every image appears equally
-    # before any image repeats — prevents the same few images dominating.
-    _unique_srcs = list(dict.fromkeys(image_paths))
+    # Coverage loop: fill remaining duration with round-robin images.
+    # Cap: each image may appear at most MAX_REPEATS times total across the whole video
+    # (initial pass + coverage loop combined) to prevent one bad image dominating.
+    _unique_srcs  = list(dict.fromkeys(image_paths))
+    _n_imgs       = max(len(_unique_srcs), 1)
+    # Allow more repeats when pool is small, but never let a single image
+    # appear more than 4× so viewers don't notice the loop.
+    _MAX_REPEATS  = max(4, int(main_duration / (_n_imgs * _adaptive_base)) + 1)
+    _use_count: dict[str, int] = {}
+    # Seed use_count from the initial main_clips pass (2 clips per image)
+    for _ip in image_paths:
+        _use_count[_ip] = _use_count.get(_ip, 0) + 2
     _cov_idx = 0
     while sum(c.duration for c in main_clips) < main_duration + 20:
-        src = _unique_srcs[_cov_idx % len(_unique_srcs)]
-        _cov_idx += 1
+        # Skip over-used images so no single image dominates when pool is small
+        _tries = 0
+        while _tries < _n_imgs:
+            src = _unique_srcs[_cov_idx % _n_imgs]
+            _cov_idx += 1
+            _tries += 1
+            if _use_count.get(src, 0) < _MAX_REPEATS:
+                break
+        else:
+            # All images at cap — accept the least-used one to avoid infinite loop
+            src = min(_unique_srcs, key=lambda p: _use_count.get(p, 0))
+        _use_count[src] = _use_count.get(src, 0) + 1
         dur = random.uniform(_adaptive_base, _adaptive_base * 1.15)
         try:
             main_clips.append(_media_clip(src, dur, zoom_in=(_cov_idx % 2 == 0)))
         except Exception:
             pass
     if _cov_idx > 0:
-        print(f"[Visual] Coverage loop: {_cov_idx} extra clips over {len(_unique_srcs)} unique images")
+        _max_used = max(_use_count.values()) if _use_count else 0
+        print(f"[Visual] Coverage loop: {_cov_idx} extra clips | max repeats/image: {_max_used}")
     # Trim to main_duration
     accumulated = 0.0
     final_main  = []
