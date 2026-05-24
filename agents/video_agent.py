@@ -2134,6 +2134,15 @@ _IMAGE_MAGIC = {
 _IMAGE_MIN_BYTES = 5_000    # 5 KB — archive/newspaper scans can be small
 _BLOCKED_IMAGE_DOMAINS = {"pinterest.com", "instagram.com", "facebook.com", "twitter.com", "x.com"}
 _BLOCKED_URL_PATTERNS  = {".html", ".php", ".aspx", "/blog/", "/article/", "/post/"}
+# Child/cartoon content — must never appear in crime documentary videos
+_BLOCKED_CHILD_PATTERNS = {
+    "clipart", "cartoon", "/kids/", "/children/", "/child/", "illustration",
+    "vector", "drawing", "coloring", "comic", "anime", "sticker", "clip-art",
+    "shutterstock.com/image-vector", "istockphoto.com/vector",
+    "freepik.com", "flaticon", "vecteezy", "dreamstime.com/stock-image-kids",
+    "depositphotos.com/stock-illustration",
+}
+_CRIME_NEGATIVE_TERMS = "-cartoon -illustration -drawing -clipart -vector -anime -kids -children -coloring"
 _VALID_IMAGE_EXTS      = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".jfif"}
 
 
@@ -2143,6 +2152,9 @@ def _is_valid_image_url(url: str) -> bool:
     if any(d in u for d in _BLOCKED_IMAGE_DOMAINS):
         return False
     if any(p in u for p in _BLOCKED_URL_PATTERNS):
+        return False
+    if any(p in u for p in _BLOCKED_CHILD_PATTERNS):
+        print(f"[Image] Blocked child/cartoon URL: {url[:80]}")
         return False
     # Accept if path ends with OR contains a known image extension
     # (CDN URLs often embed extensions mid-path, e.g. /photo.jpg/1280px-photo.jpg)
@@ -2228,7 +2240,7 @@ def _wikimedia_image_results(query: str, max_results: int = 5) -> list[str]:
             ii = page.get('imageinfo', [{}])[0]
             url = ii.get('thumburl') or ii.get('url', '')
             mtype = ii.get('mediatype', '')
-            if url and mtype in ('BITMAP', 'DRAWING') and _is_valid_image_url(url):
+            if url and mtype == 'BITMAP' and _is_valid_image_url(url):  # DRAWING excluded — may be illustrations/maps
                 urls.append(url)
             if len(urls) >= max_results:
                 break
@@ -3687,7 +3699,7 @@ def _search_pexels_images(query: str, max_results: int = 5) -> list[str]:
         r = requests.get(
             "https://api.pexels.com/v1/search",
             headers={"Authorization": api_key},
-            params={"query": query, "per_page": max_results, "orientation": "landscape"},
+            params={"query": query, "per_page": max_results, "orientation": "landscape", "size": "large"},
             timeout=20,
         )
         if r.status_code != 200:
@@ -3718,9 +3730,10 @@ def _search_pixabay_images(query: str, max_results: int = 5) -> list[str]:
                 "key": api_key,
                 "q": query,
                 "per_page": max_results,
-                "image_type": "photo",
+                "image_type": "photo",      # photo only — no illustration or vector
                 "orientation": "horizontal",
                 "safesearch": "true",
+                "editors_choice": "false",  # broader results
             },
             timeout=20,
         )
@@ -5576,14 +5589,23 @@ def _search_duckduckgo_images(query: str, max_results: int = 5) -> list[str]:
     for _attempt in range(_max_attempts):
         try:
             _proxy = _ddgs_proxy()
-            raw = DDGS(proxy=_proxy).images(query, max_results=max_results * 3)
+            # type_image="photo" filters out clipart/illustrations/drawings at source.
+            # safesearch="on" + negative terms block child/cartoon content.
+            _safe_query = f"{query} {_CRIME_NEGATIVE_TERMS}"
+            raw = DDGS(proxy=_proxy).images(
+                _safe_query,
+                max_results=max_results * 3,
+                type_image="photo",
+                safesearch="on",
+            )
             urls: list[str] = []
-            _blocked = _BLOCKED_IMAGE_DOMAINS
+            _blocked = _BLOCKED_IMAGE_DOMAINS | _BLOCKED_CHILD_PATTERNS
             for r in (raw or []):
                 url = r.get("image", "")
                 if not url or not url.startswith("http"):
                     continue
-                if any(d in url.lower() for d in _blocked):
+                u_lower = url.lower()
+                if any(d in u_lower for d in _blocked):
                     continue
                 urls.append(url)
                 if len(urls) >= max_results:
