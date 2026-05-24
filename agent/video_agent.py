@@ -2703,28 +2703,127 @@ def _classify_visual_event(
             f"{_pfx}{_VE_ATMOSPHERE_POOL[_atmo_idx]}{_IMAGE_PROMPT_SUFFIX}")
 
 
-def extract_visual_events(
-    script_text: str, topic: str = "", runtime_secs: float = 0.0
+_VALID_EVENT_TYPES = {
+    "portrait", "childhood", "location", "evidence", "courtroom",
+    "map", "newspaper", "cctv", "prison", "interrogation", "atmosphere",
+}
+
+
+def _extract_events_groq(
+    script_text: str, topic: str, runtime_secs: float
 ) -> list[dict]:
-    """Parse script into unique visual events — one per ~12-word narrative chunk.
+    """Extract narrative visual events from script using Groq (single call).
 
-    Scale: 12 unique events per minute of runtime.
-      10-min doc → ~120 unique visual events
-      15-min doc → ~180 unique visual events
-
-    Each event carries: idx, position (0-1), type, prompt, chunk (for logging).
-    These are SEMANTICALLY UNIQUE — every event maps to a different
-    narrative moment and generates a distinct Pollinations prompt.
+    Returns the same format as extract_visual_events — fallback to regex if fails.
+    Consumes ~600-1500 tokens per call depending on script length.
     """
-    import re
+    import json as _json, os as _os
     from collections import Counter as _Counter
+
+    _key = _os.getenv("GROQ_API_KEY", "")
+    if not _key:
+        return []
+
     clean = re.sub(r'\[SECTION:[^\]]+\]\s*', '', script_text).strip()
     words = clean.split()
     if not words:
         return []
 
     runtime_min = max(runtime_secs / 60, 1.0) if runtime_secs > 0 else len(words) / 150.0
-    n_events    = max(30, min(400, int(runtime_min * 7)))  # 7 unique images/min
+    n_events = max(12, min(60, int(runtime_min * 7)))
+
+    # Truncate script to stay within Groq context limits
+    excerpt = " ".join(words[:2000])
+
+    prompt = (
+        f"You are a visual story planner for a true crime YouTube video.\n"
+        f"Topic: {topic}\n\n"
+        f"Extract exactly {n_events} visual events from this script. "
+        f"Each event is a distinct narrative moment — a compelling visual shot.\n\n"
+        f"Rules:\n"
+        f"- pos: 0.0 (opening) → 1.0 (ending), evenly spaced\n"
+        f"- type: one of: portrait, childhood, location, evidence, courtroom, "
+        f"map, newspaper, cctv, prison, interrogation, atmosphere\n"
+        f"- First 20% pos: portrait/childhood/location (establish characters)\n"
+        f"- Middle 50% pos: evidence/atmosphere/location/interrogation (tension)\n"
+        f"- Last 30% pos: courtroom/prison/newspaper/atmosphere (resolution)\n"
+        f"- description: 1 vivid cinematic sentence\n"
+        f"- chunk: key phrase (max 80 chars) from the script\n\n"
+        f"Return ONLY a JSON array of exactly {n_events} objects:\n"
+        f'[{{"idx":0,"pos":0.0,"type":"portrait","description":"...","chunk":"..."}},...]\n\n'
+        f"SCRIPT:\n{excerpt}"
+    )
+
+    try:
+        from groq import Groq as _Groq
+        _gc = _Groq(api_key=_key)
+        resp = _gc.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3,
+            max_tokens=2500,
+        )
+        raw = resp.choices[0].message.content.strip()
+        # Strip markdown code fences
+        if "```" in raw:
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+            raw = raw.strip()
+        events_raw: list[dict] = _json.loads(raw)
+
+        events: list[dict] = []
+        for e in events_raw:
+            vtype = e.get("type", "atmosphere")
+            if vtype not in _VALID_EVENT_TYPES:
+                vtype = "atmosphere"
+            desc  = e.get("description", e.get("chunk", ""))
+            pos   = float(e.get("pos", len(events) / max(len(events_raw) - 1, 1)))
+            _, ev_prompt = _classify_visual_event(desc.lower(), pos, topic)
+            events.append({
+                "idx":    int(e.get("idx", len(events))),
+                "pos":    pos,
+                "type":   vtype,
+                "prompt": ev_prompt,
+                "chunk":  e.get("chunk", desc)[:80],
+            })
+
+        _dist = _Counter(ev["type"] for ev in events)
+        print(
+            f"[EventExtractor] Groq: {len(events)} events — " +
+            " | ".join(f"{t}:{c}" for t, c in sorted(_dist.items()))
+        )
+        return events
+
+    except Exception as _ex:
+        print(f"[EventExtractor] Groq failed ({_ex}) — falling back to regex chunker")
+        return []
+
+
+def extract_visual_events(
+    script_text: str, topic: str = "", runtime_secs: float = 0.0
+) -> list[dict]:
+    """Parse script into unique visual events — one per narrative moment.
+
+    Tries Groq-based semantic extraction first (storytelling-aware, true crime
+    optimised), falls back to word-chunk regex classifier on failure.
+
+    Each event: idx, position (0-1), type, prompt, chunk.
+    """
+    events = _extract_events_groq(script_text, topic, runtime_secs)
+    if events:
+        return events
+
+    # ── Regex fallback: word-chunk classifier ────────────────────────────────
+    import re as _re
+    from collections import Counter as _Counter
+    clean = _re.sub(r'\[SECTION:[^\]]+\]\s*', '', script_text).strip()
+    words = clean.split()
+    if not words:
+        return []
+
+    runtime_min = max(runtime_secs / 60, 1.0) if runtime_secs > 0 else len(words) / 150.0
+    n_events    = max(30, min(400, int(runtime_min * 7)))
     chunk_size  = max(8, len(words) // n_events)
 
     chunks: list[str] = []
@@ -2735,20 +2834,20 @@ def extract_visual_events(
             break
         chunks.append(" ".join(words[start:end]))
 
-    events: list[dict] = []
+    events = []
     for i, chunk in enumerate(chunks):
         pos    = i / max(len(chunks) - 1, 1)
-        vtype, prompt = _classify_visual_event(chunk.lower(), pos, topic)
+        vtype, ev_prompt = _classify_visual_event(chunk.lower(), pos, topic)
         events.append({
             "idx":    i,
             "pos":    pos,
             "type":   vtype,
-            "prompt": prompt,
+            "prompt": ev_prompt,
             "chunk":  chunk[:80],
         })
 
     _dist = _Counter(e["type"] for e in events)
-    print(f"[VisualPlan] {len(events)} events: " +
+    print(f"[VisualPlan] regex {len(events)} events: " +
           " | ".join(f"{t}:{c}" for t, c in sorted(_dist.items())))
     return events
 
@@ -2859,58 +2958,72 @@ def build_documentary_visual_pool(
 
         saved = None
 
-        # ── Step 1: portrait — collect real + AI candidates, pick best ──
+        # ── Step 1: portrait — canonical cache → real+AI candidates, pick best ──
         if ev_type == "portrait":
-            _portrait_cands: list[str] = []
             person = _detect_person_in_chunk(chunk)
             if person:
                 resolved = _PERSON_ALIASES.get(person.lower(), person)
-                # 1a. Wikipedia REST (real photo)
-                photo_url = _search_wikimedia_person_photo(resolved)
-                if photo_url:
-                    _rp = _download_first_valid([photo_url], out_path.replace(".png", "_rp.png"))
-                    if _rp:
-                        _portrait_cands.append(_rp)
-                        print(f"[VisualSearch] portrait real: Wikipedia '{resolved}'")
-                # 1b. Wikimedia Commons queries (real)
-                for q in scene_queries[:2]:
-                    _wurls = _wikimedia_cached(q, max_results=3)
-                    if _wurls:
-                        _wp = _download_first_valid(_wurls, out_path.replace(".png", "_wp.png"))
-                        if _wp:
-                            _portrait_cands.append(_wp)
-                            print(f"[VisualSearch] portrait real: Wikimedia '{q}'")
-                        break
-                # 1c. DDG real photos
-                if scene_queries:
-                    _ddg_imgs = _search_duckduckgo_images(scene_queries[0], max_results=5)
-                    if _ddg_imgs:
-                        _dp = _download_first_valid(_ddg_imgs, out_path.replace(".png", "_dp.png"))
-                        if _dp:
-                            _portrait_cands.append(_dp)
-                            print(f"[VisualSearch] portrait real: DDG '{scene_queries[0]}'")
-                # 1d. AI storytelling portrait (always generated — cinematic, dramatic)
-                _ap = _generate_ai_portrait_storytelling(
-                    resolved, topic, out_path.replace(".png", "_ap.png"), _seed + idx
+                # Check canonical portrait cache first — avoids repeated searches
+                _cached = _get_or_generate_character_portrait(
+                    resolved, topic, os.path.dirname(out_path)
                 )
-                if _ap:
-                    _portrait_cands.append(_ap)
-                    print(f"[VisualSearch] portrait AI: storytelling '{resolved}'")
-            # Pick best candidate by file size
-            _best = _best_image_from_candidates(_portrait_cands)
-            if _best:
-                shutil.copy2(_best, out_path)
-                saved = out_path
-                _from_real = not _best.endswith("_ap.png")
-                print(
-                    f"[VisualSearch] portrait selected: {'real' if _from_real else 'AI'} "
-                    f"({os.path.getsize(out_path)//1024}KB from {len(_portrait_cands)} candidates)"
-                )
-                for _tmp in _portrait_cands:
-                    try: os.remove(_tmp)
-                    except: pass
+                if _cached:
+                    _cached_path, _ = _cached
+                    shutil.copy2(_cached_path, out_path)
+                    saved = out_path
+                    _from_real = False
+                    print(f"[VisualSearch] portrait from canonical cache: '{resolved}'")
 
-        # ── Step 2: non-portrait — iterate query list until hit ─────────
+                if not saved:
+                    _portrait_cands: list[str] = []
+                    # 1a. Wikipedia REST (real photo)
+                    photo_url = _search_wikimedia_person_photo(resolved)
+                    if photo_url:
+                        _rp = _download_first_valid([photo_url], out_path.replace(".png", "_rp.png"))
+                        if _rp:
+                            _portrait_cands.append(_rp)
+                            print(f"[VisualSearch] portrait real: Wikipedia '{resolved}'")
+                    # 1b. Wikimedia Commons queries (real)
+                    for q in scene_queries[:2]:
+                        _wurls = _wikimedia_cached(q, max_results=3)
+                        if _wurls:
+                            _wp = _download_first_valid(_wurls, out_path.replace(".png", "_wp.png"))
+                            if _wp:
+                                _portrait_cands.append(_wp)
+                                print(f"[VisualSearch] portrait real: Wikimedia '{q}'")
+                            break
+                    # 1c. DDG real photos
+                    if scene_queries:
+                        _ddg_imgs = _search_duckduckgo_images(scene_queries[0], max_results=5)
+                        if _ddg_imgs:
+                            _dp = _download_first_valid(_ddg_imgs, out_path.replace(".png", "_dp.png"))
+                            if _dp:
+                                _portrait_cands.append(_dp)
+                                print(f"[VisualSearch] portrait real: DDG '{scene_queries[0]}'")
+                    # 1d. AI storytelling portrait (always generated — cinematic, dramatic)
+                    _ap = _generate_ai_portrait_storytelling(
+                        resolved, topic, out_path.replace(".png", "_ap.png"), _seed + idx
+                    )
+                    if _ap:
+                        _portrait_cands.append(_ap)
+                        print(f"[VisualSearch] portrait AI: storytelling '{resolved}'")
+                    # Pick best candidate by file size; store winner as canonical
+                    _best = _best_image_from_candidates(_portrait_cands)
+                    if _best:
+                        shutil.copy2(_best, out_path)
+                        saved = out_path
+                        _from_real = not _best.endswith("_ap.png")
+                        # Promote best to canonical cache for remaining portrait events
+                        _character_portrait_cache[resolved.lower()] = (out_path, ev["prompt"])
+                        print(
+                            f"[VisualSearch] portrait selected: {'real' if _from_real else 'AI'} "
+                            f"({os.path.getsize(out_path)//1024}KB from {len(_portrait_cands)} candidates)"
+                        )
+                        for _tmp in _portrait_cands:
+                            try: os.remove(_tmp)
+                            except: pass
+
+        # ── Step 2: non-portrait — inject character appearance, then search ──
         else:
             for q in scene_queries:
                 urls = _wikimedia_cached(q, max_results=4)
@@ -2959,9 +3072,15 @@ def build_documentary_visual_pool(
                 if saved:
                     break
 
-        # ── Step 3: AI generation with sanitized prompt ─────────────────
+        # ── Step 3: AI generation — inject character appearance for consistency ──
         if not saved:
             clean_prompt = _sanitize_ai_prompt(ev["prompt"], topic)
+            # If a canonical portrait exists for a person in this chunk, inject their
+            # appearance description so Pollinations renders consistent character features
+            _scene_person = _detect_person_in_chunk(chunk)
+            if _scene_person:
+                _scene_resolved = _PERSON_ALIASES.get(_scene_person.lower(), _scene_person)
+                clean_prompt = _inject_character_appearance(clean_prompt, _scene_resolved)
             print(f"[AIGeneration] Pollinations: '{clean_prompt[:80]}'")
             saved = generate_ai_image(clean_prompt, out_path, seed=_seed + idx)
             if not saved:
@@ -3094,6 +3213,62 @@ def _best_image_from_candidates(candidates: list[str]) -> str | None:
         if p and os.path.exists(p) and os.path.getsize(p) > 5_000
     ]
     return max(valid, key=lambda p: os.path.getsize(p)) if valid else None
+
+
+# ── Character portrait cache ──────────────────────────────────────────────────
+# Per-run cache: name → (portrait_path, appearance_prompt).
+# Re-use the canonical portrait for every event featuring the same person —
+# avoids repeated Pollinations calls and keeps visual appearance consistent.
+_character_portrait_cache: dict[str, tuple[str, str]] = {}
+
+
+def _get_or_generate_character_portrait(
+    name: str, topic: str, output_dir: str
+) -> tuple[str, str] | None:
+    """Return (portrait_path, appearance_prompt) for *name*, generating once per run.
+
+    The appearance_prompt is embedded in subsequent scene prompts so Pollinations
+    renders the correct subject appearance even in non-portrait shots.
+    """
+    key = name.lower().strip()
+    cached = _character_portrait_cache.get(key)
+    if cached:
+        path, appearance = cached
+        if os.path.exists(path):
+            print(f"[Portrait] Cache hit: '{name}' → {os.path.basename(path)}")
+            return cached
+
+    slug = re.sub(r"[^a-z0-9]", "_", key)[:40]
+    out_path = os.path.join(output_dir, f"char_portrait_{slug}.png")
+
+    _clean = _clean_topic_name((topic or name).strip())
+    appearance_prompt = (
+        f"{name} {_clean} dramatic cinematic portrait storytelling "
+        f"film noir atmospheric moody character close-up dark lighting"
+        f"{_IMAGE_PROMPT_SUFFIX}"
+    )
+    result = generate_ai_image(appearance_prompt, out_path, seed=abs(hash(key)) % 9999)
+    if result:
+        _character_portrait_cache[key] = (result, appearance_prompt)
+        print(f"[Portrait] Generated canonical portrait: '{name}' → {os.path.basename(result)}")
+        return result, appearance_prompt
+    return None
+
+
+def _inject_character_appearance(base_prompt: str, name: str) -> str:
+    """Append character appearance hint from cache to a scene prompt.
+
+    Called for non-portrait events where the subject appears, so Pollinations
+    renders a visually consistent character across all shots.
+    """
+    key = name.lower().strip()
+    cached = _character_portrait_cache.get(key)
+    if not cached:
+        return base_prompt
+    _, appearance = cached
+    # Extract just the descriptive core (strip suffix noise) and append briefly
+    core = appearance.split(",")[0].strip()[:80]
+    return f"{base_prompt}, featuring {core}"
 
 
 def _download_first_valid(urls: list[str], output_path: str) -> str | None:
@@ -5448,45 +5623,59 @@ def fetch_real_images(script_text: str, count: int, video_id: str,
         _scene_qs  = _build_scene_search_queries(chunk_text, _clean_topic, ev_type)
         _arabic_q  = chunk_text[:80] if any('؀' <= c <= 'ۿ' for c in chunk_text) else None
 
-        # Step 1: portrait — collect real + AI candidates, pick best
+        # Step 1: portrait — canonical cache → real+AI candidates, pick best
         if ev_type == "portrait":
             _person = _detect_person_in_chunk(chunk_text) or _clean_topic
-            _portrait_cands: list[str] = []
             if _person:
-                # 1a. Wikipedia (real)
-                _photo_url = _search_wikimedia_person_photo(_person)
-                if _photo_url:
-                    _rp = _download_first_valid([_photo_url], out_path.replace(".png", "_rp.png"))
-                    if _rp:
-                        _portrait_cands.append(_rp)
-                        print(f"[Image] chunk {ci}: portrait real Wikipedia '{_person}'")
-                # 1b. DDG real photos
-                if _scene_qs:
-                    _ddg_imgs = _search_duckduckgo_images(_scene_qs[0], max_results=5)
-                    if _ddg_imgs:
-                        _dp = _download_first_valid(_ddg_imgs, out_path.replace(".png", "_dp.png"))
-                        if _dp:
-                            _portrait_cands.append(_dp)
-                            print(f"[Image] chunk {ci}: portrait real DDG '{_scene_qs[0]}'")
-                # 1c. AI storytelling portrait (always — cinematic dramatic)
-                _ap = _generate_ai_portrait_storytelling(
-                    _person, _clean_topic or topic, out_path.replace(".png", "_ap.png"), seed_val
+                # Check canonical portrait cache first — skip expensive search
+                _cached = _get_or_generate_character_portrait(
+                    _person, _clean_topic or topic, os.path.dirname(out_path)
                 )
-                if _ap:
-                    _portrait_cands.append(_ap)
-                    print(f"[Image] chunk {ci}: portrait AI storytelling '{_person}'")
-            _best = _best_image_from_candidates(_portrait_cands)
-            if _best:
-                shutil.copy2(_best, out_path)
-                _saved = out_path
-                _kind = "real-person" if not _best.endswith("_ap.png") else "ai-portrait"
-                print(
-                    f"[Image] chunk {ci}: portrait selected {_kind} "
-                    f"({os.path.getsize(out_path)//1024}KB from {len(_portrait_cands)} candidates)"
-                )
-                for _tmp in _portrait_cands:
-                    try: os.remove(_tmp)
-                    except: pass
+                if _cached:
+                    _cached_path, _ = _cached
+                    shutil.copy2(_cached_path, out_path)
+                    _saved = out_path
+                    _kind = "ai-portrait-cached"
+                    print(f"[Image] chunk {ci}: portrait from canonical cache '{_person}'")
+
+                if not _saved:
+                    _portrait_cands: list[str] = []
+                    # 1a. Wikipedia (real)
+                    _photo_url = _search_wikimedia_person_photo(_person)
+                    if _photo_url:
+                        _rp = _download_first_valid([_photo_url], out_path.replace(".png", "_rp.png"))
+                        if _rp:
+                            _portrait_cands.append(_rp)
+                            print(f"[Image] chunk {ci}: portrait real Wikipedia '{_person}'")
+                    # 1b. DDG real photos
+                    if _scene_qs:
+                        _ddg_imgs = _search_duckduckgo_images(_scene_qs[0], max_results=5)
+                        if _ddg_imgs:
+                            _dp = _download_first_valid(_ddg_imgs, out_path.replace(".png", "_dp.png"))
+                            if _dp:
+                                _portrait_cands.append(_dp)
+                                print(f"[Image] chunk {ci}: portrait real DDG '{_scene_qs[0]}'")
+                    # 1c. AI storytelling portrait (always — cinematic dramatic)
+                    _ap = _generate_ai_portrait_storytelling(
+                        _person, _clean_topic or topic, out_path.replace(".png", "_ap.png"), seed_val
+                    )
+                    if _ap:
+                        _portrait_cands.append(_ap)
+                        print(f"[Image] chunk {ci}: portrait AI storytelling '{_person}'")
+                    _best = _best_image_from_candidates(_portrait_cands)
+                    if _best:
+                        shutil.copy2(_best, out_path)
+                        _saved = out_path
+                        _kind = "real-person" if not _best.endswith("_ap.png") else "ai-portrait"
+                        # Promote to canonical cache for remaining portrait events
+                        _character_portrait_cache[_person.lower()] = (out_path, ev_type)
+                        print(
+                            f"[Image] chunk {ci}: portrait selected {_kind} "
+                            f"({os.path.getsize(out_path)//1024}KB from {len(_portrait_cands)} candidates)"
+                        )
+                        for _tmp in _portrait_cands:
+                            try: os.remove(_tmp)
+                            except: pass
 
         # Step 2: Wikimedia Commons — all scene queries
         if not _saved:
@@ -5554,9 +5743,14 @@ def fetch_real_images(script_text: str, count: int, video_id: str,
                     print(f"[Image] chunk {ci}: Pexels video '{_scene_qs[0]}'")
                     _kind = "real-pexels-video"
 
-        # Step 6: Pollinations AI photo (with prompt-hash cache to avoid duplicates)
+        # Step 6: Pollinations AI photo — inject character appearance for consistency
         if not _saved:
-            _cached = _check_image_prompt_cache(ai_prompt_c)
+            _effective_prompt = ai_prompt_c
+            _scene_person = _detect_person_in_chunk(chunk_text)
+            if _scene_person:
+                _scene_resolved = _PERSON_ALIASES.get(_scene_person.lower(), _scene_person)
+                _effective_prompt = _inject_character_appearance(_effective_prompt, _scene_resolved)
+            _cached = _check_image_prompt_cache(_effective_prompt)
             if _cached and os.path.exists(_cached):
                 try:
                     shutil.copy2(_cached, out_path)
@@ -5566,9 +5760,9 @@ def fetch_real_images(script_text: str, count: int, video_id: str,
                 except Exception:
                     pass
             if not _saved:
-                _saved = generate_ai_image(ai_prompt_c, out_path, seed=seed_val)
+                _saved = generate_ai_image(_effective_prompt, out_path, seed=seed_val)
                 if _saved:
-                    _save_image_prompt_cache(ai_prompt_c, _saved)
+                    _save_image_prompt_cache(_effective_prompt, _saved)
                     _kind = "ai-gen"
                     print(f"[Image] chunk {ci}: AI generated")
 
@@ -7228,18 +7422,35 @@ def assemble_video_with_hook(
         print(f"[Visual] Adaptive clip duration: {_adaptive_base:.1f}s/clip "
               f"({_n_imgs} images for {main_duration:.0f}s target)")
 
+    # StoryboardArtist-inspired clip construction:
+    #   image_paths are already in NARRATIVE ORDER (EventExtractor → build_documentary_visual_pool).
+    #   Zoom direction is position-driven: establish (zoom-out) → tension (zoom-in) → resolve (alt).
+    #   NO shuffle — preserves the cinematic arc extracted by EventExtractor.
     main_clips = []
+    _n_main    = max(len(image_paths), 1)
     for idx, img_path in enumerate(image_paths):
         try:
             dur1 = random.uniform(_adaptive_base, _adaptive_base * 1.15)
             dur2 = random.uniform(_adaptive_base, _adaptive_base * 1.15)
+            # Position 0→1 drives zoom direction per StoryboardArtist arc:
+            #   0.0-0.25 → wide/zoom-out (establish setting & characters)
+            #   0.25-0.75 → zoom-in (tension & confrontation builds)
+            #   0.75-1.0  → alternating (climax & resolution)
+            _pos = idx / _n_main
+            if _pos < 0.25:
+                _z1, _z2 = False, True   # establish: pull-out first, then push-in
+            elif _pos < 0.75:
+                _z1, _z2 = True, False   # tension: push-in first, then pull-out
+            else:
+                _z1, _z2 = (idx % 2 == 0), (idx % 2 != 0)  # climax: alternate
+
             # Rotate through 4 motion styles for cinematic variety
             if not _is_video_file(img_path) and idx % 4 == 1:
                 try:
                     frame = _load_frame_cached(img_path)
                     main_clips.append(_pan_clip(frame, dur1, pan_right=True,  fade_in=0.2, fade_out=0.2))
                     main_clips.append(_zoom_clip(frame, dur2, 1.00, 1.06, fade_in=0.2, fade_out=0.2))
-                    print(f"[Visual] Reusing cinematic montage (pan-R): {os.path.basename(img_path)[:40]}")
+                    print(f"[Visual] Cinematic montage (pan-R): {os.path.basename(img_path)[:40]}")
                     continue
                 except Exception:
                     pass
@@ -7248,16 +7459,16 @@ def assemble_video_with_hook(
                     frame = _load_frame_cached(img_path)
                     main_clips.append(_pan_clip(frame, dur1, pan_right=False, fade_in=0.2, fade_out=0.2))
                     main_clips.append(_zoom_clip(frame, dur2, 1.06, 1.00, fade_in=0.2, fade_out=0.2))
-                    print(f"[Visual] Reusing cinematic montage (pan-L): {os.path.basename(img_path)[:40]}")
+                    print(f"[Visual] Cinematic montage (pan-L): {os.path.basename(img_path)[:40]}")
                     continue
                 except Exception:
                     pass
-            main_clips.append(_media_clip(img_path, dur1, zoom_in=True))
-            main_clips.append(_media_clip(img_path, dur2, zoom_in=False))
+            main_clips.append(_media_clip(img_path, dur1, zoom_in=_z1))
+            main_clips.append(_media_clip(img_path, dur2, zoom_in=_z2))
         except Exception as e:
             print(f"[Video] Main clip error: {e}")
 
-    random.shuffle(main_clips)
+    # Narrative order preserved — no shuffle
 
     # Loop main clips until they cover main_duration + buffer.
     # Round-robin through deduplicated paths so every image appears equally
