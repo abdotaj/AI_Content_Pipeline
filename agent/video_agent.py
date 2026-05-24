@@ -3273,6 +3273,34 @@ def build_documentary_visual_pool(
                 if saved:
                     break
 
+        # ── Step 2d: video clip fallback — Pexels/Pixabay short clips ─────────
+        # Tried after all image sources fail. Video clips are natively supported
+        # by assemble_video_with_hook (_is_video_file → _media_clip). Uses
+        # _download_first_valid_video for proper MP4 validation and trim-to-15s.
+        if not saved and scene_queries and ev_type not in ("portrait", "childhood"):
+            _vid_out = out_path.replace(".png", "_clip.mp4")
+            _vid_sources = [
+                ("PexelsVideo",  _search_pexels_videos,  {"per_page": 3}),
+                ("PixabayVideo", _search_pixabay_videos, {"per_page": 3}),
+            ]
+            for _vsrc_name, _vsrc_fn, _vsrc_kw in _vid_sources:
+                if saved:
+                    break
+                for _vid_q in scene_queries[:2]:
+                    try:
+                        _vid_urls = _vsrc_fn(_vid_q, **_vsrc_kw)
+                        if _vid_urls:
+                            _vsaved = _download_first_valid_video(_vid_urls, _vid_out)
+                            if _vsaved:
+                                saved = _vsaved
+                                _from_real = True
+                                print(f"[VisualSearch] {_vsrc_name} clip: '{_vid_q}'")
+                                break
+                    except Exception:
+                        pass
+                    if saved:
+                        break
+
         # ── Step 3: AI generation — inject character appearance for consistency ──
         if not saved:
             clean_prompt = _sanitize_ai_prompt(ev["prompt"], topic)
@@ -5471,7 +5499,9 @@ def _search_duckduckgo_images(query: str, max_results: int = 5) -> list[str]:
     Accesses Bing image index so finds thousands of results for any topic.
     Results are cached per pipeline run so identical queries across parallel
     event workers never hit the network more than once."""
-    # Per-run cache — prevents ~1200 redundant calls when 400 events share queries
+    # Per-run cache — prevents ~1200 redundant calls when 400 events share queries.
+    # Only cache successful (non-empty) results — errors/empty are NOT cached so
+    # a later call can retry (DDG may unblock after a short delay).
     cache_key = f"{query}|{max_results}"
     if cache_key in _DDG_SEARCH_CACHE:
         return _DDG_SEARCH_CACHE[cache_key]
@@ -5495,12 +5525,11 @@ def _search_duckduckgo_images(query: str, max_results: int = 5) -> list[str]:
                 break
         if urls:
             print(f"[Image] DuckDuckGo: {len(urls)} result(s) for '{query}'")
-        _DDG_SEARCH_CACHE[cache_key] = urls
+            _DDG_SEARCH_CACHE[cache_key] = urls  # cache only on success
         return urls
     except Exception as e:
         print(f"[Image] DuckDuckGo images error for '{query}': {e}")
-        _DDG_SEARCH_CACHE[cache_key] = []
-        return []
+        return []  # do NOT cache errors — allow retry on next call
 
 
 def _search_duckduckgo_videos(query: str, max_results: int = 5) -> list[str]:
