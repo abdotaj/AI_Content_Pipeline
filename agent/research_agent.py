@@ -1402,20 +1402,69 @@ def _covered_series_set() -> set[str]:
     return {entry["series"].lower() for entry in _load_covered()}
 
 
-def mark_covered(series: str, video_id: str) -> None:
+def mark_covered(series: str, video_id: str, topic: str = "") -> None:
     """Call after a successful upload to prevent repeating the topic."""
     COVERED_TOPICS_PATH.parent.mkdir(parents=True, exist_ok=True)
     covered = _load_covered()
-    covered.append({
+    entry: dict = {
         "series": series,
         "date": datetime.date.today().isoformat(),
         "video_id": video_id,
-    })
+    }
+    if topic:
+        entry["topic"] = topic
+    covered.append(entry)
     COVERED_TOPICS_PATH.write_text(
         json.dumps({"covered": covered}, indent=2, ensure_ascii=False),
         encoding="utf-8"
     )
-    print(f"[Research] Marked as covered: {series}")
+    print(f"[Research] Marked as covered: {series}" + (f" | topic: {topic}" if topic else ""))
+
+
+_NAME_SKIP = {
+    "the", "real", "life", "story", "behind", "truth", "about", "inside",
+    "untold", "dark", "crime", "decoded", "rise", "fall", "and", "of", "a",
+    "an", "in", "at", "how", "who", "what", "why", "when", "where", "for",
+    "true", "criminal", "mob", "boss", "gang", "cartel", "mafia", "drugs",
+    "murder", "killer", "case", "world", "secret", "hidden", "past", "new",
+    "part", "episode", "chapter", "season", "series", "inspired", "based",
+    "real-life", "story", "man", "woman", "his", "her", "their", "our",
+}
+
+
+def _extract_names(text: str) -> set[str]:
+    """Extract capitalized word tokens likely to be person/place names."""
+    names: set[str] = set()
+    for word in text.split():
+        clean = re.sub(r"[^a-zA-Z]", "", word)
+        if len(clean) >= 3 and clean[0].isupper() and clean.lower() not in _NAME_SKIP:
+            names.add(clean.lower())
+    return names
+
+
+def _covered_names_set() -> set[str]:
+    """Return all proper-name tokens seen across every covered topic + series."""
+    names: set[str] = set()
+    for entry in _load_covered():
+        names |= _extract_names(entry.get("topic", ""))
+        names |= _extract_names(entry.get("series", ""))
+    return names
+
+
+def _topic_name_already_covered(topic: str) -> bool:
+    """Return True if 2+ name tokens in topic match a previously covered entry.
+
+    Requiring 2 matches catches 'Sergei Mikhailov (FSB spy)' when the mob boss
+    'Sergei Mikhailov' was already covered, while avoiding false positives from
+    single common name tokens like 'Pablo' or 'Carlos'.
+    """
+    covered = _covered_names_set()
+    new_names = _extract_names(topic)
+    overlap = new_names & covered
+    if len(overlap) >= 2:
+        print(f"[Research] SKIP '{topic}' — name overlap with covered topic: {overlap}")
+        return True
+    return False
 
 
 # ── Series discovery (DuckDuckGo + Groq) ───────────────────
@@ -1579,6 +1628,11 @@ def research_topics(count: int = 2, niches: list[str] | None = None) -> list[dic
             f"True crime — real story behind {series}"
         )
         topic = get_trending_topic(series, niche)
+
+        # ── Name-overlap dedup — same person, different character/context ────────
+        # e.g. "Sergei Mikhailov (FSB spy)" blocked when mob-boss Mikhailov covered
+        if _topic_name_already_covered(topic.get("topic", series)):
+            continue
 
         # ── Risk classification — filter HIGH-RISK topics in AUTO mode ────────
         try:

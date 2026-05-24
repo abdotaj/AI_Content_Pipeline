@@ -1396,7 +1396,7 @@ def run_pipeline():
     series = en_long.get("series") or en_long.get("niche", "").split("behind")[-1].strip()
     if series:
         try:
-            mark_covered(series, en_long_id)
+            mark_covered(series, en_long_id, topic=en_long.get("topic", ""))
         except Exception:
             pass
 
