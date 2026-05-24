@@ -1502,9 +1502,9 @@ def get_person_images(
 
 
 
-_DEFAULT_STYLE = "true crime documentary, dark cinematic lighting, dramatic atmosphere"
+_DEFAULT_STYLE = "true crime storytelling, dark cinematic lighting, dramatic atmospheric narrative"
 _IMAGE_PROMPT_SUFFIX = (
-    ", dark cinematic documentary style, no text, "
+    ", dark cinematic storytelling style, dramatic narrative atmosphere, no text, "
     "no watermarks, photorealistic, high detail"
 )
 
@@ -2347,6 +2347,8 @@ _KNOWN_CRIME_PERSONS = {
     # Classic gangsters / outlaws
     "bonnie parker", "clyde barrow", "john dillinger", "pretty boy floyd",
     "machine gun kelly",
+    # Stalkers / workplace violence
+    "richard farley", "laura black",
 }
 
 # Canonical Wikipedia name for aliases that resolve poorly on their own
@@ -2356,6 +2358,8 @@ _PERSON_ALIASES: dict[str, str] = {
     "night stalker": "richard ramirez",
     "son of sam":    "david berkowitz",
     "zodiac":        "zodiac killer",
+    "richard farley": "Richard Farley ESL stalker",
+    "laura black":   "Laura Black ESL stalking victim",
 }
 
 # ── Visual event type classifiers ─────────────────────────────────────────────
@@ -2654,8 +2658,8 @@ def _classify_visual_event(
         if person in chunk_lower:
             canon = _PERSON_ALIASES.get(person, person)
             return ("portrait",
-                    f"{canon} real historical photograph documentary portrait dark cinematic"
-                    f"{_IMAGE_PROMPT_SUFFIX}")
+                    f"{canon} dramatic cinematic portrait storytelling film noir "
+                    f"atmospheric moody character close-up dark lighting{_IMAGE_PROMPT_SUFFIX}")
 
     if any(k in chunk_lower for k in _VE_COURTROOM):
         return ("courtroom",
@@ -2864,27 +2868,56 @@ def build_documentary_visual_pool(
 
         saved = None
 
-        # ── Step 1: portrait — Wikipedia REST then Commons ──────────────
+        # ── Step 1: portrait — collect real + AI candidates, pick best ──
         if ev_type == "portrait":
+            _portrait_cands: list[str] = []
             person = _detect_person_in_chunk(chunk)
             if person:
                 resolved = _PERSON_ALIASES.get(person.lower(), person)
-                print(f"[VisualSearch] Wikipedia person photo: '{resolved}'")
+                # 1a. Wikipedia REST (real photo)
                 photo_url = _search_wikimedia_person_photo(resolved)
                 if photo_url:
-                    saved = _download_first_valid([photo_url], out_path)
-                if not saved:
-                    # Fall through the query list (includes person+context, person+year, etc.)
-                    for q in scene_queries:
-                        urls = _wikimedia_cached(q, max_results=3)
-                        if urls:
-                            saved = _download_first_valid(urls, out_path)
-                            if saved:
-                                print(f"[VisualSearch] portrait found via '{q}'")
-                                break
-            if saved:
-                _from_real = True
-                print(f"[VisualSearch] found real portrait image")
+                    _rp = _download_first_valid([photo_url], out_path.replace(".png", "_rp.png"))
+                    if _rp:
+                        _portrait_cands.append(_rp)
+                        print(f"[VisualSearch] portrait real: Wikipedia '{resolved}'")
+                # 1b. Wikimedia Commons queries (real)
+                for q in scene_queries[:2]:
+                    _wurls = _wikimedia_cached(q, max_results=3)
+                    if _wurls:
+                        _wp = _download_first_valid(_wurls, out_path.replace(".png", "_wp.png"))
+                        if _wp:
+                            _portrait_cands.append(_wp)
+                            print(f"[VisualSearch] portrait real: Wikimedia '{q}'")
+                        break
+                # 1c. DDG real photos
+                if scene_queries:
+                    _ddg_imgs = _search_duckduckgo_images(scene_queries[0], max_results=5)
+                    if _ddg_imgs:
+                        _dp = _download_first_valid(_ddg_imgs, out_path.replace(".png", "_dp.png"))
+                        if _dp:
+                            _portrait_cands.append(_dp)
+                            print(f"[VisualSearch] portrait real: DDG '{scene_queries[0]}'")
+                # 1d. AI storytelling portrait (always generated — cinematic, dramatic)
+                _ap = _generate_ai_portrait_storytelling(
+                    resolved, topic, out_path.replace(".png", "_ap.png"), _seed + idx
+                )
+                if _ap:
+                    _portrait_cands.append(_ap)
+                    print(f"[VisualSearch] portrait AI: storytelling '{resolved}'")
+            # Pick best candidate by file size
+            _best = _best_image_from_candidates(_portrait_cands)
+            if _best:
+                shutil.copy2(_best, out_path)
+                saved = out_path
+                _from_real = not _best.endswith("_ap.png")
+                print(
+                    f"[VisualSearch] portrait selected: {'real' if _from_real else 'AI'} "
+                    f"({os.path.getsize(out_path)//1024}KB from {len(_portrait_cands)} candidates)"
+                )
+                for _tmp in _portrait_cands:
+                    try: os.remove(_tmp)
+                    except: pass
 
         # ── Step 2: non-portrait — iterate query list until hit ─────────
         else:
@@ -3041,6 +3074,35 @@ def _detect_person_in_chunk(chunk: str) -> str | None:
             return name
     return None
 
+
+def _generate_ai_portrait_storytelling(
+    name: str, topic: str, out_path: str, seed: int
+) -> str | None:
+    """Generate a storytelling-style cinematic portrait via Pollinations.
+
+    Used for portrait events to give a dramatic, cinematic visual alongside
+    real image search results. Best candidate wins in _best_image_from_candidates.
+    """
+    _clean = _clean_topic_name((topic or name).strip())
+    prompt = (
+        f"{name} {_clean} dramatic cinematic portrait storytelling "
+        f"film noir atmospheric moody character close-up dark lighting"
+        f"{_IMAGE_PROMPT_SUFFIX}"
+    )
+    return generate_ai_image(prompt, out_path, seed=seed)
+
+
+def _best_image_from_candidates(candidates: list[str]) -> str | None:
+    """Pick the highest-quality image from a list of local paths.
+
+    Uses file size as a quality proxy — larger files tend to have more detail.
+    Falls back to first valid if sizes are equal.
+    """
+    valid = [
+        p for p in candidates
+        if p and os.path.exists(p) and os.path.getsize(p) > 5_000
+    ]
+    return max(valid, key=lambda p: os.path.getsize(p)) if valid else None
 
 
 def _download_first_valid(urls: list[str], output_path: str) -> str | None:
@@ -5477,16 +5539,45 @@ def fetch_real_images(script_text: str, count: int, video_id: str,
         # Also try Arabic chunk text via DDG if script is Arabic
         _arabic_q = chunk_text[:80] if any('؀' <= c <= 'ۿ' for c in chunk_text) else None
 
-        # Step 1: portrait — Wikipedia person photo first
+        # Step 1: portrait — collect real + AI candidates, pick best
         if ev_type == "portrait":
             _person = _detect_person_in_chunk(chunk_text) or _clean_topic
+            _portrait_cands: list[str] = []
             if _person:
+                # 1a. Wikipedia (real)
                 _photo_url = _search_wikimedia_person_photo(_person)
                 if _photo_url:
-                    _saved = _download_first_valid([_photo_url], out_path)
-                    if _saved:
-                        print(f"[Image] chunk {ci}: Wikimedia person photo '{_person}'")
-                        _kind = "real-person"
+                    _rp = _download_first_valid([_photo_url], out_path.replace(".png", "_rp.png"))
+                    if _rp:
+                        _portrait_cands.append(_rp)
+                        print(f"[Image] chunk {ci}: portrait real Wikipedia '{_person}'")
+                # 1b. DDG real photos
+                if _scene_qs:
+                    _ddg_imgs = _search_duckduckgo_images(_scene_qs[0], max_results=5)
+                    if _ddg_imgs:
+                        _dp = _download_first_valid(_ddg_imgs, out_path.replace(".png", "_dp.png"))
+                        if _dp:
+                            _portrait_cands.append(_dp)
+                            print(f"[Image] chunk {ci}: portrait real DDG '{_scene_qs[0]}'")
+                # 1c. AI storytelling portrait (always — cinematic dramatic)
+                _ap = _generate_ai_portrait_storytelling(
+                    _person, _clean_topic or topic, out_path.replace(".png", "_ap.png"), seed_val
+                )
+                if _ap:
+                    _portrait_cands.append(_ap)
+                    print(f"[Image] chunk {ci}: portrait AI storytelling '{_person}'")
+            _best = _best_image_from_candidates(_portrait_cands)
+            if _best:
+                shutil.copy2(_best, out_path)
+                _saved = out_path
+                _kind = "real-person" if not _best.endswith("_ap.png") else "ai-portrait"
+                print(
+                    f"[Image] chunk {ci}: portrait selected {_kind} "
+                    f"({os.path.getsize(out_path)//1024}KB from {len(_portrait_cands)} candidates)"
+                )
+                for _tmp in _portrait_cands:
+                    try: os.remove(_tmp)
+                    except: pass
 
         # Step 2: Wikimedia Commons — all scene queries
         if not _saved:
