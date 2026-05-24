@@ -1419,18 +1419,31 @@ def apply_mishkal_tashkeel(script: str) -> str:
         return script
 
     import re as _re_msh
+
+    def _tashkeel_chunk(chunk: str) -> str:
+        """Apply tashkeel sentence-by-sentence to avoid slow analysis on long paragraphs."""
+        if not chunk.strip():
+            return chunk
+        # Split on Arabic/Latin sentence endings, keeping the delimiter
+        sentences = _re_msh.split(r'(?<=[.!?؟\n])\s*', chunk)
+        vocalized = []
+        for sent in sentences:
+            if not sent.strip():
+                vocalized.append(sent)
+                continue
+            try:
+                vocalized.append(_mishkal_vocalizer.tashkeel(sent))
+            except Exception:
+                vocalized.append(sent)
+        return " ".join(vocalized)
+
     parts = _re_msh.split(r'(\[SECTION:[^\]]*\])', script)
     out = []
     for part in parts:
         if _re_msh.match(r'\[SECTION:[^\]]*\]', part):
             out.append(part)
-        elif part.strip():
-            try:
-                out.append(_mishkal_vocalizer.tashkeel(part))
-            except Exception:
-                out.append(part)
         else:
-            out.append(part)
+            out.append(_tashkeel_chunk(part))
 
     result = "".join(out)
     print(f"[Mishkal] Tashkeel applied ({len(script)} → {len(result)} chars)")
