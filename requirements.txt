@@ -22,5 +22,5 @@ soundfile>=0.12.0
 pydub>=0.25.1
 mutagen>=1.47.0
 # Install from GitHub HEAD (v1.10) — PyPI is stuck at v0.4.1 (2021)
-mishkal
+git+https://github.com/linuxscout/mishkal.git@master
 pyarabic>=0.6.15
