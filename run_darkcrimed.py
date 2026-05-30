@@ -388,6 +388,15 @@ def run_pipeline():
     if ingested:
         print("[1/5] Using script from content files.")
         en_long = next((s for s in ingested if s.get("language") == "english"), ingested[0])
+        ar_long = next((s for s in ingested if s.get("language") == "arabic"), None)
+        if topic is None:
+            topic = {
+                "topic":       en_long.get("topic", ""),
+                "series_name": en_long.get("series_name", ""),
+                "niche":       en_long.get("niche", ""),
+                "research":    {},
+                "manual_topic": True,
+            }
 
     elif not topic:
         # ── 1A: Clear ALL old messages so only new ones are read ──────────────
@@ -530,59 +539,6 @@ def run_pipeline():
             )
             _log("Research", "No topic received — pipeline aborted (manual required)", "WARN")
             return
-            topic_text  = topic.get("topic", "")
-            topic_niche = topic.get("niche", "")
-
-            # ── Belt-and-suspenders risk check (research_agent already filters) ─
-            try:
-                from agents.topic_risk import classify_topic_risk, log_risk
-                _risk_auto = classify_topic_risk(topic_text, is_manual=False)
-                log_risk(topic_text, _risk_auto)
-                if _risk_auto.get("manual_confirmation_required"):
-                    print(f"[RISK] HIGH-RISK auto-topic blocked at pipeline level: '{topic_text}'")
-                    send_message(
-                        f"⚠️ HIGH-RISK topic blocked (auto mode):\n{topic_text}\n\n"
-                        f"Risk signals: {_risk_auto.get('matched_signals', [])}\n\n"
-                        f"Send a topic manually tomorrow to override with editorial-assist mode."
-                    )
-                    return
-                topic["risk_info"] = _risk_auto
-            except Exception as _risk_e:
-                print(f"[RISK] Auto classification failed (non-fatal): {_risk_e}")
-                topic.setdefault("risk_info", {})
-
-            if is_fictional(topic_text, topic_niche):
-                print(f"[Pipeline] Fictional topic blocked: '{topic_text}'")
-                send_message(
-                    f"\u26a0\ufe0f Fictional topic blocked: '{topic_text}'\n\n"
-                    f"Dark Crime Decoded only covers REAL true crime stories."
-                )
-                return
-
-            print(f"[Pipeline] Auto topic: '{topic_text}'")
-            series = topic_niche.split("behind")[-1].strip() if "behind" in topic_niche else topic_text
-            try:
-                research_result = _with_retry(research_series, series,
-                                              user_note=topic.get("user_note"),
-                                              retries=3, delay=12, label="research_series")
-                if research_result is None:
-                    _log("Research", "research_series returned None — aborting", "ERROR")
-                    return
-                topic["research"] = research_result
-            except Exception as e:
-                _log("Research", f"Web research failed for '{series}': {e}", "WARN")
-                topic["research"] = {}
-
-            # Collect any images sent after pipeline start (no 3-min wait in auto mode)
-            user_images = check_telegram_for_images(after_timestamp=pipeline_start_time)
-            if user_images:
-                _auto_topic  = topic.get("topic", "")
-                _auto_series = topic.get("series_name") or topic.get("niche", "")
-                _use_now, _, _ = process_user_images_smart(
-                    user_images, topic=_auto_topic,
-                    series_name=_auto_series, part_number=None,
-                )
-                user_images = _use_now
 
         print(f"[Pipeline] FINAL TOPIC: {topic.get('topic', '?')}")
         print(f"[Pipeline] Starting pipeline for: {topic.get('topic', '?')}")
@@ -612,10 +568,11 @@ def run_pipeline():
                     f"Words EN: {len(_inj.get('script','').split())} | AR: {len(_inj.get('script_ar','').split())}\n"
                     f"Skipping research + script generation."
                 )
-                topic.update({
-                    "topic":       _inj.get("topic", topic.get("topic", "")),
-                    "series_name": _inj.get("series_name") or topic.get("series_name"),
-                })
+                if topic is not None:
+                    topic.update({
+                        "topic":       _inj.get("topic", topic.get("topic", "")),
+                        "series_name": _inj.get("series_name") or topic.get("series_name"),
+                    })
         except Exception as _inj_e:
             print(f"[ScriptInject] check failed (non-fatal): {_inj_e}")
             _inj = None
@@ -1393,7 +1350,11 @@ def run_pipeline():
     )
 
     # ── Mark covered + log ─────────────────────────────────────
-    series = en_long.get("series") or en_long.get("niche", "").split("behind")[-1].strip()
+    series = (
+        en_long.get("series_name")
+        or en_long.get("topic", "")
+        or en_long.get("niche", "").split("behind")[-1].strip()
+    )
     if series:
         try:
             mark_covered(series, en_long_id, topic=en_long.get("topic", ""))

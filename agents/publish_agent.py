@@ -217,7 +217,10 @@ def upload_to_youtube(video_path: str, script_data: dict, token_file: str = None
             if status:
                 print(f"[Publish] YouTube {int(status.progress() * 100)}%")
 
-        video_id = response["id"]
+        video_id = response.get("id", "")
+        if not video_id:
+            print(f"[Publish] YouTube ERROR: response missing 'id' — likely quota/auth error. Response keys: {list(response.keys())}")
+            return ""
         url = f"https://youtube.com/watch?v={video_id}"
         print(f"[Publish] YouTube upload complete: {url}")
 

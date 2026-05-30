@@ -1358,6 +1358,8 @@ def fetch_wikipedia_arabic(query: str) -> str | None:
         content_resp = requests.get(base_url, params=content_params, timeout=15)
         content_data = content_resp.json()
         pages = content_data.get("query", {}).get("pages", {})
+        if not pages:
+            return None
         page = next(iter(pages.values()))
 
         return page.get("extract", "")[:3000]

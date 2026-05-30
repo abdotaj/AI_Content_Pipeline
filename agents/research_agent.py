@@ -814,7 +814,7 @@ def _is_known_documentary_subject(name: str) -> bool:
     """
     name_l = name.strip().lower()
     try:
-        from agent.entity_guard import _KNOWN_CRIMINALS
+        from agents.entity_guard import _KNOWN_CRIMINALS
         for known in _KNOWN_CRIMINALS:
             if known.lower() == name_l or name_l == known.lower().split()[-1]:
                 return True
@@ -1355,7 +1355,9 @@ def fetch_wikipedia_arabic(query: str) -> str | None:
 
         content_resp = requests.get(base_url, params=content_params, timeout=15)
         content_data = content_resp.json()
-        pages = content_data["query"]["pages"]
+        pages = content_data.get("query", {}).get("pages", {})
+        if not pages:
+            return None
         page = next(iter(pages.values()))
 
         return page.get("extract", "")[:3000]

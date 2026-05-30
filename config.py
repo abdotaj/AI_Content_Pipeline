@@ -52,6 +52,7 @@ VIDEOS_PER_DAY = 2                 # how many videos to generate daily
 LONG_VIDEO_DURATION    = 660   # 11 minutes target (10-12 min = 600-720 s); audio drives actual length
 SHORT_VIDEO_DURATION   = 55    # 55 seconds; audio drives actual length
 EDGETTS_RATE           = "+0%"   # edge-tts speaking rate for fallback TTS (+0% = normal speed)
+OPENAI_TTS_SPEED       = 1.0    # TTS speed for all voices (1.0 = natural pace)
 VIDEO_DURATION_SECONDS = LONG_VIDEO_DURATION  # legacy alias
 VIDEO_WIDTH  = 1080
 VIDEO_HEIGHT = 1920                # vertical 9:16 for TikTok/Shorts
