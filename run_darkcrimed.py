@@ -33,7 +33,8 @@ if hasattr(sys.stdout, "reconfigure"):
 if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
 
-sys.path.insert(0, os.path.dirname(__file__))
+_PIPELINE_ROOT = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, _PIPELINE_ROOT)
 
 # Patch 'config' BEFORE any agent import
 import config_darkcrimed
@@ -142,10 +143,10 @@ def _already_ran_today() -> bool:
     """Return True if a manifest for today's date already exists."""
     today = datetime.date.today().isoformat()
     # Fast path: manifest file named with today's date
-    if glob.glob(f"output/dark_crime/manifest_{today}.json"):
+    if glob.glob(os.path.join(_PIPELINE_ROOT, "output", "dark_crime", f"manifest_{today}.json")):
         return True
     # Slow path: scan all manifests for a matching date field
-    for m in glob.glob("output/dark_crime/manifest_*.json"):
+    for m in glob.glob(os.path.join(_PIPELINE_ROOT, "output", "dark_crime", "manifest_*.json")):
         try:
             with open(m) as f:
                 data = json.load(f)
@@ -158,7 +159,7 @@ def _already_ran_today() -> bool:
 
 def check_24h_cooldown() -> bool:
     """Return True if pipeline should run, False if last run was < 24 hours ago."""
-    manifests = glob.glob("output/dark_crime/manifest_*.json")
+    manifests = glob.glob(os.path.join(_PIPELINE_ROOT, "output", "dark_crime", "manifest_*.json"))
 
     if not manifests:
         print("[Pipeline] No previous runs found — starting fresh")
@@ -280,7 +281,7 @@ def _load_existing_outputs(today: str, topic: str) -> tuple:
     If today's manifest already has matching topic and both video files exist,
     return (en_path, ar_path) so the pipeline can skip regeneration on a rerun.
     """
-    manifest_path = f"output/dark_crime/manifest_{today}.json"
+    manifest_path = os.path.join(_PIPELINE_ROOT, "output", "dark_crime", f"manifest_{today}.json")
     if not os.path.exists(manifest_path):
         return "", ""
     try:
@@ -1459,7 +1460,7 @@ def check_failed_uploads() -> list:
     """Return list of failed YouTube uploads from previous runs where the video still exists."""
     import glob
     failed = []
-    for m in sorted(glob.glob("output/dark_crime/manifest_*.json")):
+    for m in sorted(glob.glob(os.path.join(_PIPELINE_ROOT, "output", "dark_crime", "manifest_*.json"))):
         try:
             with open(m) as f:
                 data = json.load(f)
@@ -1566,8 +1567,8 @@ def _save_manifest(today, en_long, ar_long,
             "ar_shorts_sent":   len(ar_chapter_shorts),
         },
     }
-    Path("output/dark_crime").mkdir(parents=True, exist_ok=True)
-    manifest_path = f"output/dark_crime/manifest_{today}.json"
+    Path(os.path.join(_PIPELINE_ROOT, "output", "dark_crime")).mkdir(parents=True, exist_ok=True)
+    manifest_path = os.path.join(_PIPELINE_ROOT, "output", "dark_crime", f"manifest_{today}.json")
     _tmp = manifest_path + ".tmp"
     try:
         with open(_tmp, "w", encoding="utf-8") as f:
