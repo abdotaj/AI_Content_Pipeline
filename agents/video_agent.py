@@ -1884,6 +1884,13 @@ def safe_download_image(url: str, output_path: str, timeout: int = 15) -> str | 
             print(f"[Image] safe_download: rejected bad magic bytes from {url[:60]}")
             return None
         img = PILImage.open(io.BytesIO(r.content)).convert("RGB")
+        w, h = img.size
+        if w < 400 or h < 300:
+            print(f"[Image] safe_download: rejected low-res ({w}×{h}): {url[:60]}")
+            return None
+        if _is_grayscale_image(img):
+            print(f"[Image] safe_download: rejected B&W/grayscale: {url[:60]}")
+            return None
         img = img.resize((1080, 1920), PILImage.LANCZOS)
         output_path = output_path.replace(".jpg", ".png")
         img.save(output_path, "PNG")
@@ -1923,6 +1930,11 @@ def generate_ai_image(prompt: str, output_path: str, seed: int = None) -> str:
                     continue
                 try:
                     img = PILImage.open(io.BytesIO(response.content)).convert("RGB")
+                    if _is_grayscale_image(img):
+                        print(f"[Image] AI image rejected B&W/grayscale (attempt {attempt + 1}/3) — retrying")
+                        _record_pollinations_result(False)
+                        time.sleep(20)
+                        continue
                     img = img.resize((1080, 1920), PILImage.LANCZOS)
                     img.save(output_path, "PNG")
                     print(f"[Image] Generated: {prompt[:60]}")
@@ -1998,6 +2010,119 @@ def _filter_dark_placeholders(paths: list[str], label: str = "") -> list[str]:
         if pct > 40:
             print(f"[ImageQC] WARNING: placeholder coverage {pct:.0f}% > 40% "
                   "— Pollinations may be down or returning errors")
+    return clean
+
+
+def _is_grayscale_image(img) -> bool:
+    """Return True if a PIL RGB image is black-and-white or heavily desaturated.
+
+    Computes per-pixel HSV saturation on a 64×64 sample.  Near-black pixels
+    (max channel < 30) are excluded so legitimately dark cinematic stills are
+    not rejected.  Threshold 12 % catches pure B&W and sepia-toned archive
+    photos while keeping coloured low-light shots.
+    """
+    try:
+        import numpy as _np
+        small = img.resize((64, 64))
+        arr = _np.array(small, dtype=float)
+        r, g, b = arr[:, :, 0], arr[:, :, 1], arr[:, :, 2]
+        mx = _np.maximum.reduce([r, g, b])
+        mn = _np.minimum.reduce([r, g, b])
+        bright = mx > 30
+        if bright.sum() == 0:
+            return False  # all black — dark-placeholder filter handles this
+        sat = ((mx - mn) / _np.maximum(mx, 1.0))[bright]
+        return float(sat.mean()) < 0.12
+    except ImportError:
+        small = img.resize((32, 32))
+        pixels = list(small.getdata())
+        bright = [(r, g, b) for r, g, b in pixels if max(r, g, b) > 30]
+        if not bright:
+            return False
+        sats = [(max(r, g, b) - min(r, g, b)) / max(max(r, g, b), 1) for r, g, b in bright]
+        return (sum(sats) / len(sats)) < 0.12
+    except Exception:
+        return False
+
+
+def _is_grayscale_video(path: str) -> bool:
+    """Return True if a video file is black-and-white / grayscale.
+
+    Extracts a single frame at t=1 s via ffmpeg (skips black-fade intros)
+    then runs the same saturation check used for images.
+    Returns False on any error so valid clips are never incorrectly dropped.
+    """
+    import subprocess as _sp, tempfile as _tf, io as _io
+    try:
+        from PIL import Image as _PILv
+        tmp = _tf.NamedTemporaryFile(suffix=".jpg", delete=False)
+        tmp.close()
+        res = _sp.run(
+            ["ffmpeg", "-y", "-ss", "1", "-i", path,
+             "-vframes", "1", "-f", "image2", tmp.name],
+            capture_output=True, timeout=15,
+        )
+        if res.returncode != 0 or not os.path.exists(tmp.name):
+            return False
+        with _PILv.open(tmp.name) as _frm:
+            _frm = _frm.convert("RGB")
+            result = _is_grayscale_image(_frm)
+        try:
+            os.remove(tmp.name)
+        except OSError:
+            pass
+        return result
+    except Exception:
+        return False
+
+
+def _filter_grayscale_images(paths: list[str], label: str = "") -> list[str]:
+    """Remove black-and-white / grayscale images from pool, log count."""
+    if not paths:
+        return paths
+    tag = f" [{label}]" if label else ""
+    clean = []
+    removed = 0
+    for p in paths:
+        if _is_video_file(p):
+            clean.append(p)  # videos checked separately
+            continue
+        try:
+            from PIL import Image as _PILG
+            with _PILG.open(p) as _img:
+                _img = _img.convert("RGB")
+                if _is_grayscale_image(_img):
+                    print(f"[ImageQC{tag}] Rejected B&W/grayscale: {os.path.basename(p)}")
+                    removed += 1
+                    continue
+        except Exception:
+            pass
+        clean.append(p)
+    if removed:
+        print(f"[ImageQC{tag}] Removed {removed} B&W/grayscale image(s) "
+              f"— {len(clean)} colour images remain")
+    return clean
+
+
+def _filter_grayscale_videos(paths: list[str], label: str = "") -> list[str]:
+    """Remove black-and-white / grayscale video clips from pool, log count."""
+    if not paths:
+        return paths
+    tag = f" [{label}]" if label else ""
+    clean = []
+    removed = 0
+    for p in paths:
+        if not _is_video_file(p):
+            clean.append(p)
+            continue
+        if _is_grayscale_video(p):
+            print(f"[VideoQC{tag}] Rejected B&W/grayscale clip: {os.path.basename(p)}")
+            removed += 1
+        else:
+            clean.append(p)
+    if removed:
+        print(f"[VideoQC{tag}] Removed {removed} B&W/grayscale clip(s) "
+              f"— {len(clean)} colour clips remain")
     return clean
 
 
@@ -2200,6 +2325,12 @@ def download_real_image(url: str, output_path: str) -> str | None:
             if _unique_colors < 400:
                 print(f"[Image] Rejected non-photographic image "
                       f"({_unique_colors} unique colors — likely painting/illustration): {url[:80]}")
+                return None
+
+            # 3. Black-and-white / grayscale filter — archive sources often serve
+            #    historical B&W photos that look out of place in colour AI videos.
+            if _is_grayscale_image(img):
+                print(f"[Image] Rejected B&W/grayscale image: {url[:80]}")
                 return None
         except Exception:
             pass  # skip detection on error — don't block valid images
@@ -3775,15 +3906,15 @@ def _search_pexels_videos(query: str, per_page: int = 15) -> list[str]:
         urls: list[str] = []
         for video in data.get("videos", []):
             files = video.get("video_files", [])
-            # Prefer medium portrait MP4 for faster download/render.
-            files = sorted(files, key=lambda f: (f.get("height", 0), f.get("width", 0)))
+            # Require HD (≥720p) — sort descending so we pick the best available.
+            files = sorted(files, key=lambda f: (f.get("height", 0), f.get("width", 0)), reverse=True)
             picked = None
             for f in files:
                 link = f.get("link", "")
-                if f.get("file_type") == "video/mp4" and link:
+                h    = f.get("height") or 0
+                if f.get("file_type") == "video/mp4" and link and h >= 720:
                     picked = link
-                    if (f.get("height") or 0) >= 720:
-                        break
+                    break
             if picked and "watermark" not in picked.lower():
                 urls.append(picked)
         return urls
@@ -3815,8 +3946,8 @@ def _search_pixabay_videos(query: str, per_page: int = 15) -> list[str]:
         urls: list[str] = []
         for hit in data.get("hits", []):
             vids = hit.get("videos", {})
-            # Prefer medium/large MP4s for stable rendering quality.
-            for key in ("medium", "large", "small", "tiny"):
+            # Require medium or large — "small" (640px) and "tiny" are too low quality.
+            for key in ("large", "medium"):
                 info = vids.get(key) or {}
                 u = info.get("url", "")
                 if u and "mp4" in u:
@@ -4936,38 +5067,61 @@ def _is_blacklisted_source(url_or_title: str) -> bool:
 
 
 def _validate_clip(path: str) -> bool:
-    """Return True if path is a non-corrupt video file with any usable duration (>0.5s).
+    """Return True if path is a non-corrupt, colour video file with usable duration (>0.5s).
 
     Duration limits (3s min / 60s max) are NOT enforced here — short clips are
     looped during assembly and long clips are trimmed by _trim_long_clip before
-    this function is called.
+    this function is called.  B&W / grayscale clips are rejected here so the
+    check applies to ALL video sources (archive, Wikimedia, Pexels, Pixabay…).
     """
     if not path or not os.path.exists(path):
         return False
+    # Resolution + duration check via ffprobe
+    dur = 0.0
+    width = 0
     try:
-        import subprocess as _sp
+        import subprocess as _sp, json as _json
         result = _sp.run(
             ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_streams", path],
             capture_output=True, text=True, timeout=15,
         )
         if result.returncode == 0 and result.stdout:
-            import json as _json
             data = _json.loads(result.stdout)
             for stream in data.get("streams", []):
                 if stream.get("codec_type") == "video":
-                    dur = float(stream.get("duration", 0) or 0)
-                    return dur > 0.5
+                    dur   = float(stream.get("duration", 0) or 0)
+                    width = int(stream.get("width", 0) or 0)
+                    break
     except Exception:
         pass
-    try:
+
+    if dur == 0.0:
+        # ffprobe failed — try moviepy
         try:
-            from moviepy.editor import VideoFileClip as _VFC
-        except ImportError:
-            from moviepy import VideoFileClip as _VFC
-        with _VFC(path) as c:
-            return c.duration > 0.5
-    except Exception:
+            try:
+                from moviepy.editor import VideoFileClip as _VFC
+            except ImportError:
+                from moviepy import VideoFileClip as _VFC
+            with _VFC(path) as c:
+                dur = c.duration
+        except Exception:
+            return False
+
+    if dur <= 0.5:
         return False
+
+    # Minimum resolution: reject anything below 360 px wide (very low quality)
+    if 0 < width < 360:
+        print(f"[VideoQC] Rejected low-res clip ({width}px wide): {os.path.basename(path)}")
+        return False
+
+    # B&W / grayscale rejection — skip the frame extraction for very short clips
+    # (< 1 s) to avoid ffmpeg seek errors
+    if dur >= 1.0 and _is_grayscale_video(path):
+        print(f"[VideoQC] Rejected B&W/grayscale clip: {os.path.basename(path)}")
+        return False
+
+    return True
 
 
 def _trim_long_clip(path: str, max_dur: float = 15.0) -> bool:
@@ -10035,8 +10189,9 @@ def run_fast_pipeline(
             image_paths = list(dict.fromkeys(image_paths))
             print(f"[FAST] After stock supplement: {len(image_paths)} unique sources")
 
-    # Filter dark solid-background placeholder images before assembly
+    # Filter dark placeholders, B&W/grayscale, and low-quality before assembly
     image_paths = _filter_dark_placeholders(image_paths, label="FAST")
+    image_paths = _filter_grayscale_images(image_paths, label="FAST")
 
     # Pre-export validation (warnings only — never abort on warnings alone)
     _fast_audio_secs = _real_audio_secs if _real_audio_secs > 0 else 0.0
@@ -10583,8 +10738,9 @@ def run_full_pipeline(
     print(f"[FULL] Final image count: {len(all_image_paths)}")
     print(f"[DEBUG] First 3 paths: {all_image_paths[:3]}")
 
-    # Filter dark solid-background placeholder images before assembly
+    # Filter dark placeholders, B&W/grayscale, and low-quality before assembly
     all_image_paths = _filter_dark_placeholders(all_image_paths, label="FULL")
+    all_image_paths = _filter_grayscale_images(all_image_paths, label="FULL")
 
     # Pre-export validation (warnings only — never abort on warnings alone)
     _full_audio_secs = _real_audio_secs if _real_audio_secs > 0 else 0.0
