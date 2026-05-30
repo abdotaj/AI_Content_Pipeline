@@ -439,17 +439,16 @@ def generate_voiceover_edgetts(script_text: str, filename: str, language: str = 
 def _pyarabic_normalize(text: str) -> str:
     """Normalize Arabic text with pyarabic before TTS. Silent no-op if not installed.
 
-    Fixes that mishkal tashkeel cannot handle:
-    - normalize_hamza: أ إ آ إ → consistent hamza form TTS expects
+    Safe normalizations only (normalize_ligature removed — it alters lam-alef
+    combinations that some Arabic TTS voices render differently from the canonical form):
+    - normalize_hamza: أ إ آ variants → consistent hamza form TTS expects
     - strip_tatweel: removes ـ (kashida) that some TTS engines pause on or skip
-    - normalize_ligature: lam-alef variants (لا لأ لإ لآ) → canonical form
     """
     try:
         import pyarabic.araby as _araby
         text = _araby.normalize_hamza(text)
         text = _araby.strip_tatweel(text)
-        text = _araby.normalize_ligature(text)
-        print("[AR] PyArabic normalization applied (hamza + tatweel + ligature)")
+        print("[AR] PyArabic normalization applied (hamza + tatweel)")
     except ImportError:
         print("[AR] pyarabic not installed — skipping normalization (pip install pyarabic)")
     except Exception as _e:
@@ -1999,7 +1998,7 @@ def generate_ai_image(prompt: str, output_path: str, seed: int = None) -> str:
     _seed = seed if seed is not None else random.randint(1, 99999)
     url = (
         f"https://image.pollinations.ai/prompt/{encoded}"
-        f"?width=1080&height=1920&nologo=true&seed={_seed}"
+        f"?width=1080&height=1920&nologo=true&safe=true&seed={_seed}"
     )
 
     for attempt in range(3):
@@ -2139,21 +2138,35 @@ _BLOCKED_IMAGE_DOMAINS = {
     "pixels.com", "society6.com", "artpal.com", "artfinder.com", "artplode.com",
     "ugallery.com", "artmajeur.com", "artbynumbers.com", "paintingvalley.com",
     "1zoom.me", "arts-wallpapers.com", "wallpapersafari.com",
+    # Art encyclopedias and portfolio sites — paintings, not photos
+    "wikiart.org", "artstation.com", "artuk.org", "artstor.org",
 }
 _BLOCKED_URL_PATTERNS  = {".html", ".php", ".aspx", "/blog/", "/article/", "/post/",
-                           "/painting/", "/artwork/", "/fine-art/"}
+                           "/painting/", "/artwork/", "/fine-art/", "/collection/art/"}
 # Child/cartoon content — must never appear in crime documentary videos
 _BLOCKED_CHILD_PATTERNS = {
     "clipart", "cartoon", "/kids/", "/children/", "/child/", "illustration",
     "vector", "drawing", "coloring", "comic", "anime", "sticker", "clip-art",
+    "wikiart", "artstation",
     "shutterstock.com/image-vector", "istockphoto.com/vector",
     "freepik.com", "flaticon", "vecteezy", "dreamstime.com/stock-image-kids",
     "depositphotos.com/stock-illustration",
 }
 _CRIME_NEGATIVE_TERMS = (
     "-cartoon -illustration -drawing -clipart -vector -anime -kids -children "
-    "-coloring -painting -artwork -watercolor -sketch -doodle"
+    "-coloring -painting -artwork -watercolor -sketch -doodle "
+    "-painted -acrylic -mural -fresco -digital-art"
 )
+# Keywords found in DDG result titles/source URLs that indicate non-photographic content.
+# Checked before downloading — cheaper than pixel analysis.
+_ART_RESULT_KEYWORDS = frozenset({
+    "painting", "painted", "drawing", "drawn", "illustration", "illustrated",
+    "artwork", "art by", "watercolor", "acrylic", "sketch", "oil on canvas",
+    "digital art", "fan art", "concept art", "oil painting", "portrait painting",
+    "comic", "manga", "anime", "clipart", "vector art", "pixelated",
+    "coloring page", "colouring page", "how to draw", "easy draw",
+    "wallpaper art", "deviantart", "artstation", "wikiart",
+})
 _VALID_IMAGE_EXTS      = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".jfif"}
 
 
@@ -2227,19 +2240,37 @@ def download_real_image(url: str, output_path: str) -> str | None:
             print(f"[Image] Rejected low-res ({w}×{h}): {url[:80]}")
             return None
 
-        # Painting / illustration detection via color-variety score.
-        # Real photographs have high color variety (camera noise, gradients, textures).
-        # Flat paintings, digital art, and wallpapers have large uniform regions
-        # → fewer unique colors in a downscaled sample.
-        # Threshold: <150 unique colors in a 64×64 sample → reject as non-photographic.
+        # Painting / illustration detection via two pixel-level heuristics.
+        # Both run on a 64×64 downsample so the checks are fast.
         try:
-            import numpy as _np
             _sample = img.resize((64, 64), PILImage.LANCZOS)
-            _arr = _np.array(_sample).reshape(-1, 3)
-            # Quantize each channel to 5-bit to group near-identical colors
-            _quantized = (_arr >> 3).astype("uint8")
-            _unique_colors = len(set(map(tuple, _quantized.tolist())))
-            if _unique_colors < 150:
+            _pixels = list(_sample.getdata())  # list of (R, G, B) tuples
+
+            # 1. White-background ratio: sketches/drawings on white paper have
+            #    large areas of near-white pixels. Real archive photos don't.
+            _white = sum(1 for r, g, b in _pixels if r > 235 and g > 235 and b > 235)
+            _white_ratio = _white / len(_pixels)
+            if _white_ratio > 0.40:
+                print(f"[Image] Rejected sketch/drawing "
+                      f"({_white_ratio:.0%} white background): {url[:80]}")
+                return None
+
+            # 2. Color-variety score: real photos have rich, noisy color distributions
+            #    due to camera sensor noise, gradients, and natural textures.
+            #    Paintings, cartoons, and digital art have flat regions → fewer unique
+            #    colors in a quantized sample.
+            #    Quantize each channel to 5-bit (32 levels); threshold raised to 400
+            #    so colorful paintings (watercolor, acrylic, digital art) are caught
+            #    in addition to line drawings.
+            try:
+                import numpy as _np
+                _arr = _np.array(_sample).reshape(-1, 3)
+                _quantized = (_arr >> 3).astype("uint8")
+                _unique_colors = len(set(map(tuple, _quantized.tolist())))
+            except ImportError:
+                # PIL-only fallback: quantize by shifting each channel
+                _unique_colors = len(set((r >> 3, g >> 3, b >> 3) for r, g, b in _pixels))
+            if _unique_colors < 400:
                 print(f"[Image] Rejected non-photographic image "
                       f"({_unique_colors} unique colors — likely painting/illustration): {url[:80]}")
                 return None
@@ -2582,6 +2613,47 @@ _CHUNK_LOCATION_HINTS: dict[str, str] = {
     "airport":     "airport terminal interior",
 }
 
+# Stop-words filtered out when building script-derived search queries
+_QUERY_STOP_WORDS = frozenset({
+    "a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for",
+    "of", "with", "his", "her", "their", "this", "that", "as", "was",
+    "were", "is", "are", "be", "been", "by", "from", "who", "which",
+    "when", "where", "how", "what", "while", "after", "before", "during",
+    "into", "over", "under", "through", "about", "against", "between",
+    "he", "she", "they", "it", "we", "i", "you", "had", "has", "have",
+    "did", "do", "does", "not", "no", "then", "than", "also", "just",
+    "being", "would", "could", "should", "its", "upon", "out", "up",
+    "one", "two", "three", "four", "five", "was", "all", "more", "very",
+})
+
+
+def _keywords_from_chunk(chunk: str, max_terms: int = 5) -> str:
+    """Extract up to max_terms searchable keywords from a script chunk phrase.
+
+    Strips common stop-words and punctuation; keeps proper nouns, agency
+    abbreviations, years, and crime-relevant terms. Used as the highest-
+    priority query in _build_scene_search_queries so searches reflect the
+    actual script content rather than just the video title + event type.
+    """
+    words = re.sub(r"['\",;:.!?()\[\]/\\]", " ", chunk).split()
+    out: list[str] = []
+    seen: set[str] = set()
+    for w in words:
+        w = w.strip("-–")
+        if not w or len(w) < 3:
+            continue
+        wl = w.lower()
+        if wl in _QUERY_STOP_WORDS:
+            continue
+        if wl in seen:
+            continue
+        seen.add(wl)
+        out.append(w)
+        if len(out) >= max_terms:
+            break
+    return " ".join(out)
+
+
 # Noise patterns that make AI prompts useless for documentary realism
 _AI_PROMPT_NOISE_RE = re.compile(
     r'\b(cinematic|documentary|dark|dramatic|moody|epic|atmospheric|noir|'
@@ -2654,12 +2726,14 @@ def _build_scene_search_queries(chunk: str, topic: str, event_type: str) -> list
     """Return an ordered list of archive/stock search queries for this scene chunk.
 
     Priority (most specific → most generic):
-    1. person + location  e.g. 'Jeffrey Epstein Palm Beach'
-    2. location alone     e.g. 'Palm Beach Florida mansion exterior'
-    3. person + context   e.g. 'Jeffrey Epstein courtroom'
-    4. person + year      e.g. 'Jeffrey Epstein 2008'
-    5. person alone       e.g. 'Jeffrey Epstein'   (identity anchor)
-    6. generic type base  e.g. 'courtroom empty wooden'  (no person)
+    0. person + script keywords  e.g. 'Mikhailov FSB Moscow 1998 arrest'
+    1. script keywords alone     e.g. 'FSB Moscow Lubyanka arrest CIA'
+    2. person + known location   e.g. 'Jeffrey Epstein Palm Beach'
+    3. location alone            e.g. 'Palm Beach Florida mansion exterior'
+    4. person + event context    e.g. 'Jeffrey Epstein courtroom'
+    5. person + year             e.g. 'Jeffrey Epstein 2008'
+    6. person alone              e.g. 'Jeffrey Epstein'   (identity anchor)
+    7. generic type base         e.g. 'courtroom empty wooden'  (no person)
 
     The caller tries each in order and stops at the first successful download.
     The per-run cache (_wikimedia_query_cache) ensures duplicate queries across
@@ -2673,26 +2747,36 @@ def _build_scene_search_queries(chunk: str, topic: str, event_type: str) -> list
 
     queries: list[str] = []
 
-    # 1 & 2: person + location, then location alone
+    # 0 & 1: script-derived queries — keywords extracted directly from the chunk
+    # e.g. chunk "arrested at Lubyanka FSB 1998 CIA intelligence" →
+    #      "Mikhailov arrested Lubyanka FSB 1998" then "arrested Lubyanka FSB 1998"
+    chunk_kw = _keywords_from_chunk(chunk)
+    if chunk_kw:
+        person_in_kw = bool(person) and person.lower() in chunk_kw.lower()
+        if person and not person_in_kw:
+            queries.append(f"{person} {chunk_kw}")
+        queries.append(chunk_kw)
+
+    # 2 & 3: person + known location, then location alone
     for loc_phrase, loc_query in _CHUNK_LOCATION_HINTS.items():
         if loc_phrase in chunk_lower:
             queries.append(f"{person} {loc_phrase}")  # "Jeffrey Epstein Palm Beach"
             queries.append(loc_query)                  # "Palm Beach Florida mansion exterior"
             break
 
-    # 3: person + event context
+    # 4: person + event context
     if type_ctx:
         queries.append(f"{person} {type_ctx}")         # "Jeffrey Epstein courtroom"
 
-    # 4: person + year
+    # 5: person + year
     if year:
         queries.append(f"{person} {year}")             # "Jeffrey Epstein 2008"
 
-    # 5: person alone (identity anchor — always included for person-centric events)
+    # 6: person alone (identity anchor — always included for person-centric events)
     if person:
         queries.append(person)                         # "Jeffrey Epstein"
 
-    # 6: generic type base (no person — useful when person photos are exhausted)
+    # 7: generic type base (no person — useful when person photos are exhausted)
     base = _SCENE_BASE_QUERIES.get(event_type, "documentary archival")
     queries.append(" ".join(base.split()[:3]))         # "courtroom empty wooden"
 
@@ -3388,8 +3472,9 @@ def build_documentary_visual_pool(
         if not saved and scene_queries and ev_type not in ("portrait", "childhood"):
             _vid_out = out_path.replace(".png", "_clip.mp4")
             _vid_sources = [
-                ("PexelsVideo",  _search_pexels_videos,  {"per_page": 3}),
-                ("PixabayVideo", _search_pixabay_videos, {"per_page": 3}),
+                ("DDGVideo",     _search_duckduckgo_videos, {"max_results": 3}),
+                ("PexelsVideo",  _search_pexels_videos,     {"per_page": 3}),
+                ("PixabayVideo", _search_pixabay_videos,    {"per_page": 3}),
             ]
             for _vsrc_name, _vsrc_fn, _vsrc_kw in _vid_sources:
                 if saved:
@@ -4950,6 +5035,9 @@ def _download_video_url(url: str, output_path: str,
             pass
 
         if ct and not (ct.startswith("video/") or "octet-stream" in ct or "mp4" in ct):
+            if "text/html" in ct or "text/plain" in ct:
+                # YouTube, Vimeo, news embed — yt-dlp can extract the real stream
+                return _ytdlp_clip_first15(url, output_path)
             print(f"[Stock] Rejected non-video Content-Type ({ct.split(';')[0].strip()}): {url[:60]}")
             return None
 
@@ -5626,9 +5714,11 @@ def _search_duckduckgo_images(query: str, max_results: int = 5) -> list[str]:
     for _attempt in range(_max_attempts):
         try:
             _proxy = _ddgs_proxy()
-            # type_image="photo" filters out clipart/illustrations/drawings at source.
-            # safesearch="on" + negative terms block child/cartoon content.
-            _safe_query = f"{query} {_CRIME_NEGATIVE_TERMS}"
+            # Append "photograph" to every query — forces Bing's index to rank
+            # actual photos (news, archive, press) over artwork and illustrations.
+            # type_image="photo" is DDG's category filter but is unreliable;
+            # the "photograph" keyword in the query itself is more effective.
+            _safe_query = f"{query} photograph {_CRIME_NEGATIVE_TERMS}"
             raw = DDGS(proxy=_proxy).images(
                 _safe_query,
                 max_results=max_results * 3,
@@ -5643,6 +5733,16 @@ def _search_duckduckgo_images(query: str, max_results: int = 5) -> list[str]:
                     continue
                 u_lower = url.lower()
                 if any(d in u_lower for d in _blocked):
+                    continue
+                # Filter on DDG result metadata before downloading
+                _title  = (r.get("title")  or "").lower()
+                _source = (r.get("source") or "").lower()
+                if any(kw in _title or kw in _source for kw in _ART_RESULT_KEYWORDS):
+                    continue
+                # Skip images with known-small dimensions (likely thumbnails/icons)
+                _w = int(r.get("width")  or 0)
+                _h = int(r.get("height") or 0)
+                if _w and _h and (_w < 400 or _h < 300):
                     continue
                 urls.append(url)
                 if len(urls) >= max_results:
@@ -5678,7 +5778,10 @@ def _search_duckduckgo_videos(query: str, max_results: int = 5) -> list[str]:
     for _attempt in range(_max_attempts):
         try:
             _proxy = _ddgs_proxy()
-            raw = DDGS(proxy=_proxy).videos(query, max_results=max_results * 4)
+            # Append "news footage" to bias toward short news clips/reels rather
+            # than long documentaries or unrelated uploads.
+            _vid_query = f"{query} news footage"
+            raw = DDGS(proxy=_proxy).videos(_vid_query, max_results=max_results * 4)
             urls: list[str] = []
             for r in (raw or []):
                 url = r.get("content", "") or r.get("embed_url", "")
@@ -5686,6 +5789,17 @@ def _search_duckduckgo_videos(query: str, max_results: int = 5) -> list[str]:
                     continue
                 if _is_blacklisted_source(url):
                     continue
+                # Skip very long videos (duration field is in seconds when present)
+                _dur = r.get("duration", "") or ""
+                if _dur and ":" in str(_dur):
+                    # e.g. "10:30" → 630s — skip anything over 5 minutes
+                    _parts = str(_dur).split(":")
+                    try:
+                        _total_s = int(_parts[-2]) * 60 + int(_parts[-1]) if len(_parts) >= 2 else 0
+                        if _total_s > 300:
+                            continue
+                    except (ValueError, IndexError):
+                        pass
                 urls.append(url)
                 if len(urls) >= max_results:
                     break

@@ -271,7 +271,7 @@ _WORD_FLOORS = {
 }
 _WORD_CEILINGS = {
     "fast":      {"english": 2_500,  "arabic":  7_500},  # 15 min EN × 160 | 40 min AR × 185 (upper bounds)
-    "full":      {"english": 6_500,  "arabic": 16_500},  # 20 min EN × 160 | 90 min AR × 185
+    "full":      {"english": 6_500,  "arabic": 13_750},  # 20 min EN × 160 | 74 min AR × 185
     "animation": {"english": 4_000,  "arabic": 11_000},  # 18 min EN × 160 | 60 min AR × 185
     "short":     {"english": 500,    "arabic": 500},
 }
@@ -409,7 +409,7 @@ RUNTIME_CONTRACTS: dict[str, dict] = {
     },
     "full": {
         "english": {"min_minutes": 15.0, "max_minutes": 20.0},
-        "arabic":  {"min_minutes": 45.0, "max_minutes": 90.0},
+        "arabic":  {"min_minutes": 45.0, "max_minutes": 75.0},
     },
     "animation": {
         "english": {"min_minutes": 12.0, "max_minutes": 18.0},
@@ -1420,33 +1420,58 @@ def apply_mishkal_tashkeel(script: str) -> str:
 
     import re as _re_msh
 
-    def _tashkeel_chunk(chunk: str) -> str:
-        """Apply tashkeel sentence-by-sentence to avoid slow analysis on long paragraphs."""
-        if not chunk.strip():
-            return chunk
-        # Split on Arabic/Latin sentence endings, keeping the delimiter
-        sentences = _re_msh.split(r'(?<=[.!?؟\n])\s*', chunk)
-        vocalized = []
-        for sent in sentences:
-            if not sent.strip():
-                vocalized.append(sent)
-                continue
+    # Arabic diacritical marks (harakat)
+    _HARAKAAT = 'ًٌٍَُِّْ'
+
+    def _smart_tashkeel_block(block: str) -> str:
+        """Apply tashkeel to a block, word by word.
+        - Skips words already diacritized (have harakat)
+        - Skips long words (>8 Arabic chars) — likely proper nouns / compounds
+        - Skips non-Arabic tokens (numbers, Latin, punctuation)
+        Safety: if mishkal expands the block by >35%, return original.
+        """
+        if not block.strip():
+            return block
+        words = block.split(' ')
+        result_words = []
+        _AR_RE = _re_msh.compile(r'^[؀-ۿ]+$')
+        needs_tashkeel = []
+        for i, w in enumerate(words):
+            arabic_only = _AR_RE.match(w)
+            already_diacritized = any(c in w for c in _HARAKAAT)
+            long_word = len(w) > 8  # proper nouns / compound words
+            if arabic_only and not already_diacritized and not long_word:
+                needs_tashkeel.append((i, w))
+            result_words.append(w)
+        if not needs_tashkeel:
+            return block
+        # Batch: apply tashkeel to only the candidate words
+        for idx, word in needs_tashkeel:
             try:
-                vocalized.append(_mishkal_vocalizer.tashkeel(sent))
+                vocalized = _mishkal_vocalizer.tashkeel(word)
+                # Reject if output grew >50% per word (over-tashkeel signal)
+                if len(vocalized) <= len(word) * 1.5 + 3:
+                    result_words[idx] = vocalized
             except Exception:
-                vocalized.append(sent)
-        return " ".join(vocalized)
+                pass
+        rebuilt = ' '.join(result_words)
+        # Block-level safety: if result > 30% larger, return original
+        if len(rebuilt) > len(block) * 1.30:
+            return block
+        return rebuilt
 
     parts = _re_msh.split(r'(\[SECTION:[^\]]*\])', script)
     out = []
     for part in parts:
         if _re_msh.match(r'\[SECTION:[^\]]*\]', part):
             out.append(part)
+        elif part.strip():
+            out.append(_smart_tashkeel_block(part))
         else:
-            out.append(_tashkeel_chunk(part))
+            out.append(part)
 
     result = "".join(out)
-    print(f"[Mishkal] Tashkeel applied ({len(script)} → {len(result)} chars)")
+    print(f"[Mishkal] Smart tashkeel applied ({len(script)} → {len(result)} chars)")
     return result
 
 
