@@ -27,8 +27,6 @@ YOUTUBE_CLIENT_ID_EN     = os.getenv("YOUTUBE_CLIENT_ID_EN", "")
 YOUTUBE_CLIENT_SECRET_EN = os.getenv("YOUTUBE_CLIENT_SECRET_EN", "")
 YOUTUBE_CLIENT_ID_AR     = os.getenv("YOUTUBE_CLIENT_ID_AR", "")
 YOUTUBE_CLIENT_SECRET_AR = os.getenv("YOUTUBE_CLIENT_SECRET_AR", "")
-YOUTUBE_TOKEN_FILE_EN    = "youtube_token_darkcrimed_en.json"
-YOUTUBE_TOKEN_FILE_AR    = "youtube_token_darkcrimed_ar.json"
 
 # TikTok
 TIKTOK_SESSION_ID    = os.getenv("TIKTOK_SESSION_ID", "YOUR_TIKTOK_SESSION")

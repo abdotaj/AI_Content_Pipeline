@@ -438,7 +438,7 @@ ALIASES: dict[str, str] = {
     "dennis rader":         "btk killer",
     "btk":                  "btk killer",
     "henry hill goodfellas":"henry hill",
-    "jordan belfort":       "jordan belfort",   # already canonical — kept for clarity
+
     "unabomber":            "ted kaczynski",
     "night stalker":        "richard ramirez",
     "monster dahmer":       "jeffrey dahmer",

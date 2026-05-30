@@ -4557,20 +4557,39 @@ def fix_first_mention(text: str, is_arabic: bool = False) -> str:
 # translation call and AFTER as a safety net in _fix_arabic.
 # Listed longest-first so "BTK killer" is substituted before "BTK".
 _AR_ACRONYM_SUBS: list[tuple[str, str]] = [
-    ("BTK killer",  "قاتل بي تي كي"),
-    ("BTK Killer",  "قاتل بي تي كي"),
-    ("the BTK",     "بي تي كي"),
-    ("BTK",         "بي تي كي"),
+    ("BTK killer",   "قاتل بي تي كي"),
+    ("BTK Killer",   "قاتل بي تي كي"),
+    ("the BTK",      "بي تي كي"),
+    ("BTK",          "بي تي كي"),
+    ("FBI",          "إف بي آي"),
+    ("CIA",          "سي آي إيه"),
+    ("DEA",          "دي إيه إيه"),
+    ("NSA",          "إن إس إيه"),
+    ("LAPD",         "شرطة لوس أنجلوس"),
+    ("NXIVM",        "نيكزيوم"),
     ("Dennis Rader", "دينيس رادر"),
-    ("NXIVM",       "نيكزيوم"),
 ]
+
+_LATIN_LETTER_AR: dict[str, str] = {
+    'A': 'إيه', 'B': 'بي',     'C': 'سي',    'D': 'دي',    'E': 'إي',
+    'F': 'إف',  'G': 'جي',     'H': 'إتش',   'I': 'آي',    'J': 'جاي',
+    'K': 'كاي', 'L': 'إل',     'M': 'إم',    'N': 'إن',    'O': 'أوه',
+    'P': 'بي',  'Q': 'كيو',    'R': 'آر',    'S': 'إس',    'T': 'تي',
+    'U': 'يو',  'V': 'في',     'W': 'دبليو', 'X': 'إكس',   'Y': 'واي',
+    'Z': 'زي',
+}
 
 
 def _apply_acronym_subs(text: str) -> str:
-    """Replace known drop-prone Latin acronyms with their Arabic phonetic forms."""
+    """Replace known Latin acronyms with Arabic phonetics, then convert any
+    remaining ALL-CAPS Latin word (2-6 chars) letter-by-letter.
+    """
     import re as _re
     for en, ar in _AR_ACRONYM_SUBS:
         text = _re.sub(r'\b' + _re.escape(en) + r'\b', ar, text)
+    def _spell_out(m: '_re.Match') -> str:
+        return ' '.join(_LATIN_LETTER_AR.get(c, c) for c in m.group(0).upper())
+    text = _re.sub(r'\b[A-Z]{2,6}\b', _spell_out, text)
     return text
 
 
@@ -4579,7 +4598,6 @@ def _fix_arabic(text: str) -> str:
     text = fix_arabic_prison_terms(text)
     text = fix_arabic_cta(text)
     text = fix_arabic_rsf(text)
-    # Safety net: restore any acronyms that survived translation as Latin
     text = _apply_acronym_subs(text)
     return text
 

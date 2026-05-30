@@ -241,7 +241,13 @@ _ARABIC_PRONUNCIATION = [
     ("City of God",      "مدينة الله"),
     ("Peaky Blinders",   "بيكي بلايندرز"),
     ("Money Heist",      "سرقة الأموال"),
+    # Acronyms — spelled letter-by-letter in Arabic
+    ("BTK killer",       "قاتل بي تي كي"),
+    ("BTK Killer",       "قاتل بي تي كي"),
+    ("BTK",              "بي تي كي"),
+    ("NXIVM",            "نيكزيوم"),
     # Key people
+    ("Dennis Rader",     "دينيس رادر"),
     ("John Douglas",     "جون دوغلاس"),
     ("Pablo Escobar",    "بابلو إسكوبار"),
     ("El Chapo",         "إل تشابو"),

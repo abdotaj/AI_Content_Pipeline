@@ -1338,12 +1338,14 @@ def fetch_wikipedia_arabic(query: str) -> str | None:
     try:
         search_resp = requests.get(base_url, params=search_params, timeout=15)
         search_data = search_resp.json()
-        results = search_data["query"]["search"]
+        results = search_data.get("query", {}).get("search", [])
 
         if not results:
             return None
 
-        page_title = results[0]["title"]
+        page_title = results[0].get("title", "")
+        if not page_title:
+            return None
 
         content_params = {
             "action": "query",
@@ -1355,7 +1357,7 @@ def fetch_wikipedia_arabic(query: str) -> str | None:
 
         content_resp = requests.get(base_url, params=content_params, timeout=15)
         content_data = content_resp.json()
-        pages = content_data["query"]["pages"]
+        pages = content_data.get("query", {}).get("pages", {})
         page = next(iter(pages.values()))
 
         return page.get("extract", "")[:3000]
@@ -1421,7 +1423,7 @@ def _load_covered() -> list[dict]:
 
 
 def _covered_series_set() -> set[str]:
-    return {entry["series"].lower() for entry in _load_covered()}
+    return {entry.get("series", "").lower() for entry in _load_covered() if entry.get("series")}
 
 
 def mark_covered(series: str, video_id: str, topic: str = "") -> None:

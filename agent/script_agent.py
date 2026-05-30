@@ -485,9 +485,10 @@ def _trim_plain_text_to_words(text: str, max_words: int) -> str:
     return trimmed
 
 
-_GROQ_RATE_LIMITED_UNTIL:    float = 0.0   # epoch seconds; Groq is skipped until this time
+_GROQ_RATE_LIMITED_UNTIL:     float = 0.0   # epoch seconds; Groq is skipped until this time
 _OPENAI_QUOTA_EXCEEDED_UNTIL: float = 0.0  # epoch seconds; OpenAI is skipped until this time
 _GEMINI_QUOTA_EXCEEDED_UNTIL: float = 0.0  # epoch seconds; Gemini is skipped until this time
+_CLAUDE_QUOTA_EXCEEDED_UNTIL: float = 0.0  # epoch seconds; Claude is skipped until this time
 
 # Content-refusal signals — short phrases OpenAI returns when it refuses to write
 # sensitive/lengthy Arabic content. Checked inside _openai_call so Gemini is tried next.
@@ -1488,7 +1489,9 @@ PERSON_TO_SERIES: dict[str, tuple[str, str]] = {
     "griselda blanco": ("Griselda",              "Series"),
     "jordan belfort":  ("Wolf of Wall Street",   "Movie"),
     "john gotti":      ("Gotti",                 "Movie"),
-    "btk":             ("Mindhunter",            "Series"),
+    "dennis rader":    ("BTK Documentary (A&E)", "Documentary"),
+    "btk killer":      ("BTK Documentary (A&E)", "Documentary"),
+    "btk":             ("BTK Documentary (A&E)", "Documentary"),
     "ted bundy":       ("Extremely Wicked",      "Movie"),
     "ed gein":         ("Psycho",                "Movie"),
     "lucky luciano":   ("The Godfather",         "Movie"),
@@ -1497,7 +1500,6 @@ PERSON_TO_SERIES: dict[str, tuple[str, str]] = {
     "whitey bulger":   ("Black Mass",            "Movie"),
     "dexter morgan":   ("Dexter",                "Series"),
     "dexter":          ("Dexter",                "Series"),
-    "btk killer":      ("BTK",                   "Series"),
     "night stalker":   ("Night Stalker",         "Series"),
     "richard ramirez": ("Night Stalker",         "Series"),
     "charles manson":  ("Helter Skelter",         "Movie"),
@@ -1583,9 +1585,13 @@ PERSON_TO_SERIES: dict[str, tuple[str, str]] = {
 
 
 def get_series_for_person(topic_text: str) -> tuple[str, str] | None:
-    """Return (series_name, type) tuple or None if no match."""
+    """Return (series_name, type) tuple or None if no match.
+
+    Sorts keys longest-first so "btk killer" is always checked before "btk",
+    preventing shorter substrings from shadowing more specific entries.
+    """
     topic_lower = topic_text.lower()
-    for person, info in PERSON_TO_SERIES.items():
+    for person, info in sorted(PERSON_TO_SERIES.items(), key=lambda x: len(x[0]), reverse=True):
         if person in topic_lower:
             return info
     return None
@@ -4546,11 +4552,58 @@ def fix_first_mention(text: str, is_arabic: bool = False) -> str:
     return text
 
 
+# ── Arabic acronym / Latin-word handling ─────────────────────────────────────
+# Known terms: specific Arabic translation (better than letter-by-letter)
+# Listed longest-first so "BTK killer" is substituted before "BTK".
+_AR_ACRONYM_SUBS: list[tuple[str, str]] = [
+    ("BTK killer",   "قاتل بي تي كي"),
+    ("BTK Killer",   "قاتل بي تي كي"),
+    ("the BTK",      "بي تي كي"),
+    ("BTK",          "بي تي كي"),
+    ("FBI",          "إف بي آي"),
+    ("CIA",          "سي آي إيه"),
+    ("DEA",          "دي إيه إيه"),
+    ("NSA",          "إن إس إيه"),
+    ("LAPD",         "شرطة لوس أنجلوس"),
+    ("NXIVM",        "نيكزيوم"),
+    ("Dennis Rader", "دينيس رادر"),
+]
+
+# Letter-by-letter fallback for ANY unknown ALL-CAPS acronym (2-6 chars)
+# e.g. "ATF" → "إيه تي إف", "ICC" → "آي سي سي"
+_LATIN_LETTER_AR: dict[str, str] = {
+    'A': 'إيه', 'B': 'بي',     'C': 'سي',    'D': 'دي',    'E': 'إي',
+    'F': 'إف',  'G': 'جي',     'H': 'إتش',   'I': 'آي',    'J': 'جاي',
+    'K': 'كاي', 'L': 'إل',     'M': 'إم',    'N': 'إن',    'O': 'أوه',
+    'P': 'بي',  'Q': 'كيو',    'R': 'آر',    'S': 'إس',    'T': 'تي',
+    'U': 'يو',  'V': 'في',     'W': 'دبليو', 'X': 'إكس',   'Y': 'واي',
+    'Z': 'زي',
+}
+
+
+def _apply_acronym_subs(text: str) -> str:
+    """Replace known drop-prone Latin terms with their Arabic phonetic forms,
+    then convert any remaining ALL-CAPS Latin acronym letter-by-letter.
+    Safe to call on any text — skips English-only strings.
+    """
+    import re as _re
+    # Step 1: known specific substitutions (longest first)
+    for en, ar in _AR_ACRONYM_SUBS:
+        text = _re.sub(r'\b' + _re.escape(en) + r'\b', ar, text)
+    # Step 2: general fallback — any 2-6 uppercase Latin letters left in text
+    def _spell_out(m: 're.Match') -> str:
+        return ' '.join(_LATIN_LETTER_AR.get(c, c) for c in m.group(0).upper())
+    text = _re.sub(r'\b[A-Z]{2,6}\b', _spell_out, text)
+    return text
+
+
 def _fix_arabic(text: str) -> str:
     """Apply all Arabic post-processing fixes in one call."""
     text = fix_arabic_prison_terms(text)
     text = fix_arabic_cta(text)
     text = fix_arabic_rsf(text)
+    # Convert any Latin acronyms (BTK, FBI, CIA, …) to Arabic phonetics
+    text = _apply_acronym_subs(text)
     return text
 
 
@@ -4879,6 +4932,10 @@ def try_translate_arabic(text: str, topic: str = "") -> str:
     4. Groq             (LLM translation, free tier)
     5. OpenAI gpt-4o    (last resort — highest quality but costs money)
     """
+    # Pre-substitute acronyms that machine translators silently drop
+    # (BTK→بي تي كي, FBI→إف بي آي, etc.) — do this BEFORE any translator sees the text
+    text = _apply_acronym_subs(text)
+
     # 1. Google Translate (free — primary)
     try:
         result = translate_to_arabic_google(text)
