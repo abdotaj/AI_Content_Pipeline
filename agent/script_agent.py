@@ -4778,10 +4778,59 @@ def translate_to_arabic_google(text: str) -> str:
         "q":      text,
     }
     import requests as _requests
-    response = _requests.get(url, params=params)
+    response = _requests.get(url, params=params, timeout=30)
     response.raise_for_status()
     result     = response.json()
     translated = "".join([item[0] for item in result[0]])
+    return _fix_arabic(translated)
+
+
+def translate_to_arabic_mymemory(text: str) -> str:
+    """Translate to Arabic via MyMemory free API (no key, 1000 req/day).
+    Chunks text at 490 chars to stay inside the free-tier limit.
+    """
+    import requests as _req
+    _CHUNK = 490
+    chunks = [text[i:i + _CHUNK] for i in range(0, len(text), _CHUNK)]
+    parts: list[str] = []
+    for chunk in chunks:
+        if not chunk.strip():
+            parts.append(chunk)
+            continue
+        r = _req.get(
+            "https://api.mymemory.translated.net/get",
+            params={"q": chunk, "langpair": "en|ar"},
+            timeout=20,
+        )
+        r.raise_for_status()
+        data = r.json()
+        translated = data.get("responseData", {}).get("translatedText", "")
+        if not translated or "MYMEMORY WARNING" in translated:
+            raise ValueError(f"MyMemory bad response: {data.get('responseStatus')}")
+        parts.append(translated)
+    return _fix_arabic(" ".join(parts))
+
+
+def translate_to_arabic_deepl(text: str) -> str:
+    """Translate to Arabic via DeepL free API (500k chars/month free tier).
+    Requires DEEPL_API_KEY environment variable (free account at deepl.com).
+    """
+    import requests as _req
+    api_key = os.getenv("DEEPL_API_KEY", "").strip()
+    if not api_key:
+        raise ValueError("DEEPL_API_KEY not set")
+    # Free tier uses api-free.deepl.com; paid uses api.deepl.com
+    base = "https://api-free.deepl.com" if api_key.endswith(":fx") else "https://api.deepl.com"
+    r = _req.post(
+        f"{base}/v2/translate",
+        headers={"Authorization": f"DeepL-Auth-Key {api_key}"},
+        json={"text": [text], "source_lang": "EN", "target_lang": "AR"},
+        timeout=30,
+    )
+    r.raise_for_status()
+    translated = r.json()["translations"][0]["text"]
+    if not translated:
+        raise ValueError("DeepL returned empty translation")
     return _fix_arabic(translated)
 
 
@@ -4821,16 +4870,43 @@ Return ONLY the Arabic translation. No explanations, no notes."""
 
 
 def try_translate_arabic(text: str, topic: str = "") -> str:
-    """Translate to Arabic: OpenAI → Groq → Google. Accept first success, never retry twice."""
-    # 1. OpenAI (primary — best quality)
+    """Translate to Arabic using a cost-tiered chain.
+    Free providers first — OpenAI only as last resort.
+
+    1. Google Translate  (free, no key, handles any length)
+    2. MyMemory         (free, no key, 1000 req/day, chunked)
+    3. DeepL            (free tier 500k chars/month, needs DEEPL_API_KEY)
+    4. Groq             (LLM translation, free tier)
+    5. OpenAI gpt-4o    (last resort — highest quality but costs money)
+    """
+    # 1. Google Translate (free — primary)
     try:
-        result = translate_to_arabic_openai(text, topic=topic)
+        result = translate_to_arabic_google(text)
         if result:
+            print("[Script] Arabic translation via Google ✅")
             return result
     except Exception as e:
-        print(f"[Script] OpenAI translation unavailable: {e}")
+        print(f"[Script] Google translation failed: {e}")
 
-    # 2. Groq (fallback — faster, no per-word ratio enforcement)
+    # 2. MyMemory (free — no key required)
+    try:
+        result = translate_to_arabic_mymemory(text)
+        if result:
+            print("[Script] Arabic translation via MyMemory ✅")
+            return result
+    except Exception as e:
+        print(f"[Script] MyMemory translation failed: {e}")
+
+    # 3. DeepL (free tier — needs DEEPL_API_KEY)
+    try:
+        result = translate_to_arabic_deepl(text)
+        if result:
+            print("[Script] Arabic translation via DeepL ✅")
+            return result
+    except Exception as e:
+        print(f"[Script] DeepL translation failed: {e}")
+
+    # 4. Groq (LLM — semantic quality, free tier)
     try:
         result = _groq_translate_arabic(text, topic=topic)
         if result:
@@ -4839,14 +4915,14 @@ def try_translate_arabic(text: str, topic: str = "") -> str:
     except Exception as e:
         print(f"[Script] Groq translation failed: {e}")
 
-    # 3. Google Translate (final fallback)
+    # 5. OpenAI (last resort — costs money)
     try:
-        result = translate_to_arabic_google(text)
+        result = translate_to_arabic_openai(text, topic=topic)
         if result:
-            print("[Script] Arabic translation via Google ✅")
+            print("[Script] Arabic translation via OpenAI ✅ (fallback)")
             return result
     except Exception as e:
-        print(f"[Script] Google translation failed: {e}")
+        print(f"[Script] OpenAI translation unavailable: {e}")
 
     print("[Script] ⚠️ All translation services failed — returning original English text")
     return text
