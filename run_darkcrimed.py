@@ -852,48 +852,50 @@ def run_pipeline():
     else:
         _slug = _topic_slug(_topic_for_dedup)
 
-        # ── OUTPUT 1+2 — Arabic & English long-form (parallel assembly) ─────────
-        # PIL C-extensions release the GIL, enabling true parallel execution on 2 cores.
-        # Arabic audio is ~50% longer than English (100 WPM vs 150 WPM), so running
-        # both simultaneously cuts total render time from ~33 min to ~20 min.
+        # ── OUTPUT 1+2 — Arabic long FIRST, then English long (sequential, all modes) ──
+        # AR renders before EN in every mode (fast / full / animation).
+        #
+        # WHY sequential instead of parallel:
+        #   _ACTIVE_TOPIC_CONTENT is a module-level global in video_agent.py.
+        #   Both threads called set_active_topic_content() concurrently and the
+        #   second writer (usually EN) overwrote AR's images-path mid-render,
+        #   so the Arabic video generated zero real images and fell back to
+        #   solid-colour placeholders for its entire duration.
+        #   Sequential rendering eliminates the shared-state race condition.
+        #
+        # WHY AR first:
+        #   Arabic TTS runs at ~100 WPM (vs ~150 WPM for English), so the AR
+        #   audio is ~50 % longer and needs more images.  Rendering AR first
+        #   guarantees it has full access to the Pollinations rate budget and
+        #   real-image search quota before EN consumes them.
         ar_long_path = ""
         en_long_path = ""
 
-        def _render_ar():
-            nonlocal ar_long_id, ar_long_path
-            if not ar_long:
-                _log("VideoGen", "[AR SKIPPED] Arabic script generation failed — no AR video", "WARN")
-                return
+        # ── AR long ──────────────────────────────────────────────────────────
+        _log("VideoGen", "Step 1/2 — Rendering AR long (first)")
+        if not ar_long:
+            _log("VideoGen", "[AR SKIPPED] Arabic script generation failed — no AR video", "WARN")
+        else:
             _ar_wc_pre = len(ar_long.get("script", "").split())
             if _ar_wc_pre < 50:
-                _log("VideoGen", f"[AR SKIP] Script empty ({_ar_wc_pre}w) — skipping Arabic render", "ERROR")
-                return
-            if _ar_wc_pre < 8_000:
-                _log("VideoGen", f"[AR SHORT] {_ar_wc_pre}w (~{round(_ar_wc_pre/100,1)}min) below 8000w target — rendering anyway", "WARN")
+                _log("VideoGen", f"[AR SKIP] Script empty ({_ar_wc_pre}w) — skipping", "ERROR")
             else:
-                _log("VideoGen", f"[AR AUDIO] Script: {_ar_wc_pre}w | est. ~{round(_ar_wc_pre/100,1)}min")
-            ar_long_id   = f"{today}_{_slug}_arabic_long"
-            ar_long_path = _make_video(ar_long, ar_long_id, stats, user_images=user_images, user_videos=user_videos)
+                if _ar_wc_pre < 8_000:
+                    _log("VideoGen", f"[AR SHORT] {_ar_wc_pre}w (~{round(_ar_wc_pre/100,1)}min) below 8000w target — rendering anyway", "WARN")
+                else:
+                    _log("VideoGen", f"[AR AUDIO] Script: {_ar_wc_pre}w | est. ~{round(_ar_wc_pre/100,1)}min")
+                ar_long_id   = f"{today}_{_slug}_arabic_long"
+                ar_long_path = _make_video(ar_long, ar_long_id, stats, user_images=user_images, user_videos=user_videos)
+                _log("VideoGen", f"[AR] Render complete — {ar_long_path}", "OK")
 
-        def _render_en():
-            nonlocal en_long_id, en_long_path
-            if not en_long or en_long.get("script_failed"):
-                _log("VideoGen", "[EN SKIPPED] English script generation failed — no EN video", "WARN")
-                return
+        # ── EN long ──────────────────────────────────────────────────────────
+        _log("VideoGen", "Step 2/2 — Rendering EN long (second)")
+        if not en_long or en_long.get("script_failed"):
+            _log("VideoGen", "[EN SKIPPED] English script generation failed — no EN video", "WARN")
+        else:
             en_long_id   = f"{today}_{_slug}_english_long"
             en_long_path = _make_video(en_long, en_long_id, stats, user_images=user_images, user_videos=user_videos)
-
-        import concurrent.futures as _cf_render
-        _log("VideoGen", "Rendering EN + AR long videos in parallel (2 workers)")
-        with _cf_render.ThreadPoolExecutor(max_workers=2) as _rpool:
-            _rfuts = {_rpool.submit(_render_ar): "AR", _rpool.submit(_render_en): "EN"}
-            for _rf in _cf_render.as_completed(_rfuts):
-                _lang = _rfuts[_rf]
-                try:
-                    _rf.result()
-                    _log("VideoGen", f"[{_lang}] Render complete", "OK")
-                except Exception as _re:
-                    _log("VideoGen", f"[{_lang}] Render failed: {_re}", "ERROR")
+            _log("VideoGen", f"[EN] Render complete — {en_long_path}", "OK")
 
     # ── Arabic runtime validation — mode-specific tiered system ─────────────
     # FULL:  <30m=FAIL  30-44m=UNDER TARGET→expand  45-60m=IDEAL  60-90m=ACCEPTABLE  >90m=TOO LONG
@@ -1089,12 +1091,13 @@ def run_pipeline():
             # Clear stale short paths before rerender to prevent duplicate outputs
             en_chapter_shorts = []
             ar_chapter_shorts = []
-            _slug        = _topic_slug(_topic_for_dedup)
-            en_long_id   = f"{today}_{_slug}_english_long"
-            en_long_path = _make_video(en_long, en_long_id, stats, user_images=user_images, user_videos=user_videos)
+            _slug = _topic_slug(_topic_for_dedup)
+            # AR renders first in all modes (same reason as initial render)
             if ar_long:
                 ar_long_id   = f"{today}_{_slug}_arabic_long"
                 ar_long_path = _make_video(ar_long, ar_long_id, stats, user_images=user_images, user_videos=user_videos)
+            en_long_id   = f"{today}_{_slug}_english_long"
+            en_long_path = _make_video(en_long, en_long_id, stats, user_images=user_images, user_videos=user_videos)
             if en_long_path and os.path.exists(en_long_path):
                 _en_ss = en_long.get("short_script_en", "")
                 if _en_ss:

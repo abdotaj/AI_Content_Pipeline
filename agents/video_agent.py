@@ -1416,6 +1416,7 @@ def get_person_images(
     video_id: str,
     user_images: list[dict] | None = None,
     script_text: str = "",
+    topic: str = "",
 ) -> list[dict]:
     """
     Build the priority image list for a real person.
@@ -1423,6 +1424,7 @@ def get_person_images(
     Priority order (highest first):
       1. User-uploaded images — each expanded to AI-transformed + original
       2. Wikipedia real photo (public domain, position 0 = opening shot)
+      3. Character portrait gallery (labeled portraits for all main characters)
 
     Returns list of {"path", "tags", "caption"} dicts compatible with
     _build_clip_pool_with_user_images().  AI portraits fill the rest of
@@ -1451,9 +1453,319 @@ def get_person_images(
                 })
                 print(f"[Image] Priority 2 (Wikipedia): {downloaded}")
 
+    # 3 — Character portrait gallery (main characters only, with label overlay)
+    if topic and script_text:
+        gallery = build_character_portraits(script_text, topic, video_id)
+        for char_name, info in gallery.items():
+            p = info.get("path", "")
+            if p and os.path.exists(p):
+                _REAL_IMAGE_PATHS.add(p)
+                images.append({
+                    "path":    p,
+                    "tags":    ["portrait", "character", *char_name.lower().split()],
+                    "caption": f"{char_name} — {info.get('role', '')}",
+                })
+                print(f"[Image] Priority 3 (Portrait): {char_name}")
+
     return images
 
 
+# ── Character Portrait System ─────────────────────────────────────────────────
+# Inspired by ViMax/agents/character_extractor.py + character_portraits_generator.py
+# Adapted for true crime documentaries: real photo search + documentary label overlay.
+# Rules:
+#   • Only MAIN characters (is_main=True) are searched — never non-main or unnamed
+#   • Each found portrait gets a documentary lower-third text overlay (name + role)
+
+_PORTRAIT_GALLERY_CACHE: dict[str, dict] = {}   # keyed by video_id — build once per run
+
+
+def _portrait_font(size: int):
+    """Load bold TrueType font at given pixel size. Falls back to PIL default."""
+    from PIL import ImageFont as _PIF
+    for fp in [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",          # Ubuntu/CI
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+        "/usr/share/fonts/truetype/ubuntu/Ubuntu-Bold.ttf",
+        "C:/Windows/Fonts/arialbd.ttf",                                   # Windows
+        "C:/Windows/Fonts/calibrib.ttf",
+        "C:/Windows/Fonts/verdanab.ttf",
+        "/System/Library/Fonts/Supplemental/Arial Bold.ttf",             # macOS
+        "/System/Library/Fonts/Helvetica.ttc",
+    ]:
+        try:
+            return _PIF.truetype(fp, size)
+        except Exception:
+            pass
+    try:
+        return _PIF.load_default(size=size)   # Pillow 10+
+    except TypeError:
+        return _PIF.load_default()
+
+
+def add_character_label_overlay(img_path: str, name: str, role: str) -> str:
+    """Add a documentary lower-third label overlay to a portrait image.
+
+    Renders bold name + role in a dark semi-transparent gradient bar at the
+    bottom of the 1080×1920 frame with a dark-red accent line above it.
+    Saves to *_labeled.png beside the original (original unchanged).
+    Returns path to the labeled image.
+    """
+    try:
+        from PIL import Image as _PILI, ImageDraw as _PILD
+        import numpy as _np_ov
+
+        img  = _PILI.open(img_path).convert("RGBA")
+        w, h = img.size
+
+        # Gradient dark bar from 73 % down to bottom
+        bar_top = int(h * 0.73)
+        bar_h   = h - bar_top
+        ov_arr  = _np_ov.zeros((bar_h, w, 4), dtype=_np_ov.uint8)
+        for y in range(bar_h):
+            alpha = int(80 + 150 * (y / bar_h))
+            ov_arr[y, :] = [0, 0, 0, min(alpha, 230)]
+        overlay = _PILI.fromarray(ov_arr, "RGBA")
+        img.paste(overlay, (0, bar_top), overlay)
+
+        draw = _PILD.Draw(img)
+        # Dark-red accent line
+        draw.rectangle([0, bar_top, w, bar_top + 5], fill=(180, 20, 20, 255))
+
+        margin = 60
+        # Name — bold, large
+        name_y = bar_top + int(bar_h * 0.18)
+        fn     = _portrait_font(max(52, int(h * 0.047)))
+        draw.text((margin + 3, name_y + 3), name, font=fn, fill=(0, 0, 0, 200))
+        draw.text((margin,     name_y),     name, font=fn, fill=(255, 255, 255, 255))
+        # Role — smaller, light grey
+        role_y    = bar_top + int(bar_h * 0.54)
+        fr        = _portrait_font(max(34, int(h * 0.028)))
+        role_text = role[:42] + ("…" if len(role) > 42 else "")
+        draw.text((margin + 2, role_y + 2), role_text, font=fr, fill=(0, 0, 0, 180))
+        draw.text((margin,     role_y),     role_text, font=fr, fill=(210, 210, 210, 255))
+
+        labeled = img_path.replace(".png", "_labeled.png").replace(".jpg", "_labeled.png")
+        img.convert("RGB").save(labeled, "PNG")
+        print(f"[Portrait] Label overlay: {os.path.basename(labeled)}")
+        return labeled
+    except Exception as _oe:
+        print(f"[Portrait] Label overlay failed: {_oe} — using original")
+        return img_path
+
+
+def extract_script_characters(script_text: str, topic: str) -> list[dict]:
+    """Extract main named characters from the script via Groq.
+
+    Returns ≤3 dicts: [{"name": "Pablo Escobar", "role": "Colombian Drug Lord", "is_main": True}]
+    Only real, historically named, CENTRAL people are returned.
+    Non-main, unnamed, and minor characters are excluded at extraction time.
+    Falls back to SUBJECTS dict lookup if Groq is unavailable.
+    """
+    import json as _js
+
+    try:
+        from agents.script_agent import _groq_call as _gc
+    except ImportError:
+        try:
+            from script_agent import _groq_call as _gc
+        except ImportError:
+            _gc = None
+
+    if _gc and _provider_health.is_healthy("groq"):
+        prompt = (
+            f'Analyze this true crime documentary script about: "{topic}".\n\n'
+            "List ONLY the main named characters (max 3):\n"
+            "  - PRIMARY criminal/subject (is_main: true)\n"
+            "  - NAMED central figures only: key investigator, key victim, major accomplice\n\n"
+            "Rules:\n"
+            "  - Only real historical people — no actors, no unnamed roles\n"
+            "  - Exclude minor mentions (one-sentence references)\n"
+            "  - 'role' must be ≤8 words of historical description\n\n"
+            "Return ONLY a JSON array:\n"
+            '[{"name": "Full Name", "role": "Historical Role", "is_main": true}]\n\n'
+            f"Script excerpt:\n{script_text[:1200]}"
+        )
+        try:
+            raw = _gc(
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=300, temperature=0.1,
+            ).choices[0].message.content.strip()
+            s, e = raw.find("["), raw.rfind("]") + 1
+            if s >= 0 and e > s:
+                chars = _js.loads(raw[s:e])
+                valid = [c for c in chars if c.get("name") and c.get("role")][:3]
+                if valid:
+                    print(f"[Portrait] Characters: {[c['name'] for c in valid]}")
+                    return valid
+        except Exception as _ce:
+            print(f"[Portrait] Groq extraction failed: {_ce}")
+
+    # Fallback: SUBJECTS dict key match
+    t = (topic or "").lower()
+    for key, _ in _SUBJECTS_SORTED:
+        if key in t:
+            return [{"name": key.title(), "role": "Main Subject", "is_main": True}]
+    return []
+
+
+def _find_candidate_portraits(name: str, output_dir: str, n: int = 5) -> list[str]:
+    """Search Wikipedia + Wikimedia Commons + DDG for real portrait photos.
+    Downloads ≤n candidates, applies quality filters, returns valid paths.
+    """
+    candidates: list[str] = []
+    os.makedirs(output_dir, exist_ok=True)
+    slug = name.replace(" ", "_")[:30]
+
+    # 1. Wikipedia thumbnail — most reliable for named historical subjects
+    wiki_url = fetch_wikimedia_image(name)
+    if wiki_url:
+        p = os.path.join(output_dir, f"_portrait_wiki_{slug}.png")
+        saved = download_wikipedia_image(wiki_url, p)
+        if saved:
+            try:
+                from PIL import Image as _chkP
+                _ci = _chkP.open(saved).convert("RGB")
+                if not _is_solid_background_image(_ci) and not _is_grayscale_image(_ci):
+                    candidates.append(saved)
+            except Exception:
+                candidates.append(saved)
+
+    # 2. Wikimedia Commons portrait search
+    if len(candidates) < n:
+        for i, url in enumerate(_wikimedia_image_results(f"{name} portrait", max_results=4)):
+            if len(candidates) >= n:
+                break
+            p = os.path.join(output_dir, f"_portrait_commons_{i}_{slug}.png")
+            saved = download_real_image(url, p)
+            if saved:
+                candidates.append(saved)
+
+    # 3. DDG — broader net for less-known subjects
+    if len(candidates) < n:
+        ddg_urls = _search_duckduckgo_images(
+            f"{name} real portrait photo documentary", max_results=6
+        )
+        for i, url in enumerate(ddg_urls):
+            if len(candidates) >= n:
+                break
+            p = os.path.join(output_dir, f"_portrait_ddg_{i}_{slug}.png")
+            saved = download_real_image(url, p)
+            if saved:
+                candidates.append(saved)
+
+    return candidates[:n]
+
+
+def _select_best_portrait(candidates: list[str], name: str, role: str) -> str | None:
+    """Use GPT-4o-mini vision to pick the clearest, most authentic portrait.
+    Falls back to first candidate when no API key or on any error.
+    """
+    if not candidates:
+        return None
+    if len(candidates) == 1:
+        return candidates[0]
+    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    if not api_key or not _provider_health.is_healthy("openai"):
+        return candidates[0]
+
+    import base64 as _b64, mimetypes as _mt2
+    try:
+        content: list[dict] = [{"type": "text", "text": (
+            f"Select the best portrait photo for a true crime documentary.\n"
+            f"Subject: {name} — {role}\n"
+            "Choose the image that:\n"
+            "1. Is a real photograph (not painting, drawing, or AI art)\n"
+            "2. Shows the person's face clearly (frontal or 3/4 view preferred)\n"
+            "3. Is the actual historical person, not an actor portraying them\n"
+            "Reply with ONLY the index number (0, 1, 2 …) of the best image."
+        )}]
+        for i, p in enumerate(candidates):
+            mime, _ = _mt2.guess_type(p)
+            if not mime:
+                mime = "image/png"
+            with open(p, "rb") as _f:
+                b64 = _b64.b64encode(_f.read()).decode("utf-8")
+            content += [
+                {"type": "text",      "text": f"Image {i}:"},
+                {"type": "image_url", "image_url": {
+                    "url": f"data:{mime};base64,{b64}", "detail": "low"
+                }},
+            ]
+        r = requests.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json={
+                "model": "gpt-4o-mini",
+                "messages": [{"role": "user", "content": content}],
+                "max_tokens": 5, "temperature": 0,
+            },
+            timeout=30,
+        )
+        if r.status_code == 200:
+            ans    = r.json()["choices"][0]["message"]["content"].strip()
+            digits = "".join(c for c in ans if c.isdigit())
+            idx    = int(digits[0]) if digits else 0
+            if 0 <= idx < len(candidates):
+                print(f"[Portrait] Vision selected index {idx} for {name}")
+                return candidates[idx]
+        elif r.status_code == 429:
+            _provider_health.record_failure("openai")
+    except Exception as _pe:
+        print(f"[Portrait] Vision selection failed: {_pe} — using first candidate")
+    return candidates[0]
+
+
+def build_character_portraits(
+    script_text: str,
+    topic: str,
+    video_id: str,
+    output_dir: str | None = None,
+) -> dict[str, dict]:
+    """Build a labeled portrait gallery for all MAIN characters in the script.
+
+    For each main character (is_main=True):
+      1. Search Wikipedia + Wikimedia + DDG for real portrait photos
+      2. Select best photo via GPT-4o-mini vision
+      3. Burn in documentary lower-third text overlay (name + role)
+    Non-main, unnamed, and minor characters are never searched.
+    Results cached per video_id so the gallery is built only once per run.
+
+    Returns: {name: {"path": labeled_path, "role": role, "is_main": bool}}
+    """
+    global _PORTRAIT_GALLERY_CACHE
+    if video_id in _PORTRAIT_GALLERY_CACHE:
+        return _PORTRAIT_GALLERY_CACHE[video_id]
+
+    out_dir = output_dir or _get_images_dir()
+    os.makedirs(out_dir, exist_ok=True)
+    gallery: dict[str, dict] = {}
+
+    for char in extract_script_characters(script_text, topic):
+        name    = char.get("name", "").strip()
+        role    = char.get("role", "").strip()
+        is_main = bool(char.get("is_main", True))
+        if not name:
+            continue
+        if not is_main:
+            print(f"[Portrait] Skipping non-main character: {name}")
+            continue
+
+        print(f"[Portrait] Searching: {name} ({role})")
+        candidates = _find_candidate_portraits(name, out_dir, n=5)
+        if not candidates:
+            print(f"[Portrait] No portrait found for: {name}")
+            continue
+
+        best    = _select_best_portrait(candidates, name, role)
+        labeled = add_character_label_overlay(best, name, role) if best else None
+        if labeled:
+            gallery[name] = {"path": labeled, "role": role, "is_main": is_main}
+            print(f"[Portrait] ✓ {name}")
+
+    _PORTRAIT_GALLERY_CACHE[video_id] = gallery
+    print(f"[Portrait] Gallery: {len(gallery)} portrait(s) built")
+    return gallery
 
 
 _DEFAULT_STYLE = "true crime storytelling, dark cinematic lighting, dramatic atmospheric narrative"
@@ -1941,6 +2253,11 @@ def generate_ai_image(prompt: str, output_path: str, seed: int = None) -> str:
                         _record_pollinations_result(False)
                         time.sleep(20)
                         continue
+                    if _is_solid_background_image(img):
+                        print(f"[Image] AI image rejected solid dark background (attempt {attempt + 1}/3) — retrying")
+                        _record_pollinations_result(False)
+                        time.sleep(20)
+                        continue
                     img = img.resize((1080, 1920), PILImage.LANCZOS)
                     img.save(output_path, "PNG")
                     print(f"[Image] Generated: {prompt[:60]}")
@@ -1981,23 +2298,29 @@ def generate_ai_image(prompt: str, output_path: str, seed: int = None) -> str:
 
 
 def _is_dark_placeholder(path: str, threshold: int = 8) -> bool:
-    """Return True if image is a nearly-solid black background (corrupted/empty download).
+    """Return True if image is a dark near-solid background with no real content.
 
-    threshold=8 (mean < 8/255 ≈ 3% brightness) catches only truly blank files.
-    Crime documentary content intentionally uses dark palettes (~15-40 mean) which
-    must NOT be filtered. The PIL gradient emergency fallbacks use ~18-34 RGB,
-    all safely above this threshold.
+    Two-tier check on a 64×64 full-image sample:
+      • near-blank  : mean < 8, std < 3   — truly black/corrupt file
+      • solid-dark  : mean < 40, std < 22 — dark uniform background from any source
+        (Pollinations failure, Pexels/Pixabay solid backdrop, etc.)
+    Emergency PIL gradient fallbacks (_emergency_grad_* files) are exempt from the
+    solid-dark tier — they are intentional last-resort visuals.
     """
     try:
         from PIL import Image as _PILCheck
         import numpy as _np_check
         img = _PILCheck.open(path).convert("RGB")
-        w, h = img.size
-        cx, cy = w // 2, h // 2
-        sample = img.crop((max(0, cx - 50), max(0, cy - 50),
-                           min(w, cx + 50), min(h, cy + 50)))
-        arr = _np_check.array(sample, dtype=float)
-        return arr.mean() < threshold and arr.std() < 3
+        small = img.resize((64, 64))
+        arr = _np_check.array(small, dtype=float)
+        mean_val = float(arr.mean())
+        std_val  = float(arr.std())
+        if mean_val < threshold and std_val < 3:
+            return True
+        if "_emergency_grad_" not in os.path.basename(path):
+            if std_val < 15 or (mean_val < 40 and std_val < 25):
+                return True
+        return False
     except Exception:
         return False
 
@@ -2017,6 +2340,39 @@ def _filter_dark_placeholders(paths: list[str], label: str = "") -> list[str]:
             print(f"[ImageQC] WARNING: placeholder coverage {pct:.0f}% > 40% "
                   "— Pollinations may be down or returning errors")
     return clean
+
+
+def _is_solid_background_image(img) -> bool:
+    """Return True if PIL RGB image is a near-solid colour background with no real content.
+
+    Works for ANY colour (dark, bright, neutral grey, single-tone gradients).
+    Two tiers on a 64×64 full-image sample:
+      • std < 15          — any brightness: solid or near-solid colour (JPEG noise included)
+      • mean < 40, std < 25 — dark images: allows slightly more variance for compression
+    Real photographs always have std > 20 from natural scene complexity, faces, and
+    lighting gradients. Solid colours, flat gradients, and blank backgrounds do not.
+    """
+    try:
+        import numpy as _np
+        small = img.resize((64, 64))
+        arr = _np.array(small, dtype=float)
+        mean_val = float(arr.mean())
+        std_val  = float(arr.std())
+        if std_val < 15:
+            return True
+        if mean_val < 40 and std_val < 25:
+            return True
+        return False
+    except ImportError:
+        small = img.resize((64, 64))
+        pixels = list(small.getdata())
+        vals = [v for px in pixels for v in px]
+        mean = sum(vals) / len(vals)
+        var = sum((v - mean) ** 2 for v in vals) / len(vals)
+        std = var ** 0.5
+        return std < 15 or (mean < 40 and std < 25)
+    except Exception:
+        return False
 
 
 def _is_grayscale_image(img) -> bool:
@@ -2110,6 +2466,97 @@ def _filter_grayscale_images(paths: list[str], label: str = "") -> list[str]:
     return clean
 
 
+def _vision_topic_filter(paths: list[str], topic: str, max_checks: int = 15) -> list[str]:
+    """Vision-filter: use GPT-4o-mini to reject images unrelated to the topic.
+
+    Adapted from ViMax/agents/best_image_selector.py — uses OpenAI vision API
+    with detail='low' (cheapest tier, ~$0.0004/image).  Falls back to returning
+    all paths unchanged if no API key, provider unhealthy, or any error.
+    Runs up to max_checks images in parallel (4 workers) to control cost + latency.
+    """
+    if not topic or not paths:
+        return paths
+    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        return paths
+    if not _provider_health.is_healthy("openai"):
+        return paths
+
+    import base64 as _b64
+    import mimetypes as _mt
+
+    def _check_one(img_path: str) -> bool:
+        if _is_video_file(img_path):
+            return True
+        try:
+            mime, _ = _mt.guess_type(img_path)
+            if not mime or not mime.startswith("image/"):
+                mime = "image/png"
+            with open(img_path, "rb") as _f:
+                data = _b64.b64encode(_f.read()).decode("utf-8")
+            r = requests.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json={
+                    "model": "gpt-4o-mini",
+                    "messages": [{"role": "user", "content": [
+                        {"type": "text", "text": (
+                            f"You are reviewing images for a true crime documentary about '{topic}'.\n"
+                            "Does this image show real, specific content related to this topic — "
+                            "real people, real locations, real events, or real criminal proceedings?\n"
+                            "Answer ONLY with YES or NO. "
+                            "Solid colour backgrounds, generic textures, abstract images, "
+                            "and scenes unrelated to this topic should get NO."
+                        )},
+                        {"type": "image_url", "image_url": {
+                            "url": f"data:{mime};base64,{data}",
+                            "detail": "low"
+                        }}
+                    ]}],
+                    "max_tokens": 5,
+                    "temperature": 0,
+                },
+                timeout=15,
+            )
+            if r.status_code == 200:
+                answer = r.json()["choices"][0]["message"]["content"].strip().upper()
+                if "NO" in answer and "YES" not in answer:
+                    print(f"[VisionQC] Rejected off-topic: {os.path.basename(img_path)}")
+                    return False
+            elif r.status_code == 429:
+                _provider_health.record_failure("openai")
+        except Exception as _ve:
+            print(f"[VisionQC] Check skipped ({os.path.basename(img_path)}): {_ve}")
+        return True  # fail open — keep image
+
+    videos   = [p for p in paths if _is_video_file(p)]
+    images   = [p for p in paths if not _is_video_file(p)]
+    to_check = images[:max_checks]
+    skipped  = images[max_checks:]  # beyond budget — keep unchecked
+
+    print(f"[VisionQC] Checking {len(to_check)} image(s) for topic relevance: '{topic}'")
+    from concurrent.futures import ThreadPoolExecutor as _VTE, as_completed as _VAS
+    passed: list[str] = []
+    with _VTE(max_workers=4) as _vp:
+        _futs = {_vp.submit(_check_one, p): p for p in to_check}
+        for _f in _VAS(_futs):
+            if _futs[_f]:
+                try:
+                    if _f.result():
+                        passed.append(_futs[_f])
+                except Exception:
+                    passed.append(_futs[_f])
+
+    removed = len(to_check) - len(passed)
+    if removed:
+        print(f"[VisionQC] Removed {removed} off-topic image(s) — {len(passed) + len(skipped)} remain")
+
+    # Preserve original order: checked-and-passed + unchecked overflow + videos
+    passed_set = set(passed)
+    ordered = [p for p in paths if p in passed_set or _is_video_file(p) or p in set(skipped)]
+    return ordered
+
+
 def _filter_grayscale_videos(paths: list[str], label: str = "") -> list[str]:
     """Remove black-and-white / grayscale video clips from pool, log count."""
     if not paths:
@@ -2187,6 +2634,10 @@ _BLOCKED_IMAGE_DOMAINS = {
 }
 _BLOCKED_URL_PATTERNS  = {".html", ".php", ".aspx", "/blog/", "/article/", "/post/",
                            "/painting/", "/artwork/", "/fine-art/", "/collection/art/",
+                           # Non-content backgrounds/textures — return solid colours, not photos
+                           "/background/", "/backgrounds/", "/texture/", "/textures/",
+                           "/wallpaper/", "/wallpapers/", "/gradient/", "/solid-color/",
+                           "/pattern/", "/patterns/", "/color-swatch/", "/abstract/",
                            # Adult URL path patterns
                            "/nude/", "/naked/", "/nsfw/", "/adult/", "/explicit/", "/xxx/",
                            "/lingerie/", "/erotic/", "/porn/",
@@ -2221,6 +2672,11 @@ _ART_RESULT_KEYWORDS = frozenset({
     "comic", "manga", "anime", "clipart", "vector art", "pixelated",
     "coloring page", "colouring page", "how to draw", "easy draw",
     "wallpaper art", "deviantart", "artstation", "wikiart",
+    # Generic backgrounds / textures — non-content images unrelated to any script
+    "abstract background", "background texture", "desktop wallpaper",
+    "background image", "stock background", "texture background",
+    "solid background", "color background", "colour background",
+    "seamless texture", "seamless pattern", "flat design background",
 })
 _VALID_IMAGE_EXTS      = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".jfif"}
 
@@ -2337,6 +2793,12 @@ def download_real_image(url: str, output_path: str) -> str | None:
             #    historical B&W photos that look out of place in colour AI videos.
             if _is_grayscale_image(img):
                 print(f"[Image] Rejected B&W/grayscale image: {url[:80]}")
+                return None
+
+            # 4. Near-solid colour background — catches solid/gradient images from any
+            #    source (DDG, Wikimedia, Pexels, Pixabay) regardless of brightness.
+            if _is_solid_background_image(img):
+                print(f"[Image] Rejected solid-colour background: {url[:80]}")
                 return None
         except Exception:
             pass  # skip detection on error — don't block valid images
@@ -10669,6 +11131,7 @@ def run_full_pipeline(
         person_name, video_id,
         all_user_images if all_user_images else None,
         script_text=script_text,
+        topic=topic_str,
     )
     if whisper_segments and priority_images:
         def _img_ts(img):
@@ -10744,9 +11207,10 @@ def run_full_pipeline(
     print(f"[FULL] Final image count: {len(all_image_paths)}")
     print(f"[DEBUG] First 3 paths: {all_image_paths[:3]}")
 
-    # Filter dark placeholders, B&W/grayscale, and low-quality before assembly
+    # Filter dark placeholders, B&W/grayscale, solid backgrounds, and off-topic before assembly
     all_image_paths = _filter_dark_placeholders(all_image_paths, label="FULL")
     all_image_paths = _filter_grayscale_images(all_image_paths, label="FULL")
+    all_image_paths = _vision_topic_filter(all_image_paths, topic_str, max_checks=15)
 
     # Pre-export validation (warnings only — never abort on warnings alone)
     _full_audio_secs = _real_audio_secs if _real_audio_secs > 0 else 0.0
