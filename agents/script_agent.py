@@ -5333,6 +5333,10 @@ def _expand_arabic_script_to_min(ar_script: str, target_min: int = 5000) -> str:
     return result
 
 
+# Public alias so callers can import without leading underscore
+expand_arabic_script_to_min = _expand_arabic_script_to_min
+
+
 def estimate_arabic_duration(text: str) -> float:
     """Estimate Arabic TTS duration in minutes (OpenAI TTS Nova speed=1.1 ~185 WPM)."""
     return clean_word_count(text) / _TTS_WPM["arabic"]

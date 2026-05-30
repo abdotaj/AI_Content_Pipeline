@@ -2,6 +2,8 @@
 """
 Save a script sent as a .txt document to the Telegram bot.
 
+Requires: .env file with TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID set.
+
 Usage:
     python save_script_from_telegram.py
 

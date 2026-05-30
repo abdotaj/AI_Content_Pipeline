@@ -57,7 +57,7 @@ from config_darkcrimed import (
 )
 
 from agent.research_agent import research_topics, research_series, mark_covered, is_fictional
-from agent.script_agent   import write_script, translate_script, generate_chapters, write_short_script, generate_cinematic_shorts, clean_word_count, expand_script_runtime, _expand_arabic_script_to_min
+from agent.script_agent   import write_script, translate_script, generate_chapters, write_short_script, generate_cinematic_shorts, clean_word_count, expand_script_runtime, expand_arabic_script_to_min as _expand_arabic_script_to_min
 from agent.video_agent    import create_video, ensure_music_assets, cut_best_short, load_all_content, process_user_images_smart
 from agent.notify_agent   import (
     send_message, send_video_to_telegram, send_daily_report,

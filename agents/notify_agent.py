@@ -18,12 +18,16 @@ def clean_text(text: str) -> str:
 
 
 def send_message(text: str) -> dict:
-    """Send a plain text message — no markdown."""
-    r = requests.post(f"{BASE_URL}/sendMessage", json={
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": text
-    })
-    return r.json()
+    """Send a plain text message — no markdown. Never raises; returns {} on error."""
+    try:
+        r = requests.post(f"{BASE_URL}/sendMessage", json={
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": text
+        }, timeout=15)
+        return r.json()
+    except Exception as e:
+        print(f"[Notify] send_message failed (non-fatal): {e}")
+        return {}
 
 
 def send_video_preview(video_path: str, script_data: dict, video_id: str) -> str:

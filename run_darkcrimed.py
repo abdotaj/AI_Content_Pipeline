@@ -1440,7 +1440,7 @@ def _video_secs(path: str) -> float:
 
 
 def _make_video(script_data: dict, video_id: str, stats: dict, user_images: list | None = None, user_videos: list | None = None) -> str:
-    """Create a video using ElevenLabs + Pollinations, update stats, return path."""
+    """Create a video using OpenAI TTS + Pollinations (edge-tts fallback), update stats, return path."""
     try:
         _raw = create_video(script_data, video_id, user_images=user_images, user_videos=user_videos)
         path = _raw[0] if isinstance(_raw, tuple) else _raw  # guard against accidental tuple return
