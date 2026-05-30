@@ -2140,9 +2140,17 @@ _BLOCKED_IMAGE_DOMAINS = {
     "1zoom.me", "arts-wallpapers.com", "wallpapersafari.com",
     # Art encyclopedias and portfolio sites — paintings, not photos
     "wikiart.org", "artstation.com", "artuk.org", "artstor.org",
+    # Adult/sexual content domains — YouTube Community Guidelines compliance
+    "pornhub.com", "xvideos.com", "xnxx.com", "redtube.com", "youporn.com",
+    "onlyfans.com", "fansly.com", "chaturbate.com", "brazzers.com",
+    "spankbang.com", "xhamster.com", "rule34.xxx", "gelbooru.com", "danbooru.donmai.us",
 }
 _BLOCKED_URL_PATTERNS  = {".html", ".php", ".aspx", "/blog/", "/article/", "/post/",
-                           "/painting/", "/artwork/", "/fine-art/", "/collection/art/"}
+                           "/painting/", "/artwork/", "/fine-art/", "/collection/art/",
+                           # Adult URL path patterns
+                           "/nude/", "/naked/", "/nsfw/", "/adult/", "/explicit/", "/xxx/",
+                           "/lingerie/", "/erotic/", "/porn/",
+                           }
 # Child/cartoon content — must never appear in crime documentary videos
 _BLOCKED_CHILD_PATTERNS = {
     "clipart", "cartoon", "/kids/", "/children/", "/child/", "illustration",
@@ -2152,10 +2160,17 @@ _BLOCKED_CHILD_PATTERNS = {
     "freepik.com", "flaticon", "vecteezy", "dreamstime.com/stock-image-kids",
     "depositphotos.com/stock-illustration",
 }
+# Adult/sexual URL keywords — block before downloading (YouTube policy compliance)
+_BLOCKED_ADULT_PATTERNS = {
+    "nude", "naked", "nsfw", "explicit", "/xxx", "pornographic", "lingerie",
+    "erotic", "onlyfans", "chaturbate", "brazzers", "playboy", "hustler",
+    "topless", "bottomless", "fetish", "bdsm",
+}
 _CRIME_NEGATIVE_TERMS = (
     "-cartoon -illustration -drawing -clipart -vector -anime -kids -children "
     "-coloring -painting -artwork -watercolor -sketch -doodle "
-    "-painted -acrylic -mural -fresco -digital-art"
+    "-painted -acrylic -mural -fresco -digital-art "
+    "-nude -naked -nudity -sexual -explicit -nsfw -adult -porn -lingerie -bikini -erotic"
 )
 # Keywords found in DDG result titles/source URLs that indicate non-photographic content.
 # Checked before downloading — cheaper than pixel analysis.
@@ -2179,6 +2194,9 @@ def _is_valid_image_url(url: str) -> bool:
         return False
     if any(p in u for p in _BLOCKED_CHILD_PATTERNS):
         print(f"[Image] Blocked child/cartoon URL: {url[:80]}")
+        return False
+    if any(p in u for p in _BLOCKED_ADULT_PATTERNS):
+        print(f"[Image] Blocked adult/sexual URL: {url[:80]}")
         return False
     # Accept if path ends with OR contains a known image extension
     # (CDN URLs often embed extensions mid-path, e.g. /photo.jpg/1280px-photo.jpg)

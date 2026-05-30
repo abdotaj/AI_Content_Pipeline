@@ -16,15 +16,35 @@ _TOKEN_AR = "youtube_token_darkcrimed_ar.json"
 
 # ── YOUTUBE ─────────────────────────────────────────────────
 
+_EDSA_DISCLAIMER_EN = (
+    "⚠️ This documentary is produced for educational and informational purposes. "
+    "All events depicted are based on publicly available records, court documents, "
+    "and verified news sources. Names, dates, and facts reflect documented history.\n\n"
+    "🤖 AI Disclosure: This video contains AI-generated narration and AI-assisted imagery "
+    "created to illustrate historical events. No real footage of private individuals "
+    "has been fabricated or misrepresented."
+)
+
+_EDSA_DISCLAIMER_AR = (
+    "⚠️ هذا الفيلم الوثائقي مُنتَج لأغراض تعليمية وإعلامية. "
+    "جميع الأحداث المُصوَّرة مستندة إلى وثائق عامة وسجلات المحاكم ومصادر إخبارية موثوقة.\n\n"
+    "🤖 إفصاح عن الذكاء الاصطناعي: يحتوي هذا الفيديو على تعليق صوتي مُولَّد بالذكاء الاصطناعي "
+    "وصور مُساعَدة بالذكاء الاصطناعي لتوضيح الأحداث التاريخية."
+)
+
+
 def build_youtube_description(script_data: dict, chapters: str) -> str:
-    """Build a rich YouTube description with chapter markers and social links."""
+    """Build a rich YouTube description with chapter markers, EDSA disclaimer, and AI disclosure."""
     caption  = script_data.get("caption", script_data.get("title", ""))
     hashtags = script_data.get("hashtags", "")
     if isinstance(hashtags, list):
         hashtags = " ".join(hashtags)
+    language = (script_data.get("language") or "english").lower()
+    disclaimer = _EDSA_DISCLAIMER_AR if language == "arabic" else _EDSA_DISCLAIMER_EN
 
     return (
         f"{caption}\n\n"
+        f"{disclaimer}\n\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"CHAPTERS\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -149,11 +169,12 @@ def upload_to_youtube(video_path: str, script_data: dict, token_file: str = None
 
         topic_str = script_data.get("topic", "")
         niche_str = script_data.get("niche", "")
+        lang_upload = (script_data.get("language") or "english").lower()
         seo_tags  = list(keywords) + [
             topic_str, niche_str,
             "true crime", "documentary", "dark crime decoded",
-            "real story", "netflix", "crime series",
-            "what really happened", "based on true story",
+            "true crime documentary", "real events", "crime history",
+            "educational documentary", "investigative documentary",
         ]
         seo_tags = [t for t in seo_tags if t]
 
@@ -161,7 +182,11 @@ def upload_to_youtube(video_path: str, script_data: dict, token_file: str = None
         description = (
             build_youtube_description(script_data, chapters)
             if chapters
-            else f"{script_data.get('caption', title)}\n\n{hashtags}".strip()
+            else (
+                f"{script_data.get('caption', title)}\n\n"
+                f"{_EDSA_DISCLAIMER_AR if lang_upload == 'arabic' else _EDSA_DISCLAIMER_EN}\n\n"
+                f"{hashtags}"
+            ).strip()
         )
 
         body = {
@@ -169,11 +194,13 @@ def upload_to_youtube(video_path: str, script_data: dict, token_file: str = None
                 "title": title,
                 "description": description,
                 "tags": seo_tags,
-                "categoryId": "25"
+                "categoryId": "27",        # Education — supports EDSA protection
+                "defaultLanguage": "ar" if lang_upload == "arabic" else "en",
             },
             "status": {
                 "privacyStatus": "private",
-                "selfDeclaredMadeForKids": False
+                "selfDeclaredMadeForKids": False,
+                "containsSyntheticMedia": True,   # AI-generated narration + imagery
             }
         }
 
