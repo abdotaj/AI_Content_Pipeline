@@ -1310,94 +1310,19 @@ def check_image_relevance(
     series_name: str | None,
     part_number: int | None = None,
 ) -> str:
-    """Use OpenAI Vision to decide image relevance. Returns 'use_now', 'save_part2', or 'ignore'."""
-    import base64
-
-    # User-uploaded images (Telegram) are always relevant — user chose them intentionally.
+    """Decide image relevance using local file-size gate only (no OpenAI Vision).
+    User-uploaded images are always accepted. Downloaded images pass if >= 5 KB.
+    Topic relevance is ensured by the search query that fetched them.
+    """
     if "user_images" in (image_path or "").replace("\\", "/"):
         print(f"[Image] User image — always USE_NOW: {os.path.basename(image_path)}")
         return "use_now"
-
-    api_key = os.getenv("OPENAI_API_KEY", "").strip()
-    if not api_key:
-        return "use_now"
-
     try:
-        with open(image_path, "rb") as f:
-            img_b64 = base64.b64encode(f.read()).decode("utf-8")
-    except Exception as e:
-        print(f"[Image] Cannot read image: {e}")
-        return "ignore"
-
-    prompt = f"""Look at this image carefully.
-Current video topic: {topic}
-Related series/movie: {series_name or 'Documentary'}
-Current part: Part {part_number or 1}
-
-Answer with ONLY one of these three options:
-
-USE_NOW — if the image shows:
-- The real person ({topic})
-- Actors from {series_name}
-- Locations related to {topic}
-- Historical events related to {topic}
-- Documents or evidence related to {topic}
-
-SAVE_PART2 — if the image shows:
-- Events that belong to Part 2 of the story
-- Later timeline events not covered in Part 1
-- Related but different aspect of the story
-
-IGNORE — if the image shows:
-- Unrelated people or places
-- Random photos with no connection
-- Duplicate of another image sent
-
-Reply with ONLY: USE_NOW or SAVE_PART2 or IGNORE"""
-
-    try:
-        r = requests.post(
-            "https://api.openai.com/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": "gpt-4o-mini",
-                "messages": [{
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/jpeg;base64,{img_b64}",
-                                "detail": "low",
-                            },
-                        },
-                        {"type": "text", "text": prompt},
-                    ],
-                }],
-                "max_tokens": 10,
-                "temperature": 0,
-            },
-            timeout=30,
-        )
-        if r.status_code == 200:
-            answer = r.json()["choices"][0]["message"]["content"].strip().upper()
-            if "USE_NOW" in answer:
-                print(f"[Image] âœ… Relevant: {image_path}")
-                return "use_now"
-            if "SAVE_PART2" in answer:
-                print(f"[Image] 🔦 Save for Part 2: {image_path}")
-                return "save_part2"
-            print(f"[Image] âŒ Not relevant: {image_path}")
+        if os.path.exists(image_path) and os.path.getsize(image_path) < 5_000:
             return "ignore"
-    except Exception as e:
-        print(f"[Image] Vision check failed: {e}")
-        return "use_now"
-
+    except Exception:
+        pass
     return "use_now"
-
 
 def save_images_for_part2(images: list, topic: str) -> int:
     """Copy images to output/pending_images/ and write manifest. Returns count saved."""
@@ -1660,59 +1585,43 @@ def build_visual_search_query(
 
 
 def extract_style_from_user_images(user_images: list[dict]) -> str:
-    """
-    Analyze user-provided images to extract a visual style profile (era, lighting,
-    environment, mood) for injection into all AI-generated image prompts.
-    Uses OpenAI Vision on the first available image; falls back to captions/tags.
-    Returns empty string when no user images are available.
+    """Extract a visual style hint from user images using PIL color analysis.
+    No OpenAI Vision — uses dominant brightness/warmth to infer era and mood.
+    Falls back to captions/tags if PIL analysis yields nothing useful.
     """
     if not user_images:
         return ""
+
     first_path = next(
         (img["path"] for img in user_images
          if img.get("path") and os.path.exists(img.get("path", ""))),
         None
     )
-    api_key = os.getenv("OPENAI_API_KEY", "").strip()
-    if api_key and first_path:
+
+    if first_path:
         try:
-            import base64 as _b64
-            with open(first_path, "rb") as _f:
-                img_b64 = _b64.b64encode(_f.read()).decode("utf-8")
-            ext  = os.path.splitext(first_path)[1].lower().lstrip(".")
-            mime = "image/png" if ext == "png" else "image/jpeg"
-            r = requests.post(
-                "https://api.openai.com/v1/chat/completions",
-                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                json={
-                    "model": "gpt-4o-mini",
-                    "messages": [{"role": "user", "content": [
-                        {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{img_b64}"}},
-                        {"type": "text", "text": (
-                            "Analyze this image and extract its visual style. "
-                            "Return ONLY a short comma-separated style description "
-                            "(max 15 words) covering: era, setting, lighting, mood, "
-                            "clothing if visible. "
-                            "DO NOT describe faces or identify any person. "
-                            "Example: '1970s FBI interview room, dim cold lighting, "
-                            "formal clothing, tense atmosphere'"
-                        )},
-                    ]}],
-                    "max_tokens": 60,
-                    "temperature": 0.2,
-                },
-                timeout=30,
-            )
-            if r.status_code == 200:
-                style = r.json()["choices"][0]["message"]["content"].strip().strip('"\'')
-                if style and len(style.split()) >= 3:
-                    print(f"[Style] Extracted from user image: {style}")
-                    return style
-        except Exception as e:
-            print(f"[Style] Vision analysis failed (non-fatal): {e}")
-    # Fallback: build style hint from captions and tags
+            from PIL import Image as _PIL
+            import colorsys as _cs
+            with _PIL.open(first_path) as _im:
+                _im = _im.convert("RGB").resize((64, 64))
+                pixels = list(_im.getdata())
+            avg_r = sum(p[0] for p in pixels) / len(pixels)
+            avg_g = sum(p[1] for p in pixels) / len(pixels)
+            avg_b = sum(p[2] for p in pixels) / len(pixels)
+            brightness = (avg_r + avg_g + avg_b) / 3
+            warmth = avg_r - avg_b  # positive = warm, negative = cool
+            era = "vintage" if brightness < 100 else "modern"
+            lighting = "dim lighting" if brightness < 80 else ("harsh lighting" if brightness > 190 else "natural lighting")
+            mood = "warm tones" if warmth > 20 else ("cold blue tones" if warmth < -20 else "neutral tones")
+            style = f"{era} documentary, {lighting}, {mood}"
+            print(f"[Style] PIL analysis: {style}")
+            return style
+        except Exception as _e:
+            print(f"[Style] PIL analysis failed (non-fatal): {_e}")
+
+    # Fallback: captions and tags provided by the user
     captions = [img.get("caption", "").strip() for img in user_images if img.get("caption")]
-    tags = []
+    tags: list[str] = []
     for img in user_images:
         tags.extend(img.get("tags", []))
     combined = ", ".join(captions[:2] + [t for t in tags[:4] if t not in captions])
@@ -2377,53 +2286,10 @@ def _search_wikimedia_commons(query: str, max_results: int = 3) -> list[str]:
 
 
 def _search_images_openai(query: str, max_results: int = 5) -> list[str]:
-    import re
-    api_key = os.getenv('OPENAI_API_KEY', '').strip()
-    if not api_key:
-        return []
-    try:
-        r = requests.post(
-            'https://api.openai.com/v1/responses',
-            headers={
-                'Authorization': f'Bearer {api_key}',
-                'Content-Type': 'application/json'
-            },
-            json={
-                'model': 'gpt-4o-mini',
-                'tools': [{'type': 'web_search_preview'}],
-                'input': f'Find real photographs of {query}. Return only direct image URLs ending in .jpg .jpeg .png or .webp. One URL per line. No explanation, no markdown.'
-            },
-            timeout=20,
-        )
-        data = r.json()
-        print(f'[Image] OpenAI search status: {r.status_code} for: {query}')
-
-        text = ''
-        for item in data.get('output', []):
-            if item.get('type') == 'message':
-                for c in item.get('content', []):
-                    if c.get('type') == 'output_text':
-                        text += c.get('text', '') + '\n'
-
-        urls = re.findall(
-            r'https?://\S+\.(?:jpg|jpeg|png|webp)',
-            text,
-            flags=re.IGNORECASE
-        )
-
-        print(f'[Image] OpenAI search found {len(urls)} URLs for: {query}')
-        return urls[:max_results]
-
-    except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
-        print(f'[Image] OpenAI search cancelled/timeout for: {query} — switching to AI fallback')
-        return []
-    except Exception as e:
-        err = str(e)
-        if "cancel" in err.lower() or "operation" in err.lower():
-            print(f'[Image] Search cancelled — switching to AI fallback')
-        else:
-            print(f'[Image] OpenAI search error: {e}')
-        return []
+    """Removed: OpenAI image search was too costly (called 47-400× per video).
+    DDG + Pexels + Wikimedia already cover the same search space for free.
+    Returns empty list so callers fall through to existing free providers."""
+    return []
 
 
 def _internet_archive_image_results(query: str, max_results: int = 5) -> list[str]:
@@ -4743,15 +4609,7 @@ def _fetch_gap_images(
     if len(results) >= needed:
         return results[:needed]
 
-    # Priority 3: OpenAI web search
-    remaining = needed - len(results)
-    if remaining > 0:
-        ai_imgs = _fetch_openai_images_for_gap(_clean_t, remaining, video_id)
-        results.extend(ai_imgs)
-    if len(results) >= needed:
-        return results[:needed]
-
-    # Priority 4: Pollinations AI — last resort with CLEAN topic name (not full video title)
+    # Priority 3: Pollinations AI — last resort with CLEAN topic name (not full video title)
     remaining = needed - len(results)
     if remaining > 0:
         print(f"[Video] Gap-fill last resort: generating {remaining} Pollinations AI images")
@@ -4778,30 +4636,6 @@ def _fetch_gap_images(
 
     print(f"[Video] Gap-fill complete: {len(results)}/{needed} images")
     return results[:needed]
-
-
-def _fetch_openai_images_for_gap(topic: str, count: int, video_id: str) -> list[str]:
-    """Download images found via OpenAI web search, return local paths."""
-    urls = _search_images_openai(f"{topic} real historical photograph", max_results=count * 2)
-    paths: list[str] = []
-    for i, url in enumerate(urls):
-        if len(paths) >= count:
-            break
-        try:
-            r = requests.get(url, timeout=15, headers={"User-Agent": "DarkCrimeDecoded/1.0"})
-            if r.status_code == 200 and r.content:
-                ext = ".jpg"
-                for candidate in (".png", ".webp", ".jpeg"):
-                    if candidate in url.lower():
-                        ext = candidate
-                        break
-                out = os.path.join(IMAGES_DIR, f"{video_id}_oai_{i}{ext}")
-                with open(out, "wb") as f:
-                    f.write(r.content)
-                paths.append(out)
-        except Exception as e:
-            print(f"[Image] OpenAI gap-fill download failed: {e}")
-    return paths
 
 
 def _detect_assembly_mode(user_images: list | None, user_videos: list | None) -> str:
@@ -6386,16 +6220,7 @@ def fetch_real_images(script_text: str, count: int, video_id: str,
                         _kind = "real-wiki"
                         break
 
-        # Step 2b: OpenAI web search (top query)
-        if not _saved and _scene_qs:
-            _oai = _search_images_openai(_scene_qs[0])
-            if _oai:
-                _saved = _download_first_valid(_oai, out_path)
-                if _saved:
-                    print(f"[Image] chunk {ci}: OpenAI search '{_scene_qs[0]}'")
-                    _kind = "real-oai"
-
-        # Step 2c: DuckDuckGo — all scene queries + Arabic chunk text
+        # Step 2b: DuckDuckGo — all scene queries + Arabic chunk text
         if not _saved:
             _ddg_qs = list(dict.fromkeys(filter(None, _scene_qs + [_arabic_q])))
             for _dq in _ddg_qs:

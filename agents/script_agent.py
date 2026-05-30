@@ -718,13 +718,14 @@ def _ai_script_call(prompt: str, max_tokens: int = 1000,
         return ''
 
     if premium:
-        # ── Premium path: OpenAI gpt-4o → Groq → Gemini ─────────────────────
-        result = _openai_call('gpt-4o')
-        if result:
-            return result
+        # ── Premium path: Groq → OpenAI gpt-4o (fallback) → Gemini ──────────
+        # OpenAI is reserved as fallback only — Groq handles most content well.
         result = _groq_fallback(prompt, max_tokens, json_mode, system_prompt=system_prompt)
         if result:
-            print('[Script] Groq used (premium path)')
+            return result
+        print('[Script] Groq failed (premium path) — OpenAI gpt-4o fallback')
+        result = _openai_call('gpt-4o')
+        if result:
             return result
         result = _gemini_call(prompt, max_tokens, system_prompt=system_prompt)
         if result:
@@ -732,12 +733,11 @@ def _ai_script_call(prompt: str, max_tokens: int = 1000,
         print('[Script] ❌ All providers exhausted (premium path) — returning empty')
         return ''
 
-    # ── Standard path: Groq primary → OpenAI → Gemini ───────────────────────
+    # ── Standard path: Groq primary → OpenAI mini fallback → Gemini ─────────
     result = _groq_fallback(prompt, max_tokens, json_mode, system_prompt=system_prompt)
     if result:
         return result
-    oai_model = 'gpt-4o' if time.time() < _GROQ_RATE_LIMITED_UNTIL else 'gpt-4o-mini'
-    result = _openai_call(oai_model)
+    result = _openai_call('gpt-4o-mini')
     if result:
         return result
     result = _gemini_call(prompt, max_tokens, system_prompt=system_prompt)
