@@ -485,9 +485,10 @@ def _trim_plain_text_to_words(text: str, max_words: int) -> str:
     return trimmed
 
 
-_GROQ_RATE_LIMITED_UNTIL:    float = 0.0   # epoch seconds; Groq is skipped until this time
+_GROQ_RATE_LIMITED_UNTIL:     float = 0.0   # epoch seconds; Groq is skipped until this time
 _OPENAI_QUOTA_EXCEEDED_UNTIL: float = 0.0  # epoch seconds; OpenAI is skipped until this time
 _GEMINI_QUOTA_EXCEEDED_UNTIL: float = 0.0  # epoch seconds; Gemini is skipped until this time
+_CLAUDE_QUOTA_EXCEEDED_UNTIL: float = 0.0  # epoch seconds; Claude is skipped until this time
 
 # Content-refusal signals — short phrases OpenAI returns when it refuses to write
 # sensitive/lengthy Arabic content. Checked inside _openai_call so Gemini is tried next.

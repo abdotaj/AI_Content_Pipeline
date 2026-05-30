@@ -125,6 +125,52 @@ USA_TOPICS = {
         "show": "D.B. Cooper Where Are You? (Netflix)",
         "type": "unsolved"
     },
+
+    # ── From: 50 Best True-Crime Docuseries ──────────────────
+    "steven avery": {
+        "show": "Making a Murderer (Netflix)",
+        "type": "wrongful conviction"
+    },
+    "robert durst": {
+        "show": "The Jinx (HBO)",
+        "type": "serial killer"
+    },
+    "joe exotic": {
+        "show": "Tiger King (Netflix)",
+        "type": "true crime"
+    },
+    "rajneesh cult": {
+        "show": "Wild Wild Country (Netflix)",
+        "type": "cult"
+    },
+    "heaven's gate cult": {
+        "show": "Heaven's Gate: The Cult of Cults (HBO Max)",
+        "type": "cult"
+    },
+    "nxivm cult": {
+        "show": "Seduced: Inside the NXIVM Cult (Starz)",
+        "type": "cult"
+    },
+    "r. kelly": {
+        "show": "Surviving R. Kelly (Lifetime)",
+        "type": "scandal"
+    },
+    "aaron hernandez": {
+        "show": "Killer Inside: The Mind of Aaron Hernandez (Netflix)",
+        "type": "true crime"
+    },
+    "kalief browder": {
+        "show": "TIME: The Kalief Browder Story (Spike TV)",
+        "type": "wrongful imprisonment"
+    },
+    "adnan syed": {
+        "show": "The Case Against Adnan Syed (HBO)",
+        "type": "wrongful conviction"
+    },
+    "mcmillion fraud": {
+        "show": "McMillion$ (HBO)",
+        "type": "fraud"
+    },
 }
 
 
@@ -205,6 +251,68 @@ WORLD_TOPICS = {
         "show": "Kim Jong Nam documentary",
         "type": "political crime",
         "region": "north korea"
+    },
+
+    # ── From: BuzzFeed World Crime Cases ─────────────────────
+    "abby choi murder": {
+        "show": "Hong Kong True Crime (documentary)",
+        "type": "murder",
+        "region": "hong kong"
+    },
+    "xavier dupont de ligonnes": {
+        "show": "L'Affaire Dupont de Ligonnès (documentary)",
+        "type": "family murder",
+        "region": "france"
+    },
+    "madeleine mccann": {
+        "show": "The Disappearance of Madeleine McCann (Netflix)",
+        "type": "missing persons",
+        "region": "uk"
+    },
+    "beaumont children disappearance": {
+        "show": "The Beaumont Children (Australian documentary)",
+        "type": "missing persons",
+        "region": "australia"
+    },
+    "isdal woman": {
+        "show": "Death in Ice Valley (BBC / NRK)",
+        "type": "unsolved",
+        "region": "norway"
+    },
+    "setagaya family murder": {
+        "show": "Japan's Unsolved Murders (documentary)",
+        "type": "unsolved",
+        "region": "japan"
+    },
+    "lars mittank disappearance": {
+        "show": "Disappearance in Bulgaria (European true crime)",
+        "type": "missing persons",
+        "region": "bulgaria"
+    },
+    "gareth williams spy": {
+        "show": "The Spy in the Bag (Channel 4 documentary)",
+        "type": "espionage murder",
+        "region": "uk"
+    },
+    "highway of tears": {
+        "show": "Highway of Tears (documentary)",
+        "type": "serial killer",
+        "region": "canada"
+    },
+    "carlos robledo puch": {
+        "show": "El Ángel de la Muerte (Argentine true crime)",
+        "type": "serial killer",
+        "region": "argentina"
+    },
+    "brabant killers": {
+        "show": "Bende van Nijvel (Belgian documentary)",
+        "type": "organized crime",
+        "region": "belgium"
+    },
+    "william tyrrell disappearance": {
+        "show": "Who Took William Tyrrell? (Australian documentary)",
+        "type": "missing persons",
+        "region": "australia"
     },
 }
 
@@ -350,6 +458,30 @@ ALIASES: dict[str, str] = {
     "russian mob":          "semion mogilevich",
     "mcmafia":              "semion mogilevich",
     "kim jong nam":         "kim jong nam assassination",
+
+    # Docuseries USA
+    "making a murderer":    "steven avery",
+    "the jinx":             "robert durst",
+    "tiger king":           "joe exotic",
+    "wild wild country":    "rajneesh cult",
+    "osho":                 "rajneesh cult",
+    "bhagwan":              "rajneesh cult",
+    "heavens gate":         "heaven's gate cult",
+    "keith raniere":        "nxivm cult",
+    "nxivm":                "nxivm cult",
+    "r kelly":              "r. kelly",
+    "mcmillions":           "mcmillion fraud",
+    "mcdonalds monopoly":   "mcmillion fraud",
+
+    # World crimes
+    "dupont de ligonnes":   "xavier dupont de ligonnes",
+    "maddie mccann":        "madeleine mccann",
+    "ice valley woman":     "isdal woman",
+    "miyazawa family":      "setagaya family murder",
+    "angel of death":       "carlos robledo puch",
+    "nijvel gang":          "brabant killers",
+    "bende van nijvel":     "brabant killers",
+    "spy in the bag":       "gareth williams spy",
 
     # Arabic
     "juhayman":             "juhayman al otaybi",
