@@ -258,19 +258,19 @@ def clean_word_count(text: str) -> int:
 # Word counts are SAFETY FLOORS only. Real runtime authority is measured TTS audio:
 #   script → draft TTS → real duration → expand (new scenes only) → lock contract.
 # Runtime targets (actual rendered audio — not WPM estimates):
-#   Arabic: FAST 30-40 min | ANIMATION 35-60 min | FULL 45-90 min
+#   Arabic: FAST 30-75 min | ANIMATION 35-60 min | FULL 30-75 min
 #   English: FAST 10-15 min | ANIMATION 12-18 min | FULL 15-20 min
 # WPM calibration (measured from production, OpenAI TTS Nova at speed=1.1):
 #   Arabic Nova speed=1.1:  ~185 WPM  (range 170-190, Nova voice at 1.1× speed)
 #   English Alloy 1.0: ~160 WPM (range 155-165, very consistent)
 _WORD_FLOORS = {
     "fast":      {"english": 1_800, "arabic": 5_500},   # 10 min EN × 160 | 30 min AR × 185 (lower bounds)
-    "full":      {"english": 4_000, "arabic": 8_500},   # 15 min EN × 160 | 45 min AR × 185
+    "full":      {"english": 4_000, "arabic": 5_500},   # 15 min EN × 160 | 30 min AR × 185
     "animation": {"english": 2_500, "arabic": 6_500},   # 12 min EN × 160 | 35 min AR × 185
     "short":     {"english": 0,     "arabic": 0},
 }
 _WORD_CEILINGS = {
-    "fast":      {"english": 2_500,  "arabic":  7_500},  # 15 min EN × 160 | 40 min AR × 185 (upper bounds)
+    "fast":      {"english": 2_500,  "arabic": 13_750},  # 15 min EN × 160 | 75 min AR × 185
     "full":      {"english": 6_500,  "arabic": 13_750},  # 20 min EN × 160 | 74 min AR × 185
     "animation": {"english": 4_000,  "arabic": 11_000},  # 18 min EN × 160 | 60 min AR × 185
     "short":     {"english": 500,    "arabic": 500},
@@ -405,11 +405,11 @@ _RUNTIME_CAPS = {
 RUNTIME_CONTRACTS: dict[str, dict] = {
     "fast": {
         "english": {"min_minutes": 10.0, "max_minutes": 15.0},
-        "arabic":  {"min_minutes": 30.0, "max_minutes": 40.0},
+        "arabic":  {"min_minutes": 30.0, "max_minutes": 75.0},
     },
     "full": {
         "english": {"min_minutes": 15.0, "max_minutes": 20.0},
-        "arabic":  {"min_minutes": 45.0, "max_minutes": 75.0},
+        "arabic":  {"min_minutes": 30.0, "max_minutes": 75.0},
     },
     "animation": {
         "english": {"min_minutes": 12.0, "max_minutes": 18.0},
