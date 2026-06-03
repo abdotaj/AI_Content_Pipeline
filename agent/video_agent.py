@@ -1484,13 +1484,13 @@ def _portrait_font(size: int):
     """Load bold TrueType font at given pixel size. Falls back to PIL default."""
     from PIL import ImageFont as _PIF
     for fp in [
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",          # Ubuntu/CI
         "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
         "/usr/share/fonts/truetype/ubuntu/Ubuntu-Bold.ttf",
-        "C:/Windows/Fonts/arialbd.ttf",
+        "C:/Windows/Fonts/arialbd.ttf",                                   # Windows
         "C:/Windows/Fonts/calibrib.ttf",
         "C:/Windows/Fonts/verdanab.ttf",
-        "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+        "/System/Library/Fonts/Supplemental/Arial Bold.ttf",             # macOS
         "/System/Library/Fonts/Helvetica.ttc",
     ]:
         try:
@@ -1498,7 +1498,7 @@ def _portrait_font(size: int):
         except Exception:
             pass
     try:
-        return _PIF.load_default(size=size)
+        return _PIF.load_default(size=size)   # Pillow 10+
     except TypeError:
         return _PIF.load_default()
 
@@ -1506,8 +1506,8 @@ def _portrait_font(size: int):
 def add_character_label_overlay(img_path: str, name: str, role: str) -> str:
     """Add a documentary lower-third label overlay to a portrait image.
 
-    Renders bold name + role in a dark gradient bar at the bottom of the
-    1080×1920 frame with a dark-red accent line above it.
+    Renders bold name + role in a dark semi-transparent gradient bar at the
+    bottom of the 1080×1920 frame with a dark-red accent line above it.
     Saves to *_labeled.png beside the original (original unchanged).
     Returns path to the labeled image.
     """
@@ -1517,6 +1517,8 @@ def add_character_label_overlay(img_path: str, name: str, role: str) -> str:
 
         img  = _PILI.open(img_path).convert("RGBA")
         w, h = img.size
+
+        # Gradient dark bar from 73 % down to bottom
         bar_top = int(h * 0.73)
         bar_h   = h - bar_top
         ov_arr  = _np_ov.zeros((bar_h, w, 4), dtype=_np_ov.uint8)
@@ -1525,18 +1527,24 @@ def add_character_label_overlay(img_path: str, name: str, role: str) -> str:
             ov_arr[y, :] = [0, 0, 0, min(alpha, 230)]
         overlay = _PILI.fromarray(ov_arr, "RGBA")
         img.paste(overlay, (0, bar_top), overlay)
+
         draw = _PILD.Draw(img)
+        # Dark-red accent line
         draw.rectangle([0, bar_top, w, bar_top + 5], fill=(180, 20, 20, 255))
+
         margin = 60
+        # Name — bold, large
         name_y = bar_top + int(bar_h * 0.18)
         fn     = _portrait_font(max(52, int(h * 0.047)))
         draw.text((margin + 3, name_y + 3), name, font=fn, fill=(0, 0, 0, 200))
         draw.text((margin,     name_y),     name, font=fn, fill=(255, 255, 255, 255))
+        # Role — smaller, light grey
         role_y    = bar_top + int(bar_h * 0.54)
         fr        = _portrait_font(max(34, int(h * 0.028)))
         role_text = role[:42] + ("…" if len(role) > 42 else "")
         draw.text((margin + 2, role_y + 2), role_text, font=fr, fill=(0, 0, 0, 180))
         draw.text((margin,     role_y),     role_text, font=fr, fill=(210, 210, 210, 255))
+
         labeled = img_path.replace(".png", "_labeled.png").replace(".jpg", "_labeled.png")
         img.convert("RGB").save(labeled, "PNG")
         print(f"[Portrait] Label overlay: {os.path.basename(labeled)}")
@@ -1547,8 +1555,15 @@ def add_character_label_overlay(img_path: str, name: str, role: str) -> str:
 
 
 def extract_script_characters(script_text: str, topic: str) -> list[dict]:
-    """Extract main named characters from the script via Groq."""
+    """Extract main named characters from the script via Groq.
+
+    Returns ≤3 dicts: [{"name": "Pablo Escobar", "role": "Colombian Drug Lord", "is_main": True}]
+    Only real, historically named, CENTRAL people are returned.
+    Non-main, unnamed, and minor characters are excluded at extraction time.
+    Falls back to SUBJECTS dict lookup if Groq is unavailable.
+    """
     import json as _js
+
     try:
         from agents.script_agent import _groq_call as _gc
     except ImportError:
@@ -1556,14 +1571,17 @@ def extract_script_characters(script_text: str, topic: str) -> list[dict]:
             from script_agent import _groq_call as _gc
         except ImportError:
             _gc = None
+
     if _gc and _provider_health.is_healthy("groq"):
         prompt = (
             f'Analyze this true crime documentary script about: "{topic}".\n\n'
             "List ONLY the main named characters (max 3):\n"
             "  - PRIMARY criminal/subject (is_main: true)\n"
-            "  - NAMED central figures: key investigator, key victim, major accomplice\n\n"
-            "Rules: only real historical people, no actors, no unnamed roles, "
-            "exclude minor mentions, 'role' ≤8 words.\n\n"
+            "  - NAMED central figures only: key investigator, key victim, major accomplice\n\n"
+            "Rules:\n"
+            "  - Only real historical people — no actors, no unnamed roles\n"
+            "  - Exclude minor mentions (one-sentence references)\n"
+            "  - 'role' must be ≤8 words of historical description\n\n"
             "Return ONLY a JSON array:\n"
             '[{"name": "Full Name", "role": "Historical Role", "is_main": true}]\n\n'
             f"Script excerpt:\n{script_text[:1200]}"
@@ -1582,6 +1600,8 @@ def extract_script_characters(script_text: str, topic: str) -> list[dict]:
                     return valid
         except Exception as _ce:
             print(f"[Portrait] Groq extraction failed: {_ce}")
+
+    # Fallback: SUBJECTS dict key match
     t = (topic or "").lower()
     for key, _ in _SUBJECTS_SORTED:
         if key in t:
@@ -1590,10 +1610,14 @@ def extract_script_characters(script_text: str, topic: str) -> list[dict]:
 
 
 def _find_candidate_portraits(name: str, output_dir: str, n: int = 5) -> list[str]:
-    """Search Wikipedia + Wikimedia Commons + DDG for real portrait photos."""
+    """Search Wikipedia + Wikimedia Commons + DDG for real portrait photos.
+    Downloads ≤n candidates, applies quality filters, returns valid paths.
+    """
     candidates: list[str] = []
     os.makedirs(output_dir, exist_ok=True)
     slug = name.replace(" ", "_")[:30]
+
+    # 1. Wikipedia thumbnail — most reliable for named historical subjects
     wiki_url = fetch_wikimedia_image(name)
     if wiki_url:
         p = os.path.join(output_dir, f"_portrait_wiki_{slug}.png")
@@ -1606,6 +1630,8 @@ def _find_candidate_portraits(name: str, output_dir: str, n: int = 5) -> list[st
                     candidates.append(saved)
             except Exception:
                 candidates.append(saved)
+
+    # 2. Wikimedia Commons portrait search
     if len(candidates) < n:
         for i, url in enumerate(_wikimedia_image_results(f"{name} portrait", max_results=4)):
             if len(candidates) >= n:
@@ -1614,21 +1640,27 @@ def _find_candidate_portraits(name: str, output_dir: str, n: int = 5) -> list[st
             saved = download_real_image(url, p)
             if saved:
                 candidates.append(saved)
+
+    # 3. DDG — broader net for less-known subjects
     if len(candidates) < n:
-        for i, url in enumerate(_search_duckduckgo_images(
+        ddg_urls = _search_duckduckgo_images(
             f"{name} real portrait photo documentary", max_results=6
-        )):
+        )
+        for i, url in enumerate(ddg_urls):
             if len(candidates) >= n:
                 break
             p = os.path.join(output_dir, f"_portrait_ddg_{i}_{slug}.png")
             saved = download_real_image(url, p)
             if saved:
                 candidates.append(saved)
+
     return candidates[:n]
 
 
 def _select_best_portrait(candidates: list[str], name: str, role: str) -> str | None:
-    """Use GPT-4o-mini vision to pick the clearest, most authentic portrait."""
+    """Use GPT-4o-mini vision to pick the clearest, most authentic portrait.
+    Falls back to first candidate when no API key or on any error.
+    """
     if not candidates:
         return None
     if len(candidates) == 1:
@@ -1636,12 +1668,16 @@ def _select_best_portrait(candidates: list[str], name: str, role: str) -> str | 
     api_key = os.getenv("OPENAI_API_KEY", "").strip()
     if not api_key or not _provider_health.is_healthy("openai"):
         return candidates[0]
+
     import base64 as _b64, mimetypes as _mt2
     try:
         content: list[dict] = [{"type": "text", "text": (
-            f"Select the best portrait for a true crime documentary.\n"
+            f"Select the best portrait photo for a true crime documentary.\n"
             f"Subject: {name} — {role}\n"
-            "Choose: real photograph, face clearly visible, actual historical person.\n"
+            "Choose the image that:\n"
+            "1. Is a real photograph (not painting, drawing, or AI art)\n"
+            "2. Shows the person's face clearly (frontal or 3/4 view preferred)\n"
+            "3. Is the actual historical person, not an actor portraying them\n"
             "Reply with ONLY the index number (0, 1, 2 …) of the best image."
         )}]
         for i, p in enumerate(candidates):
@@ -1686,40 +1722,49 @@ def build_character_portraits(
     video_id: str,
     output_dir: str | None = None,
 ) -> dict[str, dict]:
-    """Build labeled portrait gallery for all MAIN characters in the script.
+    """Build a labeled portrait gallery for all MAIN characters in the script.
 
-    For each main character: search real photos → vision-select best → burn in label.
+    For each main character (is_main=True):
+      1. Search Wikipedia + Wikimedia + DDG for real portrait photos
+      2. Select best photo via GPT-4o-mini vision
+      3. Burn in documentary lower-third text overlay (name + role)
     Non-main, unnamed, and minor characters are never searched.
-    Cached per video_id.
+    Results cached per video_id so the gallery is built only once per run.
 
     Returns: {name: {"path": labeled_path, "role": role, "is_main": bool}}
     """
     global _PORTRAIT_GALLERY_CACHE
     if video_id in _PORTRAIT_GALLERY_CACHE:
         return _PORTRAIT_GALLERY_CACHE[video_id]
+
     out_dir = output_dir or _get_images_dir()
     os.makedirs(out_dir, exist_ok=True)
     gallery: dict[str, dict] = {}
+
     for char in extract_script_characters(script_text, topic):
         name    = char.get("name", "").strip()
         role    = char.get("role", "").strip()
         is_main = bool(char.get("is_main", True))
-        if not name or not is_main:
-            if name:
-                print(f"[Portrait] Skipping non-main: {name}")
+        if not name:
             continue
+        if not is_main:
+            print(f"[Portrait] Skipping non-main character: {name}")
+            continue
+
         print(f"[Portrait] Searching: {name} ({role})")
         candidates = _find_candidate_portraits(name, out_dir, n=5)
         if not candidates:
-            print(f"[Portrait] No portrait found: {name}")
+            print(f"[Portrait] No portrait found for: {name}")
             continue
+
         best    = _select_best_portrait(candidates, name, role)
         labeled = add_character_label_overlay(best, name, role) if best else None
         if labeled:
             gallery[name] = {"path": labeled, "role": role, "is_main": is_main}
             print(f"[Portrait] ✓ {name}")
+
     _PORTRAIT_GALLERY_CACHE[video_id] = gallery
-    print(f"[Portrait] Gallery: {len(gallery)} portrait(s)")
+    print(f"[Portrait] Gallery: {len(gallery)} portrait(s) built")
     return gallery
 
 
@@ -2157,6 +2202,13 @@ def safe_download_image(url: str, output_path: str, timeout: int = 15) -> str | 
             print(f"[Image] safe_download: rejected bad magic bytes from {url[:60]}")
             return None
         img = PILImage.open(io.BytesIO(r.content)).convert("RGB")
+        w, h = img.size
+        if w < 400 or h < 300:
+            print(f"[Image] safe_download: rejected low-res ({w}×{h}): {url[:60]}")
+            return None
+        if _is_grayscale_image(img):
+            print(f"[Image] safe_download: rejected B&W/grayscale: {url[:60]}")
+            return None
         img = img.resize((1080, 1920), PILImage.LANCZOS)
         output_path = output_path.replace(".jpg", ".png")
         img.save(output_path, "PNG")
@@ -2196,6 +2248,11 @@ def generate_ai_image(prompt: str, output_path: str, seed: int = None) -> str:
                     continue
                 try:
                     img = PILImage.open(io.BytesIO(response.content)).convert("RGB")
+                    if _is_grayscale_image(img):
+                        print(f"[Image] AI image rejected B&W/grayscale (attempt {attempt + 1}/3) — retrying")
+                        _record_pollinations_result(False)
+                        time.sleep(20)
+                        continue
                     if _is_solid_background_image(img):
                         print(f"[Image] AI image rejected solid dark background (attempt {attempt + 1}/3) — retrying")
                         _record_pollinations_result(False)
@@ -2240,65 +2297,6 @@ def generate_ai_image(prompt: str, output_path: str, seed: int = None) -> str:
     return None
 
 
-def _is_solid_background_image(img) -> bool:
-    """Return True if PIL RGB image is a near-solid colour background with no real content.
-
-    Works for ANY colour (dark, bright, neutral grey, single-tone gradients).
-    Two tiers on a 64×64 full-image sample:
-      • std < 15          — any brightness: solid or near-solid colour (JPEG noise included)
-      • mean < 40, std < 25 — dark images: allows slightly more variance for compression
-    Real photographs always have std > 20 from natural scene complexity, faces, and
-    lighting gradients. Solid colours, flat gradients, and blank backgrounds do not.
-    """
-    try:
-        import numpy as _np
-        small = img.resize((64, 64))
-        arr = _np.array(small, dtype=float)
-        mean_val = float(arr.mean())
-        std_val  = float(arr.std())
-        if std_val < 15:
-            return True
-        if mean_val < 40 and std_val < 25:
-            return True
-        return False
-    except ImportError:
-        small = img.resize((64, 64))
-        pixels = list(small.getdata())
-        vals = [v for px in pixels for v in px]
-        mean = sum(vals) / len(vals)
-        var = sum((v - mean) ** 2 for v in vals) / len(vals)
-        std = var ** 0.5
-        return std < 15 or (mean < 40 and std < 25)
-    except Exception:
-        return False
-
-
-def _is_grayscale_image(img) -> bool:
-    """Return True if a PIL RGB image is black-and-white or heavily desaturated."""
-    try:
-        import numpy as _np
-        small = img.resize((64, 64))
-        arr = _np.array(small, dtype=float)
-        r, g, b = arr[:, :, 0], arr[:, :, 1], arr[:, :, 2]
-        mx = _np.maximum.reduce([r, g, b])
-        mn = _np.minimum.reduce([r, g, b])
-        bright = mx > 30
-        if bright.sum() == 0:
-            return False
-        sat = ((mx - mn) / _np.maximum(mx, 1.0))[bright]
-        return float(sat.mean()) < 0.12
-    except ImportError:
-        small = img.resize((32, 32))
-        pixels = list(small.getdata())
-        bright = [(r, g, b) for r, g, b in pixels if max(r, g, b) > 30]
-        if not bright:
-            return False
-        sats = [(max(r, g, b) - min(r, g, b)) / max(max(r, g, b), 1) for r, g, b in bright]
-        return (sum(sats) / len(sats)) < 0.12
-    except Exception:
-        return False
-
-
 def _is_dark_placeholder(path: str, threshold: int = 8) -> bool:
     """Return True if image is a dark near-solid background with no real content.
 
@@ -2341,6 +2339,135 @@ def _filter_dark_placeholders(paths: list[str], label: str = "") -> list[str]:
         if pct > 40:
             print(f"[ImageQC] WARNING: placeholder coverage {pct:.0f}% > 40% "
                   "— Pollinations may be down or returning errors")
+    return clean
+
+
+def _is_solid_background_image(img) -> bool:
+    """Return True if PIL RGB image is a near-solid colour background with no real content.
+
+    Works for ANY colour (dark, bright, neutral grey, single-tone gradients).
+    Two tiers on a 64×64 full-image sample:
+      • std < 15          — any brightness: solid or near-solid colour (JPEG noise included)
+      • mean < 40, std < 25 — dark images: allows slightly more variance for compression
+    Real photographs always have std > 20 from natural scene complexity, faces, and
+    lighting gradients. Solid colours, flat gradients, and blank backgrounds do not.
+    """
+    try:
+        import numpy as _np
+        small = img.resize((64, 64))
+        arr = _np.array(small, dtype=float)
+        mean_val = float(arr.mean())
+        std_val  = float(arr.std())
+        if std_val < 15:
+            return True
+        if mean_val < 40 and std_val < 25:
+            return True
+        return False
+    except ImportError:
+        small = img.resize((64, 64))
+        pixels = list(small.getdata())
+        vals = [v for px in pixels for v in px]
+        mean = sum(vals) / len(vals)
+        var = sum((v - mean) ** 2 for v in vals) / len(vals)
+        std = var ** 0.5
+        return std < 15 or (mean < 40 and std < 25)
+    except Exception:
+        return False
+
+
+def _is_grayscale_image(img) -> bool:
+    """Return True if a PIL RGB image is black-and-white or heavily desaturated.
+
+    Computes per-pixel HSV saturation on a 64×64 sample.  Near-black pixels
+    (max channel < 30) are excluded so legitimately dark cinematic stills are
+    not rejected.  Threshold 12 % catches pure B&W and sepia-toned archive
+    photos while keeping coloured low-light shots.
+    """
+    try:
+        import numpy as _np
+        small = img.resize((64, 64))
+        arr = _np.array(small, dtype=float)
+        r, g, b = arr[:, :, 0], arr[:, :, 1], arr[:, :, 2]
+        mx = _np.maximum.reduce([r, g, b])
+        mn = _np.minimum.reduce([r, g, b])
+        bright = mx > 30
+        if bright.sum() == 0:
+            return False  # all black — dark-placeholder filter handles this
+        sat = ((mx - mn) / _np.maximum(mx, 1.0))[bright]
+        return float(sat.mean()) < 0.12
+    except ImportError:
+        small = img.resize((32, 32))
+        pixels = list(small.getdata())
+        bright = [(r, g, b) for r, g, b in pixels if max(r, g, b) > 30]
+        if not bright:
+            return False
+        sats = [(max(r, g, b) - min(r, g, b)) / max(max(r, g, b), 1) for r, g, b in bright]
+        return (sum(sats) / len(sats)) < 0.12
+    except Exception:
+        return False
+
+
+def _is_grayscale_video(path: str) -> bool:
+    """Return True if a video file is black-and-white / grayscale.
+
+    Extracts a single frame at t=1 s via ffmpeg (skips black-fade intros)
+    then runs the same saturation check used for images.
+    Returns False on any error so valid clips are never incorrectly dropped.
+    """
+    import subprocess as _sp, tempfile as _tf, io as _io
+    try:
+        from PIL import Image as _PILv
+        tmp = _tf.NamedTemporaryFile(suffix=".jpg", delete=False)
+        tmp.close()
+        res = _sp.run(
+            ["ffmpeg", "-y", "-ss", "1", "-i", path,
+             "-vframes", "1", "-f", "image2", tmp.name],
+            capture_output=True, timeout=15,
+        )
+        if res.returncode != 0 or not os.path.exists(tmp.name):
+            return False
+        with _PILv.open(tmp.name) as _frm:
+            _frm = _frm.convert("RGB")
+            result = _is_grayscale_image(_frm)
+        try:
+            os.remove(tmp.name)
+        except OSError:
+            pass
+        return result
+    except Exception:
+        return False
+
+
+def _filter_grayscale_images(paths: list[str], label: str = "") -> list[str]:
+    """Remove black-and-white / grayscale images AND videos from pool, log count."""
+    if not paths:
+        return paths
+    tag = f" [{label}]" if label else ""
+    clean = []
+    removed = 0
+    for p in paths:
+        if _is_video_file(p):
+            # Check videos for B&W/grayscale — archive.org 1970s footage is often grayscale
+            if _is_grayscale_video(p):
+                print(f"[ImageQC{tag}] Rejected B&W/grayscale video: {os.path.basename(p)}")
+                removed += 1
+                continue
+            clean.append(p)
+            continue
+        try:
+            from PIL import Image as _PILG
+            with _PILG.open(p) as _img:
+                _img = _img.convert("RGB")
+                if _is_grayscale_image(_img):
+                    print(f"[ImageQC{tag}] Rejected B&W/grayscale: {os.path.basename(p)}")
+                    removed += 1
+                    continue
+        except Exception:
+            pass
+        clean.append(p)
+    if removed:
+        print(f"[ImageQC{tag}] Removed {removed} B&W/grayscale image(s) "
+              f"— {len(clean)} colour images remain")
     return clean
 
 
@@ -2429,9 +2556,32 @@ def _vision_topic_filter(paths: list[str], topic: str, max_checks: int = 15) -> 
     if removed:
         print(f"[VisionQC] Removed {removed} off-topic image(s) — {len(passed) + len(skipped)} remain")
 
+    # Preserve original order: checked-and-passed + unchecked overflow + videos
     passed_set = set(passed)
     ordered = [p for p in paths if p in passed_set or _is_video_file(p) or p in set(skipped)]
     return ordered
+
+
+def _filter_grayscale_videos(paths: list[str], label: str = "") -> list[str]:
+    """Remove black-and-white / grayscale video clips from pool, log count."""
+    if not paths:
+        return paths
+    tag = f" [{label}]" if label else ""
+    clean = []
+    removed = 0
+    for p in paths:
+        if not _is_video_file(p):
+            clean.append(p)
+            continue
+        if _is_grayscale_video(p):
+            print(f"[VideoQC{tag}] Rejected B&W/grayscale clip: {os.path.basename(p)}")
+            removed += 1
+        else:
+            clean.append(p)
+    if removed:
+        print(f"[VideoQC{tag}] Removed {removed} B&W/grayscale clip(s) "
+              f"— {len(clean)} colour clips remain")
+    return clean
 
 
 def _validate_render_inputs(
@@ -2646,7 +2796,8 @@ def download_real_image(url: str, output_path: str) -> str | None:
                       f"({_unique_colors} unique colors — likely solid icon/graphic): {url[:80]}")
                 return None
 
-            # 3. Near-solid colour background (any brightness, any source)
+            # 3. Near-solid colour background — catches solid/gradient images from any
+            #    source (DDG, Wikimedia, Pexels, Pixabay) regardless of brightness.
             if _is_solid_background_image(img):
                 print(f"[Image] Rejected solid-colour background: {url[:80]}")
                 return None
@@ -2921,29 +3072,64 @@ _SCENE_BASE_QUERIES: dict[str, str] = {
     "location":      "building exterior street daytime",
     "map":           "city map overhead aerial view",
     "interrogation": "interrogation room table chair overhead light",
-    "childhood":     "vintage family photograph portrait",
-    "atmosphere":    "city street night empty",
+    "childhood":          "vintage family photograph portrait",
+    "atmosphere":         "city street night empty",
+    "opening_landscape":  "city skyline aerial golden hour landscape",
 }
 
 # Location phrases detectable in chunk text → concrete archive search query
 _CHUNK_LOCATION_HINTS: dict[str, str] = {
-    "palm beach":  "Palm Beach Florida mansion exterior",
-    "manhattan":   "Manhattan New York City aerial",
-    "new york":    "New York City street",
-    "washington":  "Washington DC Capitol building",
-    "miami":       "Miami Florida beach aerial",
-    "los angeles": "Los Angeles California street",
-    "chicago":     "Chicago downtown skyline",
-    "london":      "London street United Kingdom",
-    "paris":       "Paris France street",
-    "wall street": "Wall Street New York financial",
-    "white house": "White House Washington DC exterior",
-    "fbi":         "FBI headquarters building Washington",
-    "cia":         "CIA headquarters Langley Virginia",
+    "palm beach":  "Palm Beach Florida mansion exterior aerial",
+    "manhattan":   "Manhattan New York City skyline aerial",
+    "new york":    "New York City skyline aerial",
+    "washington":  "Washington DC Capitol building aerial",
+    "miami":       "Miami Florida beach aerial skyline",
+    "los angeles": "Los Angeles California skyline aerial",
+    "chicago":     "Chicago skyline Lake Michigan aerial",
+    "london":      "London United Kingdom aerial Thames river",
+    "paris":       "Paris France aerial Eiffel Tower",
+    "wall street": "Wall Street New York financial district aerial",
+    "white house": "White House Washington DC exterior aerial",
+    "fbi":         "FBI headquarters building Washington DC",
+    "cia":         "CIA headquarters Langley Virginia aerial",
     "pentagon":    "Pentagon building Arlington aerial",
     "prison":      "prison corridor bars cell",
     "courthouse":  "courthouse exterior steps stone",
     "airport":     "airport terminal interior",
+    # Crime-topic cities
+    "medellín":    "Medellín Colombia aerial city landscape",
+    "medellin":    "Medellín Colombia aerial city landscape",
+    "bogotá":      "Bogotá Colombia skyline aerial",
+    "bogota":      "Bogotá Colombia skyline aerial",
+    "cali":        "Cali Colombia city aerial landscape",
+    "culiacán":    "Sinaloa Mexico mountains aerial landscape",
+    "culiacan":    "Sinaloa Mexico mountains aerial landscape",
+    "sinaloa":     "Sinaloa Mexico mountains aerial landscape",
+    "guadalajara": "Guadalajara Mexico aerial cityscape",
+    "las vegas":   "Las Vegas Nevada Strip aerial night",
+    "birmingham":  "Birmingham England industrial aerial",
+    "wichita":     "Wichita Kansas aerial cityscape",
+    "kansas":      "Kansas plains landscape aerial",
+    "milwaukee":   "Milwaukee Wisconsin aerial Lake Michigan",
+    "cleveland":   "Cleveland Ohio aerial cityscape",
+    "mexico city": "Mexico City aerial skyline",
+    "havana":      "Havana Cuba colonial aerial",
+    "cuba":        "Havana Cuba colonial aerial",
+    "sicily":      "Sicily Italy coastal aerial",
+    "palermo":     "Palermo Sicily Italy aerial",
+    "moscow":      "Moscow Russia Red Square aerial",
+    "tokyo":       "Tokyo Japan skyline aerial",
+    "berlin":      "Berlin Germany aerial cityscape",
+    "colombia":    "Colombia mountains aerial landscape",
+    "italy":       "Italy aerial scenic landscape",
+    "brazil":      "Rio de Janeiro Brazil aerial",
+    "rio":         "Rio de Janeiro Brazil aerial favela",
+    "dallas":      "Dallas Texas skyline aerial",
+    "atlanta":     "Atlanta Georgia skyline aerial",
+    "boston":      "Boston Massachusetts aerial cityscape",
+    "philadelphia":"Philadelphia Pennsylvania aerial cityscape",
+    "detroit":     "Detroit Michigan aerial cityscape",
+    "kansas city": "Kansas City Missouri aerial skyline",
 }
 
 # Stop-words filtered out when building script-derived search queries
@@ -3002,6 +3188,35 @@ _wikimedia_query_cache: dict[str, list[str]] = {}
 # Cache: DuckDuckGo image query → list of URLs (per pipeline run, not persistent)
 # Prevents the same DDG query from firing hundreds of times across parallel event workers.
 _DDG_SEARCH_CACHE: dict[str, list[str]] = {}
+
+# Cache: Arabic chunk → English translation (per pipeline run)
+# Pexels/Pixabay/DDG don't support Arabic; chunks from Arabic scripts must be translated.
+_ARABIC_CHUNK_EN_CACHE: dict[str, str] = {}
+
+
+def _translate_arabic_chunk_for_search(chunk: str) -> str:
+    """Translate an Arabic script chunk to English for image search queries.
+    Uses Google Translate free API (same endpoint as the script agent). Returns
+    the original chunk unchanged if not Arabic or if translation fails."""
+    if not chunk or not _is_arabic_text(chunk):
+        return chunk
+    key = chunk[:200]
+    if key in _ARABIC_CHUNK_EN_CACHE:
+        return _ARABIC_CHUNK_EN_CACHE[key]
+    try:
+        resp = requests.get(
+            "https://translate.googleapis.com/translate_a/single",
+            params={"client": "gtx", "sl": "ar", "tl": "en", "dt": "t", "q": key},
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            translated = "".join([item[0] for item in resp.json()[0]])
+            _ARABIC_CHUNK_EN_CACHE[key] = translated
+            return translated
+    except Exception as _te:
+        print(f"[Search] Arabic chunk translation failed: {_te}")
+    _ARABIC_CHUNK_EN_CACHE[key] = chunk
+    return chunk
 
 
 def _ddgs_proxy() -> str | None:
@@ -3072,6 +3287,12 @@ def _build_scene_search_queries(chunk: str, topic: str, event_type: str) -> list
     The per-run cache (_wikimedia_query_cache) ensures duplicate queries across
     parallel workers only hit the API once.
     """
+    # Arabic script chunks must be translated to English — Pexels/Pixabay/DDG
+    # don't support Arabic search terms. Semantic events from Groq already arrive
+    # in English; this catches regex-chunked events which contain raw Arabic text.
+    if _is_arabic_text(chunk):
+        chunk = _translate_arabic_chunk_for_search(chunk)
+
     person = _clean_topic_name(topic)
     chunk_lower = chunk.lower()
     years = re.findall(r'\b(19[4-9]\d|20[0-2]\d)\b', chunk)
@@ -3626,6 +3847,92 @@ def _prefetch_real_urls(events: list[dict], topic: str) -> dict[str, list[str]]:
     return pool
 
 
+# ── Opening-landscape helpers ─────────────────────────────────────────────────
+
+# Maps location phrases (lowercased) found in the script intro to aerial/landscape queries.
+_OPENING_LOCATION_QUERIES: dict[str, str] = {
+    "medellín":    "Medellín Colombia aerial city landscape beautiful",
+    "medellin":    "Medellín Colombia aerial city landscape beautiful",
+    "bogotá":      "Bogotá Colombia skyline aerial beautiful",
+    "bogota":      "Bogotá Colombia skyline aerial beautiful",
+    "cali":        "Cali Colombia city aerial landscape beautiful",
+    "culiacán":    "Sinaloa Mexico mountains aerial landscape beautiful",
+    "culiacan":    "Sinaloa Mexico mountains aerial landscape beautiful",
+    "sinaloa":     "Sinaloa Mexico mountains aerial landscape beautiful",
+    "guadalajara": "Guadalajara Mexico city aerial beautiful",
+    "chicago":     "Chicago skyline Lake Michigan aerial beautiful",
+    "new york":    "New York City skyline aerial beautiful",
+    "manhattan":   "Manhattan skyline aerial beautiful",
+    "miami":       "Miami Florida beach aerial skyline beautiful",
+    "las vegas":   "Las Vegas Nevada Strip aerial night beautiful",
+    "los angeles": "Los Angeles California aerial skyline beautiful",
+    "london":      "London United Kingdom aerial Thames beautiful",
+    "birmingham":  "Birmingham England aerial cityscape beautiful",
+    "paris":       "Paris France aerial beautiful",
+    "wichita":     "Wichita Kansas aerial cityscape",
+    "kansas":      "Kansas plains landscape aerial beautiful",
+    "milwaukee":   "Milwaukee Wisconsin aerial Lake Michigan",
+    "cleveland":   "Cleveland Ohio aerial cityscape",
+    "mexico city": "Mexico City aerial skyline beautiful",
+    "havana":      "Havana Cuba colonial aerial beautiful",
+    "cuba":        "Havana Cuba colonial aerial beautiful",
+    "sicily":      "Sicily Italy coastal aerial beautiful",
+    "palermo":     "Palermo Sicily Italy aerial beautiful",
+    "moscow":      "Moscow Russia aerial skyline beautiful",
+    "tokyo":       "Tokyo Japan skyline aerial beautiful",
+    "berlin":      "Berlin Germany aerial beautiful",
+    "colombia":    "Colombia green mountains aerial beautiful",
+    "brazil":      "Rio de Janeiro Brazil aerial beautiful",
+    "rio":         "Rio de Janeiro Brazil aerial beautiful",
+    "dallas":      "Dallas Texas skyline aerial beautiful",
+    "atlanta":     "Atlanta Georgia skyline aerial beautiful",
+    "washington":  "Washington DC Capitol aerial beautiful",
+    "palm beach":  "Palm Beach Florida aerial beautiful coastline",
+}
+
+
+def _extract_opening_location(script_text: str, topic: str) -> str:
+    """Detect main city/country from the script opening for the landscape shot.
+    Returns an English search query suitable for Pexels/Pixabay/DDG."""
+    excerpt = " ".join(script_text.split()[:600])
+    # Translate if Arabic so location names resolve
+    if _is_arabic_text(excerpt):
+        excerpt = _translate_arabic_chunk_for_search(excerpt[:400]) or excerpt
+    excerpt_lower = excerpt.lower()
+
+    for phrase, query in _OPENING_LOCATION_QUERIES.items():
+        if phrase in excerpt_lower:
+            return query
+
+    # Fallback: topic clean name + aerial landscape
+    clean = _clean_topic_name(topic)
+    return f"{clean} city aerial landscape beautiful"
+
+
+def _inject_opening_landscape(
+    events: list[dict], script_text: str, topic: str
+) -> list[dict]:
+    """Prepend one opening landscape/city event unless events[0] is already a location.
+    Shifts all existing idx values by 1."""
+    if not events:
+        return events
+    if events[0].get("type") in ("location", "map", "opening_landscape"):
+        return events
+
+    location_query = _extract_opening_location(script_text, topic)
+    opening_ev = {
+        "idx":    0,
+        "pos":    0.0,
+        "type":   "opening_landscape",
+        "prompt": f"{location_query}, photorealistic, vertical 9:16",
+        "chunk":  location_query,
+    }
+    for ev in events:
+        ev["idx"] += 1
+    print(f"[OpeningShot] Injected landscape event: '{location_query}'")
+    return [opening_ev] + events
+
+
 def build_documentary_visual_pool(
     script_text: str,
     runtime_secs: float,
@@ -3660,6 +3967,9 @@ def build_documentary_visual_pool(
         return fetch_real_images(
             script_text, 30, video_id, topic=topic, style_profile=style_profile
         )
+
+    # Prepend an opening landscape/city shot if the first event is not already a location.
+    events = _inject_opening_landscape(events, script_text, topic)
 
     seed = random.randint(1, 99999)
     # Pre-fetch real image URLs once per event type — avoids hammering Wikimedia
@@ -3877,13 +4187,10 @@ def build_documentary_visual_pool(
           " | ".join(f"{t}:{c}" for t, c in sorted(_type_counts.items())))
     print(f"[VisualPlan] Real-archive images tracked: {len(_REAL_IMAGE_PATHS)}")
 
-    # Emergency fallback: never return fewer than 8 images
+    # If pool is small, log it — video assembler loops available real images.
+    # Gradient/color-fill emergency visuals are disabled (they degrade quality).
     if len(paths) < 8:
-        print(f"[VisualPlan] Pool too small ({len(paths)}) — activating emergency engine")
-        _em = _generate_emergency_visuals(
-            max(20, len(events) - len(paths)), _img_dir, is_short=False, topic=topic
-        )
-        paths.extend(_em)
+        print(f"[VisualPlan] Pool small ({len(paths)}) — assembler will loop real images. Search improved next run.")
 
     return paths
 
@@ -4224,15 +4531,15 @@ def _search_pexels_videos(query: str, per_page: int = 15) -> list[str]:
         urls: list[str] = []
         for video in data.get("videos", []):
             files = video.get("video_files", [])
-            # Prefer medium portrait MP4 for faster download/render.
-            files = sorted(files, key=lambda f: (f.get("height", 0), f.get("width", 0)))
+            # Require HD (≥720p) — sort descending so we pick the best available.
+            files = sorted(files, key=lambda f: (f.get("height", 0), f.get("width", 0)), reverse=True)
             picked = None
             for f in files:
                 link = f.get("link", "")
-                if f.get("file_type") == "video/mp4" and link:
+                h    = f.get("height") or 0
+                if f.get("file_type") == "video/mp4" and link and h >= 720:
                     picked = link
-                    if (f.get("height") or 0) >= 720:
-                        break
+                    break
             if picked and "watermark" not in picked.lower():
                 urls.append(picked)
         return urls
@@ -4264,8 +4571,8 @@ def _search_pixabay_videos(query: str, per_page: int = 15) -> list[str]:
         urls: list[str] = []
         for hit in data.get("hits", []):
             vids = hit.get("videos", {})
-            # Prefer medium/large MP4s for stable rendering quality.
-            for key in ("medium", "large", "small", "tiny"):
+            # Require medium or large — "small" (640px) and "tiny" are too low quality.
+            for key in ("large", "medium"):
                 info = vids.get(key) or {}
                 u = info.get("url", "")
                 if u and "mp4" in u:
@@ -5385,38 +5692,61 @@ def _is_blacklisted_source(url_or_title: str) -> bool:
 
 
 def _validate_clip(path: str) -> bool:
-    """Return True if path is a non-corrupt video file with any usable duration (>0.5s).
+    """Return True if path is a non-corrupt, colour video file with usable duration (>0.5s).
 
     Duration limits (3s min / 60s max) are NOT enforced here — short clips are
     looped during assembly and long clips are trimmed by _trim_long_clip before
-    this function is called.
+    this function is called.  B&W / grayscale clips are rejected here so the
+    check applies to ALL video sources (archive, Wikimedia, Pexels, Pixabay…).
     """
     if not path or not os.path.exists(path):
         return False
+    # Resolution + duration check via ffprobe
+    dur = 0.0
+    width = 0
     try:
-        import subprocess as _sp
+        import subprocess as _sp, json as _json
         result = _sp.run(
             ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_streams", path],
             capture_output=True, text=True, timeout=15,
         )
         if result.returncode == 0 and result.stdout:
-            import json as _json
             data = _json.loads(result.stdout)
             for stream in data.get("streams", []):
                 if stream.get("codec_type") == "video":
-                    dur = float(stream.get("duration", 0) or 0)
-                    return dur > 0.5
+                    dur   = float(stream.get("duration", 0) or 0)
+                    width = int(stream.get("width", 0) or 0)
+                    break
     except Exception:
         pass
-    try:
+
+    if dur == 0.0:
+        # ffprobe failed — try moviepy
         try:
-            from moviepy.editor import VideoFileClip as _VFC
-        except ImportError:
-            from moviepy import VideoFileClip as _VFC
-        with _VFC(path) as c:
-            return c.duration > 0.5
-    except Exception:
+            try:
+                from moviepy.editor import VideoFileClip as _VFC
+            except ImportError:
+                from moviepy import VideoFileClip as _VFC
+            with _VFC(path) as c:
+                dur = c.duration
+        except Exception:
+            return False
+
+    if dur <= 0.5:
         return False
+
+    # Minimum resolution: reject anything below 360 px wide (very low quality)
+    if 0 < width < 360:
+        print(f"[VideoQC] Rejected low-res clip ({width}px wide): {os.path.basename(path)}")
+        return False
+
+    # B&W / grayscale rejection — skip the frame extraction for very short clips
+    # (< 1 s) to avoid ffmpeg seek errors
+    if dur >= 1.0 and _is_grayscale_video(path):
+        print(f"[VideoQC] Rejected B&W/grayscale clip: {os.path.basename(path)}")
+        return False
+
+    return True
 
 
 def _trim_long_clip(path: str, max_dur: float = 15.0) -> bool:
@@ -8705,46 +9035,9 @@ def _generate_emergency_visuals(
             if _res:
                 paths.append(_res)
 
-    if paths:
-        print(f"[Emergency] {len(paths)}/{n_unique} AI cinematic emergency visuals generated (cap={n_unique}, requested={n})")
-        return paths
-
-    # If Pollinations is 402-blocked, don't generate solid-colour gradient placeholders.
-    # The video assembly will loop real images instead, which is better than showing
-    # nearly-solid dark gradients for the majority of a long video.
-    if _pollinations_402_blocked:
-        print("[Emergency] Pollinations 402-blocked — skipping gradient fallback to avoid solid-colour images")
-        return []
-
-    # Tier 2: PIL dark-gradient fallback (not flat solid)
-    try:
-        from PIL import Image as _PIL, ImageDraw as _D
-    except ImportError:
-        print("[Emergency] PIL not available — cannot generate gradient fallback")
-        return []
-    _GRADIENT_PAIRS = [
-        ((18, 18, 24), (34, 26, 44)), ((14, 22, 28), (22, 40, 46)),
-        ((22, 16, 28), (40, 26, 34)), ((20, 24, 18), (36, 44, 30)),
-        ((28, 18, 14), (46, 32, 22)), ((16, 20, 26), (28, 38, 46)),
-    ]
-    w, h = (1080, 1920) if is_short else (1920, 1080)
-    for i in range(n - len(paths)):
-        grad_path = os.path.join(output_dir, f"_emergency_grad_{i:03d}.jpg")
-        try:
-            c1, c2    = _GRADIENT_PAIRS[i % len(_GRADIENT_PAIRS)]
-            img       = _PIL.new("RGB", (w, h), c1)
-            draw      = _D.Draw(img)
-            for y in range(h):
-                ratio = y / h
-                r = int(c1[0] + (c2[0] - c1[0]) * ratio)
-                g = int(c1[1] + (c2[1] - c1[1]) * ratio)
-                b = int(c1[2] + (c2[2] - c1[2]) * ratio)
-                draw.line([(0, y), (w, y)], fill=(r, g, b))
-            img.save(grad_path, "JPEG", quality=85)
-            paths.append(grad_path)
-        except Exception as _e:
-            print(f"[Emergency] Gradient fallback {i}: {_e}")
-    print(f"[Emergency] {len(paths)} total emergency visuals ({w}×{h})")
+    # Gradient placeholders are disabled — solid/gradient fill images degrade video quality.
+    # If Pollinations also failed, the video assembler will loop available real images.
+    print(f"[Emergency] {len(paths)}/{n_unique} AI visuals generated — gradient fallback disabled")
     return paths
 
 
@@ -10491,8 +10784,9 @@ def run_fast_pipeline(
             image_paths = list(dict.fromkeys(image_paths))
             print(f"[FAST] After stock supplement: {len(image_paths)} unique sources")
 
-    # Filter dark solid-background placeholder images before assembly
+    # Filter dark placeholders, B&W/grayscale, and low-quality before assembly
     image_paths = _filter_dark_placeholders(image_paths, label="FAST")
+    image_paths = _filter_grayscale_images(image_paths, label="FAST")
 
     # Pre-export validation (warnings only — never abort on warnings alone)
     _fast_audio_secs = _real_audio_secs if _real_audio_secs > 0 else 0.0
@@ -10573,28 +10867,16 @@ def run_fast_pipeline(
                       f"{len(image_paths)} total images")
         except ImportError:
             print("[FAST] PIL not available — skipping variation engine")
-        # When unique PIL combos are exhausted and sources were scarce,
-        # generate emergency AI visuals for genuine diversity.
-        _em_still_needed = n_images - len(image_paths)
-        if _em_still_needed > 0 and len(_base_imgs) < 10:
+        # Gradient/color-fill emergency visuals are disabled.
+        # If sources were scarce, the assembler will loop available real images.
+        if len(_base_imgs) < 10:
             print(f"[FAST] PIL pool from only {len(_base_imgs)} sources — "
-                  f"generating {_em_still_needed} emergency AI visuals for diversity")
-            _em_extra = _generate_emergency_visuals(
-                _em_still_needed, IMAGES_DIR, is_short=is_short
-            )
-            image_paths.extend([p for p in _em_extra if p and os.path.exists(p)])
-            image_paths = list(dict.fromkeys(image_paths))
+                  f"assembler will loop real images (gradient fill disabled)")
 
-    # ── Fallback visual engine: never abort due to empty visuals ──────────
-    if len(image_paths) < 4:
-        print(f"[FAST] Only {len(image_paths)} visuals — activating emergency visual engine")
-        _em_needed = max(n_images, 8) - len(image_paths)
-        _em = _generate_emergency_visuals(_em_needed, IMAGES_DIR, is_short=is_short)
-        image_paths.extend(_em)
-        image_paths = [p for p in image_paths if p and os.path.exists(p)]
-        if not image_paths:
-            print("[FAST] Emergency visual engine also failed — aborting")
-            return ""
+    # ── Fallback visual engine: abort only when truly no visuals at all ───────
+    if not image_paths:
+        print("[FAST] No visuals found — aborting (improve search queries to fix)")
+        return ""
 
     # ── Assembly — with render watchdog ───────────────────────────────────
     output_path  = os.path.join(FINAL_DIR, f"{video_id}.mp4")
@@ -11020,17 +11302,9 @@ def run_full_pipeline(
     except Exception as _enh_err:
         print(f"[FULL] Enhancement skipped (non-fatal): {_enh_err}")
 
-    # ── Emergency fallback — never assemble with < 8 visuals ──────────────
-    # build_documentary_visual_pool() already handles this internally, but
-    # guard here too in case user_content mode produced a thin pool.
-    _em_threshold = max(8, n_images // 3)  # trigger if less than 33% of target reached
-    if not is_short and len(all_image_paths) < _em_threshold:
-        print(f"[FULL] Pool too small ({len(all_image_paths)}/{n_images}) — activating emergency engine")
-        _em = _generate_emergency_visuals(
-            max(20, n_images - len(all_image_paths)), IMAGES_DIR,
-            is_short=False, topic=topic_str,
-        )
-        all_image_paths.extend(_em)
+    # Gradient/color-fill emergency visuals are disabled — assembler loops real images.
+    if not is_short and len(all_image_paths) < max(8, n_images // 3):
+        print(f"[FULL] Pool small ({len(all_image_paths)}/{n_images}) — assembler will loop real images")
 
     # ── Pre-assembly validation ────────────────────────────────────────────
     _missing = [p for p in all_image_paths if not p or not os.path.exists(p)]
@@ -11040,38 +11314,9 @@ def run_full_pipeline(
     print(f"[FULL] Final image count: {len(all_image_paths)}")
     print(f"[DEBUG] First 3 paths: {all_image_paths[:3]}")
 
-    # Filter dark solid-background placeholder images and B&W/grayscale images before assembly
+    # Filter dark placeholders, B&W/grayscale, solid backgrounds, and off-topic before assembly
     all_image_paths = _filter_dark_placeholders(all_image_paths, label="FULL")
-    # Remove B&W/grayscale images and videos (archive.org 1970s footage is often grayscale)
-    _bw_clean = []
-    _bw_removed = 0
-    for _bwp in all_image_paths:
-        try:
-            if _is_video_file(_bwp):
-                # Check videos for B&W
-                from pathlib import Path as _BwPath
-                import subprocess as _bwsp, json as _bwjson
-                _bwcmd = ["ffprobe", "-v", "quiet", "-select_streams", "v:0",
-                          "-show_entries", "stream=pix_fmt", "-of", "json", _bwp]
-                _bwr = _bwsp.run(_bwcmd, capture_output=True, text=True, timeout=5)
-                _bwpf = _bwjson.loads(_bwr.stdout).get("streams", [{}])[0].get("pix_fmt", "")
-                if "gray" in _bwpf or "monochrome" in _bwpf:
-                    print(f"[ImageQC FULL] Rejected B&W/grayscale video: {_bwPath(_bwp).name}")
-                    _bw_removed += 1
-                    continue
-            else:
-                from PIL import Image as _BWPIL
-                with _BWPIL.open(_bwp) as _bwimg:
-                    if _is_grayscale_image(_bwimg.convert("RGB")):
-                        print(f"[ImageQC FULL] Rejected B&W/grayscale image: {os.path.basename(_bwp)}")
-                        _bw_removed += 1
-                        continue
-        except Exception:
-            pass
-        _bw_clean.append(_bwp)
-    if _bw_removed:
-        print(f"[ImageQC FULL] Removed {_bw_removed} B&W/grayscale asset(s) — {len(_bw_clean)} remain")
-    all_image_paths = _bw_clean
+    all_image_paths = _filter_grayscale_images(all_image_paths, label="FULL")
     all_image_paths = _vision_topic_filter(all_image_paths, topic_str, max_checks=15)
 
     # Pre-export validation (warnings only — never abort on warnings alone)

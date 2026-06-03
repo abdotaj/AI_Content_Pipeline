@@ -3072,29 +3072,64 @@ _SCENE_BASE_QUERIES: dict[str, str] = {
     "location":      "building exterior street daytime",
     "map":           "city map overhead aerial view",
     "interrogation": "interrogation room table chair overhead light",
-    "childhood":     "vintage family photograph portrait",
-    "atmosphere":    "city street night empty",
+    "childhood":          "vintage family photograph portrait",
+    "atmosphere":         "city street night empty",
+    "opening_landscape":  "city skyline aerial golden hour landscape",
 }
 
 # Location phrases detectable in chunk text → concrete archive search query
 _CHUNK_LOCATION_HINTS: dict[str, str] = {
-    "palm beach":  "Palm Beach Florida mansion exterior",
-    "manhattan":   "Manhattan New York City aerial",
-    "new york":    "New York City street",
-    "washington":  "Washington DC Capitol building",
-    "miami":       "Miami Florida beach aerial",
-    "los angeles": "Los Angeles California street",
-    "chicago":     "Chicago downtown skyline",
-    "london":      "London street United Kingdom",
-    "paris":       "Paris France street",
-    "wall street": "Wall Street New York financial",
-    "white house": "White House Washington DC exterior",
-    "fbi":         "FBI headquarters building Washington",
-    "cia":         "CIA headquarters Langley Virginia",
+    "palm beach":  "Palm Beach Florida mansion exterior aerial",
+    "manhattan":   "Manhattan New York City skyline aerial",
+    "new york":    "New York City skyline aerial",
+    "washington":  "Washington DC Capitol building aerial",
+    "miami":       "Miami Florida beach aerial skyline",
+    "los angeles": "Los Angeles California skyline aerial",
+    "chicago":     "Chicago skyline Lake Michigan aerial",
+    "london":      "London United Kingdom aerial Thames river",
+    "paris":       "Paris France aerial Eiffel Tower",
+    "wall street": "Wall Street New York financial district aerial",
+    "white house": "White House Washington DC exterior aerial",
+    "fbi":         "FBI headquarters building Washington DC",
+    "cia":         "CIA headquarters Langley Virginia aerial",
     "pentagon":    "Pentagon building Arlington aerial",
     "prison":      "prison corridor bars cell",
     "courthouse":  "courthouse exterior steps stone",
     "airport":     "airport terminal interior",
+    # Crime-topic cities
+    "medellín":    "Medellín Colombia aerial city landscape",
+    "medellin":    "Medellín Colombia aerial city landscape",
+    "bogotá":      "Bogotá Colombia skyline aerial",
+    "bogota":      "Bogotá Colombia skyline aerial",
+    "cali":        "Cali Colombia city aerial landscape",
+    "culiacán":    "Sinaloa Mexico mountains aerial landscape",
+    "culiacan":    "Sinaloa Mexico mountains aerial landscape",
+    "sinaloa":     "Sinaloa Mexico mountains aerial landscape",
+    "guadalajara": "Guadalajara Mexico aerial cityscape",
+    "las vegas":   "Las Vegas Nevada Strip aerial night",
+    "birmingham":  "Birmingham England industrial aerial",
+    "wichita":     "Wichita Kansas aerial cityscape",
+    "kansas":      "Kansas plains landscape aerial",
+    "milwaukee":   "Milwaukee Wisconsin aerial Lake Michigan",
+    "cleveland":   "Cleveland Ohio aerial cityscape",
+    "mexico city": "Mexico City aerial skyline",
+    "havana":      "Havana Cuba colonial aerial",
+    "cuba":        "Havana Cuba colonial aerial",
+    "sicily":      "Sicily Italy coastal aerial",
+    "palermo":     "Palermo Sicily Italy aerial",
+    "moscow":      "Moscow Russia Red Square aerial",
+    "tokyo":       "Tokyo Japan skyline aerial",
+    "berlin":      "Berlin Germany aerial cityscape",
+    "colombia":    "Colombia mountains aerial landscape",
+    "italy":       "Italy aerial scenic landscape",
+    "brazil":      "Rio de Janeiro Brazil aerial",
+    "rio":         "Rio de Janeiro Brazil aerial favela",
+    "dallas":      "Dallas Texas skyline aerial",
+    "atlanta":     "Atlanta Georgia skyline aerial",
+    "boston":      "Boston Massachusetts aerial cityscape",
+    "philadelphia":"Philadelphia Pennsylvania aerial cityscape",
+    "detroit":     "Detroit Michigan aerial cityscape",
+    "kansas city": "Kansas City Missouri aerial skyline",
 }
 
 # Stop-words filtered out when building script-derived search queries
@@ -3153,6 +3188,35 @@ _wikimedia_query_cache: dict[str, list[str]] = {}
 # Cache: DuckDuckGo image query → list of URLs (per pipeline run, not persistent)
 # Prevents the same DDG query from firing hundreds of times across parallel event workers.
 _DDG_SEARCH_CACHE: dict[str, list[str]] = {}
+
+# Cache: Arabic chunk → English translation (per pipeline run)
+# Pexels/Pixabay/DDG don't support Arabic; chunks from Arabic scripts must be translated.
+_ARABIC_CHUNK_EN_CACHE: dict[str, str] = {}
+
+
+def _translate_arabic_chunk_for_search(chunk: str) -> str:
+    """Translate an Arabic script chunk to English for image search queries.
+    Uses Google Translate free API (same endpoint as the script agent). Returns
+    the original chunk unchanged if not Arabic or if translation fails."""
+    if not chunk or not _is_arabic_text(chunk):
+        return chunk
+    key = chunk[:200]
+    if key in _ARABIC_CHUNK_EN_CACHE:
+        return _ARABIC_CHUNK_EN_CACHE[key]
+    try:
+        resp = requests.get(
+            "https://translate.googleapis.com/translate_a/single",
+            params={"client": "gtx", "sl": "ar", "tl": "en", "dt": "t", "q": key},
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            translated = "".join([item[0] for item in resp.json()[0]])
+            _ARABIC_CHUNK_EN_CACHE[key] = translated
+            return translated
+    except Exception as _te:
+        print(f"[Search] Arabic chunk translation failed: {_te}")
+    _ARABIC_CHUNK_EN_CACHE[key] = chunk
+    return chunk
 
 
 def _ddgs_proxy() -> str | None:
@@ -3223,6 +3287,12 @@ def _build_scene_search_queries(chunk: str, topic: str, event_type: str) -> list
     The per-run cache (_wikimedia_query_cache) ensures duplicate queries across
     parallel workers only hit the API once.
     """
+    # Arabic script chunks must be translated to English — Pexels/Pixabay/DDG
+    # don't support Arabic search terms. Semantic events from Groq already arrive
+    # in English; this catches regex-chunked events which contain raw Arabic text.
+    if _is_arabic_text(chunk):
+        chunk = _translate_arabic_chunk_for_search(chunk)
+
     person = _clean_topic_name(topic)
     chunk_lower = chunk.lower()
     years = re.findall(r'\b(19[4-9]\d|20[0-2]\d)\b', chunk)
@@ -3777,6 +3847,92 @@ def _prefetch_real_urls(events: list[dict], topic: str) -> dict[str, list[str]]:
     return pool
 
 
+# ── Opening-landscape helpers ─────────────────────────────────────────────────
+
+# Maps location phrases (lowercased) found in the script intro to aerial/landscape queries.
+_OPENING_LOCATION_QUERIES: dict[str, str] = {
+    "medellín":    "Medellín Colombia aerial city landscape beautiful",
+    "medellin":    "Medellín Colombia aerial city landscape beautiful",
+    "bogotá":      "Bogotá Colombia skyline aerial beautiful",
+    "bogota":      "Bogotá Colombia skyline aerial beautiful",
+    "cali":        "Cali Colombia city aerial landscape beautiful",
+    "culiacán":    "Sinaloa Mexico mountains aerial landscape beautiful",
+    "culiacan":    "Sinaloa Mexico mountains aerial landscape beautiful",
+    "sinaloa":     "Sinaloa Mexico mountains aerial landscape beautiful",
+    "guadalajara": "Guadalajara Mexico city aerial beautiful",
+    "chicago":     "Chicago skyline Lake Michigan aerial beautiful",
+    "new york":    "New York City skyline aerial beautiful",
+    "manhattan":   "Manhattan skyline aerial beautiful",
+    "miami":       "Miami Florida beach aerial skyline beautiful",
+    "las vegas":   "Las Vegas Nevada Strip aerial night beautiful",
+    "los angeles": "Los Angeles California aerial skyline beautiful",
+    "london":      "London United Kingdom aerial Thames beautiful",
+    "birmingham":  "Birmingham England aerial cityscape beautiful",
+    "paris":       "Paris France aerial beautiful",
+    "wichita":     "Wichita Kansas aerial cityscape",
+    "kansas":      "Kansas plains landscape aerial beautiful",
+    "milwaukee":   "Milwaukee Wisconsin aerial Lake Michigan",
+    "cleveland":   "Cleveland Ohio aerial cityscape",
+    "mexico city": "Mexico City aerial skyline beautiful",
+    "havana":      "Havana Cuba colonial aerial beautiful",
+    "cuba":        "Havana Cuba colonial aerial beautiful",
+    "sicily":      "Sicily Italy coastal aerial beautiful",
+    "palermo":     "Palermo Sicily Italy aerial beautiful",
+    "moscow":      "Moscow Russia aerial skyline beautiful",
+    "tokyo":       "Tokyo Japan skyline aerial beautiful",
+    "berlin":      "Berlin Germany aerial beautiful",
+    "colombia":    "Colombia green mountains aerial beautiful",
+    "brazil":      "Rio de Janeiro Brazil aerial beautiful",
+    "rio":         "Rio de Janeiro Brazil aerial beautiful",
+    "dallas":      "Dallas Texas skyline aerial beautiful",
+    "atlanta":     "Atlanta Georgia skyline aerial beautiful",
+    "washington":  "Washington DC Capitol aerial beautiful",
+    "palm beach":  "Palm Beach Florida aerial beautiful coastline",
+}
+
+
+def _extract_opening_location(script_text: str, topic: str) -> str:
+    """Detect main city/country from the script opening for the landscape shot.
+    Returns an English search query suitable for Pexels/Pixabay/DDG."""
+    excerpt = " ".join(script_text.split()[:600])
+    # Translate if Arabic so location names resolve
+    if _is_arabic_text(excerpt):
+        excerpt = _translate_arabic_chunk_for_search(excerpt[:400]) or excerpt
+    excerpt_lower = excerpt.lower()
+
+    for phrase, query in _OPENING_LOCATION_QUERIES.items():
+        if phrase in excerpt_lower:
+            return query
+
+    # Fallback: topic clean name + aerial landscape
+    clean = _clean_topic_name(topic)
+    return f"{clean} city aerial landscape beautiful"
+
+
+def _inject_opening_landscape(
+    events: list[dict], script_text: str, topic: str
+) -> list[dict]:
+    """Prepend one opening landscape/city event unless events[0] is already a location.
+    Shifts all existing idx values by 1."""
+    if not events:
+        return events
+    if events[0].get("type") in ("location", "map", "opening_landscape"):
+        return events
+
+    location_query = _extract_opening_location(script_text, topic)
+    opening_ev = {
+        "idx":    0,
+        "pos":    0.0,
+        "type":   "opening_landscape",
+        "prompt": f"{location_query}, photorealistic, vertical 9:16",
+        "chunk":  location_query,
+    }
+    for ev in events:
+        ev["idx"] += 1
+    print(f"[OpeningShot] Injected landscape event: '{location_query}'")
+    return [opening_ev] + events
+
+
 def build_documentary_visual_pool(
     script_text: str,
     runtime_secs: float,
@@ -3811,6 +3967,9 @@ def build_documentary_visual_pool(
         return fetch_real_images(
             script_text, 30, video_id, topic=topic, style_profile=style_profile
         )
+
+    # Prepend an opening landscape/city shot if the first event is not already a location.
+    events = _inject_opening_landscape(events, script_text, topic)
 
     seed = random.randint(1, 99999)
     # Pre-fetch real image URLs once per event type — avoids hammering Wikimedia
@@ -4028,13 +4187,10 @@ def build_documentary_visual_pool(
           " | ".join(f"{t}:{c}" for t, c in sorted(_type_counts.items())))
     print(f"[VisualPlan] Real-archive images tracked: {len(_REAL_IMAGE_PATHS)}")
 
-    # Emergency fallback: never return fewer than 8 images
+    # If pool is small, log it — video assembler loops available real images.
+    # Gradient/color-fill emergency visuals are disabled (they degrade quality).
     if len(paths) < 8:
-        print(f"[VisualPlan] Pool too small ({len(paths)}) — activating emergency engine")
-        _em = _generate_emergency_visuals(
-            max(20, len(events) - len(paths)), _img_dir, is_short=False, topic=topic
-        )
-        paths.extend(_em)
+        print(f"[VisualPlan] Pool small ({len(paths)}) — assembler will loop real images. Search improved next run.")
 
     return paths
 
@@ -8879,46 +9035,9 @@ def _generate_emergency_visuals(
             if _res:
                 paths.append(_res)
 
-    if paths:
-        print(f"[Emergency] {len(paths)}/{n_unique} AI cinematic emergency visuals generated (cap={n_unique}, requested={n})")
-        return paths
-
-    # If Pollinations is 402-blocked, don't generate solid-colour gradient placeholders.
-    # The video assembly will loop real images instead, which is better than showing
-    # nearly-solid dark gradients for the majority of a long video.
-    if _pollinations_402_blocked:
-        print("[Emergency] Pollinations 402-blocked — skipping gradient fallback to avoid solid-colour images")
-        return []
-
-    # Tier 2: PIL dark-gradient fallback (not flat solid)
-    try:
-        from PIL import Image as _PIL, ImageDraw as _D
-    except ImportError:
-        print("[Emergency] PIL not available — cannot generate gradient fallback")
-        return []
-    _GRADIENT_PAIRS = [
-        ((18, 18, 24), (34, 26, 44)), ((14, 22, 28), (22, 40, 46)),
-        ((22, 16, 28), (40, 26, 34)), ((20, 24, 18), (36, 44, 30)),
-        ((28, 18, 14), (46, 32, 22)), ((16, 20, 26), (28, 38, 46)),
-    ]
-    w, h = (1080, 1920) if is_short else (1920, 1080)
-    for i in range(n - len(paths)):
-        grad_path = os.path.join(output_dir, f"_emergency_grad_{i:03d}.jpg")
-        try:
-            c1, c2    = _GRADIENT_PAIRS[i % len(_GRADIENT_PAIRS)]
-            img       = _PIL.new("RGB", (w, h), c1)
-            draw      = _D.Draw(img)
-            for y in range(h):
-                ratio = y / h
-                r = int(c1[0] + (c2[0] - c1[0]) * ratio)
-                g = int(c1[1] + (c2[1] - c1[1]) * ratio)
-                b = int(c1[2] + (c2[2] - c1[2]) * ratio)
-                draw.line([(0, y), (w, y)], fill=(r, g, b))
-            img.save(grad_path, "JPEG", quality=85)
-            paths.append(grad_path)
-        except Exception as _e:
-            print(f"[Emergency] Gradient fallback {i}: {_e}")
-    print(f"[Emergency] {len(paths)} total emergency visuals ({w}×{h})")
+    # Gradient placeholders are disabled — solid/gradient fill images degrade video quality.
+    # If Pollinations also failed, the video assembler will loop available real images.
+    print(f"[Emergency] {len(paths)}/{n_unique} AI visuals generated — gradient fallback disabled")
     return paths
 
 
@@ -10748,28 +10867,16 @@ def run_fast_pipeline(
                       f"{len(image_paths)} total images")
         except ImportError:
             print("[FAST] PIL not available — skipping variation engine")
-        # When unique PIL combos are exhausted and sources were scarce,
-        # generate emergency AI visuals for genuine diversity.
-        _em_still_needed = n_images - len(image_paths)
-        if _em_still_needed > 0 and len(_base_imgs) < 10:
+        # Gradient/color-fill emergency visuals are disabled.
+        # If sources were scarce, the assembler will loop available real images.
+        if len(_base_imgs) < 10:
             print(f"[FAST] PIL pool from only {len(_base_imgs)} sources — "
-                  f"generating {_em_still_needed} emergency AI visuals for diversity")
-            _em_extra = _generate_emergency_visuals(
-                _em_still_needed, IMAGES_DIR, is_short=is_short
-            )
-            image_paths.extend([p for p in _em_extra if p and os.path.exists(p)])
-            image_paths = list(dict.fromkeys(image_paths))
+                  f"assembler will loop real images (gradient fill disabled)")
 
-    # ── Fallback visual engine: never abort due to empty visuals ──────────
-    if len(image_paths) < 4:
-        print(f"[FAST] Only {len(image_paths)} visuals — activating emergency visual engine")
-        _em_needed = max(n_images, 8) - len(image_paths)
-        _em = _generate_emergency_visuals(_em_needed, IMAGES_DIR, is_short=is_short)
-        image_paths.extend(_em)
-        image_paths = [p for p in image_paths if p and os.path.exists(p)]
-        if not image_paths:
-            print("[FAST] Emergency visual engine also failed — aborting")
-            return ""
+    # ── Fallback visual engine: abort only when truly no visuals at all ───────
+    if not image_paths:
+        print("[FAST] No visuals found — aborting (improve search queries to fix)")
+        return ""
 
     # ── Assembly — with render watchdog ───────────────────────────────────
     output_path  = os.path.join(FINAL_DIR, f"{video_id}.mp4")
@@ -11195,17 +11302,9 @@ def run_full_pipeline(
     except Exception as _enh_err:
         print(f"[FULL] Enhancement skipped (non-fatal): {_enh_err}")
 
-    # ── Emergency fallback — never assemble with < 8 visuals ──────────────
-    # build_documentary_visual_pool() already handles this internally, but
-    # guard here too in case user_content mode produced a thin pool.
-    _em_threshold = max(8, n_images // 3)  # trigger if less than 33% of target reached
-    if not is_short and len(all_image_paths) < _em_threshold:
-        print(f"[FULL] Pool too small ({len(all_image_paths)}/{n_images}) — activating emergency engine")
-        _em = _generate_emergency_visuals(
-            max(20, n_images - len(all_image_paths)), IMAGES_DIR,
-            is_short=False, topic=topic_str,
-        )
-        all_image_paths.extend(_em)
+    # Gradient/color-fill emergency visuals are disabled — assembler loops real images.
+    if not is_short and len(all_image_paths) < max(8, n_images // 3):
+        print(f"[FULL] Pool small ({len(all_image_paths)}/{n_images}) — assembler will loop real images")
 
     # ── Pre-assembly validation ────────────────────────────────────────────
     _missing = [p for p in all_image_paths if not p or not os.path.exists(p)]
