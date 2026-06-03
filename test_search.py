@@ -199,8 +199,10 @@ def main():
     _key_status = []
     _key_status.append("Pexels:OK"   if os.getenv("PEXELS_API_KEY")  else "Pexels:MISSING")
     _key_status.append("Pixabay:OK"  if os.getenv("PIXABAY_API_KEY") else "Pixabay:MISSING")
-    _key_status.append("GoogleCSE:OK"  if (os.getenv("GOOGLE_API_KEY") and os.getenv("GOOGLE_CSE_ID")) else "GoogleCSE:not-configured")
-    _key_status.append("YouTube:OK"   if os.getenv("GOOGLE_API_KEY") else "YouTube:not-configured")
+    _g_key = os.getenv("custom_search") or os.getenv("GOOGLE_API_KEY")
+    _yt_key = os.getenv("YouTube_Data_API_v3") or os.getenv("custom_search") or os.getenv("GOOGLE_API_KEY")
+    _key_status.append("GoogleCSE:OK"  if (_g_key and os.getenv("GOOGLE_CSE_ID")) else "GoogleCSE:needs-CSE-ID" if _g_key else "GoogleCSE:no-key")
+    _key_status.append("YouTube:OK"   if _yt_key else "YouTube:no-key")
     print(f"  Keys: {' | '.join(_key_status)}")
     print(eq)
 

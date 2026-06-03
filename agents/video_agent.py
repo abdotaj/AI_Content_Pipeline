@@ -6459,8 +6459,8 @@ def _search_google_images(query: str, max_results: int = 10) -> list[str]:
     Returns up to max_results direct image URLs.
     Results are cached per pipeline run so the same query is never sent twice.
     """
-    api_key = os.getenv("GOOGLE_API_KEY", "").strip()
-    cse_id  = os.getenv("GOOGLE_CSE_ID", "").strip()
+    api_key = (os.getenv("custom_search") or os.getenv("GOOGLE_API_KEY") or "").strip()
+    cse_id  = (os.getenv("GOOGLE_CSE_ID") or "").strip()
     if not api_key or not cse_id:
         return []
 
@@ -6544,8 +6544,8 @@ def _search_google_web_videos(query: str, max_results: int = 5) -> list[str]:
     Appends 'short video clip footage' to the query so Google ranks video
     pages over plain article pages.
     """
-    api_key = os.getenv("GOOGLE_API_KEY", "").strip()
-    cse_id  = os.getenv("GOOGLE_CSE_ID", "").strip()
+    api_key = (os.getenv("custom_search") or os.getenv("GOOGLE_API_KEY") or "").strip()
+    cse_id  = (os.getenv("GOOGLE_CSE_ID") or "").strip()
     if not api_key or not cse_id:
         return []
 
@@ -6616,7 +6616,7 @@ def _search_youtube_videos(query: str, max_results: int = 5) -> list[str]:
     path in _download_first_valid_video already handles these correctly.
     Results cached per run so identical queries don't burn quota.
     """
-    api_key = os.getenv("GOOGLE_API_KEY", "").strip()
+    api_key = (os.getenv("YouTube_Data_API_v3") or os.getenv("custom_search") or os.getenv("GOOGLE_API_KEY") or "").strip()
     if not api_key:
         return []
 
