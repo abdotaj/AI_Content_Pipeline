@@ -2615,22 +2615,24 @@ def download_real_image(url: str, output_path: str) -> str | None:
             _sample = img.resize((64, 64), PILImage.LANCZOS)
             _pixels = list(_sample.getdata())  # list of (R, G, B) tuples
 
-            # 1. White-background ratio: sketches/drawings on white paper have
-            #    large areas of near-white pixels. Real archive photos don't.
+            # 1. White-background ratio: reject blank sketches/icons with near-pure
+            #    white backgrounds. Raised from 40% to 70% so that newspaper scans,
+            #    court documents, and article screenshots (which are mostly white paper
+            #    with black text) are allowed — user explicitly wants these.
             _white = sum(1 for r, g, b in _pixels if r > 235 and g > 235 and b > 235)
             _white_ratio = _white / len(_pixels)
-            if _white_ratio > 0.40:
+            if _white_ratio > 0.70:
                 print(f"[Image] Rejected sketch/drawing "
                       f"({_white_ratio:.0%} white background): {url[:80]}")
                 return None
 
-            # 2. Color-variety score: real photos have rich, noisy color distributions
-            #    due to camera sensor noise, gradients, and natural textures.
-            #    Paintings, cartoons, and digital art have flat regions → fewer unique
-            #    colors in a quantized sample.
-            #    Quantize each channel to 5-bit (32 levels); threshold raised to 400
-            #    so colorful paintings (watercolor, acrylic, digital art) are caught
-            #    in addition to line drawings.
+            # 2. Color-variety score: catch simple flat-design graphics (icons, logos,
+            #    solid-fill cartoons). Threshold LOWERED from 400 to 40 so that
+            #    vintage crime-scene photos, 1970s courtroom shots, newspaper images,
+            #    and other documentary archive content are NOT rejected.
+            #    Only near-solid, icon-level images (< 40 quantized unique colors)
+            #    are blocked; everything else — even very low-saturation documentary
+            #    photos — is allowed through.
             try:
                 import numpy as _np
                 _arr = _np.array(_sample).reshape(-1, 3)
@@ -2639,17 +2641,12 @@ def download_real_image(url: str, output_path: str) -> str | None:
             except ImportError:
                 # PIL-only fallback: quantize by shifting each channel
                 _unique_colors = len(set((r >> 3, g >> 3, b >> 3) for r, g, b in _pixels))
-            if _unique_colors < 400:
+            if _unique_colors < 40:
                 print(f"[Image] Rejected non-photographic image "
-                      f"({_unique_colors} unique colors — likely painting/illustration): {url[:80]}")
+                      f"({_unique_colors} unique colors — likely solid icon/graphic): {url[:80]}")
                 return None
 
-            # 3. Black-and-white / grayscale filter
-            if _is_grayscale_image(img):
-                print(f"[Image] Rejected B&W/grayscale image: {url[:80]}")
-                return None
-
-            # 4. Near-solid colour background (any brightness, any source)
+            # 3. Near-solid colour background (any brightness, any source)
             if _is_solid_background_image(img):
                 print(f"[Image] Rejected solid-colour background: {url[:80]}")
                 return None
