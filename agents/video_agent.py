@@ -3868,11 +3868,15 @@ def _prefetch_real_urls(events: list[dict], topic: str) -> dict[str, list[str]]:
             urls = _wikimedia_cached(q, max_results=4)
             all_urls.extend(urls)
         if not all_urls:
-            # Internet Archive fallback using the best query
-            q = queries[0] if queries else topic
-            all_urls = _internet_archive_image_results(q, max_results=4)
-            if all_urls:
-                _wikimedia_query_cache[queries[0] if queries else topic] = all_urls
+            # Google CSE → Internet Archive fallback (both tried when Wikimedia empty)
+            _top_q = queries[0] if queries else topic
+            _g = _search_google_images(_top_q, max_results=6)
+            if _g:
+                all_urls.extend(_g)
+            if not all_urls:
+                all_urls = _internet_archive_image_results(_top_q, max_results=4)
+                if all_urls:
+                    _wikimedia_query_cache[_top_q] = all_urls
         pool[t] = list(dict.fromkeys(all_urls))  # deduplicate, preserve order
         tier = "static" if t in _STATIC_TYPES else "dynamic"
         tag = "real" if all_urls else "none"
@@ -4121,6 +4125,7 @@ def build_documentary_visual_pool(
         if not saved and scene_queries:
             _real_sources = [
                 ("DDG",       lambda q: _search_duckduckgo_images(q, max_results=5)),
+                ("Google",    lambda q: _search_google_images(q, max_results=10)),
                 ("Flickr",    lambda q: _search_flickr_images(q, max_results=4)),
                 ("Pexels",    lambda q: _search_pexels_images(q, max_results=4)),
                 ("Pixabay",   lambda q: _search_pixabay_images(q, max_results=4)),
@@ -4149,9 +4154,11 @@ def build_documentary_visual_pool(
         if not saved and scene_queries and ev_type not in ("portrait", "childhood"):
             _vid_out = out_path.replace(".png", "_clip.mp4")
             _vid_sources = [
-                ("DDGVideo",     _search_duckduckgo_videos, {"max_results": 3}),
-                ("PexelsVideo",  _search_pexels_videos,     {"per_page": 3}),
-                ("PixabayVideo", _search_pixabay_videos,    {"per_page": 3}),
+                ("DDGVideo",      _search_duckduckgo_videos,  {"max_results": 3}),
+                ("GoogleVideo",   _search_google_web_videos,  {"max_results": 3}),
+                ("YouTube",       _search_youtube_videos,     {"max_results": 3}),
+                ("PexelsVideo",   _search_pexels_videos,      {"per_page": 3}),
+                ("PixabayVideo",  _search_pixabay_videos,     {"per_page": 3}),
             ]
             for _vsrc_name, _vsrc_fn, _vsrc_kw in _vid_sources:
                 if saved:
@@ -6435,6 +6442,233 @@ def _search_duckduckgo_images(query: str, max_results: int = 5) -> list[str]:
     if _last_err:
         print(f"[Image] DuckDuckGo images failed for '{query}': {_last_err}")
     return []
+
+
+# Per-run cache for Google Custom Search results
+_GOOGLE_SEARCH_CACHE: dict[str, list[str]] = {}
+
+
+def _search_google_images(query: str, max_results: int = 10) -> list[str]:
+    """Search Google Custom Search API for images.
+
+    Free tier: 100 queries/day. Requires two environment variables:
+      GOOGLE_API_KEY  — from https://console.cloud.google.com/ (Custom Search API)
+      GOOGLE_CSE_ID   — from https://programmablesearchengine.google.com/
+                        Create engine → "Search the entire web" → enable Image Search
+
+    Returns up to max_results direct image URLs.
+    Results are cached per pipeline run so the same query is never sent twice.
+    """
+    api_key = os.getenv("GOOGLE_API_KEY", "").strip()
+    cse_id  = os.getenv("GOOGLE_CSE_ID", "").strip()
+    if not api_key or not cse_id:
+        return []
+
+    cache_key = f"google|{query}|{max_results}"
+    if cache_key in _GOOGLE_SEARCH_CACHE:
+        return _GOOGLE_SEARCH_CACHE[cache_key]
+
+    try:
+        resp = requests.get(
+            "https://www.googleapis.com/customsearch/v1",
+            params={
+                "key":        api_key,
+                "cx":         cse_id,
+                "q":          query,
+                "searchType": "image",
+                "num":        min(max_results, 10),  # API max is 10 per call
+                "safe":       "active",
+                "imgType":    "photo",
+                "fileType":   "jpg,jpeg,png",
+            },
+            timeout=15,
+            headers={"User-Agent": "DarkCrimeDecoded/1.0"},
+        )
+        if resp.status_code == 429:
+            print(f"[Image] Google CSE quota exceeded for '{query}'")
+            _GOOGLE_SEARCH_CACHE[cache_key] = []
+            return []
+        if resp.status_code != 200:
+            print(f"[Image] Google CSE HTTP {resp.status_code} for '{query}'")
+            _GOOGLE_SEARCH_CACHE[cache_key] = []
+            return []
+
+        items = resp.json().get("items", [])
+        urls: list[str] = []
+        for item in items:
+            # Prefer the direct image link; fall back to pagemap thumbnail
+            url = item.get("link", "")
+            if not url or not url.startswith("http"):
+                img = (item.get("pagemap") or {}).get("cse_image", [{}])
+                url = img[0].get("src", "") if img else ""
+            if url and url.startswith("http") and _is_valid_image_url(url):
+                if not any(d in url.lower() for d in _BLOCKED_IMAGE_DOMAINS):
+                    urls.append(url)
+            if len(urls) >= max_results:
+                break
+
+        if urls:
+            print(f"[Image] Google CSE: {len(urls)} result(s) for '{query}'")
+        _GOOGLE_SEARCH_CACHE[cache_key] = urls
+        return urls
+
+    except Exception as e:
+        print(f"[Image] Google CSE error for '{query}': {e}")
+        _GOOGLE_SEARCH_CACHE[cache_key] = []
+        return []
+
+
+# Per-run cache for Google web video and YouTube search results
+_YOUTUBE_SEARCH_CACHE: dict[str, list[str]] = {}
+_GOOGLE_VIDEO_CACHE:   dict[str, list[str]] = {}
+
+# Video-hosting domains yt-dlp handles reliably (used for CSE result filtering)
+_YTDLP_VIDEO_DOMAINS = frozenset({
+    "vimeo.com", "dailymotion.com", "apnews.com", "reuters.com",
+    "nbcnews.com", "cbsnews.com", "abcnews.go.com", "cnn.com",
+    "bbc.com", "bbc.co.uk", "theguardian.com", "nytimes.com",
+    "washingtonpost.com", "pbs.org", "democracynow.org",
+    "archive.org", "facebook.com", "twitter.com", "x.com",
+    "instagram.com", "tiktok.com", "rumble.com", "odysee.com",
+    "bitchute.com", "liveleak.com",
+})
+
+
+def _search_google_web_videos(query: str, max_results: int = 5) -> list[str]:
+    """Search Google CSE for web video pages across news sites, Vimeo, DailyMotion, etc.
+
+    Uses the same GOOGLE_API_KEY + GOOGLE_CSE_ID as _search_google_images.
+    Returns web page URLs — yt-dlp in _download_first_valid_video handles
+    download from any site it supports (Vimeo, news embeds, Reuters, AP, etc.).
+
+    Appends 'short video clip footage' to the query so Google ranks video
+    pages over plain article pages.
+    """
+    api_key = os.getenv("GOOGLE_API_KEY", "").strip()
+    cse_id  = os.getenv("GOOGLE_CSE_ID", "").strip()
+    if not api_key or not cse_id:
+        return []
+
+    cache_key = f"gvid|{query}|{max_results}"
+    if cache_key in _GOOGLE_VIDEO_CACHE:
+        return _GOOGLE_VIDEO_CACHE[cache_key]
+
+    try:
+        resp = requests.get(
+            "https://www.googleapis.com/customsearch/v1",
+            params={
+                "key":   api_key,
+                "cx":    cse_id,
+                "q":     f"{query} short video clip footage documentary",
+                "num":   min(max_results * 2, 10),
+                "safe":  "active",
+            },
+            timeout=15,
+            headers={"User-Agent": "DarkCrimeDecoded/1.0"},
+        )
+        if resp.status_code == 429:
+            print(f"[Video] Google web video quota exceeded for '{query}'")
+            _GOOGLE_VIDEO_CACHE[cache_key] = []
+            return []
+        if resp.status_code != 200:
+            _GOOGLE_VIDEO_CACHE[cache_key] = []
+            return []
+
+        items  = resp.json().get("items", [])
+        urls: list[str] = []
+        for item in items:
+            url = item.get("link", "")
+            if not url or not url.startswith("http"):
+                continue
+            # Prefer known video-hosting domains; still include others
+            # since yt-dlp may handle them via generic extractor
+            domain = url.split("/")[2].lstrip("www.")
+            if any(url.lower().endswith(ext) for ext in (".mp4", ".webm", ".mov")):
+                urls.insert(0, url)   # direct video file — promote to front
+            elif any(d in domain for d in _YTDLP_VIDEO_DOMAINS):
+                urls.append(url)
+            if len(urls) >= max_results:
+                break
+
+        if urls:
+            print(f"[Video] Google web search: {len(urls)} video page(s) for '{query}'")
+        _GOOGLE_VIDEO_CACHE[cache_key] = urls
+        return urls
+
+    except Exception as e:
+        print(f"[Video] Google web video error for '{query}': {e}")
+        _GOOGLE_VIDEO_CACHE[cache_key] = []
+        return []
+
+
+def _search_youtube_videos(query: str, max_results: int = 5) -> list[str]:
+    """Search YouTube for short documentary/news clips via YouTube Data API v3.
+
+    Uses the same GOOGLE_API_KEY as Google CSE — no extra credentials needed.
+    Free tier: 10,000 units/day; each search call costs 100 units = 100 searches/day.
+
+    Filters applied:
+      - videoDuration=short  (under 4 minutes — avoids full episodes)
+      - videoType=any        (news clips, documentaries, news)
+      - safeSearch=strict
+
+    Returns youtube.com/watch?v={id} URLs — the existing yt-dlp download
+    path in _download_first_valid_video already handles these correctly.
+    Results cached per run so identical queries don't burn quota.
+    """
+    api_key = os.getenv("GOOGLE_API_KEY", "").strip()
+    if not api_key:
+        return []
+
+    cache_key = f"yt|{query}|{max_results}"
+    if cache_key in _YOUTUBE_SEARCH_CACHE:
+        return _YOUTUBE_SEARCH_CACHE[cache_key]
+
+    try:
+        resp = requests.get(
+            "https://www.googleapis.com/youtube/v3/search",
+            params={
+                "key":           api_key,
+                "q":             query,
+                "part":          "snippet",
+                "type":          "video",
+                "videoDuration": "short",   # under 4 minutes
+                "safeSearch":    "strict",
+                "maxResults":    min(max_results, 10),
+                "relevanceLanguage": "en",
+                "videoEmbeddable":   "true",
+            },
+            timeout=15,
+            headers={"User-Agent": "DarkCrimeDecoded/1.0"},
+        )
+        if resp.status_code == 403:
+            _quota_msg = resp.json().get("error", {}).get("message", "quota exceeded")
+            print(f"[Video] YouTube API 403 for '{query}': {_quota_msg}")
+            _YOUTUBE_SEARCH_CACHE[cache_key] = []
+            return []
+        if resp.status_code != 200:
+            print(f"[Video] YouTube API HTTP {resp.status_code} for '{query}'")
+            _YOUTUBE_SEARCH_CACHE[cache_key] = []
+            return []
+
+        items = resp.json().get("items", [])
+        urls: list[str] = []
+        for item in items:
+            vid_id = item.get("id", {}).get("videoId", "")
+            if vid_id:
+                urls.append(f"https://www.youtube.com/watch?v={vid_id}")
+            if len(urls) >= max_results:
+                break
+
+        if urls:
+            print(f"[Video] YouTube: {len(urls)} result(s) for '{query}'")
+        _YOUTUBE_SEARCH_CACHE[cache_key] = urls
+        return urls
+
+    except Exception as e:
+        print(f"[Video] YouTube search error for '{query}': {e}")
+        _YOUTUBE_SEARCH_CACHE[cache_key] = []
+        return []
 
 
 def _search_duckduckgo_videos(query: str, max_results: int = 5) -> list[str]:

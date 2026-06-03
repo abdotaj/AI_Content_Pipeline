@@ -32,6 +32,7 @@ with contextlib.redirect_stdout(_silence):
             _extract_opening_location,
             _wikimedia_image_results,
             _search_duckduckgo_images,
+            _search_google_images,
             _search_pexels_images,
             _search_pixabay_images,
             _search_flickr_images,
@@ -40,6 +41,8 @@ with contextlib.redirect_stdout(_silence):
             _search_pexels_videos,
             _search_pixabay_videos,
             _search_duckduckgo_videos,
+            _search_youtube_videos,
+            _search_google_web_videos,
             _is_arabic_text,
             _translate_arabic_chunk_for_search,
             _SCRIPT_CHARACTER_ORDER,
@@ -52,6 +55,7 @@ with contextlib.redirect_stdout(_silence):
 SOURCES_IMAGE = [
     ("Wikimedia",   lambda q: _wikimedia_image_results(q, max_results=5)),
     ("DDG",         lambda q: _search_duckduckgo_images(q, max_results=5)),
+    ("Google",      lambda q: _search_google_images(q, max_results=10)),
     ("Pexels",      lambda q: _search_pexels_images(q, max_results=5)),
     ("Pixabay",     lambda q: _search_pixabay_images(q, max_results=5)),
     ("Flickr",      lambda q: _search_flickr_images(q, max_results=5)),
@@ -60,9 +64,11 @@ SOURCES_IMAGE = [
 ]
 
 SOURCES_VIDEO = [
+    ("DDGVideo",      lambda q: _search_duckduckgo_videos(q, max_results=5)),
+    ("GoogleVideo",   lambda q: _search_google_web_videos(q, max_results=5)),
+    ("YouTube",       lambda q: _search_youtube_videos(q, max_results=5)),
     ("PexelsVideo",   lambda q: _search_pexels_videos(q, per_page=5)),
     ("PixabayVideo",  lambda q: _search_pixabay_videos(q, per_page=5)),
-    ("DDGVideo",      lambda q: _search_duckduckgo_videos(q, max_results=5)),
 ]
 
 EVENT_TYPES = ["portrait", "evidence", "courtroom", "location", "atmosphere"]
@@ -189,6 +195,13 @@ def main():
     eq = "=" * 72
     print(f"\n{eq}")
     print(f"  SEARCH TEST  |  topic: {topic}  |  event: {event_type}")
+    # Show which optional keys are configured
+    _key_status = []
+    _key_status.append("Pexels:OK"   if os.getenv("PEXELS_API_KEY")  else "Pexels:MISSING")
+    _key_status.append("Pixabay:OK"  if os.getenv("PIXABAY_API_KEY") else "Pixabay:MISSING")
+    _key_status.append("GoogleCSE:OK"  if (os.getenv("GOOGLE_API_KEY") and os.getenv("GOOGLE_CSE_ID")) else "GoogleCSE:not-configured")
+    _key_status.append("YouTube:OK"   if os.getenv("GOOGLE_API_KEY") else "YouTube:not-configured")
+    print(f"  Keys: {' | '.join(_key_status)}")
     print(eq)
 
     # 1. Opening landscape
