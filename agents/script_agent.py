@@ -276,8 +276,8 @@ _WORD_CEILINGS = {
     "short":     {"english": 500,    "arabic": 500},
 }
 # Legacy aliases — write_long_script_split and callers use fast/full English by default.
-LONG_SCRIPT_MIN_WORDS: int = _WORD_FLOORS["fast"]["english"]    # 3,500
-LONG_SCRIPT_MAX_WORDS: int = _WORD_CEILINGS["full"]["english"]  # 5,500
+LONG_SCRIPT_MIN_WORDS: int = _WORD_FLOORS["fast"]["english"]    # 1,800 (10 min × 160 WPM)
+LONG_SCRIPT_MAX_WORDS: int = _WORD_CEILINGS["fast"]["english"]  # 2,500 (15 min × 160 WPM)
 
 # ── Story variation profiles — prevents formula fatigue ──────────────────────
 # Each profile shifts the narrative APPROACH without removing the 5-act structure.
@@ -3005,7 +3005,7 @@ angle_content: 2-3 sentences — all facts must be from {topic}'s actual documen
 
 def write_long_script_split(topic: dict, research: dict, series_info: tuple | None,
                              angle: dict | None = None) -> str:
-    """Write 3,500+ real-word cinematic script via 5 AI calls → 24–45+ min runtime."""
+    """Write 1,400–1,900 real-word cinematic script via 5 AI calls → 9–12 min runtime."""
     import time
 
     series = series_info[0] if series_info else topic.get("niche", topic.get("topic", ""))
@@ -3132,13 +3132,14 @@ def write_long_script_split(topic: dict, research: dict, series_info: tuple | No
     # ── 5-ACT NARRATIVE FLOW ENGINE — story progression phases, not documentary chapters ──
     # Each act = a distinct STORY STATE SHIFT. Viewer must feel: story is MOVING, not explained.
     # Act state chain: UNEASE → INVESTIGATION → ESCALATION → COLLAPSE → AFTERMATH
-    # Minimum totals: 700+750+950+700+400 = 3,500 words → ~24 min at 145 WPM
+    # Target totals: 280+300+380+280+180 = 1,420 words → ~9 min at 160 WPM
+    # Max totals:    380+400+500+380+240 = 1,900 words → ~12 min at 160 WPM
     _SECTIONS_META = [
-        ("Act 1 — Unease & First Clue",    700, 900,  False),
-        ("Act 2 — Investigation Begins",   750, 950,  False),
-        ("Act 3 — Escalation",             950, 1200, False),
-        ("Act 4 — Collapse & Exposure",    700, 900,  False),
-        ("Act 5 — Aftermath & Legacy",     400, 500,  True),
+        ("Act 1 — Unease & First Clue",    280, 380,  False),
+        ("Act 2 — Investigation Begins",   300, 400,  False),
+        ("Act 3 — Escalation",             380, 500,  False),
+        ("Act 4 — Collapse & Exposure",    280, 380,  False),
+        ("Act 5 — Aftermath & Legacy",     180, 240,  True),
     ]
 
     _SECTION_LABELS = [

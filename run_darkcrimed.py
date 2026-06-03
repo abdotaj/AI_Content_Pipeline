@@ -133,10 +133,9 @@ def _load_injected_script() -> dict | None:
 
 
 # SHORT_MODE controls how the daily short videos are generated.
-# "script" (default) — TTS + full video assembly from the optimized short script.
-# "cut"              — cut the best chapter clip from the finished long video.
-# Falls back to "cut" automatically if short_script_en/ar are empty.
-SHORT_MODE = os.getenv("SHORT_MODE", "script").lower()
+# "cut"    (default) — cut the best chapter clip from the finished long video.
+# "script"           — TTS + full video assembly from the optimized short script.
+SHORT_MODE = os.getenv("SHORT_MODE", "cut").lower()
 
 
 def _already_ran_today() -> bool:

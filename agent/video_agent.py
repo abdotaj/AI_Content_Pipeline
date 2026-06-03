@@ -8627,19 +8627,19 @@ def calculate_unique_images(is_short: bool = False) -> int:
 def plan_visual_requirements(runtime_secs: float, is_short: bool = False) -> dict:
     """Compute the visual inventory required for high-density cinematic documentary.
 
-    FULL mode target: 12 UNIQUE visual events per minute of runtime.
-      10-min doc → 120 unique images    (one new visual every 5s)
-      15-min doc → 180 unique images
-      20-min doc → 240 unique images
+    FULL mode target: 4 UNIQUE visual events per minute of runtime.
+      15-min doc → 60 unique images
+      30-min doc → 120 unique images
+      50-min doc → 200 unique images
 
-    Each image is semantically unique — driven by script narrative events,
-    not by PIL cropping/filtering of recycled source images.
+    Capped at 4/min to stay within real-photo availability for Dark Crime topics
+    (historical + crime photography is limited; higher targets force gradient fallbacks).
     """
     if is_short:
         return {"n_unique": 6, "n_target": 6, "clips_per_min": 8.0,
                 "insert_count": 0, "runtime_min": 0.0}
     runtime_min   = max(runtime_secs / 60, 0.1)
-    n_unique      = max(60, min(400, int(runtime_min * 7)))  # 7 unique images/min
+    n_unique      = max(60, min(400, int(runtime_min * 4)))  # 4 unique images/min — Dark Crime real-photo limit
     clips_per_min = round(n_unique * 2 / runtime_min, 1)
     print(f"[FULL] Visual plan: {n_unique} unique semantic events | "
           f"~{clips_per_min} cuts/min for {runtime_min:.1f}min documentary")
@@ -8711,6 +8711,13 @@ def _generate_emergency_visuals(
     if paths:
         print(f"[Emergency] {len(paths)}/{n_unique} AI cinematic emergency visuals generated (cap={n_unique}, requested={n})")
         return paths
+
+    # If Pollinations is 402-blocked, don't generate solid-colour gradient placeholders.
+    # The video assembly will loop real images instead, which is better than showing
+    # nearly-solid dark gradients for the majority of a long video.
+    if _pollinations_402_blocked:
+        print("[Emergency] Pollinations 402-blocked — skipping gradient fallback to avoid solid-colour images")
+        return []
 
     # Tier 2: PIL dark-gradient fallback (not flat solid)
     try:
@@ -11036,8 +11043,38 @@ def run_full_pipeline(
     print(f"[FULL] Final image count: {len(all_image_paths)}")
     print(f"[DEBUG] First 3 paths: {all_image_paths[:3]}")
 
-    # Filter dark solid-background placeholder images before assembly
+    # Filter dark solid-background placeholder images and B&W/grayscale images before assembly
     all_image_paths = _filter_dark_placeholders(all_image_paths, label="FULL")
+    # Remove B&W/grayscale images and videos (archive.org 1970s footage is often grayscale)
+    _bw_clean = []
+    _bw_removed = 0
+    for _bwp in all_image_paths:
+        try:
+            if _is_video_file(_bwp):
+                # Check videos for B&W
+                from pathlib import Path as _BwPath
+                import subprocess as _bwsp, json as _bwjson
+                _bwcmd = ["ffprobe", "-v", "quiet", "-select_streams", "v:0",
+                          "-show_entries", "stream=pix_fmt", "-of", "json", _bwp]
+                _bwr = _bwsp.run(_bwcmd, capture_output=True, text=True, timeout=5)
+                _bwpf = _bwjson.loads(_bwr.stdout).get("streams", [{}])[0].get("pix_fmt", "")
+                if "gray" in _bwpf or "monochrome" in _bwpf:
+                    print(f"[ImageQC FULL] Rejected B&W/grayscale video: {_bwPath(_bwp).name}")
+                    _bw_removed += 1
+                    continue
+            else:
+                from PIL import Image as _BWPIL
+                with _BWPIL.open(_bwp) as _bwimg:
+                    if _is_grayscale_image(_bwimg.convert("RGB")):
+                        print(f"[ImageQC FULL] Rejected B&W/grayscale image: {os.path.basename(_bwp)}")
+                        _bw_removed += 1
+                        continue
+        except Exception:
+            pass
+        _bw_clean.append(_bwp)
+    if _bw_removed:
+        print(f"[ImageQC FULL] Removed {_bw_removed} B&W/grayscale asset(s) — {len(_bw_clean)} remain")
+    all_image_paths = _bw_clean
     all_image_paths = _vision_topic_filter(all_image_paths, topic_str, max_checks=15)
 
     # Pre-export validation (warnings only — never abort on warnings alone)
