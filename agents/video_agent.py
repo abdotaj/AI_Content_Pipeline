@@ -3293,17 +3293,38 @@ def _build_scene_search_queries(chunk: str, topic: str, event_type: str) -> list
     if _is_arabic_text(chunk):
         chunk = _translate_arabic_chunk_for_search(chunk)
 
-    person = _clean_topic_name(topic)
+    person = _clean_topic_name(topic)         # main character (from topic title)
     chunk_lower = chunk.lower()
     years = re.findall(r'\b(19[4-9]\d|20[0-2]\d)\b', chunk)
     year = years[0] if years else ""
     type_ctx = _TYPE_CONTEXT.get(event_type, "")
 
+    # Build ordered secondary character list for this chunk.
+    # Priority 1: characters detected IN THIS CHUNK (most relevant for the scene).
+    # Priority 2: script-level character order from _SCRIPT_CHARACTER_ORDER
+    #             (main character first, then secondary, tertiary — set during
+    #              _prefetch_character_portraits at pipeline start).
+    # Both lists are deduplicated and filtered to exclude the main topic person.
+    _secondary_chars: list[str] = []
+
+    _chunk_person_raw = _detect_person_in_chunk(chunk)
+    if _chunk_person_raw:
+        _cp = _PERSON_ALIASES.get(_chunk_person_raw.lower(), _chunk_person_raw)
+        if person.lower() not in _cp.lower() and _cp.lower() not in person.lower():
+            _secondary_chars.append(_cp)
+
+    for _sc in _SCRIPT_CHARACTER_ORDER[1:]:   # [0] is main character, skip
+        _sc_norm = _PERSON_ALIASES.get(_sc.lower(), _sc)
+        if person.lower() not in _sc_norm.lower() and _sc_norm.lower() not in person.lower():
+            if _sc_norm not in _secondary_chars:
+                _secondary_chars.append(_sc_norm)
+        if len(_secondary_chars) >= 2:        # cap at 2 secondary chars per search
+            break
+
     queries: list[str] = []
 
-    # 0 & 1: script-derived queries — keywords extracted directly from the chunk
-    # e.g. chunk "arrested at Lubyanka FSB 1998 CIA intelligence" →
-    #      "Mikhailov arrested Lubyanka FSB 1998" then "arrested Lubyanka FSB 1998"
+    # 0 & 1: main character + script keywords  ("Pablo Escobar arrested Medellín 1993")
+    #        then keywords alone               ("arrested Medellín 1993")
     chunk_kw = _keywords_from_chunk(chunk)
     if chunk_kw:
         person_in_kw = bool(person) and person.lower() in chunk_kw.lower()
@@ -3311,28 +3332,37 @@ def _build_scene_search_queries(chunk: str, topic: str, event_type: str) -> list
             queries.append(f"{person} {chunk_kw}")
         queries.append(chunk_kw)
 
-    # 2 & 3: person + known location, then location alone
+    # 2 & 3: main character + known location, then location alone
     for loc_phrase, loc_query in _CHUNK_LOCATION_HINTS.items():
         if loc_phrase in chunk_lower:
             queries.append(f"{person} {loc_phrase}")  # "Jeffrey Epstein Palm Beach"
-            queries.append(loc_query)                  # "Palm Beach Florida mansion exterior"
+            queries.append(loc_query)                  # "Palm Beach Florida aerial"
             break
 
-    # 4: person + event context
+    # 4: main character + event context  ("Jeffrey Epstein courtroom")
     if type_ctx:
-        queries.append(f"{person} {type_ctx}")         # "Jeffrey Epstein courtroom"
+        queries.append(f"{person} {type_ctx}")
 
-    # 5: person + year
+    # 5: main character + year  ("Jeffrey Epstein 2008")
     if year:
-        queries.append(f"{person} {year}")             # "Jeffrey Epstein 2008"
+        queries.append(f"{person} {year}")
 
-    # 6: person alone (identity anchor — always included for person-centric events)
+    # 6: main character alone  ("Jeffrey Epstein")
     if person:
-        queries.append(person)                         # "Jeffrey Epstein"
+        queries.append(person)
 
-    # 7: generic type base (no person — useful when person photos are exhausted)
+    # 6b-6d: secondary/tertiary character queries — only tried after main char exhausted.
+    # For each secondary char: char+keywords → char+type_ctx → char alone.
+    for _sc in _secondary_chars:
+        if chunk_kw and _sc.lower() not in chunk_kw.lower():
+            queries.append(f"{_sc} {chunk_kw}")
+        if type_ctx:
+            queries.append(f"{_sc} {type_ctx}")
+        queries.append(_sc)
+
+    # 7: generic type base — used when all character searches are exhausted
     base = _SCENE_BASE_QUERIES.get(event_type, "documentary archival")
-    queries.append(" ".join(base.split()[:3]))         # "courtroom empty wooden"
+    queries.append(" ".join(base.split()[:3]))
 
     # Deduplicate while preserving order
     seen: set[str] = set()
@@ -4283,6 +4313,13 @@ def _best_image_from_candidates(candidates: list[str]) -> str | None:
 # avoids repeated Pollinations calls and keeps visual appearance consistent.
 _character_portrait_cache: dict[str, tuple[str, str]] = {}
 
+# ── Script character order ────────────────────────────────────────────────────
+# Ordered list of all named characters extracted from the current script
+# (main character first, then secondary, tertiary, etc.).
+# Set once by _prefetch_character_portraits so _build_scene_search_queries
+# can prioritise searches: main → secondary → tertiary → generic.
+_SCRIPT_CHARACTER_ORDER: list[str] = []
+
 
 def _get_or_generate_character_portrait(
     name: str, topic: str, output_dir: str
@@ -4408,11 +4445,16 @@ def _prefetch_character_portraits(
     Runs once at the start of build_documentary_visual_pool so every subsequent
     portrait event hits the cache instead of re-searching.
     Works for both English and Arabic scripts.
+    Also populates _SCRIPT_CHARACTER_ORDER so search queries use the same
+    priority order: main character first, then secondary, tertiary, etc.
     """
+    global _SCRIPT_CHARACTER_ORDER
     names = _extract_all_characters(script_text, topic)
+    _SCRIPT_CHARACTER_ORDER = names  # expose to _build_scene_search_queries
     if not names:
         return
     print(f"[Portrait] Pre-warming {len(names)} character portraits: {names}")
+    print(f"[Search] Character search order: {names[:5]}")
     for name in names:
         try:
             _get_or_generate_character_portrait(name, topic, output_dir)
