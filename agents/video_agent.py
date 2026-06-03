@@ -2826,8 +2826,12 @@ def _wikimedia_image_results(query: str, max_results: int = 5) -> list[str]:
             'gsrnamespace': '6', 'gsrsearch': query, 'gsrlimit': max_results * 3,
             'prop': 'imageinfo', 'iiprop': 'url|mediatype', 'iiurlwidth': 1080,
         }
-        r = requests.get('https://commons.wikimedia.org/w/api.php', params=params, timeout=12)
+        r = requests.get(
+            'https://commons.wikimedia.org/w/api.php', params=params, timeout=12,
+            headers={'User-Agent': 'DarkCrimeDecoded/1.0 (documentary pipeline)'},
+        )
         if r.status_code != 200:
+            print(f'[Image] Wikimedia search HTTP {r.status_code} for: {query}')
             return []
         pages = r.json().get('query', {}).get('pages', {}).values()
         urls = []
@@ -3524,7 +3528,7 @@ def _llm_json_call(prompt: str, max_tokens: int = 2500, label: str = "LLM") -> s
                 )
                 result = (resp.choices[0].message.content or "").strip()
                 if result:
-                    print(f"[{label}] Groq ✅ ({len(result)} chars)")
+                    print(f"[{label}] Groq OK ({len(result)} chars)")
                     return result
             except Exception as _ex:
                 _err = str(_ex).lower()
@@ -3559,7 +3563,7 @@ def _llm_json_call(prompt: str, max_tokens: int = 2500, label: str = "LLM") -> s
         if _r.status_code == 200:
             content = (_r.json()["choices"][0]["message"]["content"] or "").strip()
             if content:
-                print(f"[{label}] OpenAI gpt-4o-mini ✅ ({len(content)} chars)")
+                print(f"[{label}] OpenAI gpt-4o-mini OK ({len(content)} chars)")
                 return content
         elif _r.status_code == 429:
             _VIZ_OAI_QL_UNTIL = _time.time() + 300  # 5-min cooldown
@@ -6253,7 +6257,7 @@ def _search_loc_images(query: str, max_results: int = 5) -> list[str]:
                 "sp": 1,
             },
             headers={"User-Agent": "DarkCrimeDecoded/1.0"},
-            timeout=15,
+            timeout=8,
         )
         if r.status_code != 200:
             print(f"[Image] LoC {r.status_code} for '{query}'")
@@ -6261,7 +6265,6 @@ def _search_loc_images(query: str, max_results: int = 5) -> list[str]:
         results = r.json().get("results", [])
         urls = []
         for item in results:
-            # Prefer JPEG thumbnail or image_url
             for field in ("image_url", "thumbnail"):
                 val = item.get(field)
                 if isinstance(val, list):
