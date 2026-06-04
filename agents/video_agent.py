@@ -2471,7 +2471,7 @@ def _filter_grayscale_images(paths: list[str], label: str = "") -> list[str]:
     return clean
 
 
-def _vision_topic_filter(paths: list[str], topic: str, max_checks: int = 15) -> list[str]:
+def _vision_topic_filter(paths: list[str], topic: str, max_checks: int = 40) -> list[str]:
     """Vision-filter: use GPT-4o-mini to reject images unrelated to the topic.
 
     Adapted from ViMax/agents/best_image_selector.py — uses OpenAI vision API
@@ -2506,12 +2506,18 @@ def _vision_topic_filter(paths: list[str], topic: str, max_checks: int = 15) -> 
                     "model": "gpt-4o-mini",
                     "messages": [{"role": "user", "content": [
                         {"type": "text", "text": (
-                            f"You are reviewing images for a true crime documentary about '{topic}'.\n"
-                            "Does this image show real, specific content related to this topic — "
-                            "real people, real locations, real events, or real criminal proceedings?\n"
-                            "Answer ONLY with YES or NO. "
-                            "Solid colour backgrounds, generic textures, abstract images, "
-                            "and scenes unrelated to this topic should get NO."
+                            f"You are a content moderator for a true crime documentary channel about '{topic}'.\n"
+                            "Review this image and answer with exactly one word.\n\n"
+                            "Answer REJECT if ANY of these are true:\n"
+                            "- Contains nudity, sexual content, or explicit material\n"
+                            "- Contains graphic violence, blood, gore, or body parts\n"
+                            "- Shows pornographic or sexually suggestive content\n"
+                            "- Is completely unrelated to the documentary topic\n"
+                            "- Is a solid colour, texture, abstract, or cartoon/illustration\n\n"
+                            "Answer KEEP only if: the image is a real photograph relevant to "
+                            f"'{topic}' (person, location, event, investigation) AND contains "
+                            "no explicit, sexual, or graphically violent content.\n\n"
+                            "Reply with only: KEEP or REJECT"
                         )},
                         {"type": "image_url", "image_url": {
                             "url": f"data:{mime};base64,{data}",
@@ -2525,8 +2531,8 @@ def _vision_topic_filter(paths: list[str], topic: str, max_checks: int = 15) -> 
             )
             if r.status_code == 200:
                 answer = r.json()["choices"][0]["message"]["content"].strip().upper()
-                if "NO" in answer and "YES" not in answer:
-                    print(f"[VisionQC] Rejected off-topic: {os.path.basename(img_path)}")
+                if "REJECT" in answer:
+                    print(f"[VisionQC] Rejected (explicit/off-topic): {os.path.basename(img_path)}")
                     return False
             elif r.status_code == 429:
                 _provider_health.record_failure("openai")
@@ -5737,11 +5743,36 @@ def _download_video_url(url: str, output_path: str,
 
 _SOURCE_BLACKLIST = {"agc", "chronicle", "reaction", "review", "compilation"}
 
+# Adult/porn video domains — blocked in all video source searches (YouTube policy compliance)
+_VIDEO_ADULT_DOMAINS = frozenset({
+    "pornhub", "xvideos", "xnxx", "redtube", "youporn", "xhamster",
+    "spankbang", "brazzers", "onlyfans", "chaturbate", "fansly",
+    "rule34", "gelbooru", "danbooru", "hentai", "nhentai",
+    "thefappening", "scandalplanet", "celeb jihad", "im9.eu",
+    "leakedcelebs", "realgirlsexposed", "amateurporn", "sexvid",
+    "drtuber", "4tube", "tube8", "txxx", "vid2c", "clipjunkie",
+    "freeporn", "bravotube", "freeones", "porndig", "sunporno",
+    "xxxgif", "nsfw", "nudostar", "thothub",
+})
+
 
 def _is_blacklisted_source(url_or_title: str) -> bool:
     """Return True if the URL or title belongs to a channel/type we want to skip."""
     text = (url_or_title or "").lower()
-    return any(kw in text for kw in _SOURCE_BLACKLIST)
+    if any(kw in text for kw in _SOURCE_BLACKLIST):
+        return True
+    if any(domain in text for domain in _VIDEO_ADULT_DOMAINS):
+        print(f"[Video] Blocked adult domain in source: {text[:80]}")
+        return True
+    # Block explicit keywords in URL path
+    _adult_url_patterns = {
+        "/porn", "/xxx", "/nude", "/naked", "/nsfw", "/explicit",
+        "/sex/", "/adult/", "pornstar", "hardcore", "cumshot",
+    }
+    if any(p in text for p in _adult_url_patterns):
+        print(f"[Video] Blocked adult URL pattern in source: {text[:80]}")
+        return True
+    return False
 
 
 def _validate_clip(path: str) -> bool:
@@ -6691,13 +6722,23 @@ def _search_duckduckgo_videos(query: str, max_results: int = 5) -> list[str]:
             # Append "news footage" to bias toward short news clips/reels rather
             # than long documentaries or unrelated uploads.
             _vid_query = f"{query} news footage"
-            raw = DDGS(proxy=_proxy).videos(_vid_query, max_results=max_results * 4)
+            raw = DDGS(proxy=_proxy).videos(_vid_query, max_results=max_results * 4, safesearch="on")
             urls: list[str] = []
             for r in (raw or []):
                 url = r.get("content", "") or r.get("embed_url", "")
                 if not url or not url.startswith("http"):
                     continue
                 if _is_blacklisted_source(url):
+                    continue
+                # Also check description/title for adult content signals
+                _title = (r.get("title") or "").lower()
+                _desc  = (r.get("description") or "").lower()
+                _combined = f"{_title} {_desc} {url.lower()}"
+                if any(kw in _combined for kw in (
+                    "nude", "naked", "porn", "sex", "xxx", "nsfw", "explicit",
+                    "erotic", "adult", "lingerie", "topless", "fetish",
+                )):
+                    print(f"[Stock] Blocked adult video result: {url[:60]}")
                     continue
                 # Skip very long videos (duration field is in seconds when present)
                 _dur = r.get("duration", "") or ""

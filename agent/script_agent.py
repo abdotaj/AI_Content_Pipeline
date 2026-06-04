@@ -242,7 +242,49 @@ SHOW vs REALITY — for biopics, true crime series, and historical dramas:
   Part A starting with EXACTLY: "Here is what [show] got RIGHT:"
   Part B starting with EXACTLY: "Here is what they completely changed or left out:"
 - Each part covers at least 3 specific comparisons with real names, scenes, or dates.
-- This structure is MANDATORY for any topic based on true events."""
+- This structure is MANDATORY for any topic based on true events.
+
+══════════════════════════════════════
+YOUTUBE COMMUNITY GUIDELINES COMPLIANCE — MANDATORY
+══════════════════════════════════════
+This script will be published on YouTube. Violating these rules causes age-restriction or removal.
+YouTube's AI scans every sentence. Clinical, journalistic, consequence-focused language passes.
+Graphic physical descriptions of death or harm — even for real historical events — trigger age-restriction.
+
+VIOLENCE + DEATH — NEVER write:
+- Wounds, injuries, bleeding, body parts, or the physical mechanics of killing
+- Graphic descriptions of dying, suffering, or corpses
+- "Bodies were torn apart", "blood covered", "limbs scattered", "skull", "entrails"
+BAD: "The explosion ripped through the building, killing dozens — their bodies thrown across the street."
+GOOD: "The explosion killed 257 people across thirteen locations in under two hours."
+Rule: State the death/event occurred + casualty count. Move immediately to investigation and consequences.
+
+SUICIDE + SELF-HARM — NEVER write:
+- Methods, descriptions, or physical details of suicide or self-harm
+- Romanticized or graphic accounts of someone dying by suicide
+- Descriptions of the physical experience of dying
+BAD: "He hanged himself in his cell, his body found in the morning."
+GOOD: "He was found dead in his cell — authorities ruled it a suicide."
+
+BOMBINGS + MASS CASUALTY EVENTS — NEVER write:
+- Descriptions of victim suffering, injury, or death scenes
+- How the bomb worked, where it was placed for maximum harm, or its physical effect on victims
+BAD: "The car bomb tore apart the market, burning survivors fleeing in every direction."
+GOOD: "The bomb killed 54 people and wounded hundreds more. Investigators traced the explosives to a Pakistan-based cell."
+
+GENERAL GRAPHIC CONTENT — ALWAYS avoid:
+- Gore, torture, mutilation in descriptive language
+- Step-by-step criminal methods (how to build a bomb, poison someone, etc.)
+- Any language a parent would not want a teenager to hear on YouTube
+
+SAFE FRAMING — use these constructions:
+- "killed X people" / "injured X" / "resulted in X deaths"
+- "was found dead" / "died in custody" / "was executed by the state"
+- "investigators discovered evidence of" / "court records showed" / "forensic analysis revealed"
+- "the attack caused mass casualties" / "victims included civilians"
+
+Remember: consequences, investigations, legal proceedings, and human impact are always safe.
+Physical descriptions of violence or death are never safe for YouTube."""
 
 
 def clean_word_count(text: str) -> int:
@@ -1587,7 +1629,7 @@ PERSON_TO_SERIES: dict[str, tuple[str, str]] = {
 def get_series_for_person(topic_text: str) -> tuple[str, str] | None:
     """Return (series_name, type) tuple or None if no match.
 
-    Sorts keys longest-first so "btk killer" is always checked before "btk",
+    Matches longest keys first so "btk killer" is checked before "btk",
     preventing shorter substrings from shadowing more specific entries.
     """
     topic_lower = topic_text.lower()
@@ -4553,8 +4595,9 @@ def fix_first_mention(text: str, is_arabic: bool = False) -> str:
     return text
 
 
-# ── Arabic acronym / Latin-word handling ─────────────────────────────────────
-# Known terms: specific Arabic translation (better than letter-by-letter)
+# Acronyms / Latin terms that machine translators (Google, MyMemory, DeepL)
+# tend to silently drop when translating to Arabic.  Applied BEFORE every
+# translation call and AFTER as a safety net in _fix_arabic.
 # Listed longest-first so "BTK killer" is substituted before "BTK".
 _AR_ACRONYM_SUBS: list[tuple[str, str]] = [
     ("BTK killer",   "قاتل بي تي كي"),
@@ -4570,8 +4613,6 @@ _AR_ACRONYM_SUBS: list[tuple[str, str]] = [
     ("Dennis Rader", "دينيس رادر"),
 ]
 
-# Letter-by-letter fallback for ANY unknown ALL-CAPS acronym (2-6 chars)
-# e.g. "ATF" → "إيه تي إف", "ICC" → "آي سي سي"
 _LATIN_LETTER_AR: dict[str, str] = {
     'A': 'إيه', 'B': 'بي',     'C': 'سي',    'D': 'دي',    'E': 'إي',
     'F': 'إف',  'G': 'جي',     'H': 'إتش',   'I': 'آي',    'J': 'جاي',
@@ -4583,16 +4624,13 @@ _LATIN_LETTER_AR: dict[str, str] = {
 
 
 def _apply_acronym_subs(text: str) -> str:
-    """Replace known drop-prone Latin terms with their Arabic phonetic forms,
-    then convert any remaining ALL-CAPS Latin acronym letter-by-letter.
-    Safe to call on any text — skips English-only strings.
+    """Replace known Latin acronyms with Arabic phonetics, then convert any
+    remaining ALL-CAPS Latin word (2-6 chars) letter-by-letter.
     """
     import re as _re
-    # Step 1: known specific substitutions (longest first)
     for en, ar in _AR_ACRONYM_SUBS:
         text = _re.sub(r'\b' + _re.escape(en) + r'\b', ar, text)
-    # Step 2: general fallback — any 2-6 uppercase Latin letters left in text
-    def _spell_out(m: 're.Match') -> str:
+    def _spell_out(m: '_re.Match') -> str:
         return ' '.join(_LATIN_LETTER_AR.get(c, c) for c in m.group(0).upper())
     text = _re.sub(r'\b[A-Z]{2,6}\b', _spell_out, text)
     return text
@@ -4603,7 +4641,6 @@ def _fix_arabic(text: str) -> str:
     text = fix_arabic_prison_terms(text)
     text = fix_arabic_cta(text)
     text = fix_arabic_rsf(text)
-    # Convert any Latin acronyms (BTK, FBI, CIA, …) to Arabic phonetics
     text = _apply_acronym_subs(text)
     return text
 
@@ -4933,8 +4970,7 @@ def try_translate_arabic(text: str, topic: str = "") -> str:
     4. Groq             (LLM translation, free tier)
     5. OpenAI gpt-4o    (last resort — highest quality but costs money)
     """
-    # Pre-substitute acronyms that machine translators silently drop
-    # (BTK→بي تي كي, FBI→إف بي آي, etc.) — do this BEFORE any translator sees the text
+    # Pre-substitute acronyms that machine translators silently drop (BTK → بي تي كي)
     text = _apply_acronym_subs(text)
 
     # 1. Google Translate (free — primary)
@@ -5758,7 +5794,43 @@ _AR_SCRIPT_SYSTEM_PROMPT = """أنت راوٍ سينمائي عربي متخصص
   "لا أحد يعرف حتى اليوم ما حدث للحقيبة الثانية."
 
 الانتقال بين الحالات يجب أن يُشعر المستمع بـ: "شيء تغيّر الآن."
-ليس: "انتهى الفصل وبدأ فصل جديد." """
+ليس: "انتهى الفصل وبدأ فصل جديد."
+
+══════════════════════════════════════
+الامتثال لسياسات يوتيوب — إلزامي تماماً
+══════════════════════════════════════
+هذا النص سيُنشر على يوتيوب. مخالفة هذه القواعد تؤدي إلى تقييد العمر أو الحذف.
+خوارزمية يوتيوب تفحص كل جملة. اللغة الصحفية التحليلية آمنة. أوصاف العنف الجسدي ليست آمنة.
+
+العنف والوفاة — لا تكتب أبداً:
+- أوصاف الجروح، الدم، أجزاء الجسد، أو الميكانيكا الجسدية للقتل
+- أوصاف المعاناة الجسدية أو الجثث
+- "مُزّقت الأجساد"، "غرق في الدماء"، "أشلاء"، "جمجمة"
+سيئ: "دمّر الانفجار كل شيء وتناثرت أجساد الضحايا في كل اتجاه."
+جيد: "راح الانفجار بحياة 257 شخصاً في ثلاثة عشر موقعاً خلال أقل من ساعتين."
+القاعدة: اذكر وقوع الحادثة وعدد الضحايا. انتقل فوراً إلى التحقيق والعواقب.
+
+الانتحار وإيذاء النفس — لا تكتب أبداً:
+- طرق الانتحار أو أوصاف الإيذاء الجسدي لأي شخص
+- سرد رومانسي أو تفصيلي لمشهد الوفاة بالانتحار
+- وصف التجربة الجسدية للاحتضار
+سيئ: "شنق نفسه في زنزانته، واكتشفت الحراسة الجثة في الصباح."
+جيد: "وُجد ميتاً في زنزانته — وأصدرت السلطات بياناً بوفاته."
+
+التفجيرات والهجمات الجماعية — لا تكتب أبداً:
+- أوصاف معاناة الضحايا أو مشاهد الموت أو الحرق
+- كيفية تصنيع المتفجرات أو تفاصيل الإيذاء الجسدي
+سيئ: "أحرق الانفجار المارة وفرّ الناجون محترقون في كل اتجاه."
+جيد: "أودى الانفجار بحياة 54 شخصاً وأصاب المئات. كشف المحققون لاحقاً أن المتفجرات قدمت من خلية باكستانية."
+
+الصياغة الآمنة — استخدم دائماً:
+- "راح بحياة / لقي حتفه / لقوا مصرعهم" + عدد الضحايا
+- "عُثر عليه ميتاً" / "توفي أثناء احتجازه" / "نُفّذ فيه حكم الإعدام"
+- "كشف المحققون أدلة على" / "أثبتت وثائق المحكمة" / "أظهر التحليل الجنائي"
+- "خلّف الهجوم ضحايا مدنيين" / "أسفر عن سقوط عدد كبير من القتلى"
+
+العواقب والتحقيقات والإجراءات القانونية دائماً آمنة.
+الأوصاف الجسدية للعنف أو الموت ليست آمنة أبداً على يوتيوب."""
 
 
 def translate_research_to_arabic(research: dict) -> dict:
