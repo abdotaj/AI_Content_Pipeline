@@ -2471,7 +2471,7 @@ def _filter_grayscale_images(paths: list[str], label: str = "") -> list[str]:
     return clean
 
 
-def _vision_topic_filter(paths: list[str], topic: str, max_checks: int = 40) -> list[str]:
+def _vision_topic_filter(paths: list[str], topic: str, max_checks: int = 9999) -> list[str]:
     """Vision-filter: use GPT-4o-mini to reject images unrelated to the topic.
 
     Adapted from ViMax/agents/best_image_selector.py — uses OpenAI vision API
@@ -2674,6 +2674,94 @@ _CRIME_NEGATIVE_TERMS = (
     "-painted -acrylic -mural -fresco -digital-art "
     "-nude -naked -nudity -sexual -explicit -nsfw -adult -porn -lingerie -bikini -erotic"
 )
+
+# ── Search query sanitization ─────────────────────────────────────────────────
+# Maps adult/sensitive script terms → safe documentary alternatives.
+# Applied to EVERY search query before it reaches DDG/Google/Pexels/Pixabay.
+# This prevents "prostitution documentary" → porn results.
+_QUERY_SAFE_REPLACEMENTS: dict[str, str] = {
+    # Sexual exploitation topics
+    "prostitution":       "crime investigation urban",
+    "prostitute":         "crime investigation",
+    "sex worker":         "law enforcement operation",
+    "sex workers":        "law enforcement operation",
+    "brothel":            "criminal establishment investigation",
+    "escort":             "crime investigation FBI",
+    "call girl":          "crime investigation FBI",
+    "pimp":               "crime boss operation",
+    "pimping":            "criminal operation FBI",
+    "solicitation":       "criminal arrest police",
+    # Human trafficking
+    "sex trafficking":    "FBI human trafficking investigation",
+    "trafficking":        "law enforcement operation FBI",
+    "trafficker":         "FBI criminal arrest",
+    "smuggling women":    "law enforcement operation",
+    "forced labor":       "criminal exploitation investigation",
+    # Sexual violence
+    "rape":               "criminal investigation court proceedings",
+    "sexual assault":     "criminal investigation court",
+    "molestation":        "criminal investigation court",
+    "molest":             "criminal investigation",
+    # Nudity/explicit
+    "nude":               "documentary photograph",
+    "naked":              "documentary photograph",
+    "pornography":        "crime investigation",
+    "porn":               "crime investigation",
+    "explicit":           "documentary evidence",
+    "erotic":             "documentary",
+    "stripper":           "nightclub entertainment",
+    "strip club":         "nightclub crime investigation",
+    "sex tape":           "criminal evidence court",
+    # Additional sensitive crime terms that return bad results
+    "body parts":         "crime scene forensic investigation",
+    "dismembered":        "crime scene forensic investigation",
+    "torture":            "criminal investigation abuse",
+    "mutilation":         "forensic investigation",
+    "gore":               "crime scene investigation",
+}
+
+# Terms that should NEVER appear in a search query — replaced by fallback
+_QUERY_HARD_BLOCK: frozenset = frozenset({
+    "pornography", "porn", "nude", "naked", "nsfw", "xxx",
+    "erotic", "explicit", "sexual", "sex tape", "masturbat",
+    "orgasm", "fetish", "bdsm", "bondage", "rape",
+})
+
+
+def _sanitize_search_query(query: str, topic: str = "") -> str:
+    """
+    Remove or replace adult/sensitive terms from any search query before it
+    is sent to DDG, Google, Pexels, Pixabay, or any other image/video source.
+
+    Returns a clean, safe search query. If the query becomes empty after
+    sanitization, falls back to '{topic} investigation documentary'.
+    """
+    if not query:
+        return query
+    q = query.strip()
+    q_lower = q.lower()
+
+    # Hard-block: if any hard-block term is present as a word, replace entire query
+    import re as _re
+    for term in _QUERY_HARD_BLOCK:
+        if _re.search(rf'\b{_re.escape(term)}\b', q_lower):
+            fallback = f"{topic} investigation documentary" if topic else "crime investigation documentary"
+            print(f"[QueryFilter] Hard-blocked '{term}' in query '{q[:50]}' → '{fallback}'")
+            return fallback
+
+    # Soft replacements: swap known sensitive phrases with safe alternatives
+    for bad, good in _QUERY_SAFE_REPLACEMENTS.items():
+        pattern = _re.compile(_re.escape(bad), _re.IGNORECASE)
+        if pattern.search(q):
+            q = pattern.sub(good, q)
+            print(f"[QueryFilter] Replaced '{bad}' → '{good}' in query")
+
+    q = q.strip()
+    if not q:
+        return f"{topic} investigation documentary" if topic else "crime investigation documentary"
+    return q
+
+
 # Keywords found in DDG result titles/source URLs that indicate non-photographic content.
 # Checked before downloading — cheaper than pixel analysis.
 _ART_RESULT_KEYWORDS = frozenset({
@@ -4516,6 +4604,7 @@ def _search_pexels_images(query: str, max_results: int = 5) -> list[str]:
     if not api_key or api_key.startswith("YOUR_"):
         print("[Image] Pexels: no API key — skipping (set PEXELS_API_KEY secret)")
         return []
+    query = _sanitize_search_query(query)
     try:
         r = requests.get(
             "https://api.pexels.com/v1/search",
@@ -4544,6 +4633,7 @@ def _search_pixabay_images(query: str, max_results: int = 5) -> list[str]:
     if not api_key or api_key.startswith("YOUR_"):
         print("[Image] Pixabay: no API key — skipping (set PIXABAY_API_KEY secret)")
         return []
+    query = _sanitize_search_query(query)
     try:
         r = requests.get(
             "https://pixabay.com/api/",
@@ -4576,6 +4666,7 @@ def _search_pexels_videos(query: str, per_page: int = 15) -> list[str]:
     api_key = os.getenv("PEXELS_API_KEY", "").strip()
     if not api_key or api_key.startswith("YOUR_"):
         return []
+    query = _sanitize_search_query(query)
     try:
         r = requests.get(
             "https://api.pexels.com/videos/search",
@@ -4612,6 +4703,7 @@ def _search_pixabay_videos(query: str, per_page: int = 15) -> list[str]:
     api_key = os.getenv("PIXABAY_API_KEY", "").strip()
     if not api_key or api_key.startswith("YOUR_"):
         return []
+    query = _sanitize_search_query(query)
     try:
         r = requests.get(
             "https://pixabay.com/api/videos/",
@@ -4656,10 +4748,20 @@ def _groq_query_for_chunk(chunk_text: str, topic: str = "", for_video: bool = Fa
         except ImportError:
             return None
     first_120 = " ".join((chunk_text or "").split()[:120])
+    _safe_query_rule = (
+        "CRITICAL: NEVER use these words in the query: "
+        "prostitution, prostitute, sex worker, brothel, escort, call girl, nude, naked, "
+        "trafficking, rape, sexual assault, erotic, porn, strip club, stripper, sex, "
+        "explicit, nsfw, fetish, bdsm, torture, gore, dismember, mutilation. "
+        "If the script mentions any of these topics, search instead for: "
+        "law enforcement operation, FBI investigation, court proceedings, crime investigation. "
+        "The query goes to DuckDuckGo — adult terms return porn results.\n"
+    )
     if for_video:
         prompt = (
             f"Create one stock B-roll video search query (3-6 English words).\n"
             f"Topic: {topic}\n"
+            f"{_safe_query_rule}"
             f"Be as specific as possible. Use real names, real places, real time periods from the text.\n"
             f"GOOD: 'John Douglas FBI agent 1977'\n"
             f"GOOD: 'Edmund Kemper prison interview 1979'\n"
@@ -4672,6 +4774,7 @@ def _groq_query_for_chunk(chunk_text: str, topic: str = "", for_video: bool = Fa
         prompt = (
             f"What is the most specific searchable image subject in this text?\n"
             f"Return only a short English search query (max 5 words).\n"
+            f"{_safe_query_rule}"
             f"Be as specific as possible. Use real names, real places, real time periods from the text.\n"
             f"GOOD: 'John Douglas FBI agent 1977'\n"
             f"GOOD: 'Edmund Kemper prison interview 1979'\n"
@@ -4690,7 +4793,7 @@ def _groq_query_for_chunk(chunk_text: str, topic: str = "", for_video: bool = Fa
             return None
         if 2 <= len(result.split()) <= 8:
             _provider_health.reset("groq")
-            return result
+            return _sanitize_search_query(result, topic=topic)
     except Exception as e:
         _provider_health.record_failure("groq")
         print(f"[Stock] Groq query failed (recorded): {e}")
@@ -6428,11 +6531,13 @@ def _search_duckduckgo_images(query: str, max_results: int = 5) -> list[str]:
     for _attempt in range(_max_attempts):
         try:
             _proxy = _ddgs_proxy()
+            # Sanitize query to strip adult/sensitive terms before searching
+            _clean_query = _sanitize_search_query(query)
             # Append "photograph" to every query — forces Bing's index to rank
             # actual photos (news, archive, press) over artwork and illustrations.
             # type_image="photo" is DDG's category filter but is unreliable;
             # the "photograph" keyword in the query itself is more effective.
-            _safe_query = f"{query} photograph {_CRIME_NEGATIVE_TERMS}"
+            _safe_query = f"{_clean_query} photograph {_CRIME_NEGATIVE_TERMS}"
             raw = DDGS(proxy=_proxy).images(
                 _safe_query,
                 max_results=max_results * 3,
@@ -6721,7 +6826,8 @@ def _search_duckduckgo_videos(query: str, max_results: int = 5) -> list[str]:
             _proxy = _ddgs_proxy()
             # Append "news footage" to bias toward short news clips/reels rather
             # than long documentaries or unrelated uploads.
-            _vid_query = f"{query} news footage"
+            _clean_vid_query = _sanitize_search_query(query)
+            _vid_query = f"{_clean_vid_query} news footage"
             raw = DDGS(proxy=_proxy).videos(_vid_query, max_results=max_results * 4, safesearch="on")
             urls: list[str] = []
             for r in (raw or []):
@@ -6799,7 +6905,10 @@ def _generate_visual_queries(chunk: str, topic: str) -> list[str]:
         f"- Include a real location, action, or time period\n"
         f"- GOOD: 'FBI headquarters Washington 1970s', 'courtroom trial verdict 1983'\n"
         f"- BAD: 'crime background', 'dark dramatic scene'\n"
-        f"- Never include: animals, nature, fashion, beauty, cooking, gaming\n\n"
+        f"- Never include: animals, nature, fashion, beauty, cooking, gaming\n"
+        f"- CRITICAL — NEVER use these words: prostitution, sex, nude, naked, rape, trafficking, "
+        f"erotic, porn, explicit, escort, brothel, stripper, gore, torture, dismember. "
+        f"Replace with: law enforcement, FBI investigation, court proceedings, crime investigation.\n\n"
         f"Return ONLY the queries, one per line. No bullets, no numbers, no explanations."
     )
     api_key = os.getenv("OPENAI_API_KEY", "").strip()
@@ -6820,6 +6929,8 @@ def _generate_visual_queries(chunk: str, topic: str) -> list[str]:
                     for line in text.splitlines()
                     if line.strip() and 2 <= len(line.strip().split()) <= 8
                 ]
+                # Sanitize every generated query before use
+                queries = [_sanitize_search_query(q, topic=topic) for q in queries]
                 relevant = [q for q in queries if _is_crime_relevant_query(q)]
                 if relevant:
                     print(f"[Stock] Visual queries: {relevant}")
