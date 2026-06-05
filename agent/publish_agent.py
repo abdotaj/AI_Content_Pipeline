@@ -19,17 +19,12 @@ _TOKEN_AR = "youtube_token_darkcrimed_ar.json"
 _EDSA_DISCLAIMER_EN = (
     "⚠️ This documentary is produced for educational and informational purposes. "
     "All events depicted are based on publicly available records, court documents, "
-    "and verified news sources. Names, dates, and facts reflect documented history.\n\n"
-    "🤖 AI Disclosure: This video contains AI-generated narration and AI-assisted imagery "
-    "created to illustrate historical events. No real footage of private individuals "
-    "has been fabricated or misrepresented."
+    "and verified news sources. Names, dates, and facts reflect documented history."
 )
 
 _EDSA_DISCLAIMER_AR = (
     "⚠️ هذا الفيلم الوثائقي مُنتَج لأغراض تعليمية وإعلامية. "
-    "جميع الأحداث المُصوَّرة مستندة إلى وثائق عامة وسجلات المحاكم ومصادر إخبارية موثوقة.\n\n"
-    "🤖 إفصاح عن الذكاء الاصطناعي: يحتوي هذا الفيديو على تعليق صوتي مُولَّد بالذكاء الاصطناعي "
-    "وصور مُساعَدة بالذكاء الاصطناعي لتوضيح الأحداث التاريخية."
+    "جميع الأحداث المُصوَّرة مستندة إلى وثائق عامة وسجلات المحاكم ومصادر إخبارية موثوقة."
 )
 
 
