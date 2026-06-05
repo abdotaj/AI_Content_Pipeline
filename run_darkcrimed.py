@@ -1,12 +1,12 @@
-# ============================================================
-#  run_darkcrimed.py  —  Pipeline entry point for Dark Crime Decoded
+﻿# ============================================================
+#  run_darkcrimed.py  â€”  Pipeline entry point for Dark Crime Decoded
 #
 #  Daily output (1 topic, 4 pieces):
 #
-#    OUTPUT 1 — English long-form (12-20 min) → auto YouTube upload
-#    OUTPUT 2 — Arabic long-form  (12-20 min) → auto YouTube upload
-#    OUTPUT 3 — English short (45-90s) → Telegram  [SHORT_MODE=script|cut]
-#    OUTPUT 4 — Arabic short  (45-90s) → Telegram  [SHORT_MODE=script|cut]
+#    OUTPUT 1 â€” English long-form (12-20 min) â†’ auto YouTube upload
+#    OUTPUT 2 â€” Arabic long-form  (12-20 min) â†’ auto YouTube upload
+#    OUTPUT 3 â€” English short (45-90s) â†’ Telegram  [SHORT_MODE=script|cut]
+#    OUTPUT 4 â€” Arabic short  (45-90s) â†’ Telegram  [SHORT_MODE=script|cut]
 # ============================================================
 import os
 import sys
@@ -63,7 +63,7 @@ from agent.notify_agent   import (
     send_topic_confirmation,
 )
 from agent.publish_agent  import upload_to_youtube
-from agents.content_agent import ingest_content_files
+from agent.content_agent import ingest_content_files
 from pipelines.approval import wait_for_approval
 
 
@@ -104,7 +104,7 @@ def _load_injected_script() -> dict | None:
                       "script": "", "script_ar": "", "short_script_en": "", "short_script_ar": ""}
             body, ar, past_sep, in_ar = [], [], False, False
             def _sep(s):
-                s = s.strip(); return len(s) >= 3 and all(c in '-─━_=' for c in s)
+                s = s.strip(); return len(s) >= 3 and all(c in '-â”€â”_=' for c in s)
             for line in lines:
                 if not past_sep and _sep(line):
                     past_sep = True; continue
@@ -125,7 +125,7 @@ def _load_injected_script() -> dict | None:
         ts   = _dt.datetime.now().strftime("%Y%m%d_%H%M")
         dest = os.path.join(_used_dir, f"{ts}_{candidates[0]}")
         os.rename(src, dest)
-        print(f"[ScriptInject] Consumed '{candidates[0]}' → _used/{ts}_{candidates[0]}")
+        print(f"[ScriptInject] Consumed '{candidates[0]}' â†’ _used/{ts}_{candidates[0]}")
         return result
     except Exception as _e:
         print(f"[ScriptInject] Failed to load '{candidates[0]}': {_e}")
@@ -133,8 +133,8 @@ def _load_injected_script() -> dict | None:
 
 
 # SHORT_MODE controls how the daily short videos are generated.
-# "script" (default) — TTS + full video assembly from the optimized short script.
-# "cut"              — cut the best chapter clip from the finished long video.
+# "script" (default) â€” TTS + full video assembly from the optimized short script.
+# "cut"              â€” cut the best chapter clip from the finished long video.
 SHORT_MODE = os.getenv("SHORT_MODE", "script").lower()
 
 
@@ -161,7 +161,7 @@ def check_24h_cooldown() -> bool:
     manifests = glob.glob(os.path.join(_PIPELINE_ROOT, "output", "dark_crime", "manifest_*.json"))
 
     if not manifests:
-        print("[Pipeline] No previous runs found — starting fresh")
+        print("[Pipeline] No previous runs found â€” starting fresh")
         return True
 
     latest = max(manifests, key=os.path.getmtime)
@@ -179,7 +179,7 @@ def check_24h_cooldown() -> bool:
 
         if elapsed_hours < 24:
             remaining = 24 - elapsed_hours
-            print(f"[Pipeline] Too soon — {remaining:.1f} hours remaining")
+            print(f"[Pipeline] Too soon â€” {remaining:.1f} hours remaining")
             send_message(
                 f"\u23f0 Pipeline Cooldown Active\n\n"
                 f"Last run: {elapsed_hours:.1f} hours ago\n"
@@ -188,7 +188,7 @@ def check_24h_cooldown() -> bool:
             )
             return False
 
-        print("[Pipeline] Cooldown passed — ready to run")
+        print("[Pipeline] Cooldown passed â€” ready to run")
         return True
 
     except Exception as e:
@@ -222,9 +222,9 @@ def check_force_run() -> bool:
     return False
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-#  Pipeline Utilities  (structured log · retry · stage timer · manifest dedup)
-# ═══════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+#  Pipeline Utilities  (structured log Â· retry Â· stage timer Â· manifest dedup)
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 def _log(stage: str, msg: str, level: str = "INFO") -> None:
     """Timestamped structured log line."""
@@ -245,7 +245,7 @@ def _with_retry(fn, *args, retries: int = 3, delay: float = 10.0,
             wait = delay * attempt
             _log("Retry",
                  f"{label or fn.__name__} attempt {attempt}/{retries}: {exc} "
-                 f"— retrying in {wait:.0f}s", "WARN")
+                 f"â€” retrying in {wait:.0f}s", "WARN")
             time.sleep(wait)
 
 
@@ -263,7 +263,7 @@ def _timing_report() -> str:
     """Return a multi-line stage-timing summary."""
     if not _STAGE_MARKS:
         return ""
-    lines = ["", "── Stage Timings ─────────────────────────────────"]
+    lines = ["", "â”€â”€ Stage Timings â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€"]
     prev_t = _PIPELINE_T0
     for name, t in _STAGE_MARKS:
         dur = t - prev_t
@@ -271,7 +271,7 @@ def _timing_report() -> str:
         prev_t = t
     total = time.time() - _PIPELINE_T0
     lines.append(f"  {'TOTAL':<34} {total / 60:5.1f} min")
-    lines.append("──────────────────────────────────────────────────")
+    lines.append("â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€")
     return "\n".join(lines)
 
 
@@ -307,32 +307,32 @@ def run_pipeline():
     stats = {"generated": 0, "posted": 0, "skipped": 0, "errors": 0}
 
     print(f"\n{'='*60}")
-    print(f"  Dark Crime Decoded Pipeline — {today}")
+    print(f"  Dark Crime Decoded Pipeline â€” {today}")
     print(f"{'='*60}\n")
     _stage("Pipeline start")
 
-    # ── Date-based cooldown (scheduled runs only) ──────────────
+    # â”€â”€ Date-based cooldown (scheduled runs only) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     # workflow_dispatch and local runs always proceed regardless.
     _event = os.getenv("GITHUB_EVENT_NAME", "")
     if _event == "schedule":
         if _already_ran_today():
-            print("[Pipeline] Already ran today — exiting")
+            print("[Pipeline] Already ran today â€” exiting")
             sys.exit(0)
-        print("[Pipeline] Scheduled run — no run today yet, proceeding")
+        print("[Pipeline] Scheduled run â€” no run today yet, proceeding")
     else:
-        print(f"[Pipeline] Trigger: '{_event or 'local'}' — cooldown check skipped")
+        print(f"[Pipeline] Trigger: '{_event or 'local'}' â€” cooldown check skipped")
 
-    # ── Ensure music assets are downloaded ────────────────────
+    # â”€â”€ Ensure music assets are downloaded â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     ensure_music_assets()
 
-    # ── Cooldown guard ─────────────────────────────────────────
+    # â”€â”€ Cooldown guard â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if not check_24h_cooldown():
         if not check_force_run():
-            print("[Pipeline] Skipping — cooldown active")
+            print("[Pipeline] Skipping â€” cooldown active")
             return
         print("[Pipeline] Cooldown bypassed by user")
 
-    # ── STEP 1: Topic + images ────────────────────────────────
+    # â”€â”€ STEP 1: Topic + images â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     pipeline_start_time = time.time()
 
     # Priority 1: content/dark_crime/ JSON files (skip Telegram flow)
@@ -344,7 +344,7 @@ def run_pipeline():
     _part_number:       int | None = None
     _series_name_for_filter: str | None = None
 
-    # Priority 2: topic_inject.json — created by create_topic.py, consumed once
+    # Priority 2: topic_inject.json â€” created by create_topic.py, consumed once
     _inject_file = os.path.join(os.path.dirname(__file__), "topic_inject.json")
     if not ingested and os.path.exists(_inject_file):
         try:
@@ -399,13 +399,13 @@ def run_pipeline():
             }
 
     elif not topic:
-        # ── 1A: Clear ALL old messages so only new ones are read ──────────────
+        # â”€â”€ 1A: Clear ALL old messages so only new ones are read â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         print("[1/5] Clearing old Telegram messages...")
         clear_telegram_queue()
 
-        # ── 1B: Tell user pipeline is ready and wait 60s for topic ───────────
+        # â”€â”€ 1B: Tell user pipeline is ready and wait 60s for topic â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         send_message(
-            f"Pipeline ready — send your topic now!\n\n"
+            f"Pipeline ready â€” send your topic now!\n\n"
             f"Examples:\n"
             f"  Frank Lucas\n"
             f"  Al Capone\n"
@@ -415,7 +415,7 @@ def run_pipeline():
         print("[1/5] Waiting 60 seconds for topic...")
         time.sleep(60)
 
-        # ── 1C: Read ONLY messages sent after the clear ───────────────────────
+        # â”€â”€ 1C: Read ONLY messages sent after the clear â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         print("[1/5] Checking for topic sent in last 60 seconds...")
         telegram_result = check_telegram_for_script(timeout=30)
 
@@ -443,8 +443,8 @@ def run_pipeline():
             if _part_number:
                 print(f"[Pipeline] Part {_part_number} detected in user note")
 
-            # ── 1D: Ask for photos now that topic is confirmed ────────────────
-            # Quick show_characters lookup (uses hardcoded map — no API call for known shows)
+            # â”€â”€ 1D: Ask for photos now that topic is confirmed â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            # Quick show_characters lookup (uses hardcoded map â€” no API call for known shows)
             _is_show, _show_key = _detect_show_topic(topic_text)
             _quick_chars: list = []
             if _is_show:
@@ -458,13 +458,13 @@ def run_pipeline():
             print("[1/5] Waiting 3 minutes for photos...")
             time.sleep(180)
 
-            # ── 1E: Collect images + videos sent AFTER pipeline start ────────
+            # â”€â”€ 1E: Collect images + videos sent AFTER pipeline start â”€â”€â”€â”€â”€â”€â”€â”€
             user_images = check_telegram_for_images(after_timestamp=pipeline_start_time)
             user_videos = check_telegram_for_videos(after_timestamp=pipeline_start_time)
             if user_videos:
                 print(f"[1/5] Found {len(user_videos)} video(s) from Telegram")
             if user_images:
-                print(f"[1/5] Found {len(user_images)} image(s) for '{topic_text}' — checking relevance...")
+                print(f"[1/5] Found {len(user_images)} image(s) for '{topic_text}' â€” checking relevance...")
                 _use_now, _save_later, _ignored = process_user_images_smart(
                     user_images,
                     topic=topic_text,
@@ -473,28 +473,28 @@ def run_pipeline():
                 )
                 user_images = _use_now
                 send_message(
-                    f"📸 Image Check Complete for: {topic_text}\n\n"
-                    f"✅ Using now: {len(_use_now)} images\n"
-                    f"📦 Saved for Part 2: {len(_save_later)} images\n"
-                    f"❌ Not relevant: {len(_ignored)} images"
+                    f"ðŸ“¸ Image Check Complete for: {topic_text}\n\n"
+                    f"âœ… Using now: {len(_use_now)} images\n"
+                    f"ðŸ“¦ Saved for Part 2: {len(_save_later)} images\n"
+                    f"âŒ Not relevant: {len(_ignored)} images"
                 )
             else:
-                print("[1/5] No photos — AI images will be generated")
+                print("[1/5] No photos â€” AI images will be generated")
 
-            # ── 1F: Research exact topic ──────────────────────────────────────
+            # â”€â”€ 1F: Research exact topic â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             _log("Research", f"Researching: {topic_text}")
             try:
                 research = _with_retry(research_series, topic_text, series_name,
                                        user_note=raw_input, retries=3, delay=12,
                                        label="research_series")
                 if research is None:
-                    _log("Research", "research_series returned None — aborting", "ERROR")
+                    _log("Research", "research_series returned None â€” aborting", "ERROR")
                     return
             except Exception as e:
                 _log("Research", f"Web research failed for '{topic_text}': {e}", "WARN")
                 research = {}
 
-            # Force correct person — never let research override the user's choice
+            # Force correct person â€” never let research override the user's choice
             if research is not None:
                 research["real_person"] = topic_text
                 research["series_name"] = series_name or topic_text
@@ -511,17 +511,17 @@ def run_pipeline():
                 "manual_topic": True,
             }
 
-            # ── Risk classification — manual topics always allowed ────────────
+            # â”€â”€ Risk classification â€” manual topics always allowed â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             try:
-                from agents.topic_risk import classify_topic_risk, log_risk
+                from agent.topic_risk import classify_topic_risk, log_risk
                 _risk_manual = classify_topic_risk(topic_text, is_manual=True)
                 log_risk(topic_text, _risk_manual)
                 topic["risk_info"] = _risk_manual
                 if _risk_manual["editorial_mode"]:
                     send_message(
-                        f"⚠️ Sensitive topic detected: {topic_text}\n\n"
+                        f"âš ï¸ Sensitive topic detected: {topic_text}\n\n"
                         f"Risk level: {_risk_manual['risk_level']}\n"
-                        f"Editorial-assist mode is ACTIVE — narration will use evidential framing.\n"
+                        f"Editorial-assist mode is ACTIVE â€” narration will use evidential framing.\n"
                         f"Creator retains full editorial control."
                     )
             except Exception as _risk_e:
@@ -529,39 +529,39 @@ def run_pipeline():
                 topic["risk_info"] = {}
 
         else:
-            # No topic sent — strict manual-only policy: abort instead of auto-select
-            print("[Pipeline] No topic received — aborting (manual topic required)")
+            # No topic sent â€” strict manual-only policy: abort instead of auto-select
+            print("[Pipeline] No topic received â€” aborting (manual topic required)")
             send_message(
-                "⛔ No topic received.\n\n"
+                "â›” No topic received.\n\n"
                 "Send your topic name (e.g. 'Jeffrey Epstein') within 60 seconds of starting.\n"
                 "Or use topic_inject.json to pre-set a topic.\n\n"
                 "Pipeline stopped."
             )
-            _log("Research", "No topic received — pipeline aborted (manual required)", "WARN")
+            _log("Research", "No topic received â€” pipeline aborted (manual required)", "WARN")
             return
 
         print(f"[Pipeline] FINAL TOPIC: {topic.get('topic', '?')}")
         print(f"[Pipeline] Starting pipeline for: {topic.get('topic', '?')}")
 
-        # ══════════════════════════════════════════════════════════════════════
+        # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
         # STEP 2: Language-isolated script generation
         #
         # English and Arabic pipelines run INDEPENDENTLY.
         # Failure of one language does NOT abort the other.
-        #   • English: write_script(topic, "english") — standard path
-        #   • Arabic:  write_arabic_script(topic, research) — native, no EN dependency
+        #   â€¢ English: write_script(topic, "english") â€” standard path
+        #   â€¢ Arabic:  write_arabic_script(topic, research) â€” native, no EN dependency
         #
         # Injection override: if content/scripts/ has a .json or .txt file,
         # consume it and skip write_script() / write_arabic_script() entirely.
-        # ══════════════════════════════════════════════════════════════════════
+        # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
         print("\n[2/5] Writing scripts (EN + AR independently)...")
 
-        # ── Script injection check ─────────────────────────────────────────────
+        # â”€â”€ Script injection check â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         _inj: dict | None = None
         try:
             _inj = _load_injected_script()
             if _inj:
-                _log("Scripts", f"[INJECT] Pre-written script: '{_inj.get('title','?')}' — skipping generation", "OK")
+                _log("Scripts", f"[INJECT] Pre-written script: '{_inj.get('title','?')}' â€” skipping generation", "OK")
                 send_message(
                     f"[Pipeline] Script injection detected!\n"
                     f"Title: {_inj.get('title','?')}\n"
@@ -577,7 +577,7 @@ def run_pipeline():
             print(f"[ScriptInject] check failed (non-fatal): {_inj_e}")
             _inj = None
 
-        # ── 2A: English pipeline ───────────────────────────────────────────────
+        # â”€â”€ 2A: English pipeline â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         en_long = None
         if _inj and _inj.get("script"):
             en_long = {
@@ -626,7 +626,7 @@ def run_pipeline():
 
     _stage("Scripts EN done")
 
-    # ── 2B: Arabic pipeline (independent — no en_long dependency) ─────────────
+    # â”€â”€ 2B: Arabic pipeline (independent â€” no en_long dependency) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     ar_long = None
     _research = topic.get("research", {}) if topic else {}
     _inj_ar = (_inj or {}).get("script_ar", "").strip()
@@ -665,13 +665,13 @@ def run_pipeline():
                  f"{_ar_wc}w | path={ar_long.get('arabic_path','?')}", "OK")
         except Exception as _ar_e:
             _log("Scripts", f"AR script failed: {_ar_e}", "ERROR")
-            send_message(f"[Pipeline] Arabic script failed (non-fatal — EN will still run): {_ar_e}")
+            send_message(f"[Pipeline] Arabic script failed (non-fatal â€” EN will still run): {_ar_e}")
             ar_long = None   # Arabic render will be skipped below
 
-    # ── 2C: Short scripts (independent per language) ───────────────────────────
+    # â”€â”€ 2C: Short scripts (independent per language) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     _anim_mode_dc = os.getenv("PIPELINE_MODE", "").lower() == "animation"
     if not _anim_mode_dc:
-        # English short — use injected if available, otherwise generate
+        # English short â€” use injected if available, otherwise generate
         if en_long and not en_long.get("script_failed"):
             if en_long.get("short_script_en"):
                 _log("Scripts", f"EN short (injected): {len(en_long['short_script_en'].split())}w", "OK")
@@ -686,7 +686,7 @@ def run_pipeline():
         else:
             en_long.setdefault("short_script_en", "")
 
-        # Arabic short — use injected if available, otherwise generate independently
+        # Arabic short â€” use injected if available, otherwise generate independently
         if ar_long and not ar_long.get("script_too_short"):
             if ar_long.get("short_script_ar"):
                 _log("Scripts", f"AR short (injected): {len(ar_long['short_script_ar'].split())}w", "OK")
@@ -701,14 +701,14 @@ def run_pipeline():
         elif ar_long:
             ar_long.setdefault("short_script_ar", "")
     else:
-        _log("Scripts", "Animation mode — short script generation skipped", "INFO")
+        _log("Scripts", "Animation mode â€” short script generation skipped", "INFO")
         en_long.setdefault("short_script_en", "")
         if ar_long:
             ar_long.setdefault("short_script_ar", "")
 
     _stage("Scripts AR done")
 
-    # ── STEP 3: Send scripts to Telegram for review (non-blocking) ────────────
+    # â”€â”€ STEP 3: Send scripts to Telegram for review (non-blocking) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     print("\n[3/5] Sending scripts to Telegram for review...")
     _dc_mode_label = os.getenv("PIPELINE_MODE", "fast").lower()
     _long_dur_label = {"fast": "30-40 min", "animation": "35-60 min", "full": "45-90 min"}.get(_dc_mode_label, "30-40 min")
@@ -738,13 +738,13 @@ def run_pipeline():
             except Exception as e:
                 print(f"  [WARN] AR short script preview failed: {e}")
 
-    _log("Telegram", "Scripts sent to Telegram — waiting for approval", "OK")
+    _log("Telegram", "Scripts sent to Telegram â€” waiting for approval", "OK")
     _stage("Scripts sent to Telegram")
 
-    # ── Approval gate 1: Scripts ─────────────────────────────────────────────
+    # â”€â”€ Approval gate 1: Scripts â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     while True:
         _approval_1 = wait_for_approval(
-            stage_name=f"Scripts Ready — {(en_long.get('title') or '')[:60]}\nReview the scripts above.",
+            stage_name=f"Scripts Ready â€” {(en_long.get('title') or '')[:60]}\nReview the scripts above.",
             available_commands=["approve", "rewrite", "cancel"],
             mode="PIPELINE",
         )
@@ -757,7 +757,7 @@ def run_pipeline():
             if topic is None:
                 send_message("[Pipeline] Rewrite unavailable for content-file ingested scripts.")
                 continue
-            _log("Scripts", "Rewrite requested — regenerating", "WARN")
+            _log("Scripts", "Rewrite requested â€” regenerating", "WARN")
             send_message("[Pipeline] Rewriting scripts...")
             try:
                 en_long = write_script(topic, language="english")
@@ -770,7 +770,7 @@ def run_pipeline():
             except Exception as _re:
                 send_message(f"[Pipeline] Rewrite failed: {_re}")
 
-    # ── Load saved Part 2 images if this is a Part 2 run ──────
+    # â”€â”€ Load saved Part 2 images if this is a Part 2 run â”€â”€â”€â”€â”€â”€
     _part_num_final = en_long.get("part_number")
     if _part_num_final == 2:
         _p2_paths = load_part2_images(en_long.get("topic", ""))
@@ -780,7 +780,7 @@ def run_pipeline():
             print(f"[Pipeline] Added {len(_p2_paths)} saved Part 2 images")
             send_message(f"[Pipeline] Loaded {len(_p2_paths)} saved images for Part 2")
 
-    # ── Load GitHub content library for this topic (retry up to 5x) ──────────
+    # â”€â”€ Load GitHub content library for this topic (retry up to 5x) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     _topic_for_media = en_long.get("topic", "")
     _gh_images: list = []
     _gh_videos: list = []
@@ -791,7 +791,7 @@ def run_pipeline():
         if _gh_images or _gh_videos:
             break
         if _media_attempt < 4:
-            _log("Media", f"No media loaded (attempt {_media_attempt + 1}/5) — retrying in 1s", "WARN")
+            _log("Media", f"No media loaded (attempt {_media_attempt + 1}/5) â€” retrying in 1s", "WARN")
             time.sleep(1)
     # If folder exists but no media loaded, switch to AI/web fallback mode
     _content_folder = find_content_folder(_topic_for_media)
@@ -800,7 +800,7 @@ def run_pipeline():
         _log(
             "Media",
             f"No local media found in '{_content_folder}' "
-            f"— switching to AI/web fallback mode",
+            f"â€” switching to AI/web fallback mode",
             "WARN"
         )
 
@@ -831,11 +831,11 @@ def run_pipeline():
         print(f"[Content] Telegram: {len(_tg_imgs)} images + {len(_tg_vids)} videos")
         print(f"[Content] Total: {len(user_images)} images + {len(user_videos)} videos")
 
-    # ── STEP 4: Generate all 4 videos ─────────────────────────
+    # â”€â”€ STEP 4: Generate all 4 videos â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     _log("VideoGen", "Starting video generation")
     _stage("Video gen start")
 
-    # Snapshot user content for short video generation — isolate from any
+    # Snapshot user content for short video generation â€” isolate from any
     # side-effects of long video assembly and re-load from GitHub content folder.
     _short_user_images = list(user_images)
     _short_user_videos = list(user_videos)
@@ -847,11 +847,11 @@ def run_pipeline():
     if _ex_en and _ex_ar:
         en_long_path, ar_long_path = _ex_en, _ex_ar
         stats["skipped"] += 2
-        _log("VideoGen", "Reusing existing video files — skipping generation", "OK")
+        _log("VideoGen", "Reusing existing video files â€” skipping generation", "OK")
     else:
         _slug = _topic_slug(_topic_for_dedup)
 
-        # ── OUTPUT 1+2 — Arabic long FIRST, then English long (sequential, all modes) ──
+        # â”€â”€ OUTPUT 1+2 â€” Arabic long FIRST, then English long (sequential, all modes) â”€â”€
         # AR renders before EN in every mode (fast / full / animation).
         #
         # WHY sequential instead of parallel:
@@ -870,42 +870,42 @@ def run_pipeline():
         ar_long_path = ""
         en_long_path = ""
 
-        # ── AR long ──────────────────────────────────────────────────────────
-        _log("VideoGen", "Step 1/2 — Rendering AR long (first)")
+        # â”€â”€ AR long â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        _log("VideoGen", "Step 1/2 â€” Rendering AR long (first)")
         if not ar_long:
-            _log("VideoGen", "[AR SKIPPED] Arabic script generation failed — no AR video", "WARN")
+            _log("VideoGen", "[AR SKIPPED] Arabic script generation failed â€” no AR video", "WARN")
         else:
             _ar_wc_pre = len(ar_long.get("script", "").split())
             if _ar_wc_pre < 50:
-                _log("VideoGen", f"[AR SKIP] Script empty ({_ar_wc_pre}w) — skipping", "ERROR")
+                _log("VideoGen", f"[AR SKIP] Script empty ({_ar_wc_pre}w) â€” skipping", "ERROR")
             else:
                 if _ar_wc_pre < 8_000:
-                    _log("VideoGen", f"[AR SHORT] {_ar_wc_pre}w (~{round(_ar_wc_pre/100,1)}min) below 8000w target — rendering anyway", "WARN")
+                    _log("VideoGen", f"[AR SHORT] {_ar_wc_pre}w (~{round(_ar_wc_pre/100,1)}min) below 8000w target â€” rendering anyway", "WARN")
                 else:
                     _log("VideoGen", f"[AR AUDIO] Script: {_ar_wc_pre}w | est. ~{round(_ar_wc_pre/100,1)}min")
                 ar_long_id   = f"{today}_{_slug}_arabic_long"
                 ar_long_path = _make_video(ar_long, ar_long_id, stats, user_images=user_images, user_videos=user_videos)
-                _log("VideoGen", f"[AR] Render complete — {ar_long_path}", "OK")
+                _log("VideoGen", f"[AR] Render complete â€” {ar_long_path}", "OK")
 
-        # ── EN long ──────────────────────────────────────────────────────────
-        _log("VideoGen", "Step 2/2 — Rendering EN long (second)")
+        # â”€â”€ EN long â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        _log("VideoGen", "Step 2/2 â€” Rendering EN long (second)")
         if not en_long or en_long.get("script_failed"):
-            _log("VideoGen", "[EN SKIPPED] English script generation failed — no EN video", "WARN")
+            _log("VideoGen", "[EN SKIPPED] English script generation failed â€” no EN video", "WARN")
         else:
             en_long_id   = f"{today}_{_slug}_english_long"
             en_long_path = _make_video(en_long, en_long_id, stats, user_images=user_images, user_videos=user_videos)
-            _log("VideoGen", f"[EN] Render complete — {en_long_path}", "OK")
+            _log("VideoGen", f"[EN] Render complete â€” {en_long_path}", "OK")
 
-    # ── Arabic runtime validation — mode-specific tiered system ─────────────
-    # FULL:  <30m=FAIL  30-44m=UNDER TARGET→expand  45-60m=IDEAL  60-90m=ACCEPTABLE  >90m=TOO LONG
-    # ANIM:  <30m=FAIL  30-35m=UNDER TARGET→expand  35-60m=IDEAL  >60m=ACCEPTABLE
+    # â”€â”€ Arabic runtime validation â€” mode-specific tiered system â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # FULL:  <30m=FAIL  30-44m=UNDER TARGETâ†’expand  45-60m=IDEAL  60-90m=ACCEPTABLE  >90m=TOO LONG
+    # ANIM:  <30m=FAIL  30-35m=UNDER TARGETâ†’expand  35-60m=IDEAL  >60m=ACCEPTABLE
     # FAST:  <30m=FAIL  30-40m=IDEAL                >40m=TOO LONG
     _dc_mode       = os.getenv("PIPELINE_MODE", "fast").lower()
     _AR_IDEAL_SECS = {"fast": 1800, "animation": 2100, "full": 2700}.get(_dc_mode, 1800)
     _AR_MAX_SECS   = {"fast": 2400, "animation": 3600, "full": 5400}.get(_dc_mode, 2400)
     _AR_TGT_MIN    = {"fast": 35.0, "animation": 47.5, "full": 55.0}.get(_dc_mode, 35.0)
     _AR_TARGET_STR = {"fast": "30-40m", "animation": "35-60m", "full": "45-90m"}.get(_dc_mode, "30-40m")
-    _AR_HARD_FAIL  = 1800  # 30 min — universal absolute floor
+    _AR_HARD_FAIL  = 1800  # 30 min â€” universal absolute floor
     _ar_rebuild    = 0
     _ar_max_rb     = 4
     _topic_text_ar = topic.get("topic", "") if topic else (ar_long.get("topic", "") if ar_long else "")
@@ -922,19 +922,19 @@ def run_pipeline():
             _ar_status = "TOO LONG"
         _log("VideoGen", f"[AR RUNTIME] Target: {_AR_TARGET_STR} | Rendered: {_ar_mins:.1f}m | Status: {_ar_status}")
         if _ar_status in ("IDEAL", "ACCEPTABLE LONGFORM"):
-            _log("VideoGen", f"[AR PASSED] {_ar_mins:.1f}min — {_ar_status}", "OK")
+            _log("VideoGen", f"[AR PASSED] {_ar_mins:.1f}min â€” {_ar_status}", "OK")
             break
         if _ar_status == "TOO LONG":
-            _log("VideoGen", f"[AR TOO LONG] {_ar_mins:.1f}min > {_AR_MAX_SECS//60}min — exporting as-is", "WARN")
-            send_message(f"[Pipeline] AR {_ar_mins:.1f}min exceeds {_AR_MAX_SECS//60}min — exporting as-is")
+            _log("VideoGen", f"[AR TOO LONG] {_ar_mins:.1f}min > {_AR_MAX_SECS//60}min â€” exporting as-is", "WARN")
+            send_message(f"[Pipeline] AR {_ar_mins:.1f}min exceeds {_AR_MAX_SECS//60}min â€” exporting as-is")
             break
         _ar_rebuild += 1
         if _ar_rebuild > _ar_max_rb:
-            _log("VideoGen", f"[AR EXPANSION] Limit reached — continuing with {_ar_mins:.1f}min", "WARN")
-            send_message(f"[Pipeline] AR {_ar_mins:.1f}min after {_ar_max_rb} expansions — proceeding")
+            _log("VideoGen", f"[AR EXPANSION] Limit reached â€” continuing with {_ar_mins:.1f}min", "WARN")
+            send_message(f"[Pipeline] AR {_ar_mins:.1f}min after {_ar_max_rb} expansions â€” proceeding")
             break
         send_message(
-            f"[Pipeline] AR {_ar_status}: {_ar_mins:.1f}min | target {_AR_IDEAL_SECS//60}min — "
+            f"[Pipeline] AR {_ar_status}: {_ar_mins:.1f}min | target {_AR_IDEAL_SECS//60}min â€” "
             f"fallback expansion ({_ar_rebuild}/{_ar_max_rb})..."
         )
         from agent.script_agent import expand_arabic_runtime as _ear
@@ -942,20 +942,20 @@ def run_pipeline():
         ar_long["script"] = _ear(ar_long["script"], target_min=_AR_TGT_MIN, topic=_topic_text_ar)
         _ar_wc_post = len(ar_long["script"].split())
         if _ar_wc_post <= _ar_wc_pre:
-            _log("VideoGen", f"[AR EXPANSION] Expansion added 0 words (content refused or rate-limited) — accepting {_ar_mins:.1f}min video", "WARN")
-            send_message(f"[Pipeline] AR expansion failed (0 words added) — accepting {_ar_mins:.1f}min video and continuing")
+            _log("VideoGen", f"[AR EXPANSION] Expansion added 0 words (content refused or rate-limited) â€” accepting {_ar_mins:.1f}min video", "WARN")
+            send_message(f"[Pipeline] AR expansion failed (0 words added) â€” accepting {_ar_mins:.1f}min video and continuing")
             break
         _slug_rb     = _topic_slug(_topic_for_dedup)
         ar_long_id   = f"{today}_{_slug_rb}_arabic_long_rb{_ar_rebuild}"
         ar_long_path = _make_video(ar_long, ar_long_id, stats, user_images=user_images, user_videos=user_videos)
 
-    # Output 3: Arabic short  ── script path or cut fallback (Arabic first)
+    # Output 3: Arabic short  â”€â”€ script path or cut fallback (Arabic first)
     ar_chapter_shorts: list[dict] = []
     _ar_short_script = ar_long.get("short_script_ar", "") if ar_long else ""
     _ar_short_via_script = False
     _ar_slug = _topic_slug(_topic_for_dedup)
     if SHORT_MODE == "script" and _ar_short_script and ar_long:
-        print("[Pipeline] Generating Arabic short from short script (TTS → video)...")
+        print("[Pipeline] Generating Arabic short from short script (TTS â†’ video)...")
         _ar_short_data = {**ar_long, "script": _ar_short_script}
         _ar_short_id   = f"{today}_{_ar_slug}_arabic_short"
         _ar_short_path = _make_video(_ar_short_data, _ar_short_id, stats,
@@ -969,7 +969,7 @@ def run_pipeline():
                 if _ar_s_secs >= 60:
                     _log("Shorts", f"[SHORT PASSED] AR short: {_ar_s_secs:.1f}s", "OK")
                     break
-                _log("Shorts", f"[SHORT EXPANSION] AR short {_ar_s_secs:.1f}s < 60s — expanding (attempt {_ar_s_rb}/2)", "WARN")
+                _log("Shorts", f"[SHORT EXPANSION] AR short {_ar_s_secs:.1f}s < 60s â€” expanding (attempt {_ar_s_rb}/2)", "WARN")
                 from agent.script_agent import expand_short_script as _ess
                 _ar_short_script = _ess(_ar_short_script, "arabic", ar_long.get("topic", ""), 290)
                 ar_long["short_script_ar"] = _ar_short_script
@@ -982,13 +982,13 @@ def run_pipeline():
             else:
                 _ar_s_secs = _video_secs(_ar_short_path)
                 if _ar_s_secs < 60:
-                    _log("Shorts", f"[SHORT BLOCKED] AR short {_ar_s_secs:.1f}s < 60s after 2 expansions — will not send", "ERROR")
+                    _log("Shorts", f"[SHORT BLOCKED] AR short {_ar_s_secs:.1f}s < 60s after 2 expansions â€” will not send", "ERROR")
                     _ar_short_path = ""
         if _ar_short_path:
             ar_chapter_shorts = [{
                 "path":        _ar_short_path,
                 "title":       ar_long.get("title", "") if ar_long else "",
-                "label":       "Best Short — TikTok + Instagram + YouTube Shorts",
+                "label":       "Best Short â€” TikTok + Instagram + YouTube Shorts",
                 "chapter_idx": 1,
             }]
     else:
@@ -1002,14 +1002,14 @@ def run_pipeline():
                 if _cut_secs >= 60:
                     ar_chapter_shorts.append(_cut)
                 else:
-                    _log("Shorts", f"[SHORT BLOCKED] AR cut short {_cut_secs:.1f}s < 60s — skipped", "ERROR")
+                    _log("Shorts", f"[SHORT BLOCKED] AR cut short {_cut_secs:.1f}s < 60s â€” skipped", "ERROR")
 
-    # Output 4: English short  ── script path or cut fallback
+    # Output 4: English short  â”€â”€ script path or cut fallback
     en_chapter_shorts: list[dict] = []
     _en_short_script = en_long.get("short_script_en", "")
     _en_short_via_script = False
     if SHORT_MODE == "script" and _en_short_script:
-        print("[Pipeline] Generating English short from short script (TTS → video)...")
+        print("[Pipeline] Generating English short from short script (TTS â†’ video)...")
         _en_short_data = {**en_long, "script": _en_short_script}
         _slug          = _topic_slug(en_long.get("topic", ""))
         _en_short_id   = f"{today}_{_slug}_english_short"
@@ -1024,7 +1024,7 @@ def run_pipeline():
                 if _en_s_secs >= 60:
                     _log("Shorts", f"[SHORT PASSED] EN short: {_en_s_secs:.1f}s", "OK")
                     break
-                _log("Shorts", f"[SHORT EXPANSION] EN short {_en_s_secs:.1f}s < 60s — expanding (attempt {_en_s_rb}/2)", "WARN")
+                _log("Shorts", f"[SHORT EXPANSION] EN short {_en_s_secs:.1f}s < 60s â€” expanding (attempt {_en_s_rb}/2)", "WARN")
                 from agent.script_agent import expand_short_script as _ess
                 _en_short_script = _ess(_en_short_script, "english", en_long.get("topic", ""), 200)
                 en_long["short_script_en"] = _en_short_script
@@ -1037,13 +1037,13 @@ def run_pipeline():
             else:
                 _en_s_secs = _video_secs(_en_short_path)
                 if _en_s_secs < 60:
-                    _log("Shorts", f"[SHORT BLOCKED] EN short {_en_s_secs:.1f}s < 60s after 2 expansions — will not send", "ERROR")
+                    _log("Shorts", f"[SHORT BLOCKED] EN short {_en_s_secs:.1f}s < 60s after 2 expansions â€” will not send", "ERROR")
                     _en_short_path = ""
         if _en_short_path:
             en_chapter_shorts = [{
                 "path":        _en_short_path,
                 "title":       en_long.get("title", ""),
-                "label":       "Best Short — TikTok + Instagram + YouTube Shorts",
+                "label":       "Best Short â€” TikTok + Instagram + YouTube Shorts",
                 "chapter_idx": 1,
             }]
     else:
@@ -1057,7 +1057,7 @@ def run_pipeline():
                 if _cut_secs >= 60:
                     en_chapter_shorts.append(_cut)
                 else:
-                    _log("Shorts", f"[SHORT BLOCKED] EN cut short {_cut_secs:.1f}s < 60s — skipped", "ERROR")
+                    _log("Shorts", f"[SHORT BLOCKED] EN cut short {_cut_secs:.1f}s < 60s â€” skipped", "ERROR")
 
     _stage("Videos + shorts done")
 
@@ -1072,10 +1072,10 @@ def run_pipeline():
             _log("Cleanup", f"Could not reset {_clear_dir}: {_ce}", "WARN")
     _log("Cleanup", "User media dirs reset for next run", "OK")
 
-    # ── Approval gate 2: Render complete ─────────────────────────────────────
+    # â”€â”€ Approval gate 2: Render complete â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     while True:
         _approval_2 = wait_for_approval(
-            stage_name="Render Complete — Ready to Upload",
+            stage_name="Render Complete â€” Ready to Upload",
             available_commands=["approve", "publish", "rerender", "cancel"],
             mode="PIPELINE",
         )
@@ -1085,7 +1085,7 @@ def run_pipeline():
             send_message("[Pipeline] Cancelled at render gate.")
             return
         elif _approval_2 == "rerender":
-            _log("VideoGen", "Re-render requested — regenerating all videos", "WARN")
+            _log("VideoGen", "Re-render requested â€” regenerating all videos", "WARN")
             send_message("[Pipeline] Re-rendering all videos...")
             # Clear stale short paths before rerender to prevent duplicate outputs
             en_chapter_shorts = []
@@ -1124,7 +1124,7 @@ def run_pipeline():
                     ar_chapter_shorts = cut_best_short(ar_long_path, ar_long)
                 ar_chapter_shorts = [c for c in ar_chapter_shorts if _video_secs(c.get("path", "")) >= 60]
 
-    # ── STEP 5: FINALIZE → VALIDATE → PUBLISH ────────────────────────────────
+    # â”€â”€ STEP 5: FINALIZE â†’ VALIDATE â†’ PUBLISH â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     _log("Finalize", "Validating all outputs before publish")
     _stage("Finalize + validate")
 
@@ -1161,7 +1161,7 @@ def run_pipeline():
         ok = secs >= min_secs and mb >= min_mb
         status = "OK " if ok else "FAIL"
         _log("Validate",
-             f"{status}   {label}: {mins:.1f}min ({secs:.0f}s), {mb}MB, {res} — {path}",
+             f"{status}   {label}: {mins:.1f}min ({secs:.0f}s), {mb}MB, {res} â€” {path}",
              "OK" if ok else "ERROR")
         return ok
 
@@ -1178,9 +1178,9 @@ def run_pipeline():
     _log("Validate", f"Output validation: {_valid_count}/4 outputs valid",
          "OK" if _en_long_ok else "ERROR")
 
-    # Block upload if the EN long is missing — it's the primary deliverable
+    # Block upload if the EN long is missing â€” it's the primary deliverable
     if not _en_long_ok and not en_long_path:
-        _crit = "[CRITICAL] EN long video missing — cannot upload. Check logs above."
+        _crit = "[CRITICAL] EN long video missing â€” cannot upload. Check logs above."
         _log("Validate", _crit, "ERROR")
         send_message(f"[Pipeline] {_crit}")
 
@@ -1207,20 +1207,20 @@ def run_pipeline():
                                     token_file=YOUTUBE_TOKEN_FILE_EN,
                                     retries=3, delay=30, label="YT EN upload")
             # upload_to_youtube catches its own exceptions and returns "" on failure,
-            # so we must check the return value — a raised exception here is unlikely.
+            # so we must check the return value â€” a raised exception here is unlikely.
             if yt_en_url:
                 send_message(
-                    f"✅ English Video Published on YouTube!\n\n"
-                    f"🎬 {en_long.get('title', '')}\n"
-                    f"🔗 {yt_en_url}\n\n"
+                    f"âœ… English Video Published on YouTube!\n\n"
+                    f"ðŸŽ¬ {en_long.get('title', '')}\n"
+                    f"ðŸ”— {yt_en_url}\n\n"
                     f"Duration: {get_duration(en_long_path)}"
                 )
                 _log("Publish", f"English YouTube: {yt_en_url}", "OK")
             else:
                 _log("Publish",
-                     "upload_to_youtube returned empty string — scroll up for [Publish] ERROR + traceback",
+                     "upload_to_youtube returned empty string â€” scroll up for [Publish] ERROR + traceback",
                      "ERROR")
-                _fail_msg = "❌ English YouTube upload failed (upload_to_youtube returned empty URL)"
+                _fail_msg = "âŒ English YouTube upload failed (upload_to_youtube returned empty URL)"
                 if _artifact_url:
                     _fail_msg += f"\n\nDownload video:\n{_artifact_url}"
                 send_message(_fail_msg)
@@ -1228,7 +1228,7 @@ def run_pipeline():
         except Exception as e:
             _log("Publish", f"English YouTube upload raised exception: {e}", "ERROR")
             _log("Publish", traceback.format_exc(), "ERROR")
-            _fail_msg = f"❌ English YouTube upload failed: {e}"
+            _fail_msg = f"âŒ English YouTube upload failed: {e}"
             if _artifact_url:
                 _fail_msg += f"\n\nDownload video from GitHub artifact:\n{_artifact_url}"
             send_message(_fail_msg)
@@ -1247,17 +1247,17 @@ def run_pipeline():
                                     retries=3, delay=30, label="YT AR upload")
             if yt_ar_url:
                 send_message(
-                    f"✅ تم نشر الفيديو العربي على يوتيوب!\n\n"
-                    f"🎬 {ar_long.get('title', '')}\n"
-                    f"🔗 {yt_ar_url}\n\n"
-                    f"المدة: {get_duration(ar_long_path)}"
+                    f"âœ… ØªÙ… Ù†Ø´Ø± Ø§Ù„ÙÙŠØ¯ÙŠÙˆ Ø§Ù„Ø¹Ø±Ø¨ÙŠ Ø¹Ù„Ù‰ ÙŠÙˆØªÙŠÙˆØ¨!\n\n"
+                    f"ðŸŽ¬ {ar_long.get('title', '')}\n"
+                    f"ðŸ”— {yt_ar_url}\n\n"
+                    f"Ø§Ù„Ù…Ø¯Ø©: {get_duration(ar_long_path)}"
                 )
                 _log("Publish", f"Arabic YouTube: {yt_ar_url}", "OK")
             else:
                 _log("Publish",
-                     "upload_to_youtube returned empty string — scroll up for [Publish] ERROR + traceback",
+                     "upload_to_youtube returned empty string â€” scroll up for [Publish] ERROR + traceback",
                      "ERROR")
-                _fail_msg = "❌ Arabic YouTube upload failed (upload_to_youtube returned empty URL)"
+                _fail_msg = "âŒ Arabic YouTube upload failed (upload_to_youtube returned empty URL)"
                 if _artifact_url:
                     _fail_msg += f"\n\nDownload video:\n{_artifact_url}"
                 send_message(_fail_msg)
@@ -1265,7 +1265,7 @@ def run_pipeline():
         except Exception as e:
             _log("Publish", f"Arabic YouTube upload raised exception: {e}", "ERROR")
             _log("Publish", traceback.format_exc(), "ERROR")
-            _fail_msg = f"❌ Arabic YouTube upload failed: {e}"
+            _fail_msg = f"âŒ Arabic YouTube upload failed: {e}"
             if _artifact_url:
                 _fail_msg += f"\n\nDownload video from GitHub artifact:\n{_artifact_url}"
             send_message(_fail_msg)
@@ -1279,7 +1279,7 @@ def run_pipeline():
         _s_mb = os.path.getsize(_s_path) / 1024 / 1024 if _s_exists else 0
         _log("Telegram", f"EN short: path={_s_path} | exists={_s_exists} | size={_s_mb:.1f}MB")
         if not _s_exists:
-            _log("Telegram", f"EN short video file missing on disk — cannot send", "ERROR")
+            _log("Telegram", f"EN short video file missing on disk â€” cannot send", "ERROR")
         else:
             try:
                 caption = (
@@ -1305,7 +1305,7 @@ def run_pipeline():
         _s_mb = os.path.getsize(_s_path) / 1024 / 1024 if _s_exists else 0
         _log("Telegram", f"AR short: path={_s_path} | exists={_s_exists} | size={_s_mb:.1f}MB")
         if not _s_exists:
-            _log("Telegram", f"AR short video file missing on disk — cannot send", "ERROR")
+            _log("Telegram", f"AR short video file missing on disk â€” cannot send", "ERROR")
         else:
             try:
                 caption = (
@@ -1323,7 +1323,7 @@ def run_pipeline():
                 _log("Telegram", f"AR best short send failed: {e}", "WARN")
                 _log("Telegram", traceback.format_exc(), "WARN")
 
-    # ── Save manifest (2 long videos + shorts summary) ────────
+    # â”€â”€ Save manifest (2 long videos + shorts summary) â”€â”€â”€â”€â”€â”€â”€â”€
     _save_manifest(
         today,
         en_long, ar_long,
@@ -1333,26 +1333,26 @@ def run_pipeline():
     )
     _stage("Publish done")
 
-    # ── Daily summary ──────────────────────────────────────────
+    # â”€â”€ Daily summary â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     _total_shorts = len(en_chapter_shorts) + len(ar_chapter_shorts)
     _total_elapsed = (time.time() - _PIPELINE_T0) / 60
-    _status_en = f"✅ {yt_en_url}" if yt_en_url else "❌ Upload failed"
-    _status_ar = f"✅ {yt_ar_url}" if yt_ar_url else "❌ Upload failed"
+    _status_en = f"âœ… {yt_en_url}" if yt_en_url else "âŒ Upload failed"
+    _status_ar = f"âœ… {yt_ar_url}" if yt_ar_url else "âŒ Upload failed"
     send_message(
-        f"📊 Daily Report — Dark Crime Decoded\n\n"
-        f"✅ Generated: 2 long + {_total_shorts} shorts (1 EN + 1 AR best chapters)\n"
-        f"⏱ Total time: {_total_elapsed:.0f} min\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"🎬 English Long → YouTube\n"
+        f"ðŸ“Š Daily Report â€” Dark Crime Decoded\n\n"
+        f"âœ… Generated: 2 long + {_total_shorts} shorts (1 EN + 1 AR best chapters)\n"
+        f"â± Total time: {_total_elapsed:.0f} min\n"
+        f"â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”\n"
+        f"ðŸŽ¬ English Long â†’ YouTube\n"
         f"{_status_en}\n\n"
-        f"🎬 Arabic Long → YouTube\n"
+        f"ðŸŽ¬ Arabic Long â†’ YouTube\n"
         f"{_status_ar}\n\n"
-        f"📱 {len(en_chapter_shorts)} EN Best Short → Telegram ✅\n"
-        f"📱 {len(ar_chapter_shorts)} AR Best Short → Telegram ✅\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━"
+        f"ðŸ“± {len(en_chapter_shorts)} EN Best Short â†’ Telegram âœ…\n"
+        f"ðŸ“± {len(ar_chapter_shorts)} AR Best Short â†’ Telegram âœ…\n"
+        f"â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”"
     )
 
-    # ── Mark covered + log ─────────────────────────────────────
+    # â”€â”€ Mark covered + log â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     series = (
         en_long.get("series_name")
         or en_long.get("topic", "")
@@ -1380,11 +1380,11 @@ def run_pipeline():
 
     send_daily_report(stats)
 
-    # ── Final console summary ──────────────────────────────────
+    # â”€â”€ Final console summary â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     _result = "SUCCESS" if stats["errors"] == 0 else f"PARTIAL ({stats['errors']} error(s))"
     print(_timing_report())
     print(f"\n{'='*60}")
-    print(f"  Pipeline {_result} — {today}")
+    print(f"  Pipeline {_result} â€” {today}")
     print(f"  Generated: {stats['generated']} | Skipped: {stats['skipped']} "
           f"| Posted: {stats['posted']} | Errors: {stats['errors']}")
     print(f"  YouTube EN: {yt_en_url or 'FAILED'}")
@@ -1502,7 +1502,7 @@ def _retry_failed_uploads():
     if not failed:
         return
 
-    print(f"[Recovery] {len(failed)} failed upload(s) from previous runs — retrying...")
+    print(f"[Recovery] {len(failed)} failed upload(s) from previous runs â€” retrying...")
     send_message(f"[Recovery] Retrying {len(failed)} failed upload(s) from previous runs...")
 
     for item in failed:
@@ -1513,7 +1513,7 @@ def _retry_failed_uploads():
                               retries=3, delay=30, label=f"Recovery {label}")
             if url:
                 _log("Recovery", f"{label} recovered: {url}", "OK")
-                send_message(f"✅ [Recovery] {label} video uploaded: {url}")
+                send_message(f"âœ… [Recovery] {label} video uploaded: {url}")
                 try:
                     with open(item["manifest"], encoding="utf-8") as f:
                         mdata = json.load(f)
@@ -1577,7 +1577,7 @@ def _save_manifest(today, en_long, ar_long,
             json.dump(manifest, f, ensure_ascii=False, indent=2)
         os.replace(_tmp, manifest_path)
     except Exception as _me:
-        _log("Manifest", f"Atomic write failed: {_me} — falling back to direct write", "WARN")
+        _log("Manifest", f"Atomic write failed: {_me} â€” falling back to direct write", "WARN")
         with open(manifest_path, "w", encoding="utf-8") as f:
             json.dump(manifest, f, ensure_ascii=False, indent=2)
     _log("Manifest", f"Saved: {manifest_path}", "OK")

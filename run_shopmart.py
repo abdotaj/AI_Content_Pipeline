@@ -1,9 +1,9 @@
-# ============================================================
-#  run_shopmart.py  —  Pipeline entry point for Shopmart Global
+﻿# ============================================================
+#  run_shopmart.py  â€”  Pipeline entry point for Shopmart Global
 #
 #  Daily output:
-#    • 1 short video (60 sec) → auto-post to YouTube Shorts
-#    • Same video → sent to Telegram for manual posting to TikTok + Instagram
+#    â€¢ 1 short video (60 sec) â†’ auto-post to YouTube Shorts
+#    â€¢ Same video â†’ sent to Telegram for manual posting to TikTok + Instagram
 # ============================================================
 import os
 import sys
@@ -35,7 +35,7 @@ from agent.script_agent   import write_scripts
 from agent.video_agent    import create_video
 from agent.notify_agent   import send_message, send_for_manual_posting, send_daily_report, listen_for_content
 from agent.publish_agent  import upload_to_youtube
-from agents.content_agent import ingest_content_files
+from agent.content_agent import ingest_content_files
 
 
 def run_pipeline():
@@ -43,10 +43,10 @@ def run_pipeline():
     stats = {"generated": 0, "posted": 0, "skipped": 0, "errors": 0}
 
     print(f"\n{'='*50}")
-    print(f"  Shopmart Global Pipeline — {today}")
+    print(f"  Shopmart Global Pipeline â€” {today}")
     print(f"{'='*50}\n")
 
-    send_message(f"Shopmart Global — Pipeline starting {today}")
+    send_message(f"Shopmart Global â€” Pipeline starting {today}")
 
     listen_for_content(timeout=30)
 
@@ -56,7 +56,7 @@ def run_pipeline():
     if scripts:
         print(f"[1/4] Using {len(scripts)} script(s) from content files.")
     else:
-        print("[1/4] No content files found — researching trending topics...")
+        print("[1/4] No content files found â€” researching trending topics...")
         try:
             topics = research_topics(count=VIDEOS_PER_DAY, niches=NICHES)
         except Exception as e:
@@ -67,7 +67,7 @@ def run_pipeline():
         print("[1b] Web-researching product facts...")
         for topic in topics:
             niche  = topic.get("niche", "")
-            series = niche.split("—")[-1].strip() if "—" in niche else topic.get("topic", "")
+            series = niche.split("â€”")[-1].strip() if "â€”" in niche else topic.get("topic", "")
             try:
                 topic["research"] = research_series(series)
             except Exception as e:
@@ -101,7 +101,7 @@ def run_pipeline():
 
         print(f"\n[4/4] Publishing video {i+1}...")
 
-        # ── Short video → YouTube Shorts (auto-post, no approval needed) ──
+        # â”€â”€ Short video â†’ YouTube Shorts (auto-post, no approval needed) â”€â”€
         try:
             yt_url = upload_to_youtube(video_path, script_data)
             stats["posted"] += 1
@@ -111,7 +111,7 @@ def run_pipeline():
             send_message(f"YouTube upload failed for {video_id}: {e}")
             stats["errors"] += 1
 
-        # ── Same video → Telegram for manual posting ───────────────────────
+        # â”€â”€ Same video â†’ Telegram for manual posting â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         try:
             send_for_manual_posting(
                 video_path, script_data,
@@ -128,7 +128,7 @@ def run_pipeline():
         _save_log(log_entry)
 
         send_message(
-            f"Shopmart Global — {script_data.get('title', video_id)}\n"
+            f"Shopmart Global â€” {script_data.get('title', video_id)}\n"
             f"YouTube Shorts: {yt_url or 'failed'}\n"
             f"Video sent to Telegram for manual posting"
         )

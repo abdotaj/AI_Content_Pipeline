@@ -1,5 +1,5 @@
-# ============================================================
-#  config.py  —  All API keys and settings in one place
+﻿# ============================================================
+#  config.py  â€”  All API keys and settings in one place
 # ============================================================
 import os
 from dotenv import load_dotenv
@@ -10,10 +10,6 @@ load_dotenv()
 ANTHROPIC_API_KEY    = os.getenv("ANTHROPIC_API_KEY", "YOUR_ANTHROPIC_KEY")
 GEMINI_API_KEY       = os.getenv("GEMINI_API_KEY", "YOUR_GEMINI_KEY")
 GROQ_API_KEY         = os.getenv("GROQ_API_KEY", "YOUR_GROQ_KEY")
-ELEVENLABS_API_KEY   = os.getenv("ELEVENLABS_API_KEY", "YOUR_ELEVENLABS_KEY")
-ELEVENLABS_VOICE_ID  = os.getenv("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")  # Rachel voice
-ELEVENLABS_VOICE_ID_EN = os.getenv("ELEVENLABS_VOICE_ID_EN", "oHXsMWwdWLsNE9IdmbuT")
-ELEVENLABS_VOICE_ID_AR = os.getenv("ELEVENLABS_VOICE_ID_AR", "kVE76Ng0Z4kGR7oebETP")
 PEXELS_API_KEY       = os.getenv("PEXELS_API_KEY", "YOUR_PEXELS_KEY")
 PIXABAY_API_KEY      = os.getenv("PIXABAY_API_KEY", "YOUR_PIXABAY_KEY")
 TELEGRAM_BOT_TOKEN   = os.getenv("TELEGRAM_BOT_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN")
@@ -22,11 +18,11 @@ YOUTUBE_CLIENT_ID    = os.getenv("YOUTUBE_CLIENT_ID", "YOUR_YT_CLIENT_ID")
 YOUTUBE_CLIENT_SECRET= os.getenv("YOUTUBE_CLIENT_SECRET", "YOUR_YT_SECRET")
 
 # TikTok
-TIKTOK_SESSION_ID    = os.getenv("TIKTOK_SESSION_ID", "")        # legacy — not in active secrets
+TIKTOK_SESSION_ID    = os.getenv("TIKTOK_SESSION_ID", "")        # legacy â€” not in active secrets
 TIKTOK_CLIENT_KEY    = os.getenv("TIKTOK_CLIENT_KEY", "")
 TIKTOK_CLIENT_SECRET = os.getenv("TIKTOK_CLIENT_SECRET", "")
 
-# Instagram (Graph API) — not in active secrets, defaults to "" so guards skip gracefully
+# Instagram (Graph API) â€” not in active secrets, defaults to "" so guards skip gracefully
 INSTAGRAM_ACCESS_TOKEN = os.getenv("INSTAGRAM_ACCESS_TOKEN", "")
 INSTAGRAM_BUSINESS_ID  = os.getenv("INSTAGRAM_BUSINESS_ID", "")
 
@@ -36,14 +32,14 @@ FACEBOOK_PAGE_ID       = os.getenv("FACEBOOK_PAGE_ID", "YOUR_FACEBOOK_PAGE_ID")
 
 # --- Content Settings ---
 NICHES = [
-    "True crime — real story behind Breaking Bad",
-    "True crime — real story behind Narcos",
-    "True crime — real story behind Money Heist",
-    "True crime — real story behind Peaky Blinders",
-    "True crime — real story behind Ozark",
-    "True crime — real story behind The Wire",
-    "True crime — real story behind Griselda",
-    "True crime — criminal psychology behind famous crime series",
+    "True crime â€” real story behind Breaking Bad",
+    "True crime â€” real story behind Narcos",
+    "True crime â€” real story behind Money Heist",
+    "True crime â€” real story behind Peaky Blinders",
+    "True crime â€” real story behind Ozark",
+    "True crime â€” real story behind The Wire",
+    "True crime â€” real story behind Griselda",
+    "True crime â€” criminal psychology behind famous crime series",
 ]
 
 NICHE_WEIGHTS = [0.20, 0.20, 0.15, 0.15, 0.10, 0.10, 0.05, 0.05]

@@ -1,5 +1,5 @@
-# ============================================================
-#  main.py  —  Orchestrator: runs the full daily pipeline
+﻿# ============================================================
+#  main.py  â€”  Orchestrator: runs the full daily pipeline
 # ============================================================
 import os
 import sys
@@ -23,32 +23,32 @@ from agent.script_agent   import write_scripts
 from agent.video_agent    import create_video
 from agent.notify_agent   import send_message, send_video_preview, send_daily_report, listen_for_content
 from agent.publish_agent  import publish_video
-from agents.content_agent import ingest_content_files
+from agent.content_agent import ingest_content_files
 
 
 def run_pipeline():
-    """Full daily pipeline: research → script → video → notify → publish."""
+    """Full daily pipeline: research â†’ script â†’ video â†’ notify â†’ publish."""
 
     today = datetime.date.today().isoformat()
     stats = {"generated": 0, "posted": 0, "skipped": 0, "errors": 0}
 
     print(f"\n{'='*50}")
-    print(f"  Content Pipeline — {today}")
+    print(f"  Content Pipeline â€” {today}")
     print(f"{'='*50}\n")
 
-    send_message(f"*Pipeline starting* — {today}\nGenerating {VIDEOS_PER_DAY} videos...")
+    send_message(f"*Pipeline starting* â€” {today}\nGenerating {VIDEOS_PER_DAY} videos...")
 
-    # ── STEP 0: Check for Telegram content drops ────────────
+    # â”€â”€ STEP 0: Check for Telegram content drops â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     listen_for_content(timeout=30)
 
-    # ── STEP 1: Content files or research ───────────────────
+    # â”€â”€ STEP 1: Content files or research â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     print("[1/4] Checking content/ folder for user-provided files...")
     scripts = ingest_content_files()
 
     if scripts:
         print(f"[1/4] Using {len(scripts)} script(s) from content files.")
     else:
-        print("[1/4] No content files found — researching trending topics...")
+        print("[1/4] No content files found â€” researching trending topics...")
         try:
             topics = research_topics(count=VIDEOS_PER_DAY)
         except Exception as e:
@@ -56,7 +56,7 @@ def run_pipeline():
             print(f"[ERROR] Research: {e}")
             return
 
-        # ── STEP 1b: Web-research real facts per series ─────────
+        # â”€â”€ STEP 1b: Web-research real facts per series â”€â”€â”€â”€â”€â”€â”€â”€â”€
         print("[1b] Web-researching real facts (Claude + web search)...")
         for topic in topics:
             niche = topic.get("niche", "")
@@ -67,7 +67,7 @@ def run_pipeline():
                 print(f"  [WARN] Web research failed for '{series}': {e}")
                 topic["research"] = {}
 
-        # ── STEP 2: Write Scripts ───────────────────────────────
+        # â”€â”€ STEP 2: Write Scripts â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         print("\n[2/4] Writing scripts...")
         try:
             scripts = write_scripts(topics)
@@ -76,7 +76,7 @@ def run_pipeline():
             print(f"[ERROR] Scripts: {e}")
             return
 
-    # ── STEP 3: Create Videos ───────────────────────────────
+    # â”€â”€ STEP 3: Create Videos â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     print("\n[3/4] Creating videos...")
     video_queue = []
 
@@ -100,7 +100,7 @@ def run_pipeline():
         send_message("No videos were generated today. Check logs.")
         return
 
-    # ── STEP 4: Notify + Approve + Publish ─────────────────
+    # â”€â”€ STEP 4: Notify + Approve + Publish â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     print(f"\n[4/4] Sending {len(video_queue)} video(s) for approval...")
 
     for video_path, script_data, video_id in video_queue:
@@ -108,7 +108,7 @@ def run_pipeline():
             decision = send_video_preview(video_path, script_data, video_id)
 
             if decision == "approve":
-                print(f"  Approved: {video_id} — publishing...")
+                print(f"  Approved: {video_id} â€” publishing...")
                 results = publish_video(video_path, script_data)
 
                 # Save publish log
@@ -149,7 +149,7 @@ def run_pipeline():
             send_message(f"Error publishing {video_id}: {e}")
             stats["errors"] += 1
 
-    # ── Daily Summary ───────────────────────────────────────
+    # â”€â”€ Daily Summary â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     send_daily_report(stats)
     print(f"\nDone. Generated: {stats['generated']} | Posted: {stats['posted']} | Skipped: {stats['skipped']}\n")
 

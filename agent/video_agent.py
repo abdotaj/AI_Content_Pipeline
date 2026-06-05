@@ -1770,8 +1770,11 @@ def build_character_portraits(
 
 _DEFAULT_STYLE = "true crime storytelling, dark cinematic lighting, dramatic atmospheric narrative"
 _IMAGE_PROMPT_SUFFIX = (
-    ", dark cinematic storytelling style, dramatic narrative atmosphere, no text, "
-    "no watermarks, photorealistic, high detail"
+    ", cinematic storytelling style, dramatic narrative atmosphere, "
+    "photorealistic documentary photograph, real people real places, "
+    "natural lighting, high contrast, "
+    "no text, no watermarks, no cartoon, no illustration, no animation, "
+    "no video game, no 3D render, high detail"
 )
 
 
@@ -2230,9 +2233,20 @@ def generate_ai_image(prompt: str, output_path: str, seed: int = None) -> str:
     output_path = output_path.replace(".jpg", ".png")
     encoded = requests.utils.quote(clean_prompt(prompt))
     _seed = seed if seed is not None else random.randint(1, 99999)
+    # Negative prompt: block cartoon/game/illustration/explicit outputs at the
+    # Stable Diffusion level. "safe=true" only blocks nudity — it does NOT block
+    # game screenshots, cartoon characters, or illustrations without this.
+    _negative = requests.utils.quote(
+        "cartoon, animation, anime, manga, video game, game screenshot, "
+        "3D render, CGI, illustration, drawing, clipart, vector art, "
+        "super mario, mario bros, pokemon, pikachu, minecraft, roblox, "
+        "fortnite, zelda, sonic, disney character, pixar, looney tunes, "
+        "low quality, blurry, watermark, text, logo, nude, explicit, nsfw"
+    )
     url = (
         f"https://image.pollinations.ai/prompt/{encoded}"
         f"?width=1080&height=1920&nologo=true&safe=true&seed={_seed}"
+        f"&negative={_negative}"
     )
 
     for attempt in range(3):
@@ -2642,6 +2656,12 @@ _BLOCKED_IMAGE_DOMAINS = {
     "pornhub.com", "xvideos.com", "xnxx.com", "redtube.com", "youporn.com",
     "onlyfans.com", "fansly.com", "chaturbate.com", "brazzers.com",
     "spankbang.com", "xhamster.com", "rule34.xxx", "gelbooru.com", "danbooru.donmai.us",
+    # Video game / cartoon sites — gameplay screenshots not appropriate for crime docs
+    "nintendo.com", "pokemon.com", "mariowiki.com", "zeldawiki.wiki",
+    "minecraft.net", "epicgames.com", "roblox.com", "steamcommunity.com",
+    "gamespot.com", "ign.com", "kotaku.com", "polygon.com", "eurogamer.net",
+    "wikia.com", "fandom.com", "gamebanana.com", "gamefaqs.gamespot.com",
+    "bulbapedia.bulbagarden.net", "zelda.fandom.com", "mario.fandom.com",
 }
 _BLOCKED_URL_PATTERNS  = {".html", ".php", ".aspx", "/blog/", "/article/", "/post/",
                            "/painting/", "/artwork/", "/fine-art/", "/collection/art/",
@@ -2661,6 +2681,11 @@ _BLOCKED_CHILD_PATTERNS = {
     "shutterstock.com/image-vector", "istockphoto.com/vector",
     "freepik.com", "flaticon", "vecteezy", "dreamstime.com/stock-image-kids",
     "depositphotos.com/stock-illustration",
+    # Video game / cartoon franchise keywords in URL path
+    "supermario", "super-mario", "mariobros", "mario-bros",
+    "pokemon", "pikachu", "minecraft", "roblox", "fortnite",
+    "zelda", "sonic-the", "dragonball", "dragon-ball",
+    "fandom.com", "wikia.com", "gamebanana",
 }
 # Adult/sexual URL keywords — block before downloading (YouTube policy compliance)
 _BLOCKED_ADULT_PATTERNS = {
@@ -2672,7 +2697,9 @@ _CRIME_NEGATIVE_TERMS = (
     "-cartoon -illustration -drawing -clipart -vector -anime -kids -children "
     "-coloring -painting -artwork -watercolor -sketch -doodle "
     "-painted -acrylic -mural -fresco -digital-art "
-    "-nude -naked -nudity -sexual -explicit -nsfw -adult -porn -lingerie -bikini -erotic"
+    "-nude -naked -nudity -sexual -explicit -nsfw -adult -porn -lingerie -bikini -erotic "
+    "-mario -pokemon -minecraft -roblox -fortnite -zelda -sonic -pikachu "
+    "-videogame -\"video game\" -gameplay -screenshot -gaming"
 )
 
 # ── Search query sanitization ─────────────────────────────────────────────────
@@ -2776,6 +2803,18 @@ _ART_RESULT_KEYWORDS = frozenset({
     "background image", "stock background", "texture background",
     "solid background", "color background", "colour background",
     "seamless texture", "seamless pattern", "flat design background",
+    # Video game franchises / cartoon characters — never appropriate for crime docs
+    "super mario", "mario bros", "sonic the hedgehog", "sonic hedgehog",
+    "pokemon", "pikachu", "zelda", "link ", "minecraft", "fortnite",
+    "roblox", "among us", "grand theft auto", "gta screenshot",
+    "call of duty", "overwatch", "league of legends", "valorant",
+    "cartoon network", "nickelodeon", "disney character", "pixar",
+    "looney tunes", "tom and jerry", "scooby-doo", "simpsons character",
+    "family guy", "south park", "avatar the last", "my little pony",
+    "transformers cartoon", "power rangers",
+    # Anime characters (generic anime already present, but add show names)
+    "dragon ball", "naruto", "one piece", "attack on titan", "demon slayer",
+    "jujutsu kaisen", "bleach anime", "fairy tail", "sword art online",
 })
 _VALID_IMAGE_EXTS      = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".jfif"}
 
@@ -2784,6 +2823,9 @@ def _is_valid_image_url(url: str) -> bool:
     """Pre-filter: skip obviously non-image URLs before attempting any download."""
     u = url.lower()
     if any(d in u for d in _BLOCKED_IMAGE_DOMAINS):
+        return False
+    if any(d in u for d in _VIDEO_ADULT_DOMAINS):
+        print(f"[Image] Blocked adult/sexual URL: {url[:80]}")
         return False
     if any(p in u for p in _BLOCKED_URL_PATTERNS):
         return False
@@ -2912,8 +2954,16 @@ def download_real_image(url: str, output_path: str) -> str | None:
         return None
 
 
+# Circuit breaker — trips on first Wikimedia 429 to stop hammering the API with
+# parallel workers after rate limiting kicks in. Reset each pipeline run.
+_wikimedia_429_blocked = False
+
+
 def _wikimedia_image_results(query: str, max_results: int = 5) -> list[str]:
     """Search Wikimedia Commons for real photos -- works from server IPs."""
+    global _wikimedia_429_blocked
+    if _wikimedia_429_blocked:
+        return []
     try:
         params = {
             'action': 'query', 'format': 'json', 'generator': 'search',
@@ -2924,6 +2974,10 @@ def _wikimedia_image_results(query: str, max_results: int = 5) -> list[str]:
             'https://commons.wikimedia.org/w/api.php', params=params, timeout=12,
             headers={'User-Agent': 'DarkCrimeDecoded/1.0 (documentary pipeline)'},
         )
+        if r.status_code == 429:
+            _wikimedia_429_blocked = True
+            print(f'[Image] Wikimedia 429 — circuit breaker tripped, skipping all future Wikimedia calls')
+            return []
         if r.status_code != 200:
             print(f'[Image] Wikimedia search HTTP {r.status_code} for: {query}')
             return []
@@ -2952,6 +3006,9 @@ def _wikimedia_image_results(query: str, max_results: int = 5) -> list[str]:
 
 def _search_wikimedia_commons(query: str, max_results: int = 3) -> list[str]:
     """Search Wikimedia Commons by MIME type — broader than mediatype filter."""
+    global _wikimedia_429_blocked
+    if _wikimedia_429_blocked:
+        return []
     try:
         r = requests.get(
             'https://commons.wikimedia.org/w/api.php',
@@ -2968,13 +3025,21 @@ def _search_wikimedia_commons(query: str, max_results: int = 3) -> list[str]:
             timeout=15,
             headers={'User-Agent': 'DarkCrimeDecoded/1.0'},
         )
+        if r.status_code == 429:
+            _wikimedia_429_blocked = True
+            print(f'[Image] Wikimedia Commons 429 — circuit breaker tripped')
+            return []
+        if r.status_code != 200:
+            print(f'[Image] Wikimedia Commons HTTP {r.status_code} for: {query}')
+            return []
+        _PHOTO_MIMES = {'image/jpeg', 'image/png', 'image/webp', 'image/gif'}
         urls = []
         pages = r.json().get('query', {}).get('pages', {})
         for page in pages.values():
             for info in page.get('imageinfo', []):
                 mime = info.get('mime', '')
                 url = info.get('url', '')
-                if mime.startswith('image/') and url:
+                if mime in _PHOTO_MIMES and url and _is_valid_image_url(url):
                     urls.append(url)
         print(f'[Image] Wikimedia Commons: {len(urls)} results for "{query}"')
         return urls[:max_results]
@@ -2994,8 +3059,9 @@ def _internet_archive_image_results(query: str, max_results: int = 5) -> list[st
     """Search Internet Archive for historical images."""
     try:
         params = {
-            'q': f'{query} AND mediatype:image',
-            'fl': 'identifier', 'rows': max_results * 2,
+            # format:JPEG restricts results to items that actually have JPEG files
+            'q': f'{query} AND mediatype:image AND format:JPEG',
+            'fl': 'identifier,format', 'rows': max_results * 2,
             'output': 'json', 'page': 1,
         }
         r = requests.get('https://archive.org/advancedsearch.php', params=params, timeout=15)
@@ -3006,6 +3072,8 @@ def _internet_archive_image_results(query: str, max_results: int = 5) -> list[st
         for doc in docs:
             ident = doc.get('identifier', '')
             if ident:
+                # Use the JPEG download URL — archive.org resolves {ident}.jpg for
+                # single-image items; multi-file items return a redirect to the first JPEG.
                 urls.append(f'https://archive.org/download/{ident}/{ident}.jpg')
             if len(urls) >= max_results:
                 break
@@ -4332,6 +4400,9 @@ def build_documentary_visual_pool(
 
 def _search_wikimedia_person_photo(person_name: str) -> str | None:
     """Fetch Wikipedia thumbnail for a real person via two endpoints."""
+    global _wikimedia_429_blocked
+    if _wikimedia_429_blocked:
+        return None
     # Resolve alias to canonical Wikipedia name (e.g. "el chapo" → "joaquin guzman")
     person_name = _PERSON_ALIASES.get(person_name.lower(), person_name)
     print(f'[Image] Wikimedia person search: {person_name}')
@@ -4340,29 +4411,33 @@ def _search_wikimedia_person_photo(person_name: str) -> str | None:
     # Endpoint 1: REST summary API (simpler, more reliable)
     try:
         url = f'https://en.wikipedia.org/api/rest_v1/page/summary/{encoded}'
-        print(f'[Image] Wikimedia URL: {url}')
         r = requests.get(url, timeout=10, headers={'User-Agent': 'DarkCrimeDecoded/1.0'})
-        print(f'[Image] Wikimedia response status: {r.status_code}')
+        if r.status_code == 429:
+            _wikimedia_429_blocked = True
+            print(f'[Image] Wikimedia person photo 429 — circuit breaker tripped')
+            return None
         if r.status_code == 200:
             data = r.json()
             thumb = data.get('thumbnail', {}).get('source', '')
             if thumb:
                 print(f'[Image] Wikimedia REST found: {thumb[:80]}')
                 return thumb
-            print(f'[Image] Wikimedia REST: no thumbnail in response keys={list(data.keys())}')
     except Exception as e:
         print(f'[Image] Wikimedia REST failed for "{person_name}": {e}')
+
+    if _wikimedia_429_blocked:
+        return None
 
     # Endpoint 2: pageimages API
     try:
         url = f'https://en.wikipedia.org/w/api.php?action=query&titles={encoded}&prop=pageimages&pithumbsize=800&format=json'
-        print(f'[Image] Wikimedia URL: {url}')
         r = requests.get(url, timeout=10, headers={'User-Agent': 'DarkCrimeDecoded/1.0'})
-        print(f'[Image] Wikimedia response status: {r.status_code}')
+        if r.status_code == 429:
+            _wikimedia_429_blocked = True
+            print(f'[Image] Wikimedia pageimages 429 — circuit breaker tripped')
+            return None
         if r.status_code == 200:
-            resp_data = r.json()
-            print(f'[Image] Wikimedia response: {resp_data}')
-            pages = resp_data.get('query', {}).get('pages', {})
+            pages = r.json().get('query', {}).get('pages', {})
             for page in pages.values():
                 thumb = page.get('thumbnail', {}).get('source', '')
                 if thumb:
@@ -4598,27 +4673,36 @@ def _is_video_file(path: str) -> bool:
     return ext in {".mp4", ".mov", ".m4v", ".webm"}
 
 
+_pexels_blocked = False  # circuit breaker for Pexels rate/auth errors
+
+
 def _search_pexels_images(query: str, max_results: int = 5) -> list[str]:
     """Search Pexels photos and return direct image URLs (free licensed)."""
+    global _pexels_blocked
+    if _pexels_blocked:
+        return []
     api_key = os.getenv("PEXELS_API_KEY", "").strip()
     if not api_key or api_key.startswith("YOUR_"):
-        print("[Image] Pexels: no API key — skipping (set PEXELS_API_KEY secret)")
         return []
     query = _sanitize_search_query(query)
     try:
         r = requests.get(
             "https://api.pexels.com/v1/search",
             headers={"Authorization": api_key},
-            params={"query": query, "per_page": max_results, "orientation": "landscape", "size": "large"},
+            params={"query": query, "per_page": max_results, "orientation": "portrait", "size": "large"},
             timeout=20,
         )
+        if r.status_code in (429, 403, 402):
+            _pexels_blocked = True
+            print(f"[Image] Pexels {r.status_code} — circuit breaker tripped")
+            return []
         if r.status_code != 200:
             print(f"[Image] Pexels photos {r.status_code} for '{query}'")
             return []
         urls = []
         for photo in r.json().get("photos", []):
             src = photo.get("src", {})
-            url = src.get("large2x") or src.get("large") or src.get("original")
+            url = src.get("portrait") or src.get("large2x") or src.get("large") or src.get("original")
             if url:
                 urls.append(url)
         return urls
@@ -4627,11 +4711,16 @@ def _search_pexels_images(query: str, max_results: int = 5) -> list[str]:
         return []
 
 
+_pixabay_blocked = False  # circuit breaker for Pixabay rate/auth errors
+
+
 def _search_pixabay_images(query: str, max_results: int = 5) -> list[str]:
     """Search Pixabay photos and return direct image URLs (free licensed)."""
+    global _pixabay_blocked
+    if _pixabay_blocked:
+        return []
     api_key = os.getenv("PIXABAY_API_KEY", "").strip()
     if not api_key or api_key.startswith("YOUR_"):
-        print("[Image] Pixabay: no API key — skipping (set PIXABAY_API_KEY secret)")
         return []
     query = _sanitize_search_query(query)
     try:
@@ -4642,12 +4731,16 @@ def _search_pixabay_images(query: str, max_results: int = 5) -> list[str]:
                 "q": query,
                 "per_page": max_results,
                 "image_type": "photo",      # photo only — no illustration or vector
-                "orientation": "horizontal",
+                "orientation": "vertical",  # portrait for 9:16 video format
                 "safesearch": "true",
                 "editors_choice": "false",  # broader results
             },
             timeout=20,
         )
+        if r.status_code in (429, 403, 402):
+            _pixabay_blocked = True
+            print(f"[Image] Pixabay {r.status_code} — circuit breaker tripped")
+            return []
         if r.status_code != 200:
             print(f"[Image] Pixabay photos {r.status_code} for '{query}'")
             return []
@@ -5640,6 +5733,9 @@ def _search_wikimedia_videos(query: str, max_results: int = 5) -> list[str]:
     Search Wikimedia Commons for public domain video clips.
     Returns list of direct video URLs.
     """
+    global _wikimedia_429_blocked
+    if _wikimedia_429_blocked:
+        return []
     try:
         r = requests.get(
             "https://commons.wikimedia.org/w/api.php",
@@ -5652,6 +5748,10 @@ def _search_wikimedia_videos(query: str, max_results: int = 5) -> list[str]:
             timeout=15,
             headers={"User-Agent": "DarkCrimeDecoded/1.0"},
         )
+        if r.status_code == 429:
+            _wikimedia_429_blocked = True
+            print(f'[Stock] Wikimedia videos 429 — circuit breaker tripped')
+            return []
         if r.status_code != 200:
             return []
         results = r.json().get("query", {}).get("search", [])
@@ -5671,6 +5771,9 @@ def _search_wikimedia_videos(query: str, max_results: int = 5) -> list[str]:
                     timeout=15,
                     headers={"User-Agent": "DarkCrimeDecoded/1.0"},
                 )
+                if ir.status_code == 429:
+                    _wikimedia_429_blocked = True
+                    return video_urls
                 if ir.status_code == 200:
                     for page in ir.json().get("query", {}).get("pages", {}).values():
                         info = (page.get("imageinfo") or [{}])[0]
@@ -5679,7 +5782,7 @@ def _search_wikimedia_videos(query: str, max_results: int = 5) -> list[str]:
                             break
             except Exception:
                 pass
-            if len(video_urls) >= max_results:
+            if len(video_urls) >= max_results or _wikimedia_429_blocked:
                 break
             time.sleep(0.4)
         if video_urls:
@@ -6545,7 +6648,7 @@ def _search_duckduckgo_images(query: str, max_results: int = 5) -> list[str]:
                 safesearch="on",
             )
             urls: list[str] = []
-            _blocked = _BLOCKED_IMAGE_DOMAINS | _BLOCKED_CHILD_PATTERNS
+            _blocked = _BLOCKED_IMAGE_DOMAINS | _BLOCKED_CHILD_PATTERNS | _VIDEO_ADULT_DOMAINS
             for r in (raw or []):
                 url = r.get("image", "")
                 if not url or not url.startswith("http"):
@@ -6553,10 +6656,14 @@ def _search_duckduckgo_images(query: str, max_results: int = 5) -> list[str]:
                 u_lower = url.lower()
                 if any(d in u_lower for d in _blocked):
                     continue
+                if any(p in u_lower for p in _BLOCKED_ADULT_PATTERNS):
+                    continue
                 # Filter on DDG result metadata before downloading
                 _title  = (r.get("title")  or "").lower()
                 _source = (r.get("source") or "").lower()
                 if any(kw in _title or kw in _source for kw in _ART_RESULT_KEYWORDS):
+                    continue
+                if any(kw in _title or kw in _source for kw in _BLOCKED_ADULT_PATTERNS):
                     continue
                 # Skip images with known-small dimensions (likely thumbnails/icons)
                 _w = int(r.get("width")  or 0)
@@ -6582,6 +6689,9 @@ def _search_duckduckgo_images(query: str, max_results: int = 5) -> list[str]:
 
 # Per-run cache for Google Custom Search results
 _GOOGLE_SEARCH_CACHE: dict[str, list[str]] = {}
+# Circuit breaker — set True on first quota/auth error so remaining parallel
+# workers skip Google immediately instead of all hitting the same 429/403.
+_google_cse_blocked = False
 
 
 def _search_google_images(query: str, max_results: int = 10) -> list[str]:
@@ -6595,6 +6705,9 @@ def _search_google_images(query: str, max_results: int = 10) -> list[str]:
     Returns up to max_results direct image URLs.
     Results are cached per pipeline run so the same query is never sent twice.
     """
+    global _google_cse_blocked
+    if _google_cse_blocked:
+        return []
     api_key = (os.getenv("custom_search") or os.getenv("GOOGLE_API_KEY") or "").strip()
     cse_id  = (os.getenv("GOOGLE_CSE_ID") or "").strip()
     if not api_key or not cse_id:
@@ -6620,8 +6733,9 @@ def _search_google_images(query: str, max_results: int = 10) -> list[str]:
             timeout=15,
             headers={"User-Agent": "DarkCrimeDecoded/1.0"},
         )
-        if resp.status_code == 429:
-            print(f"[Image] Google CSE quota exceeded for '{query}'")
+        if resp.status_code in (429, 403, 402):
+            _google_cse_blocked = True
+            print(f"[Image] Google CSE {resp.status_code} — circuit breaker tripped, skipping all future Google calls")
             _GOOGLE_SEARCH_CACHE[cache_key] = []
             return []
         if resp.status_code != 200:
@@ -7275,21 +7389,21 @@ def fetch_real_images(script_text: str, count: int, video_id: str,
     if topic:
         _t = topic.lower()
         if any(k in _t for k in ("mindhunter", "behavioral", "bsu", "fbi", "douglas", "ressler")):
-            fallback_base = f"FBI Behavioral Science Unit office 1970s dark cinematic documentary style{_IMAGE_PROMPT_SUFFIX}"
+            fallback_base = f"FBI Behavioral Science Unit office 1970s cinematic documentary style{_IMAGE_PROMPT_SUFFIX}"
         elif any(k in _t for k in ("narcos", "escobar", "medellin")):
-            fallback_base = f"1980s Colombia Medellin cartel cinematic documentary dark{_IMAGE_PROMPT_SUFFIX}"
+            fallback_base = f"1980s Colombia Medellin cartel cinematic documentary{_IMAGE_PROMPT_SUFFIX}"
         elif any(k in _t for k in ("manson", "cult", "helter")):
-            fallback_base = f"1960s California cult commune cinematic documentary dark{_IMAGE_PROMPT_SUFFIX}"
+            fallback_base = f"1960s California cult commune cinematic documentary{_IMAGE_PROMPT_SUFFIX}"
         elif any(k in _t for k in ("godfather", "mafia", "luciano", "gotti", "capone")):
-            fallback_base = f"1940s New York mafia meeting dark cinematic documentary{_IMAGE_PROMPT_SUFFIX}"
+            fallback_base = f"1940s New York mafia meeting cinematic documentary{_IMAGE_PROMPT_SUFFIX}"
         elif any(k in _t for k in ("scarface", "cocaine", "miami")):
-            fallback_base = f"1980s Miami drug trafficking cinematic documentary dark{_IMAGE_PROMPT_SUFFIX}"
+            fallback_base = f"1980s Miami drug trafficking cinematic documentary{_IMAGE_PROMPT_SUFFIX}"
         elif any(k in _t for k in ("goodfellas", "henry hill", "wiseguy")):
-            fallback_base = f"1970s New York organized crime cinematic dark documentary{_IMAGE_PROMPT_SUFFIX}"
+            fallback_base = f"1970s New York organized crime cinematic documentary{_IMAGE_PROMPT_SUFFIX}"
         else:
-            fallback_base = f"{topic} real historical documentary cinematic dark{_IMAGE_PROMPT_SUFFIX}"
+            fallback_base = f"{topic} real historical documentary cinematic{_IMAGE_PROMPT_SUFFIX}"
     else:
-        fallback_base = f"true crime historical documentary scene cinematic dark{_IMAGE_PROMPT_SUFFIX}"
+        fallback_base = f"true crime historical documentary scene cinematic{_IMAGE_PROMPT_SUFFIX}"
 
     _img_dir = _get_images_dir()
 
@@ -9433,21 +9547,21 @@ def _generate_emergency_visuals(
     # each with a unique seed so the same prompt produces a different image.
     _top = topic or "true crime"
     _EM_PROMPTS = [
-        f"{_top} crime investigation dark documentary cinematic{_IMAGE_PROMPT_SUFFIX}",
-        f"police detective office 1970s dark cinematic file cabinet{_IMAGE_PROMPT_SUFFIX}",
-        f"crime scene night urban dark atmospheric yellow tape{_IMAGE_PROMPT_SUFFIX}",
+        f"{_top} crime investigation documentary cinematic moody{_IMAGE_PROMPT_SUFFIX}",
+        f"police detective office 1970s cinematic file cabinet dramatic{_IMAGE_PROMPT_SUFFIX}",
+        f"crime scene night urban atmospheric yellow tape dramatic{_IMAGE_PROMPT_SUFFIX}",
         f"interrogation room single overhead light shadow two chairs{_IMAGE_PROMPT_SUFFIX}",
         f"evidence board crime photos newspaper clippings map pins{_IMAGE_PROMPT_SUFFIX}",
-        f"{_top} court trial gavel dark dramatic cinematic{_IMAGE_PROMPT_SUFFIX}",
-        f"surveillance camera footage grainy documentary dark{_IMAGE_PROMPT_SUFFIX}",
-        f"prison cell iron bars shadow dramatic dark cinematic{_IMAGE_PROMPT_SUFFIX}",
-        f"newspaper front page 1980s crime headline dark dramatic{_IMAGE_PROMPT_SUFFIX}",
-        f"city skyline night rain neon reflections dark{_IMAGE_PROMPT_SUFFIX}",
-        f"detective notebook handwriting evidence dark moody{_IMAGE_PROMPT_SUFFIX}",
-        f"abandoned building interior dark shadow cinematic{_IMAGE_PROMPT_SUFFIX}",
+        f"{_top} court trial gavel dramatic cinematic{_IMAGE_PROMPT_SUFFIX}",
+        f"surveillance camera footage grainy documentary moody{_IMAGE_PROMPT_SUFFIX}",
+        f"prison cell iron bars shadow dramatic cinematic{_IMAGE_PROMPT_SUFFIX}",
+        f"newspaper front page 1980s crime headline dramatic{_IMAGE_PROMPT_SUFFIX}",
+        f"city skyline night rain neon reflections atmospheric{_IMAGE_PROMPT_SUFFIX}",
+        f"detective notebook handwriting evidence moody cinematic{_IMAGE_PROMPT_SUFFIX}",
+        f"abandoned building interior shadow cinematic atmospheric{_IMAGE_PROMPT_SUFFIX}",
         f"courtroom empty witness stand dramatic window light{_IMAGE_PROMPT_SUFFIX}",
         f"police car lights reflection wet street night{_IMAGE_PROMPT_SUFFIX}",
-        f"archive filing cabinet open folders dusty dark{_IMAGE_PROMPT_SUFFIX}",
+        f"archive filing cabinet open folders dusty cinematic{_IMAGE_PROMPT_SUFFIX}",
     ]
     _em_seed = random.randint(1, 99999)
 
@@ -11922,8 +12036,18 @@ def create_video(
     user_videos: list | None = None,
 ) -> str:
     """Dispatcher: routes to run_fast_pipeline() or run_full_pipeline()."""
-    global _PIPELINE_START
+    global _PIPELINE_START, _wikimedia_429_blocked, _pollinations_402_blocked
+    global _pollinations_429_count, _pollinations_req_count
+    global _google_cse_blocked, _pexels_blocked, _pixabay_blocked
     _PIPELINE_START = time.time()
+    # Reset per-run circuit breakers so each video starts fresh
+    _wikimedia_429_blocked = False
+    _pollinations_402_blocked = False
+    _pollinations_429_count = 0
+    _pollinations_req_count = 0
+    _google_cse_blocked = False
+    _pexels_blocked = False
+    _pixabay_blocked = False
     if PIPELINE_MODE == "fast":
         return run_fast_pipeline(script_data, video_id, custom_audio_path, user_images, user_videos)
     else:

@@ -814,7 +814,7 @@ def _is_known_documentary_subject(name: str) -> bool:
     """
     name_l = name.strip().lower()
     try:
-        from agent.entity_guard import _KNOWN_CRIMINALS
+        from agents.entity_guard import _KNOWN_CRIMINALS
         for known in _KNOWN_CRIMINALS:
             if known.lower() == name_l or name_l == known.lower().split()[-1]:
                 return True
@@ -1338,14 +1338,12 @@ def fetch_wikipedia_arabic(query: str) -> str | None:
     try:
         search_resp = requests.get(base_url, params=search_params, timeout=15)
         search_data = search_resp.json()
-        results = search_data.get("query", {}).get("search", [])
+        results = search_data["query"]["search"]
 
         if not results:
             return None
 
-        page_title = results[0].get("title", "")
-        if not page_title:
-            return None
+        page_title = results[0]["title"]
 
         content_params = {
             "action": "query",
@@ -1425,7 +1423,7 @@ def _load_covered() -> list[dict]:
 
 
 def _covered_series_set() -> set[str]:
-    return {entry.get("series", "").lower() for entry in _load_covered() if entry.get("series")}
+    return {entry["series"].lower() for entry in _load_covered()}
 
 
 def mark_covered(series: str, video_id: str, topic: str = "") -> None:

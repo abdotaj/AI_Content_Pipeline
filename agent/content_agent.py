@@ -275,7 +275,7 @@ def ingest_content_files(content_dir: str | None = None) -> list[dict]:
                 _send_telegram(f"No sources found — writing original story for {topic_text}")
                 topic["research"] = {}
 
-        for lang in ("arabic", "english"):
+        for lang in ("english", "arabic"):
             try:
                 script_data = write_script(topic, language=lang)
                 scripts.append(script_data)

@@ -1,5 +1,5 @@
-# ============================================================
-#  config_darkcrimed.py  —  Settings for the Dark Crime Decoded channel
+﻿# ============================================================
+#  config_darkcrimed.py  â€”  Settings for the Dark Crime Decoded channel
 # ============================================================
 import os
 from dotenv import load_dotenv
@@ -11,10 +11,6 @@ ANTHROPIC_API_KEY     = os.getenv("ANTHROPIC_API_KEY", "YOUR_ANTHROPIC_KEY")
 OPENAI_API_KEY        = os.getenv("OPENAI_API_KEY", "")
 GEMINI_API_KEY        = os.getenv("GEMINI_API_KEY", "YOUR_GEMINI_KEY")
 GROQ_API_KEY          = os.getenv("GROQ_API_KEY", "YOUR_GROQ_KEY")
-ELEVENLABS_API_KEY    = os.getenv("ELEVENLABS_API_KEY", "YOUR_ELEVENLABS_KEY")
-ELEVENLABS_VOICE_ID   = os.getenv("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")
-ELEVENLABS_VOICE_ID_EN = os.getenv("ELEVENLABS_VOICE_ID_EN", "oHXsMWwdWLsNE9IdmbuT")
-ELEVENLABS_VOICE_ID_AR = os.getenv("ELEVENLABS_VOICE_ID_AR", "kVE76Ng0Z4kGR7oebETP")
 PEXELS_API_KEY        = os.getenv("PEXELS_API_KEY", "YOUR_PEXELS_KEY")
 PIXABAY_API_KEY       = os.getenv("PIXABAY_API_KEY", "YOUR_PIXABAY_KEY")
 TELEGRAM_BOT_TOKEN    = os.getenv("TELEGRAM_BOT_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN")
@@ -79,7 +75,7 @@ LONG_VIDEO_DURATION  = 3000  # 50 minutes max; actual duration set by audio leng
 SHORT_VIDEO_DURATION = 75    # 75 seconds target (60-90 s range); audio drives actual length
 EDGETTS_RATE         = "+0%"   # edge-tts speaking rate for fallback TTS (+0% = normal speed)
 OPENAI_TTS_SPEED     = 1.0    # TTS speed for all voices, all languages (1.0 = natural pace)
-# Legacy aliases — kept for backward compatibility
+# Legacy aliases â€” kept for backward compatibility
 VIDEO_DURATION_SECONDS = LONG_VIDEO_DURATION
 SHORT_CLIP_DURATION    = SHORT_VIDEO_DURATION
 VIDEO_WIDTH  = 1080

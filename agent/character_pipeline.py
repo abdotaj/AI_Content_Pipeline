@@ -867,8 +867,10 @@ def _ddg_portrait_search(name: str, role: str, era: str) -> list[str]:
     urls: list[str] = []
     seen: set[str] = set()
     try:
+        import os as _os
+        _ddg_proxy = _os.getenv("DDG_PROXY") or _os.getenv("HTTPS_PROXY") or None
         from duckduckgo_search import DDGS
-        with DDGS() as ddgs:
+        with DDGS(proxy=_ddg_proxy) as ddgs:
             for q in queries:
                 try:
                     results = list(ddgs.images(q, max_results=6, safesearch="off"))

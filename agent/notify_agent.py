@@ -9,11 +9,6 @@ from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
 
 BASE_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 
-# Tracks Telegram file_ids already downloaded this pipeline run so
-# check_telegram_for_images and check_telegram_for_videos never download
-# the same video twice when both are called sequentially.
-_DOWNLOADED_TG_FILE_IDS: set[str] = set()
-
 
 def clean_text(text: str) -> str:
     """Remove special markdown characters that break Telegram."""
@@ -773,11 +768,6 @@ def check_telegram_for_images(after_timestamp: float = 0.0) -> list[dict]:
             )
             continue
 
-        if file_id in _DOWNLOADED_TG_FILE_IDS:
-            print(f"[Notify] Skipping already-downloaded file_id (dedup)")
-            continue
-        _DOWNLOADED_TG_FILE_IDS.add(file_id)
-
         vid_info = _download_user_video(file_id, file_size, duration, caption, msg_id)
         if vid_info:
             results.append(vid_info)
@@ -947,11 +937,6 @@ def check_telegram_for_videos(after_timestamp: float = 0.0) -> list[dict]:
 
         if not file_id:
             continue
-
-        if file_id in _DOWNLOADED_TG_FILE_IDS:
-            print(f"[Notify] Skipping already-downloaded file_id (dedup)")
-            continue
-        _DOWNLOADED_TG_FILE_IDS.add(file_id)
 
         if file_size > 20 * 1024 * 1024:
             size_mb = file_size // (1024 * 1024)

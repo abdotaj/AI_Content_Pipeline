@@ -760,8 +760,10 @@ def _fetch_character_photo(name: str, output_dir: str) -> str | None:
 
     # 2. DDG image search
     try:
+        import os as _os
+        _ddg_proxy = _os.getenv("DDG_PROXY") or _os.getenv("HTTPS_PROXY") or None
         from duckduckgo_search import DDGS
-        with DDGS() as ddgs:
+        with DDGS(proxy=_ddg_proxy) as ddgs:
             results = list(ddgs.images(
                 f"{name} real photo portrait",
                 max_results=5,
