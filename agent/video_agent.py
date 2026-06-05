@@ -437,9 +437,17 @@ def generate_voiceover_edgetts(script_text: str, filename: str, language: str = 
         )
         await communicate.save(audio_path)
 
-    asyncio.run(_generate())
-    print(f"[Video] Voiceover saved (edge-tts): {audio_path}")
-    return audio_path
+    for _attempt in range(3):
+        try:
+            asyncio.run(_generate())
+            print(f"[Video] Voiceover saved (edge-tts): {audio_path}")
+            return audio_path
+        except Exception as _e:
+            print(f"[Video] edge-tts attempt {_attempt + 1} failed: {_e}")
+            if _attempt < 2:
+                import time as _t; _t.sleep(5)
+    print("[Video] edge-tts failed all 3 attempts — returning None")
+    return None
 
 
 def _pyarabic_normalize(text: str) -> str:
@@ -1320,8 +1328,9 @@ def check_image_relevance(
     User-uploaded images are always accepted. Downloaded images pass if >= 5 KB.
     Topic relevance is ensured by the search query that fetched them.
     """
-    if "user_images" in (image_path or "").replace("\\", "/"):
-        print(f"[Image] User image — always USE_NOW: {os.path.basename(image_path)}")
+    _norm = (image_path or "").replace("\\", "/")
+    if "user_images" in _norm or "search_images" in _norm:
+        print(f"[Image] User/search image — always USE_NOW: {os.path.basename(image_path)}")
         return "use_now"
     try:
         if os.path.exists(image_path) and os.path.getsize(image_path) < 5_000:
@@ -4970,7 +4979,8 @@ def _load_user_images_from_folders(topic: str = "") -> list[dict]:
         "assets/images",
         "content/images",
         "content/pending/images",
-        "output/user_images",   # Telegram images downloaded by notify_agent
+        "output/user_images",    # Telegram images downloaded by notify_agent
+        "output/search_images",  # DDG/web images fetched by download_search_images_for_topic
     ]
     # Also check topic-specific subfolder
     if topic:
@@ -6687,6 +6697,194 @@ def _search_duckduckgo_images(query: str, max_results: int = 5) -> list[str]:
     return []
 
 
+# Per-run cache so download_search_images_for_topic is idempotent per run.
+_SEARCH_IMAGES_DOWNLOADED: set[str] = set()
+
+_SEARCH_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+
+
+def _extract_article_og_image(article_url: str) -> str | None:
+    """
+    Fetch an article page and return its Open Graph / Twitter Card main image URL.
+    Works for Wikipedia, Britannica, Biography.com, TIME, People.com, etc.
+    Returns None on any failure.
+    """
+    import re as _re
+    from urllib.request import urlopen as _uo, Request as _Rq
+    try:
+        req  = _Rq(article_url, headers={"User-Agent": _SEARCH_UA})
+        html = _uo(req, timeout=10).read().decode("utf-8", errors="ignore")
+        # Open Graph (preferred — most reliable for article hero image)
+        for pat in (
+            r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']',
+            r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image["\']',
+            r'<meta[^>]+name=["\']twitter:image["\'][^>]+content=["\']([^"\']+)["\']',
+            r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+name=["\']twitter:image["\']',
+        ):
+            m = _re.search(pat, html, _re.I)
+            if m:
+                img = m.group(1).strip()
+                if img.startswith("//"):
+                    img = "https:" + img
+                if img.startswith("http"):
+                    return img
+        # Wikipedia fallback — first large Wikimedia upload in the article body
+        if "wikipedia.org" in article_url:
+            imgs = _re.findall(r'src=["\'](//upload\.wikimedia\.org/[^"\']+)["\']', html)
+            for img in imgs:
+                full = "https:" + img
+                if not any(skip in img for skip in ("icon", "flag", "svg", "logo", "map")):
+                    return full
+    except Exception:
+        pass
+    return None
+
+
+def _download_image_url(
+    url: str,
+    dest: str,
+    min_bytes: int = 5_000,
+    min_w: int = 400,
+    min_h: int = 300,
+) -> bool:
+    """Download url → dest. Returns True if valid image was saved."""
+    import re as _re
+    from urllib.request import urlopen as _uo, Request as _Rq
+    try:
+        req  = _Rq(url, headers={"User-Agent": _SEARCH_UA})
+        data = _uo(req, timeout=12).read()
+        if len(data) < min_bytes:
+            return False
+        with open(dest, "wb") as _f:
+            _f.write(data)
+        from PIL import Image as _PIL
+        with _PIL.open(dest) as _im:
+            _w, _h = _im.size
+        if _w < min_w or _h < min_h:
+            os.remove(dest)
+            return False
+        return True
+    except Exception:
+        try: os.remove(dest)
+        except OSError: pass
+        return False
+
+
+def download_search_images_for_topic(
+    topic: str,
+    count: int = 15,
+    ar_topic: str = "",
+    search_queries: list | None = None,
+    source_urls: list | None = None,
+) -> list[dict]:
+    """
+    Collect real photos for the topic from three sources and save to
+    output/search_images/.  Images here are treated identically to
+    user-uploaded Telegram images (USE_NOW, no relevance filtering).
+
+    Sources (in priority order):
+      1. Open Graph / Twitter Card images scraped from source_urls
+         (Wikipedia, Britannica, Biography.com, TIME, People.com …)
+      2. DuckDuckGo image search using exact research search_queries
+      3. DuckDuckGo image search using Google-style fallback queries
+         (English + Arabic) when no script queries are available
+
+    All three sources are also tried through Google Custom Search API
+    (if GOOGLE_API_KEY + GOOGLE_CSE_ID env vars are set).
+
+    Idempotent per pipeline run — already-downloaded files are reused.
+    """
+    import re as _re
+    import hashlib as _hashlib
+
+    clean_topic = _re.sub(r'[_\-]+', ' ', topic).strip()
+    out_dir     = os.path.join("output", "search_images")
+    os.makedirs(out_dir, exist_ok=True)
+    topic_slug  = _re.sub(r'[^a-z0-9]+', '_', clean_topic.lower())[:30].strip('_')
+
+    results: list[dict] = []
+    _seen_img_urls: set[str] = set()
+
+    def _save(img_url: str, label: str = "search") -> bool:
+        """Download img_url, validate, register in results. Returns True on success."""
+        nonlocal results
+        if len(results) >= count:
+            return False
+        if img_url in _seen_img_urls:
+            return False
+        _seen_img_urls.add(img_url)
+
+        url_hash = _hashlib.sha256(img_url.encode()).hexdigest()[:10]
+        fname    = f"{label}_{topic_slug}_{url_hash}.jpg"
+        dest     = os.path.abspath(os.path.join(out_dir, fname))
+
+        if dest in _SEARCH_IMAGES_DOWNLOADED:
+            results.append({"path": dest, "caption": clean_topic, "tags": [label]})
+            return True
+        if os.path.exists(dest) and os.path.getsize(dest) > 5_000:
+            _SEARCH_IMAGES_DOWNLOADED.add(dest)
+            results.append({"path": dest, "caption": clean_topic, "tags": [label]})
+            return True
+
+        ok = _download_image_url(img_url, dest)
+        if ok:
+            _SEARCH_IMAGES_DOWNLOADED.add(dest)
+            results.append({"path": dest, "caption": clean_topic, "tags": [label]})
+            print(f"[Search] ✅ {label} image {len(results)}/{count}: {fname}")
+        return ok
+
+    # ── Source 1: scrape Open Graph image from each article source URL ─────────
+    for src in (source_urls or []):
+        if len(results) >= count:
+            break
+        article_url = src.get("url", "") if isinstance(src, dict) else str(src)
+        if not article_url.startswith("http"):
+            continue
+        og_img = _extract_article_og_image(article_url)
+        if og_img:
+            _save(og_img, label="article")
+
+    print(f"[Search] Article OG images: {len(results)} so far")
+
+    # ── Source 2: DDG + Google using exact research queries ────────────────────
+    _script_queries = [
+        q.strip().strip('"') for q in (search_queries or []) if q and q.strip()
+    ]
+    for q in _script_queries:
+        if len(results) >= count:
+            break
+        for u in _search_duckduckgo_images(q, max_results=6):
+            _save(u, label="ddg_query")
+        # Google (if credentials available)
+        for u in _search_google_images(q, max_results=5):
+            _save(u, label="google_query")
+
+    print(f"[Search] After script queries: {len(results)} so far")
+
+    # ── Source 3: Fallback generic queries (EN + AR) ───────────────────────────
+    if len(results) < count:
+        _ar_label = ar_topic if ar_topic else clean_topic
+        fallback_queries = [
+            f"{clean_topic} real photo documentary",
+            f"{clean_topic} portrait photograph historical",
+            f"{clean_topic} news photo",
+            f"{_ar_label} صورة حقيقية وثائقي",
+        ]
+        for q in fallback_queries:
+            if len(results) >= count:
+                break
+            for u in _search_duckduckgo_images(q, max_results=6):
+                _save(u, label="ddg_fallback")
+            for u in _search_google_images(q, max_results=4):
+                _save(u, label="google_fallback")
+
+    print(f"[Search] {len(results)} real search image(s) ready for '{clean_topic}'"
+          f" (article={sum(1 for r in results if 'article' in r['tags'])}"
+          f" ddg={sum(1 for r in results if 'ddg' in str(r['tags']))}"
+          f" google={sum(1 for r in results if 'google' in str(r['tags']))})")
+    return results
+
+
 # Per-run cache for Google Custom Search results
 _GOOGLE_SEARCH_CACHE: dict[str, list[str]] = {}
 # Circuit breaker — set True on first quota/auth error so remaining parallel
@@ -7143,6 +7341,26 @@ def fetch_stock_videos(script_text: str, count: int, video_id: str, topic: str =
     results: list[str] = []
     query_cache: dict[str, str] = {}
 
+    # Prepend research queries (from "SEARCH QUERIES USED") before chunk queries.
+    # These run through the same _try_all_sources chain so every video source
+    # (Archive, Wikimedia, DDG, Pexels, Pixabay…) is tried for each query.
+    if _SCRIPT_SEARCH_QUERIES:
+        _sv_pre = 0
+        for _sq in _SCRIPT_SEARCH_QUERIES:
+            if len(results) >= count or _sv_pre >= 4:
+                break
+            _sq_clean = _sq.strip().strip('"')
+            _sq_out   = os.path.join(STOCK_VIDEOS_DIR,
+                f"{video_id}_sq_{abs(hash(_sq_clean)) % 10**8}.mp4")
+            _sv = _try_all_sources(_sq_clean, _sq_out)
+            if _sv:
+                results.append(_sv)
+                query_cache[_sq_clean] = _sv
+                _sv_pre += 1
+                print(f"[Stock] Script query video {_sv_pre}: {_sq_clean[:50]}")
+        if _sv_pre:
+            print(f"[Stock] {_sv_pre} video(s) from script search queries")
+
     def _try_all_sources(query: str, out_path: str) -> str | None:
         # (src_name, search_fn, use_ytdlp, max_bytes_override)
         for src_name, src_fn, use_ytdlp, mb_override in [
@@ -7417,7 +7635,35 @@ def fetch_real_images(script_text: str, count: int, video_id: str,
                 paths.append(r)
         return paths
 
-    # Priority 0: user-provided images from standard asset folders
+    # Priority 0a: script research queries → DDG + Google image search
+    # Runs BEFORE scene-based chunk queries.  Uses the exact queries from
+    # "SEARCH QUERIES USED" that the research agent already proved are on-topic.
+    if _SCRIPT_SEARCH_QUERIES:
+        _img_dir_sq = _get_images_dir()
+        _sq_added   = 0
+        for _sq in _SCRIPT_SEARCH_QUERIES:
+            if _sq_added >= 6:
+                break
+            _sq_clean = _sq.strip().strip('"')
+            for _sq_url in _search_duckduckgo_images(_sq_clean, max_results=4):
+                _sq_dest = os.path.join(_img_dir_sq,
+                    f"{video_id}_sq_{abs(hash(_sq_url)) % 10**8}.jpg")
+                if _download_image_url(_sq_url, _sq_dest):
+                    _sq_added += 1
+                    print(f"[Search] Script query image {_sq_added}: {_sq_clean[:50]}")
+                    break
+            for _gq_url in _search_google_images(_sq_clean, max_results=3):
+                _sq_dest = os.path.join(_img_dir_sq,
+                    f"{video_id}_gq_{abs(hash(_gq_url)) % 10**8}.jpg")
+                if _download_image_url(_gq_url, _sq_dest):
+                    _sq_added += 1
+                    print(f"[Search] Google query image {_sq_added}: {_sq_clean[:50]}")
+                    break
+        if _sq_added:
+            print(f"[Search] {_sq_added} image(s) from script search queries")
+
+    # Priority 0b: user-provided images from standard asset folders
+    # (includes output/search_images/ which holds article OG images)
     user_folder_images = _load_user_images_from_folders(topic)
     preloaded_paths: list[str] = []
     for uimg in user_folder_images:
@@ -10616,6 +10862,13 @@ _PIPELINE_START: float = 0.0
 # FAST: 25 min  |  FULL: 30 min
 _MAX_CLIP_PROCESSING_SECONDS: float = 25 * 60 if PIPELINE_MODE == "fast" else 30 * 60
 
+# Script-level search context — set once per video in create_video() from
+# script_data["search_queries"] and script_data["source_urls"].
+# Read by fetch_real_images() and fetch_stock_videos() to prepend research-grade
+# queries to the existing chunk-based search, before scene queries run.
+_SCRIPT_SEARCH_QUERIES: list[str] = []   # exact queries from SEARCH QUERIES USED
+_SCRIPT_SOURCE_URLS:    list[dict] = []  # article URLs from SOURCES & REFERENCES
+
 
 def _check_clip_timeout() -> bool:
     """Return True if clip processing has exceeded its mode-dependent time budget."""
@@ -12048,6 +12301,28 @@ def create_video(
     _google_cse_blocked = False
     _pexels_blocked = False
     _pixabay_blocked = False
+
+    # Expose script's research queries and source URLs to the image/video search
+    # pipeline.  fetch_real_images() and fetch_stock_videos() read these globals
+    # and prepend them to their existing chunk-based search so they run first.
+    global _SCRIPT_SEARCH_QUERIES, _SCRIPT_SOURCE_URLS
+    _SCRIPT_SEARCH_QUERIES = script_data.get("search_queries", []) or []
+    _SCRIPT_SOURCE_URLS    = script_data.get("source_urls",    []) or []
+
+    # Scrape OG images from article source URLs now so they land in
+    # output/search_images/ (Priority 0 in _load_user_images_from_folders)
+    # before any render begins.  Short clips skip this — they don't need it.
+    if _SCRIPT_SOURCE_URLS and "short" not in video_id:
+        try:
+            download_search_images_for_topic(
+                topic          = script_data.get("topic", ""),
+                count          = 15,
+                search_queries = [],          # queries handled inside fetch_real_images
+                source_urls    = _SCRIPT_SOURCE_URLS,
+            )
+        except Exception as _si_e:
+            print(f"[Search] Article OG pre-fetch failed (non-fatal): {_si_e}")
+
     if PIPELINE_MODE == "fast":
         return run_fast_pipeline(script_data, video_id, custom_audio_path, user_images, user_videos)
     else:

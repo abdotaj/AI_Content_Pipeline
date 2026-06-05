@@ -990,6 +990,21 @@ def filter_contaminated_facts(
     series_kw = _keywords(series)
     allowed   = topic_kw | series_kw
 
+    # Pass 1: collect anchor facts (strict topic match) and extract hub entities.
+    # Hub entities = proper nouns that appear in ≥ 2 anchor facts — e.g. "Theranos"
+    # is the central company for topic "elizabeth_holmes" but isn't a topic keyword.
+    from collections import Counter as _Counter
+    _hub_counts: _Counter = _Counter()
+    for fact in facts:
+        if not fact or not isinstance(fact, str):
+            continue
+        fact_kw = _keywords(fact)
+        if fact_kw & allowed or len(fact.split()) < 5:
+            for word in re.findall(r'\b[A-Z][a-z]{3,}\b', fact):
+                _hub_counts[word.lower()] += 1
+    hub_kw   = {w for w, c in _hub_counts.items() if c >= 2}
+    allowed  = allowed | hub_kw
+
     kept: List[str] = []
     removed = 0
     for fact in facts:

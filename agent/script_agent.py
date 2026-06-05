@@ -5941,6 +5941,11 @@ def _write_ar_section_chunked(
             premium=True,
         )
         cont_wc = clean_word_count(cont) if cont else 0
+        # Reject refusal text even when it is long enough to pass the word-count gate
+        if cont and any(sig in cont for sig in _AR_REFUSAL_SIGNALS):
+            print(f"[AR Chunk] {label} chunk {chunk_num}: refusal detected in chunk — discarding")
+            cont    = None
+            cont_wc = 0
         if cont_wc < 100:
             # Retry with a stripped-down prompt — entity_lock may have confused the model
             _tc.sleep(4)
@@ -5952,6 +5957,9 @@ def _write_ar_section_chunked(
                 premium=True,
             )
             cont_wc = clean_word_count(cont) if cont else 0
+            if cont and any(sig in cont for sig in _AR_REFUSAL_SIGNALS):
+                print(f"[AR Chunk] {label} chunk {chunk_num}: refusal on simple-retry — stopping")
+                break
             if cont_wc < 50:
                 print(f"[AR Chunk] {label} chunk {chunk_num}: too short ({cont_wc}w after simple retry) — stopping")
                 break
@@ -7704,6 +7712,14 @@ def write_arabic_short(ar_long_script: dict) -> dict:
         except Exception as _e:
             print(f"[AR Short] Groq error (attempt {attempt + 1}): {_e}")
             import time as _time; _time.sleep(8)
+
+    # OpenAI fallback when Groq was rate-limited throughout
+    if not ar_text or clean_word_count(ar_text) < 100:
+        print("[AR Short] Groq exhausted — OpenAI fallback")
+        _oa_result = _ai_script_call(prompt, max_tokens=700, temperature=0.85, premium=True)
+        if _oa_result and clean_word_count(_oa_result) > clean_word_count(ar_text):
+            ar_text = _oa_result
+            print(f"[AR Short] OpenAI fallback: {clean_word_count(ar_text)}w")
 
     # Enforce minimum via expand_short_script
     if ar_text and clean_word_count(ar_text) < 240:
