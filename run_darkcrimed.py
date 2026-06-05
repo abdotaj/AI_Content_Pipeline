@@ -479,7 +479,7 @@ def run_pipeline():
                     f"âŒ Not relevant: {len(_ignored)} images"
                 )
             else:
-                print(“[1/5] No photos â€” AI images will be generated”)
+                print("[1/5] No photos â€” AI images will be generated")
 
             # â”€â”€ 1F: Research exact topic â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             _log("Research", f"Researching: {topic_text}")
@@ -706,7 +706,7 @@ def run_pipeline():
         if ar_long:
             ar_long.setdefault("short_script_ar", "")
 
-    _stage(“Scripts AR done”)
+    _stage("Scripts AR done")
 
     # â”€â”€ STEP 3: Send scripts to Telegram for review (non-blocking) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     print("\n[3/5] Sending scripts to Telegram for review...")
