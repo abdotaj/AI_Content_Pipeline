@@ -2785,6 +2785,9 @@ def _is_valid_image_url(url: str) -> bool:
     u = url.lower()
     if any(d in u for d in _BLOCKED_IMAGE_DOMAINS):
         return False
+    if any(d in u for d in _VIDEO_ADULT_DOMAINS):
+        print(f"[Image] Blocked adult/sexual URL: {url[:80]}")
+        return False
     if any(p in u for p in _BLOCKED_URL_PATTERNS):
         return False
     if any(p in u for p in _BLOCKED_CHILD_PATTERNS):
@@ -2912,8 +2915,16 @@ def download_real_image(url: str, output_path: str) -> str | None:
         return None
 
 
+# Circuit breaker — trips on first Wikimedia 429 to stop hammering the API with
+# parallel workers after rate limiting kicks in. Reset each pipeline run.
+_wikimedia_429_blocked = False
+
+
 def _wikimedia_image_results(query: str, max_results: int = 5) -> list[str]:
     """Search Wikimedia Commons for real photos -- works from server IPs."""
+    global _wikimedia_429_blocked
+    if _wikimedia_429_blocked:
+        return []
     try:
         params = {
             'action': 'query', 'format': 'json', 'generator': 'search',
@@ -2924,6 +2935,10 @@ def _wikimedia_image_results(query: str, max_results: int = 5) -> list[str]:
             'https://commons.wikimedia.org/w/api.php', params=params, timeout=12,
             headers={'User-Agent': 'DarkCrimeDecoded/1.0 (documentary pipeline)'},
         )
+        if r.status_code == 429:
+            _wikimedia_429_blocked = True
+            print(f'[Image] Wikimedia 429 — circuit breaker tripped, skipping all future Wikimedia calls')
+            return []
         if r.status_code != 200:
             print(f'[Image] Wikimedia search HTTP {r.status_code} for: {query}')
             return []
@@ -2952,6 +2967,9 @@ def _wikimedia_image_results(query: str, max_results: int = 5) -> list[str]:
 
 def _search_wikimedia_commons(query: str, max_results: int = 3) -> list[str]:
     """Search Wikimedia Commons by MIME type — broader than mediatype filter."""
+    global _wikimedia_429_blocked
+    if _wikimedia_429_blocked:
+        return []
     try:
         r = requests.get(
             'https://commons.wikimedia.org/w/api.php',
@@ -2968,6 +2986,13 @@ def _search_wikimedia_commons(query: str, max_results: int = 3) -> list[str]:
             timeout=15,
             headers={'User-Agent': 'DarkCrimeDecoded/1.0'},
         )
+        if r.status_code == 429:
+            _wikimedia_429_blocked = True
+            print(f'[Image] Wikimedia Commons 429 — circuit breaker tripped')
+            return []
+        if r.status_code != 200:
+            print(f'[Image] Wikimedia Commons HTTP {r.status_code} for: {query}')
+            return []
         urls = []
         pages = r.json().get('query', {}).get('pages', {})
         for page in pages.values():
@@ -6545,7 +6570,7 @@ def _search_duckduckgo_images(query: str, max_results: int = 5) -> list[str]:
                 safesearch="on",
             )
             urls: list[str] = []
-            _blocked = _BLOCKED_IMAGE_DOMAINS | _BLOCKED_CHILD_PATTERNS
+            _blocked = _BLOCKED_IMAGE_DOMAINS | _BLOCKED_CHILD_PATTERNS | _VIDEO_ADULT_DOMAINS
             for r in (raw or []):
                 url = r.get("image", "")
                 if not url or not url.startswith("http"):
@@ -6553,10 +6578,14 @@ def _search_duckduckgo_images(query: str, max_results: int = 5) -> list[str]:
                 u_lower = url.lower()
                 if any(d in u_lower for d in _blocked):
                     continue
+                if any(p in u_lower for p in _BLOCKED_ADULT_PATTERNS):
+                    continue
                 # Filter on DDG result metadata before downloading
                 _title  = (r.get("title")  or "").lower()
                 _source = (r.get("source") or "").lower()
                 if any(kw in _title or kw in _source for kw in _ART_RESULT_KEYWORDS):
+                    continue
+                if any(kw in _title or kw in _source for kw in _BLOCKED_ADULT_PATTERNS):
                     continue
                 # Skip images with known-small dimensions (likely thumbnails/icons)
                 _w = int(r.get("width")  or 0)
@@ -11922,8 +11951,14 @@ def create_video(
     user_videos: list | None = None,
 ) -> str:
     """Dispatcher: routes to run_fast_pipeline() or run_full_pipeline()."""
-    global _PIPELINE_START
+    global _PIPELINE_START, _wikimedia_429_blocked, _pollinations_402_blocked
+    global _pollinations_429_count, _pollinations_req_count
     _PIPELINE_START = time.time()
+    # Reset per-run circuit breakers so each video starts fresh
+    _wikimedia_429_blocked = False
+    _pollinations_402_blocked = False
+    _pollinations_429_count = 0
+    _pollinations_req_count = 0
     if PIPELINE_MODE == "fast":
         return run_fast_pipeline(script_data, video_id, custom_audio_path, user_images, user_videos)
     else:
