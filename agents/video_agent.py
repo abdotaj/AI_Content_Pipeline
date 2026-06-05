@@ -1770,8 +1770,10 @@ def build_character_portraits(
 
 _DEFAULT_STYLE = "true crime storytelling, dark cinematic lighting, dramatic atmospheric narrative"
 _IMAGE_PROMPT_SUFFIX = (
-    ", dark cinematic storytelling style, dramatic narrative atmosphere, no text, "
-    "no watermarks, photorealistic, high detail"
+    ", dark cinematic storytelling style, dramatic narrative atmosphere, "
+    "photorealistic documentary photograph, real people real places, "
+    "no text, no watermarks, no cartoon, no illustration, no animation, "
+    "no video game, no 3D render, high detail"
 )
 
 
@@ -2230,9 +2232,20 @@ def generate_ai_image(prompt: str, output_path: str, seed: int = None) -> str:
     output_path = output_path.replace(".jpg", ".png")
     encoded = requests.utils.quote(clean_prompt(prompt))
     _seed = seed if seed is not None else random.randint(1, 99999)
+    # Negative prompt: block cartoon/game/illustration/explicit outputs at the
+    # Stable Diffusion level. "safe=true" only blocks nudity — it does NOT block
+    # game screenshots, cartoon characters, or illustrations without this.
+    _negative = requests.utils.quote(
+        "cartoon, animation, anime, manga, video game, game screenshot, "
+        "3D render, CGI, illustration, drawing, clipart, vector art, "
+        "super mario, mario bros, pokemon, pikachu, minecraft, roblox, "
+        "fortnite, zelda, sonic, disney character, pixar, looney tunes, "
+        "low quality, blurry, watermark, text, logo, nude, explicit, nsfw"
+    )
     url = (
         f"https://image.pollinations.ai/prompt/{encoded}"
         f"?width=1080&height=1920&nologo=true&safe=true&seed={_seed}"
+        f"&negative={_negative}"
     )
 
     for attempt in range(3):
