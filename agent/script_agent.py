@@ -1889,7 +1889,7 @@ def generate_chapters(total_words: int, language: str = "english",
 def _sanitize_chapter_title(text: str) -> str:
     """Strip supplementary-plane emoji (4-byte sequences) that corrupt in non-UTF-8 contexts.
 
-    Keeps Arabic, Latin, and BMP punctuation. Prevents garbled output like â±ï¸ or ðŸŽ¬.
+    Keeps Arabic, Latin, and BMP punctuation. Prevents garbled output like â±ï¸ or 🎬.
     """
     import unicodedata as _ud
     nfc = _ud.normalize("NFC", text)

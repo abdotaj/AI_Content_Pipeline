@@ -28,7 +28,7 @@ if moviepy.__version__.startswith('2'):
     print("[Video] Using compatibility mode")
     MOVIEPY_V2 = True
 else:
-    print("[Video] MoviePy 1.x confirmed âœ…")
+    print("[Video] MoviePy 1.x confirmed ✅")
     MOVIEPY_V2 = False
 
 
@@ -174,11 +174,11 @@ def _strip_section_markers(text: str) -> str:
     """Remove section markers so they are never spoken in TTS."""
     import re
     marker_line = re.compile(
-        r'(?im)^\s*[\[\{\(]\s*(?:(?:section|chapter|part|Ù‚Ø³Ù…|Ø§Ù„Ù‚Ø³Ù…)\s*:\s*)?([^\]\}\)\n:]+?)\s*:?\s*[\]\}\)]\s*$'
+        r'(?im)^\s*[\[\{\(]\s*(?:(?:section|chapter|part|قسم|القسم)\s*:\s*)?([^\]\}\)\n:]+?)\s*:?\s*[\]\}\)]\s*$'
     )
     text = marker_line.sub("", text or "")
     text = re.sub(
-        r'(?im)^\s*(introduction|background|main story|shocking facts|conclusion|Ù…Ù‚Ø¯Ù…Ø©|Ø§Ù„Ø®Ù„ÙÙŠØ©|Ø§Ù„Ù‚ØµØ© Ø§Ù„Ø±Ø¦ÙŠØ³ÙŠØ©|Ø­Ù‚Ø§Ø¦Ù‚ ØµØ§Ø¯Ù…Ø©|Ø§Ù„Ø®Ø§ØªÙ…Ø©)\s*:\s*$',
+        r'(?im)^\s*(introduction|background|main story|shocking facts|conclusion|مقدمة|الخلفية|القصة الرئيسية|حقائق صادمة|الخاتمة)\s*:\s*$',
         "",
         text,
     )
@@ -538,13 +538,13 @@ def generate_voiceover_openai(text: str, language: str, output_path: str,
             "Strong clear ending sentence. Maintain realism and credibility."
         ),
         "alloy_arabic": (
-            "Ø£Ø³Ù„ÙˆØ¨ Ø§Ù„Ø£Ø¯Ø§Ø¡: Ø±Ø§ÙˆÙ ÙˆØ«Ø§Ø¦Ù‚ÙŠ Ø¹Ø±Ø¨ÙŠ Ø§Ø­ØªØ±Ø§ÙÙŠ. "
-            "ØµÙˆØª Ø¹Ù…ÙŠÙ‚ ÙˆÙˆØ§Ø«Ù‚ ÙˆÙ‡Ø§Ø¯Ø¦. Ù†Ø¨Ø±Ø© Ø¬Ø§Ø¯Ø© ÙˆØºØ§Ù…Ø¶Ø©. Ø¥Ù„Ù‚Ø§Ø¡ Ø·Ø¨ÙŠØ¹ÙŠ Ø¬Ø¯Ø§Ù‹. "
-            "ÙˆØ¶ÙˆØ­ Ù…Ù…ØªØ§Ø² Ù„Ù„Ø­Ø±ÙˆÙ. ÙˆÙ‚ÙØ§Øª Ù‚ØµÙŠØ±Ø© Ø¨Ø¹Ø¯ Ø§Ù„Ø¬Ù…Ù„ Ø§Ù„Ù…Ù‡Ù…Ø©. "
-            "ØªØµØ§Ø¹Ø¯ ØªØ¯Ø±ÙŠØ¬ÙŠ ÙÙŠ Ø§Ù„ØªÙˆØªØ± Ø£Ø«Ù†Ø§Ø¡ Ø§Ù„Ø£Ø­Ø¯Ø§Ø«. "
-            "Ø®ÙØ¶ Ø§Ù„Ù†Ø¨Ø±Ø© Ø¹Ù†Ø¯ Ø§Ù„Ù…Ø¢Ø³ÙŠ ÙˆØ§Ù„Ø¶Ø­Ø§ÙŠØ§. "
-            "Ù„Ø§ Ù…Ø¨Ø§Ù„ØºØ©ØŒ Ù„Ø§ ØªÙ…Ø«ÙŠÙ„ Ø²Ø§Ø¦Ø¯ØŒ Ù„Ø§ ØµÙˆØª Ø±ÙˆØ¨ÙˆØªÙŠ. "
-            "Ø§Ù„Ø¥Ø­Ø³Ø§Ø³ Ø§Ù„Ø¹Ø§Ù…: Ù‡ÙŠØ¨Ø©ØŒ ØºÙ…ÙˆØ¶ØŒ Ù…ØµØ¯Ø§Ù‚ÙŠØ©ØŒ Ù‚ÙˆØ© Ù‡Ø§Ø¯Ø¦Ø©ØŒ Ø³Ø±Ø¯ Ø³ÙŠÙ†Ù…Ø§Ø¦ÙŠ."
+            "أسلوب الأداء: راوٍ وثائقي عربي احترافي. "
+            "صوت عميق وواثق وهادئ. نبرة جادة وغامضة. إلقاء طبيعي جداً. "
+            "وضوح ممتاز للحروف. وقفات قصيرة بعد الجمل المهمة. "
+            "تصاعد تدريجي في التوتر أثناء الأحداث. "
+            "خفض النبرة عند المآسي والضحايا. "
+            "لا مبالغة، لا تمثيل زائد، لا صوت روبوتي. "
+            "الإحساس العام: هيبة، غموض، مصداقية، قوة هادئة، سرد سينمائي."
         ),
     }
 
@@ -1016,11 +1016,11 @@ SUBJECTS = {
 
     # Sudan — documentary topics
     "hemedti":             "Mohamed Hamdan Dagalo Hemedti RSF Sudan military general portrait cinematic",
-    "Ø­Ù…ÙŠØ¯ØªÙŠ":              "Sudanese military general RSF commander portrait dark cinematic dramatic",
+    "حميدتي":              "Sudanese military general RSF commander portrait dark cinematic dramatic",
     "dagalo":              "RSF Sudan military commander portrait cinematic dark dramatic",
-    "Ù…Ø­Ù…Ø¯ Ø­Ù…Ø¯Ø§Ù† Ø¯Ù‚Ù„Ùˆ":     "Sudanese military general portrait dark cinematic dramatic",
+    "محمد حمدان دقلو":     "Sudanese military general portrait dark cinematic dramatic",
     "omar bashir":         "Omar al-Bashir Sudan dictator president portrait cinematic",
-    "Ø§Ù„Ø¨Ø´ÙŠØ±":              "Sudan president portrait dark cinematic dramatic",
+    "البشير":              "Sudan president portrait dark cinematic dramatic",
 }
 
 # Keys sorted longest-first — computed once at import time
@@ -1410,7 +1410,7 @@ def process_user_images_smart(
             ignored.append(img)
 
     print(f"[Image] Smart filter results:")
-    print(f"  âœ… Use now: {len(use_now)}")
+    print(f"  ✅ Use now: {len(use_now)}")
     print(f"  🔦 Save Part 2: {len(save_for_later)}")
     print(f"  âŒ Ignored: {len(ignored)}")
 
@@ -10430,7 +10430,7 @@ def mix_background_music(voice_path: str, is_short: bool = False) -> str:
     )
 
     if not os.path.exists(music_file):
-        print(f"[Music] Music file missing ({music_file}) — skipping mix âš ï¸")
+        print(f"[Music] Music file missing ({music_file}) — skipping mix ⚠ï¸")
         return voice_path
 
     ffmpeg_bin = _get_ffmpeg()
@@ -10452,7 +10452,7 @@ def mix_background_music(voice_path: str, is_short: bool = False) -> str:
             check=True, capture_output=True,
         )
         label = "short" if is_short else "long"
-        print(f"[Music] Music mixed at -24 dB ({label}): {output} âœ…")
+        print(f"[Music] Music mixed at -24 dB ({label}): {output} ✅")
         return output
     except Exception as e:
         print(f"[Music] Mix failed: {e} — returning voice-only")
@@ -10561,11 +10561,11 @@ _SECTION_DISPLAY = {
     "Shocking Facts": "\U0001f480 Shocking Facts",
     "Conclusion":     "\U0001f3af Conclusion",
     "الرواية مقابل الواقع": "\U0001f3ad الرواية مقابل الواقع",
-    "Ù…Ù‚Ø¯Ù…Ø©":          "ðŸŽ¬ Ù…Ù‚Ø¯Ù…Ø©",
-    "Ø§Ù„Ø®Ù„ÙÙŠØ©":         "🔺 Ø§Ù„Ø®Ù„ÙÙŠØ© ÙˆØ§Ù„Ø³ÙŠØ§Ù‚",
-    "Ø§Ù„Ù‚ØµØ© Ø§Ù„Ø±Ø¦ÙŠØ³ÙŠØ©":  "🔍 Ø§Ù„Ù‚ØµØ© Ø§Ù„Ø±Ø¦ÙŠØ³ÙŠØ©",
-    "Ø­Ù‚Ø§Ø¦Ù‚ ØµØ§Ø¯Ù…Ø©":    "ðŸ'€ Ø­Ù‚Ø§Ø¦Ù‚ ØµØ§Ø¯Ù…Ø©",
-    "Ø§Ù„Ø®Ø§ØªÙ…Ø©":         "ðŸŽ¯ Ø§Ù„Ø®Ø§ØªÙ…Ø©",
+    "مقدمة":          "ðŸŽ¬ مقدمة",
+    "الخلفية":         "🔺 الخلفية والسياق",
+    "القصة الرئيسية":  "🔍 القصة الرئيسية",
+    "حقائق صادمة":    "ðŸ'€ حقائق صادمة",
+    "الخاتمة":         "ðŸŽ¯ الخاتمة",
 }
 
 
@@ -10595,15 +10595,15 @@ def _canonical_section_name(name: str) -> str:
         "ending": "Conclusion",
         "القصة الحقيقية": "القصة الرئيسية",
         "الرواية مقابل الواقع": "الرواية مقابل الواقع",
-        "Ù…Ù‚Ø¯Ù…Ø©": "Ù…Ù‚Ø¯Ù…Ø©",
-        "Ø§Ù„Ù…Ù‚Ø¯Ù…Ø©": "Ù…Ù‚Ø¯Ù…Ø©",
-        "Ø§Ù„Ø®Ù„ÙÙŠØ©": "Ø§Ù„Ø®Ù„ÙÙŠØ©",
-        "Ø§Ù„Ø®Ù„ÙÙŠØ© ÙˆØ§Ù„Ø³ÙŠØ§Ù‚": "Ø§Ù„Ø®Ù„ÙÙŠØ©",
-        "Ø§Ù„Ù‚ØµØ© Ø§Ù„Ø±Ø¦ÙŠØ³ÙŠØ©": "Ø§Ù„Ù‚ØµØ© Ø§Ù„Ø±Ø¦ÙŠØ³ÙŠØ©",
-        "Ø§Ù„Ù‚ØµØ©": "Ø§Ù„Ù‚ØµØ© Ø§Ù„Ø±Ø¦ÙŠØ³ÙŠØ©",
-        "Ø­Ù‚Ø§Ø¦Ù‚ ØµØ§Ø¯Ù…Ø©": "Ø­Ù‚Ø§Ø¦Ù‚ ØµØ§Ø¯Ù…Ø©",
-        "Ø§Ù„Ø­Ù‚Ø§Ø¦Ù‚ Ø§Ù„ØµØ§Ø¯Ù…Ø©": "Ø­Ù‚Ø§Ø¦Ù‚ ØµØ§Ø¯Ù…Ø©",
-        "Ø§Ù„Ø®Ø§ØªÙ…Ø©": "Ø§Ù„Ø®Ø§ØªÙ…Ø©",
+        "مقدمة": "مقدمة",
+        "المقدمة": "مقدمة",
+        "الخلفية": "الخلفية",
+        "الخلفية والسياق": "الخلفية",
+        "القصة الرئيسية": "القصة الرئيسية",
+        "القصة": "القصة الرئيسية",
+        "حقائق صادمة": "حقائق صادمة",
+        "الحقائق الصادمة": "حقائق صادمة",
+        "الخاتمة": "الخاتمة",
     }
     return aliases.get(n, cleaned.strip() or name.strip())
 
@@ -10614,17 +10614,17 @@ def _parse_script_sections(script_text: str) -> list[tuple[str, str]]:
 
     Supports:
     - [SECTION: Name]
-    - [Ù‚Ø³Ù…: Name] / [Ø§Ù„Ù‚Ø³Ù…: Name]
+    - [قسم: Name] / [القسم: Name]
     - {SECTION: Name}
-    - {Ø§Ù„Ø®Ø§ØªÙ…Ø©:}
+    - {الخاتمة:}
     """
     import re
     marker_line = re.compile(
-        r'^\s*[\[\{\(]\s*(?:(?:section|chapter|part|Ù‚Ø³Ù…|Ø§Ù„Ù‚Ø³Ù…)\s*:\s*)?([^\]\}\)\n:]+?)\s*:?\s*[\]\}\)]\s*$',
+        r'^\s*[\[\{\(]\s*(?:(?:section|chapter|part|قسم|القسم)\s*:\s*)?([^\]\}\)\n:]+?)\s*:?\s*[\]\}\)]\s*$',
         flags=re.IGNORECASE,
     )
     plain_label_line = re.compile(
-        r'^\s*(introduction|background|main story|shocking facts|conclusion|Ù…Ù‚Ø¯Ù…Ø©|Ø§Ù„Ø®Ù„ÙÙŠØ©|Ø§Ù„Ù‚ØµØ© Ø§Ù„Ø±Ø¦ÙŠØ³ÙŠØ©|Ø­Ù‚Ø§Ø¦Ù‚ ØµØ§Ø¯Ù…Ø©|Ø§Ù„Ø®Ø§ØªÙ…Ø©)\s*:\s*$',
+        r'^\s*(introduction|background|main story|shocking facts|conclusion|مقدمة|الخلفية|القصة الرئيسية|حقائق صادمة|الخاتمة)\s*:\s*$',
         flags=re.IGNORECASE,
     )
 
