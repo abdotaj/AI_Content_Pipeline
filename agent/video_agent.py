@@ -7341,26 +7341,6 @@ def fetch_stock_videos(script_text: str, count: int, video_id: str, topic: str =
     results: list[str] = []
     query_cache: dict[str, str] = {}
 
-    # Prepend research queries (from "SEARCH QUERIES USED") before chunk queries.
-    # These run through the same _try_all_sources chain so every video source
-    # (Archive, Wikimedia, DDG, Pexels, Pixabay…) is tried for each query.
-    if _SCRIPT_SEARCH_QUERIES:
-        _sv_pre = 0
-        for _sq in _SCRIPT_SEARCH_QUERIES:
-            if len(results) >= count or _sv_pre >= 4:
-                break
-            _sq_clean = _sq.strip().strip('"')
-            _sq_out   = os.path.join(STOCK_VIDEOS_DIR,
-                f"{video_id}_sq_{abs(hash(_sq_clean)) % 10**8}.mp4")
-            _sv = _try_all_sources(_sq_clean, _sq_out)
-            if _sv:
-                results.append(_sv)
-                query_cache[_sq_clean] = _sv
-                _sv_pre += 1
-                print(f"[Stock] Script query video {_sv_pre}: {_sq_clean[:50]}")
-        if _sv_pre:
-            print(f"[Stock] {_sv_pre} video(s) from script search queries")
-
     def _try_all_sources(query: str, out_path: str) -> str | None:
         # (src_name, search_fn, use_ytdlp, max_bytes_override)
         for src_name, src_fn, use_ytdlp, mb_override in [
@@ -7386,6 +7366,26 @@ def fetch_stock_videos(script_text: str, count: int, video_id: str, topic: str =
                 print(f"[Stock] {src_name}: '{query}'")
                 return saved
         return None
+
+    # Prepend research queries (from "SEARCH QUERIES USED") before chunk queries.
+    # These run through the same _try_all_sources chain so every video source
+    # (Archive, Wikimedia, DDG, Pexels, Pixabay…) is tried for each query.
+    if _SCRIPT_SEARCH_QUERIES:
+        _sv_pre = 0
+        for _sq in _SCRIPT_SEARCH_QUERIES:
+            if len(results) >= count or _sv_pre >= 4:
+                break
+            _sq_clean = _sq.strip().strip('"')
+            _sq_out   = os.path.join(STOCK_VIDEOS_DIR,
+                f"{video_id}_sq_{abs(hash(_sq_clean)) % 10**8}.mp4")
+            _sv = _try_all_sources(_sq_clean, _sq_out)
+            if _sv:
+                results.append(_sv)
+                query_cache[_sq_clean] = _sv
+                _sv_pre += 1
+                print(f"[Stock] Script query video {_sv_pre}: {_sq_clean[:50]}")
+        if _sv_pre:
+            print(f"[Stock] {_sv_pre} video(s) from script search queries")
 
     for i, chunk in enumerate(chunks):
         # Generate 2-3 specific queries (location/action/mood) then refine via YouTube titles
