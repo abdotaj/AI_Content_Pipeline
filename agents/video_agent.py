@@ -2642,6 +2642,12 @@ _BLOCKED_IMAGE_DOMAINS = {
     "pornhub.com", "xvideos.com", "xnxx.com", "redtube.com", "youporn.com",
     "onlyfans.com", "fansly.com", "chaturbate.com", "brazzers.com",
     "spankbang.com", "xhamster.com", "rule34.xxx", "gelbooru.com", "danbooru.donmai.us",
+    # Video game / cartoon sites — gameplay screenshots not appropriate for crime docs
+    "nintendo.com", "pokemon.com", "mariowiki.com", "zeldawiki.wiki",
+    "minecraft.net", "epicgames.com", "roblox.com", "steamcommunity.com",
+    "gamespot.com", "ign.com", "kotaku.com", "polygon.com", "eurogamer.net",
+    "wikia.com", "fandom.com", "gamebanana.com", "gamefaqs.gamespot.com",
+    "bulbapedia.bulbagarden.net", "zelda.fandom.com", "mario.fandom.com",
 }
 _BLOCKED_URL_PATTERNS  = {".html", ".php", ".aspx", "/blog/", "/article/", "/post/",
                            "/painting/", "/artwork/", "/fine-art/", "/collection/art/",
@@ -2661,6 +2667,11 @@ _BLOCKED_CHILD_PATTERNS = {
     "shutterstock.com/image-vector", "istockphoto.com/vector",
     "freepik.com", "flaticon", "vecteezy", "dreamstime.com/stock-image-kids",
     "depositphotos.com/stock-illustration",
+    # Video game / cartoon franchise keywords in URL path
+    "supermario", "super-mario", "mariobros", "mario-bros",
+    "pokemon", "pikachu", "minecraft", "roblox", "fortnite",
+    "zelda", "sonic-the", "dragonball", "dragon-ball",
+    "fandom.com", "wikia.com", "gamebanana",
 }
 # Adult/sexual URL keywords — block before downloading (YouTube policy compliance)
 _BLOCKED_ADULT_PATTERNS = {
@@ -2672,7 +2683,9 @@ _CRIME_NEGATIVE_TERMS = (
     "-cartoon -illustration -drawing -clipart -vector -anime -kids -children "
     "-coloring -painting -artwork -watercolor -sketch -doodle "
     "-painted -acrylic -mural -fresco -digital-art "
-    "-nude -naked -nudity -sexual -explicit -nsfw -adult -porn -lingerie -bikini -erotic"
+    "-nude -naked -nudity -sexual -explicit -nsfw -adult -porn -lingerie -bikini -erotic "
+    "-mario -pokemon -minecraft -roblox -fortnite -zelda -sonic -pikachu "
+    "-videogame -\"video game\" -gameplay -screenshot -gaming"
 )
 
 # ── Search query sanitization ─────────────────────────────────────────────────
@@ -2776,6 +2789,18 @@ _ART_RESULT_KEYWORDS = frozenset({
     "background image", "stock background", "texture background",
     "solid background", "color background", "colour background",
     "seamless texture", "seamless pattern", "flat design background",
+    # Video game franchises / cartoon characters — never appropriate for crime docs
+    "super mario", "mario bros", "sonic the hedgehog", "sonic hedgehog",
+    "pokemon", "pikachu", "zelda", "link ", "minecraft", "fortnite",
+    "roblox", "among us", "grand theft auto", "gta screenshot",
+    "call of duty", "overwatch", "league of legends", "valorant",
+    "cartoon network", "nickelodeon", "disney character", "pixar",
+    "looney tunes", "tom and jerry", "scooby-doo", "simpsons character",
+    "family guy", "south park", "avatar the last", "my little pony",
+    "transformers cartoon", "power rangers",
+    # Anime characters (generic anime already present, but add show names)
+    "dragon ball", "naruto", "one piece", "attack on titan", "demon slayer",
+    "jujutsu kaisen", "bleach anime", "fairy tail", "sword art online",
 })
 _VALID_IMAGE_EXTS      = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".jfif"}
 
