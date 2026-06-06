@@ -1859,11 +1859,22 @@ def build_visual_search_query(
     topic_clean = (topic or "").strip()
     text_lower = text.lower()
 
+    # First names that are also royal/celebrity names — need topic context to disambiguate
+    _AMBIGUOUS_FIRST_NAMES = {
+        "elizabeth", "victoria", "diana", "kate", "meghan", "william",
+        "charles", "george", "henry", "mary", "anne", "margaret", "edward",
+    }
+
     # 1. Named person — consecutive title-case words (≥2, each ≥3 chars)
     name_match = re.findall(r'\b([A-Z][a-z]{2,}(?:\s+[A-Z][a-z]{2,})+)\b', text)
     for nm in name_match:
         parts = nm.split()
         if all(p.lower() not in _STOPWORDS for p in parts):
+            # Check if alias provides an unambiguous canonical form (e.g. Elizabeth Holmes → Theranos)
+            _alias = _PERSON_ALIASES.get(nm.lower(), "")
+            if _alias and _alias.lower() != nm.lower():
+                return _alias
+
             # Add topic context if the name is not the whole topic
             suffix = ""
             for loc_key in _LOCATIONS:
@@ -1880,6 +1891,19 @@ def build_visual_search_query(
                 parts_out.append(era)
             elif suffix:
                 parts_out.append(suffix)
+            elif {p.lower() for p in parts} & _AMBIGUOUS_FIRST_NAMES:
+                # Ambiguous royal/celebrity first name — add topic qualifier to prevent
+                # unrelated results (e.g. "Elizabeth Holmes" → Queen Elizabeth photos)
+                topic_extras = [
+                    w for w in topic_clean.split()
+                    if w.lower() not in nm.lower() and len(w) > 3
+                    and w.lower() not in _STOPWORDS
+                ]
+                if topic_extras:
+                    parts_out.append(topic_extras[0])
+                else:
+                    # No extra topic words — append "documentary" as minimum context
+                    parts_out.append("documentary")
             query = " ".join(parts_out)
             if len(query.split()) >= 2:
                 return query
@@ -3112,17 +3136,32 @@ _KNOWN_CRIME_PERSONS = {
     "machine gun kelly",
     # Stalkers / workplace violence
     "richard farley", "laura black",
+    # White-collar / corporate fraud (modern)
+    "elizabeth holmes", "bernie madoff", "bernard madoff", "jordan belfort",
+    "sam bankman-fried", "anna delvey", "anna sorokin", "billy mcfarland",
+    "adam neumann", "elizabeth warren", "martin shkreli",
 }
 
 # Canonical Wikipedia name for aliases that resolve poorly on their own
 _PERSON_ALIASES: dict[str, str] = {
-    "el chapo":      "joaquin guzman",
-    "btk":           "dennis rader",
-    "night stalker": "richard ramirez",
-    "son of sam":    "david berkowitz",
-    "zodiac":        "zodiac killer",
-    "richard farley": "Richard Farley ESL stalker",
-    "laura black":   "Laura Black ESL stalking victim",
+    "el chapo":           "joaquin guzman",
+    "btk":                "dennis rader",
+    "night stalker":      "richard ramirez",
+    "son of sam":         "david berkowitz",
+    "zodiac":             "zodiac killer",
+    "richard farley":     "Richard Farley ESL stalker",
+    "laura black":        "Laura Black ESL stalking victim",
+    # White-collar figures — disambiguated to avoid celebrity/royal name confusion
+    "elizabeth holmes":   "Elizabeth Holmes Theranos founder",
+    "bernie madoff":      "Bernie Madoff Ponzi scheme",
+    "bernard madoff":     "Bernie Madoff Ponzi scheme",
+    "jordan belfort":     "Jordan Belfort Wolf of Wall Street",
+    "sam bankman-fried":  "Sam Bankman-Fried FTX crypto",
+    "anna delvey":        "Anna Delvey Sorokin fake heiress",
+    "anna sorokin":       "Anna Sorokin Delvey fake heiress",
+    "billy mcfarland":    "Billy McFarland Fyre Festival fraud",
+    "adam neumann":       "Adam Neumann WeWork CEO fraud",
+    "martin shkreli":     "Martin Shkreli pharma fraud",
 }
 
 # ── Visual event type classifiers ─────────────────────────────────────────────
@@ -4685,6 +4724,26 @@ def _is_video_file(path: str) -> bool:
 _pexels_blocked = False  # circuit breaker for Pexels rate/auth errors
 
 
+# Terms in Pexels/Pixabay metadata that indicate royal/celebrity mismatch.
+# Applied when the query targets a specific crime figure, not royalty.
+_STOCK_ROYAL_REJECT = frozenset({
+    "queen elizabeth", "princess diana", "royal family", "buckingham palace",
+    "king charles", "queen victoria", "prince william", "duchess cambridge",
+    "meghan markle", "monarchy", "coronation", "windsor castle",
+    "british royal", "royal portrait", "queen consort",
+})
+
+
+def _stock_result_is_royal_mismatch(description: str, query: str) -> bool:
+    """Return True if a stock photo description looks like royal content we didn't ask for."""
+    desc_lower = description.lower()
+    query_lower = query.lower()
+    # Only reject if query doesn't itself mention royalty
+    if any(t in query_lower for t in ("queen", "royal", "princess", "king", "monarch")):
+        return False
+    return any(t in desc_lower for t in _STOCK_ROYAL_REJECT)
+
+
 def _search_pexels_images(query: str, max_results: int = 5) -> list[str]:
     """Search Pexels photos and return direct image URLs (free licensed)."""
     global _pexels_blocked
@@ -4698,7 +4757,7 @@ def _search_pexels_images(query: str, max_results: int = 5) -> list[str]:
         r = requests.get(
             "https://api.pexels.com/v1/search",
             headers={"Authorization": api_key},
-            params={"query": query, "per_page": max_results, "orientation": "portrait", "size": "large"},
+            params={"query": query, "per_page": max_results * 2, "orientation": "portrait", "size": "large"},
             timeout=20,
         )
         if r.status_code in (429, 403, 402):
@@ -4710,10 +4769,16 @@ def _search_pexels_images(query: str, max_results: int = 5) -> list[str]:
             return []
         urls = []
         for photo in r.json().get("photos", []):
+            alt = photo.get("alt", "") or ""
+            if _stock_result_is_royal_mismatch(alt, query):
+                print(f"[Image] Pexels: rejected royal mismatch — '{alt[:60]}'")
+                continue
             src = photo.get("src", {})
             url = src.get("portrait") or src.get("large2x") or src.get("large") or src.get("original")
             if url:
                 urls.append(url)
+            if len(urls) >= max_results:
+                break
         return urls
     except Exception as e:
         print(f"[Image] Pexels photo search error: {e}")
@@ -4738,7 +4803,7 @@ def _search_pixabay_images(query: str, max_results: int = 5) -> list[str]:
             params={
                 "key": api_key,
                 "q": query,
-                "per_page": max_results,
+                "per_page": max_results * 2,
                 "image_type": "photo",      # photo only — no illustration or vector
                 "orientation": "vertical",  # portrait for 9:16 video format
                 "safesearch": "true",
@@ -4753,11 +4818,18 @@ def _search_pixabay_images(query: str, max_results: int = 5) -> list[str]:
         if r.status_code != 200:
             print(f"[Image] Pixabay photos {r.status_code} for '{query}'")
             return []
-        return [
-            hit.get("largeImageURL", "")
-            for hit in r.json().get("hits", [])
-            if hit.get("largeImageURL")
-        ]
+        urls = []
+        for hit in r.json().get("hits", []):
+            tags = hit.get("tags", "") or ""
+            if _stock_result_is_royal_mismatch(tags, query):
+                print(f"[Image] Pixabay: rejected royal mismatch — '{tags[:60]}'")
+                continue
+            url = hit.get("largeImageURL", "")
+            if url:
+                urls.append(url)
+            if len(urls) >= max_results:
+                break
+        return urls
     except Exception as e:
         print(f"[Image] Pixabay image search error: {e}")
         return []
