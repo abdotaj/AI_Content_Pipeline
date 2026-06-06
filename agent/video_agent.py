@@ -6978,7 +6978,7 @@ def _search_google_images(query: str, max_results: int = 10) -> list[str]:
     global _google_cse_blocked
     if _google_cse_blocked:
         return []
-    api_key = (os.getenv("GOOGLE_API_KEY") or "").strip()
+    api_key = (os.getenv("CUSTOM_SEARCH") or "").strip()
     cse_id  = (os.getenv("GOOGLE_CSE_ID") or "").strip()
     if not api_key or not cse_id:
         return []
@@ -7073,7 +7073,7 @@ def _search_google_web_videos(query: str, max_results: int = 5) -> list[str]:
     Appends 'short video clip footage' to the query so Google ranks video
     pages over plain article pages.
     """
-    api_key = (os.getenv("custom_search") or os.getenv("GOOGLE_API_KEY") or "").strip()
+    api_key = (os.getenv("CUSTOM_SEARCH") or "").strip()
     cse_id  = (os.getenv("GOOGLE_CSE_ID") or "").strip()
     if not api_key or not cse_id:
         return []
