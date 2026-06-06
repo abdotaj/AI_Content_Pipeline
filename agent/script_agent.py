@@ -6936,6 +6936,36 @@ def translate_script(en_script: dict, research: dict | None = None) -> dict:
     return ar_data
 
 
+_AR_SHORT_SCRIPT_SYSTEM = """أنت تكتب تعليقاً صوتياً مدته 60 ثانية لفيديو جريمة حقيقية قصير (يوتيوب شورتس / تيك توك / إنستغرام ريلز).
+
+الهيكل (ضمني — لا عناوين ولا تسميات في المخرجات):
+- الثواني 0-3 (الخطّاف): ابدأ مباشرة بالفعل. حقيقة صادمة أو سر مفاجئ. الصدمة فوراً.
+- الثواني 3-20 (البناء): من كان متورطاً. ما الذي كان على المحك. جملتان أو ثلاث، مضغوطة.
+- الثواني 20-45 (الكشف): الحقيقة، الانقلاب، اللحظة التي تغير كل شيء. أكثف جزء في النص.
+- آخر 5 ثوانٍ (خاتمة + CTA): اختم بسؤال مفتوح أو حقيقة مقلقة. ثم: "تابع Dark Crime Decoded لمزيد."
+
+نبرة الصوت: هادئة. تقصيرية. مقلقة قليلاً. الراوي يعرف أكثر مما يقول.
+ليس: متحمساً، أكاديمياً، رسمياً، أو مثيراً للإحساس.
+
+قواعد الجمل:
+- الحد الأقصى: 12 كلمة لكل جملة. الأقصر أقوى.
+- كل جملتين يجب أن ترفعا التوتر — ممنوع البقاء على مستوى واحد.
+- تنويع الإيقاع: اخلط جمل الخمس كلمات مع جمل الاثنتي عشرة.
+- لا حشو وصفي. كل جملة يجب أن تُحرك القصة للأمام.
+
+كثافة المعلومات — إلزامي:
+كل جملة يجب أن تفعل إحدى هذه: تكشف معلومة جديدة، تذكر حقيقة محددة، أو تُصعّد التوتر.
+جمل حشو محظورة: "ساد الصمت." / "تزايد الخوف." / "لم يصدق أحد ما حدث."
+صحيح: "ظهر اسمها في ثلاث قضايا قبل أن يربطها المحققون."
+الحد الأقصى جملة واحدة جوية في الفيديو كله. كل جملة أخرى = حقيقة محددة.
+
+الطول: الهدف 230-260 كلمة. المقبول 210-280. الحد الأدنى المطلق 200.
+
+افتتاحيات محظورة: "هذا الفيديو يشرح...", "في هذه القصة...", "في عام...", "كانت هي...", "كانت...", "هذا عن..."
+تنسيق محظور: أي عناوين أو تسميات أو علامات مقاطع في المخرجات.
+أسلوب محظور: ملخصات، نبرة تعليمية، عبارات جوية مكررة، تكرار "كانت" كبداية للجمل، قوائم نقطية."""
+
+
 _SHORT_SCRIPT_SYSTEM = """You are writing a 60-second spoken voiceover for a true crime short video (YouTube Shorts / TikTok / Instagram Reels).
 
 STRUCTURE (implicit — NO labels, NO headings in output):
@@ -7666,6 +7696,8 @@ def write_arabic_short(ar_long_script: dict) -> dict:
     Picks the strongest moment from the Arabic long script and rewrites it
     as a standalone viral voiceover in native Arabic.
     """
+    import re as _re
+
     topic       = ar_long_script.get("topic", "")
     long_script = ar_long_script.get("script", "")
     series_name = ar_long_script.get("series_name", "")
@@ -7674,56 +7706,93 @@ def write_arabic_short(ar_long_script: dict) -> dict:
         print("[AR Short] No Arabic long script — returning empty")
         return {"short_script_ar": ""}
 
-    prompt = f"""أنت تكتب تعليقاً صوتياً لفيديو جريمة حقيقية قصير مدته 60-90 ثانية.
+    # Extract the best window: skip the intro, use the middle/climax of the script
+    # Split by [SECTION:] markers and skip the first section (intro)
+    _sections = _re.split(r'\[SECTION:[^\]]+\]', long_script)
+    _sections = [s.strip() for s in _sections if s.strip()]
+    if len(_sections) >= 3:
+        # Skip intro (first section), use sections 2-4 where climax usually lives
+        _source_window = " ".join(_sections[1:4])[:3000]
+    elif len(_sections) == 2:
+        _source_window = _sections[1][:3000]
+    else:
+        # No markers — skip first 20% (intro) and take 3000 chars from middle
+        _skip = max(0, len(long_script) // 5)
+        _source_window = long_script[_skip:_skip + 3000]
 
-المهمة: اقرأ النص المصدر أدناه. اعثر على أقوى لحظة — صدمة، اعتراف، انقلاب، أو حقيقة مخفية. أعد كتابتها كتعليق صوتي مستقل وفيروسي. لا تلخّص القصة كلها. أخبر لحظة واحدة، بسرعة وقوة.
+    _series_line = f"المسلسل/الفيلم: {series_name}\n" if series_name else ""
+
+    prompt = f"""المهمة: اقرأ النص المصدر أدناه. اعثر على اللحظة الأكثر إثارة — اعتراف، انقلاب، حكم، أو حقيقة مخفية. أعد كتابتها كتعليق صوتي مستقل وفيروسي. لا تلخّص القصة كلها. أخبر لحظة واحدة، بسرعة وقوة.
 
 الموضوع: {topic}
-{f"المسلسل/الفيلم: {series_name}" if series_name else ""}
+{_series_line}
+الهيكل — اكتبه كنص متصل بلا عناوين:
+- الخطّاف (2-3 جمل): ابدأ بالفعل أو الحقيقة الصادمة. لا مقدمات. لا "في عام..."
+- البناء (2-3 جمل): من كان متورطاً؟ ما الذي كان على المحك؟ أسماء وتفاصيل محددة.
+- الكشف الرئيسي (4-5 جمل): الحقيقة التي غيّرت كل شيء. الحادثة المحورية من النص.
+- الخاتمة (2 جملة): جملة تبقى في الذهن. اختم بـ: "تابع Dark Crime Decoded لمزيد."
 
-قواعد صارمة:
-- افتح مباشرة بالفعل أو الحقيقة. لا مقدمات. لا "في عام..."
-- كل جملة: 10-15 كلمة كحد أقصى
-- لا تقرير، لا تحليل نفسي، لا لغة أكاديمية
-- اسرد المشهد، لا تلخّصه
-- أنهِ بجملة تبقى في الذهن. اختم بـ: "تابع Dark Crime Decoded لمزيد."
-- الطول المستهدف: 260-300 كلمة. الحد الأدنى المطلق: 240 كلمة.
+قيود صارمة:
+- الحد الأقصى: 12 كلمة لكل جملة. الأقصر أقوى.
+- كل جملة يجب أن تكشف معلومة جديدة أو تُصعّد التوتر.
+- محظور: بدء الجمل بـ "كانت" أو "كان" — استخدم أفعالاً حدثت فعلاً.
+- محظور: القوائم النقطية، الملخصات، النبرة الأكاديمية.
+- محظور: أي عناوين أو تسميات في المخرجات.
+- الطول المستهدف: 230-260 كلمة. الحد الأدنى المطلق: 200 كلمة.
 
 النص المصدر (استخرج منه أفضل لحظة):
-{long_script[:2000]}
+{_source_window}
 
 اكتب التعليق الصوتي فقط. لا عناوين. لا تسميات. لا شرح."""
 
     ar_text = ""
-    for attempt in range(3):
-        try:
-            _r = _groq_call(
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=700,
-                temperature=0.85,
-            )
-            _result = _r.choices[0].message.content.strip()
-            _wc     = clean_word_count(_result)
-            print(f"[AR Short] attempt {attempt + 1}: {_wc}w")
-            if _wc > clean_word_count(ar_text):
-                ar_text = _result
-            if _wc >= 240:
-                break
-        except Exception as _e:
-            print(f"[AR Short] Groq error (attempt {attempt + 1}): {_e}")
-            import time as _time; _time.sleep(8)
+    best_text = ""
 
-    # OpenAI fallback when Groq was rate-limited throughout
-    if not ar_text or clean_word_count(ar_text) < 100:
-        print("[AR Short] Groq exhausted — OpenAI fallback")
-        _oa_result = _ai_script_call(prompt, max_tokens=700, temperature=0.85, premium=True)
-        if _oa_result and clean_word_count(_oa_result) > clean_word_count(ar_text):
-            ar_text = _oa_result
-            print(f"[AR Short] OpenAI fallback: {clean_word_count(ar_text)}w")
+    # Phase 1: OpenAI GPT-4o primary (2 attempts)
+    for attempt in range(2):
+        _p = prompt
+        if attempt > 0 and ar_text:
+            _wc_prev = clean_word_count(ar_text)
+            _p += (f"\n\nالمحاولة السابقة: {_wc_prev} كلمة — الهدف 230-260، الحد الأدنى 200. "
+                   f"{'وسّع القسمين الثاني والثالث بحقائق محددة.' if _wc_prev < 200 else 'احذف الحشو واحتفظ بالحقائق فقط.'}")
+        _result = _ai_script_call(_p, max_tokens=700, temperature=0.85,
+                                   system_prompt=_AR_SHORT_SCRIPT_SYSTEM, premium=True).strip()
+        _wc = clean_word_count(_result)
+        print(f"[AR Short] GPT-4o attempt {attempt + 1}: {_wc}w")
+        if _wc > clean_word_count(best_text):
+            best_text = _result
+        ar_text = _result
+        if _wc >= 200:
+            break
+
+    # Phase 2: Groq fallback if GPT-4o under 200 words
+    if clean_word_count(ar_text) < 200:
+        print("[AR Short] GPT-4o under 200w — Groq fallback")
+        for attempt in range(2):
+            try:
+                _r = _groq_call(
+                    messages=[{"role": "user", "content": prompt + "\n\nاكتب على الأقل 200 كلمة. الهدف 230-260."}],
+                    max_tokens=700,
+                    temperature=0.85,
+                )
+                _result = _r.choices[0].message.content.strip()
+                _wc = clean_word_count(_result)
+                print(f"[AR Short] Groq attempt {attempt + 1}: {_wc}w")
+                if _wc > clean_word_count(best_text):
+                    best_text = _result
+                ar_text = _result
+                if _wc >= 200:
+                    break
+            except Exception as _e:
+                print(f"[AR Short] Groq error (attempt {attempt + 1}): {_e}")
+                import time as _time; _time.sleep(8)
+
+    if not ar_text and best_text:
+        ar_text = best_text
 
     # Enforce minimum via expand_short_script
-    if ar_text and clean_word_count(ar_text) < 240:
-        ar_text = expand_short_script(ar_text, "arabic", topic, 270)
+    if ar_text and clean_word_count(ar_text) < 200:
+        ar_text = expand_short_script(ar_text, "arabic", topic, 230)
 
     _final_wc   = clean_word_count(ar_text)
     _final_secs = estimate_short_duration_secs(ar_text, "arabic") if ar_text else 0.0
