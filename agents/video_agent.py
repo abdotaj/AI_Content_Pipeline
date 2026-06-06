@@ -6976,7 +6976,7 @@ def _search_google_images(query: str, max_results: int = 10) -> list[str]:
     global _google_cse_blocked
     if _google_cse_blocked:
         return []
-    api_key = (os.getenv("custom_search") or os.getenv("GOOGLE_API_KEY") or "").strip()
+    api_key = (os.getenv("GOOGLE_API_KEY") or "").strip()
     cse_id  = (os.getenv("GOOGLE_CSE_ID") or "").strip()
     if not api_key or not cse_id:
         return []
@@ -7003,15 +7003,25 @@ def _search_google_images(query: str, max_results: int = 10) -> list[str]:
         )
         if resp.status_code in (429, 403, 402):
             _google_cse_blocked = True
-            print(f"[Image] Google CSE {resp.status_code} — circuit breaker tripped, skipping all future Google calls")
+            print(f"[Image] Google CSE {resp.status_code} — circuit breaker tripped. Response: {resp.text[:300]}")
             _GOOGLE_SEARCH_CACHE[cache_key] = []
             return []
         if resp.status_code != 200:
-            print(f"[Image] Google CSE HTTP {resp.status_code} for '{query}'")
+            print(f"[Image] Google CSE HTTP {resp.status_code} for '{query}' — {resp.text[:300]}")
             _GOOGLE_SEARCH_CACHE[cache_key] = []
             return []
 
-        items = resp.json().get("items", [])
+        data = resp.json()
+        items = data.get("items", [])
+        if not items:
+            # Log why — common cause: Image Search not enabled on the CSE, or quota exhausted
+            err = data.get("error", {})
+            info = data.get("searchInformation", {})
+            print(f"[Image] Google CSE 0 results for '{query}' — "
+                  f"totalResults={info.get('totalResults','?')} "
+                  f"error={err.get('message','none')}")
+            _GOOGLE_SEARCH_CACHE[cache_key] = []
+            return []
         urls: list[str] = []
         for item in items:
             # Prefer the direct image link; fall back to pagemap thumbnail
@@ -7025,8 +7035,7 @@ def _search_google_images(query: str, max_results: int = 10) -> list[str]:
             if len(urls) >= max_results:
                 break
 
-        if urls:
-            print(f"[Image] Google CSE: {len(urls)} result(s) for '{query}'")
+        print(f"[Image] Google CSE: {len(urls)} result(s) for '{query}'")
         _GOOGLE_SEARCH_CACHE[cache_key] = urls
         return urls
 
