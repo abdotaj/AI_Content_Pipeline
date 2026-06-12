@@ -546,11 +546,22 @@ def generate_voiceover_openai(text: str, language: str, output_path: str,
             "لا مبالغة، لا تمثيل زائد، لا صوت روبوتي. "
             "الإحساس العام: هيبة، غموض، مصداقية، قوة هادئة، سرد سينمائي."
         ),
+        "marin": (
+            "أنت راوٍ وثائقي عربي احترافي لقناة جرائم حقيقية على يوتيوب. "
+            "النبرة: هادئة، موثوقة، سينمائية. صوت عميق ومسيطر. "
+            "احترم كل علامة ترقيم كأداة إيقاع صوتي: "
+            "الفاصلة وقفة قصيرة، النقطة وقفة كاملة، النقاط الثلاث وقفة درامية. "
+            "انطق الأرقام والتواريخ بوضوح تام. "
+            "انطق الأسماء الأجنبية بثقة ووضوح. "
+            "تصاعد تدريجي في التوتر. خفض النبرة عند المآسي والضحايا. "
+            "لا مبالغة، لا صوت روبوتي، لا تمثيل زائد. "
+            "الإحساس العام: هيبة، غموض، مصداقية، قوة هادئة، سرد سينمائي."
+        ),
     }
 
     if language == "arabic":
-        model = "tts-1"
-        voice = voice_override or "nova"
+        model = "gpt-4o-mini-tts"
+        voice = voice_override or "marin"
         speed = speed_override if speed_override is not None else 1.1
         label = "Arabic"
     else:
@@ -559,7 +570,8 @@ def generate_voiceover_openai(text: str, language: str, output_path: str,
         speed = speed_override if speed_override is not None else 1.0
         label = "English"
 
-    tts_instructions = None  # tts-1 does not support instructions param
+    # gpt-4o-mini-tts supports instructions; tts-1 does not
+    tts_instructions = _INSTRUCTIONS.get(voice) if language == "arabic" else None
 
     print(f"[TTS] Language={language}")
     print(f"[TTS] Using OpenAI voice={voice} speed={speed}")
@@ -568,7 +580,8 @@ def generate_voiceover_openai(text: str, language: str, output_path: str,
     _cache_key  = hashlib.sha256(
         f"{text}|{language}|{voice}|{model}|{speed}".encode()
     ).hexdigest()[:16]
-    _cache_path = os.path.join(AUDIO_DIR, f"tts_{_cache_key}.mp3")
+    _audio_ext  = "wav" if language == "arabic" else "mp3"
+    _cache_path = os.path.join(AUDIO_DIR, f"tts_{_cache_key}.{_audio_ext}")
     if os.path.exists(_cache_path) and os.path.getsize(_cache_path) > 0:
         _shutil.copy2(_cache_path, output_path)
         print(f"[TTS] cache hit — {_cache_path}")
@@ -601,9 +614,9 @@ def generate_voiceover_openai(text: str, language: str, output_path: str,
         print(f"[Voice] OpenAI TTS: {len(chunks)} chunk(s) for {language}")
 
         audio_files: list[str] = []
-        base = output_path.replace(".mp3", "")
+        base = os.path.splitext(output_path)[0]
         for i, chunk in enumerate(chunks):
-            chunk_path = f"{base}_oai_chunk{i}.mp3"
+            chunk_path = f"{base}_oai_chunk{i}.{_audio_ext}"
 
             if os.path.exists(chunk_path) and os.path.getsize(chunk_path) > 0:
                 print(f"[Voice] OpenAI chunk {i + 1}/{len(chunks)} cached — reusing")
@@ -618,6 +631,8 @@ def generate_voiceover_openai(text: str, language: str, output_path: str,
                         input=chunk,
                         speed=speed,
                     )
+                    if language == "arabic":
+                        tts_kwargs["response_format"] = "wav"
                     if tts_instructions:
                         tts_kwargs["instructions"] = tts_instructions
                     response = client.audio.speech.create(**tts_kwargs)
@@ -838,11 +853,12 @@ def generate_voiceover(script_text: str, filename: str, language: str = "english
     if language == "arabic":
         script_text = _apply_arabic_pronunciation(script_text)
 
-    # Priority 1: OpenAI TTS (primary — Arabic: nova/1.1, English: alloy/1.0)
+    # Priority 1: OpenAI TTS (primary — Arabic: marin/gpt-4o-mini-tts/1.1 WAV, English: alloy/1.0 MP3)
     openai_key = os.getenv("OPENAI_API_KEY", "").strip()
     if openai_key and not _OPENAI_QUOTA_EXCEEDED:
         print("[Voice] Trying OpenAI TTS (primary)...")
-        _oai_path = os.path.join(AUDIO_DIR, f"{filename}.mp3")
+        _oai_ext  = "wav" if language == "arabic" else "mp3"
+        _oai_path = os.path.join(AUDIO_DIR, f"{filename}.{_oai_ext}")
         _is_short = "short" in filename.lower()
         _primary_text = preprocess_arabic_tts(script_text) if language == "arabic" else script_text
         result = generate_voiceover_openai(_primary_text, language, _oai_path, is_short=_is_short)
