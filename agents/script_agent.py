@@ -306,20 +306,20 @@ def clean_word_count(text: str) -> int:
 #   Arabic Nova speed=1.1:  ~185 WPM  (range 170-190, Nova voice at 1.1× speed)
 #   English Alloy 1.0: ~160 WPM (range 155-165, very consistent)
 _WORD_FLOORS = {
-    "fast":      {"english": 1_800, "arabic": 5_500},   # 10 min EN × 160 | 30 min AR × 185 (lower bounds)
+    "fast":      {"english": 2_325, "arabic": 5_500},   # 15 min EN × 155 | 30 min AR × 185 (hard minimum)
     "full":      {"english": 4_000, "arabic": 5_500},   # 15 min EN × 160 | 30 min AR × 185
     "animation": {"english": 2_500, "arabic": 6_500},   # 12 min EN × 160 | 35 min AR × 185
     "short":     {"english": 0,     "arabic": 0},
 }
 _WORD_CEILINGS = {
-    "fast":      {"english": 2_500,  "arabic": 13_750},  # 15 min EN × 160 | 75 min AR × 185
+    "fast":      {"english": 3_000,  "arabic": 13_750},  # 18 min EN × 160 | 75 min AR × 185
     "full":      {"english": 6_500,  "arabic": 13_750},  # 20 min EN × 160 | 74 min AR × 185
     "animation": {"english": 4_000,  "arabic": 11_000},  # 18 min EN × 160 | 60 min AR × 185
     "short":     {"english": 500,    "arabic": 500},
 }
 # Legacy aliases — write_long_script_split and callers use fast/full English by default.
-LONG_SCRIPT_MIN_WORDS: int = _WORD_FLOORS["fast"]["english"]    # 1,800 (10 min × 160 WPM)
-LONG_SCRIPT_MAX_WORDS: int = _WORD_CEILINGS["fast"]["english"]  # 2,500 (15 min × 160 WPM)
+LONG_SCRIPT_MIN_WORDS: int = _WORD_FLOORS["fast"]["english"]    # 2,325 (15 min × 155 WPM)
+LONG_SCRIPT_MAX_WORDS: int = _WORD_CEILINGS["fast"]["english"]  # 3,000 (18 min × 160 WPM)
 
 # ── Story variation profiles — prevents formula fatigue ──────────────────────
 # Each profile shifts the narrative APPROACH without removing the 5-act structure.
@@ -6963,7 +6963,15 @@ _AR_SHORT_SCRIPT_SYSTEM = """أنت تكتب تعليقاً صوتياً مدت�
 
 افتتاحيات محظورة: "هذا الفيديو يشرح...", "في هذه القصة...", "في عام...", "كانت هي...", "كانت...", "هذا عن..."
 تنسيق محظور: أي عناوين أو تسميات أو علامات مقاطع في المخرجات.
-أسلوب محظور: ملخصات، نبرة تعليمية، عبارات جوية مكررة، تكرار "كانت" كبداية للجمل، قوائم نقطية."""
+أسلوب محظور: ملخصات، نبرة تعليمية، عبارات جوية مكررة، تكرار "كانت" كبداية للجمل، قوائم نقطية.
+
+تنويع الكلمة الأولى — قاعدة إلزامية:
+لا تبدأ جملتان متتاليتان بنفس الكلمة الأولى.
+لا تُستخدم نفس الكلمة الافتتاحية أكثر من مرتين في النص كله.
+محظور تاماً: "يتم" في أي صيغة — الفاعل يجب أن يكون صريحاً في كل جملة.
+محظور تاماً: "كانت" أو "كان" كبداية لأي جملة.
+النمط المحظور: كانت X. كانت Y. كانت Z. كانت... (تكرار نفس البداية في كل سطر)
+النمط الصحيح: بدأت X. قررت Y. اكتشف المحققون Z. رفض القاضي..."""
 
 
 _SHORT_SCRIPT_SYSTEM = """You are writing a 60-second spoken voiceover for a true crime short video (YouTube Shorts / TikTok / Instagram Reels).
@@ -7049,6 +7057,146 @@ Return ONLY the expanded spoken script. No headings. No labels."""
         return result
     print(f"[SHORT EXPANSION] Expansion shrunk script ({current_wc} → {result_wc}) — keeping original")
     return script_text
+
+
+def _check_repeated_sentence_starters(text: str, max_allowed: int = 3) -> tuple[bool, str, int]:
+    """Return (is_bad, offending_word, count) if any word opens more than max_allowed sentences."""
+    import re
+    from collections import Counter
+    sentences = re.split(r'[.!؟\n]+', text)
+    first_words = [
+        s.strip().split()[0]
+        for s in sentences
+        if s.strip() and s.strip().split()
+    ]
+    if not first_words:
+        return False, "", 0
+    word, count = Counter(first_words).most_common(1)[0]
+    if count > max_allowed:
+        return True, word, count
+    return False, "", 0
+
+
+_AR_SHORT_OPENING_STYLES = [
+    "ابدأ بحقيقة صادمة أو رقم غير متوقع.",
+    "ابدأ بالفعل — ضع المستمع داخل اللحظة مباشرةً.",
+    "ابدأ بسؤال يكسر التوقعات، ثم أجب عنه فوراً.",
+    "ابدأ بالاسم والجريمة في جملة واحدة مضغوطة.",
+    "ابدأ بالنتيجة أولاً، ثم اعد المستمع إلى البداية.",
+    "ابدأ بجملة يقولها أحد الشخصيات — كلمة حقيقية موثقة.",
+]
+
+
+def _translate_arabic_short_script(english_text: str, topic: str, series_name: str = "") -> str:
+    """Rewrite English short into natural spoken Arabic — skips Google Translate entirely.
+    Uses GPT-4o with explicit يتم/passive ban. Groq fallback."""
+    import random as _random
+    import hashlib as _hashlib
+    _series_line = f"المسلسل/الفيلم: {series_name}\n" if series_name else ""
+    # Pick opening style deterministically per topic so re-runs stay consistent
+    # but different topics get different openings
+    _style_idx = int(_hashlib.md5(topic.encode()).hexdigest(), 16) % len(_AR_SHORT_OPENING_STYLES)
+    _opening_style = _AR_SHORT_OPENING_STYLES[_style_idx]
+    prompt = (
+        f"المهمة: النص الإنجليزي أدناه هو نص فيديو قصير عن جريمة حقيقية. "
+        f"أعد كتابته بالعربية الفصحى الحديثة كتعليق صوتي احترافي لفيديو 60-90 ثانية. "
+        f"هذه إعادة كتابة إبداعية وليست ترجمة حرفية — احتفظ بالوقائع والأحداث لكن اجعل النص "
+        f"يبدو كما كتبه صحفي عربي متمرس.\n\n"
+        f"الموضوع: {topic}\n"
+        f"{_series_line}"
+        f"أسلوب الافتتاح المطلوب لهذا الفيديو تحديداً: {_opening_style}\n\n"
+        f"الهيكل — اكتبه كنص متصل بلا عناوين:\n"
+        f"- الخطّاف (2-3 جمل): {_opening_style} لا مقدمات.\n"
+        f"- البناء (2-3 جمل): من كان متورطاً؟ ما الذي كان على المحك؟\n"
+        f"- الكشف (4-5 جمل): اللحظة المحورية. الحقيقة التي غيّرت كل شيء.\n"
+        f"- الخاتمة (2 جملة): اختم بـ: \"تابع Dark Crime Decoded لمزيد.\"\n\n"
+        f"قواعد صارمة — الانتهاك يُبطل النص:\n"
+        f"- محظور تاماً: \"يتم\" في أي صيغة (يتم القبض، يتم ربطه، يتم إدانته، إلخ)\n"
+        f"- محظور تاماً: المبني للمجهول — لكل فعل فاعل صريح\n"
+        f"- الصحيح: \"اعتقله المحققون\" لا \"تم اعتقاله\" / \"أصدر القاضي حكماً\" لا \"صدر بحقه حكم\"\n"
+        f"- محظور تاماً: بدء الجملة بـ \"كانت\" أو \"كان\"\n"
+        f"- تنويع الكلمة الأولى: لا تبدأ جملتان متتاليتان بنفس الكلمة. لا تكرر كلمة افتتاحية أكثر من مرتين.\n"
+        f"- النمط المحظور: كانت X. كانت Y. كانت Z. — هذا فشل فوري.\n"
+        f"- النمط الصحيح: اعتقله المحققون. قرر القاضي. كشف التحقيق. رفض الاستئناف.\n"
+        f"- الجملة القصوى: 12 كلمة. الأقصر أقوى.\n"
+        f"- الهدف: 230-260 كلمة. الحد الأدنى المطلق: 200 كلمة.\n\n"
+        f"النص الإنجليزي المصدر:\n{english_text}\n\n"
+        f"اكتب التعليق الصوتي العربي فقط. لا عناوين. لا شرح."
+    )
+
+    import time as _time
+
+    def _fix_note(text: str) -> str:
+        """Build a correction instruction when repeated starters are detected."""
+        _bad, _word, _cnt = _check_repeated_sentence_starters(text)
+        if not _bad:
+            return ""
+        return (
+            f"\n\nخطأ في المحاولة السابقة: الكلمة \"{_word}\" تفتح {_cnt} جمل — الحد الأقصى 3. "
+            f"أعد الكتابة بالكامل. كل جملة يجب أن تبدأ بكلمة مختلفة عن الجملة السابقة."
+        )
+
+    ar_text = ""
+    best_text = ""
+
+    for attempt in range(2):
+        _p = prompt
+        if attempt > 0 and ar_text:
+            _wc_prev = clean_word_count(ar_text)
+            _size_note = ("وسّع القسمين الثاني والثالث بحقائق محددة." if _wc_prev < 200 else "احذف الحشو.")
+            _p += f"\n\nالمحاولة السابقة: {_wc_prev} كلمة — الهدف 230-260. {_size_note}"
+            _p += _fix_note(ar_text)
+        _result = _ai_script_call(
+            _p, max_tokens=700, temperature=0.82,
+            system_prompt=_AR_SHORT_SCRIPT_SYSTEM, premium=True,
+        ).strip()
+        _wc = clean_word_count(_result)
+        _bad_r, _word_r, _cnt_r = _check_repeated_sentence_starters(_result)
+        print(f"[AR Trans] GPT-4o attempt {attempt + 1}: {_wc}w | starter repeat: {'BAD ('+_word_r+' ×'+str(_cnt_r)+')' if _bad_r else 'OK'}")
+        if _wc > clean_word_count(best_text) and not _bad_r:
+            best_text = _result
+        elif not best_text:
+            best_text = _result
+        ar_text = _result
+        if _wc >= 200 and not _bad_r:
+            break
+
+    if clean_word_count(ar_text) < 200 or _check_repeated_sentence_starters(ar_text)[0]:
+        print("[AR Trans] GPT-4o issues — Groq fallback")
+        for attempt in range(2):
+            try:
+                _suffix = "\n\nاكتب على الأقل 200 كلمة. الهدف 230-260."
+                _suffix += _fix_note(ar_text)
+                _r = _groq_call(
+                    messages=[{"role": "user", "content": prompt + _suffix}],
+                    max_tokens=700,
+                    temperature=0.85,
+                )
+                _result = _r.choices[0].message.content.strip()
+                _wc = clean_word_count(_result)
+                _bad_r, _word_r, _cnt_r = _check_repeated_sentence_starters(_result)
+                print(f"[AR Trans] Groq attempt {attempt + 1}: {_wc}w | starter repeat: {'BAD ('+_word_r+' ×'+str(_cnt_r)+')' if _bad_r else 'OK'}")
+                if _wc > clean_word_count(best_text) and not _bad_r:
+                    best_text = _result
+                ar_text = _result
+                if _wc >= 200 and not _bad_r:
+                    break
+            except Exception as _e:
+                print(f"[AR Trans] Groq error (attempt {attempt + 1}): {_e}")
+                _time.sleep(8)
+
+    if not ar_text and best_text:
+        ar_text = best_text
+    # Always prefer a clean (non-repeated) version even if shorter
+    if _check_repeated_sentence_starters(ar_text)[0] and best_text and not _check_repeated_sentence_starters(best_text)[0]:
+        ar_text = best_text
+
+    _final_bad, _final_word, _final_cnt = _check_repeated_sentence_starters(ar_text)
+    _final_wc = clean_word_count(ar_text)
+    if _final_bad:
+        print(f"[AR Trans] WARNING: repeated starter '{_final_word}' ×{_final_cnt} in final output")
+    print(f"[AR Trans] Final: {_final_wc}w → ready")
+    return ar_text
 
 
 def write_short_script(en_long_script: dict) -> dict:
@@ -7193,15 +7341,15 @@ Write ONLY the spoken words. No headings. No labels. No explanations."""
 
     script_text = evaluate_and_fix_script(script_text)
 
-    # ── Arabic short: translate + enforce 260-word minimum for 60s runtime ───
-    ar_script_text = translate_to_arabic(script_text) if script_text else ""
+    # ── Arabic short: GPT-4o rewrite (no Google Translate) ───────────────────
+    ar_script_text = _translate_arabic_short_script(script_text, topic, series_name) if script_text else ""
     if ar_script_text:
         _ar_short_wc = clean_word_count(ar_script_text)
         _ar_short_secs = estimate_short_duration_secs(ar_script_text, "arabic")
         print(f"[SHORT RUNTIME] AR: {_ar_short_wc} words → ~{_ar_short_secs:.0f}s")
-        if _ar_short_wc < 260:
-            print(f"[SHORT EXPANSION] AR short under 260 words ({_ar_short_wc}) — expanding to 280")
-            ar_script_text = expand_short_script(ar_script_text, "arabic", topic, 280)
+        if _ar_short_wc < 200:
+            print(f"[SHORT EXPANSION] AR short under 200 words ({_ar_short_wc}) — expanding to 230")
+            ar_script_text = expand_short_script(ar_script_text, "arabic", topic, 230)
             _ar_short_wc = clean_word_count(ar_script_text)
             _ar_short_secs = estimate_short_duration_secs(ar_script_text, "arabic")
             print(f"[SHORT RUNTIME] AR after expansion: {_ar_short_wc} words → ~{_ar_short_secs:.0f}s")
@@ -7735,7 +7883,11 @@ def write_arabic_short(ar_long_script: dict) -> dict:
 قيود صارمة:
 - الحد الأقصى: 12 كلمة لكل جملة. الأقصر أقوى.
 - كل جملة يجب أن تكشف معلومة جديدة أو تُصعّد التوتر.
-- محظور: بدء الجمل بـ "كانت" أو "كان" — استخدم أفعالاً حدثت فعلاً.
+- محظور تاماً: "يتم" في أي صيغة — الفاعل يجب أن يكون صريحاً.
+- محظور تاماً: "كانت" أو "كان" كبداية لأي جملة.
+- تنويع الكلمة الأولى: لا تبدأ جملتان متتاليتان بنفس الكلمة. لا تكرر كلمة افتتاحية أكثر من مرتين.
+- النمط المحظور: كانت X. كانت Y. كانت Z. — هذا فشل فوري.
+- النمط الصحيح: اعتقله. فتح المحقق. رفض القاضي. كشف التحقيق.
 - محظور: القوائم النقطية، الملخصات، النبرة الأكاديمية.
 - محظور: أي عناوين أو تسميات في المخرجات.
 - الطول المستهدف: 230-260 كلمة. الحد الأدنى المطلق: 200 كلمة.
@@ -7748,40 +7900,56 @@ def write_arabic_short(ar_long_script: dict) -> dict:
     ar_text = ""
     best_text = ""
 
+    def _ar_short_fix_note(text: str) -> str:
+        _bad, _word, _cnt = _check_repeated_sentence_starters(text)
+        if not _bad:
+            return ""
+        return (
+            f"\n\nخطأ في المحاولة السابقة: الكلمة \"{_word}\" تفتح {_cnt} جمل — الحد الأقصى 3. "
+            f"أعد الكتابة بالكامل. كل جملة يجب أن تبدأ بكلمة مختلفة عن الجملة السابقة."
+        )
+
     # Phase 1: OpenAI GPT-4o primary (2 attempts)
     for attempt in range(2):
         _p = prompt
         if attempt > 0 and ar_text:
             _wc_prev = clean_word_count(ar_text)
-            _p += (f"\n\nالمحاولة السابقة: {_wc_prev} كلمة — الهدف 230-260، الحد الأدنى 200. "
-                   f"{'وسّع القسمين الثاني والثالث بحقائق محددة.' if _wc_prev < 200 else 'احذف الحشو واحتفظ بالحقائق فقط.'}")
+            _size_note = "وسّع القسمين الثاني والثالث بحقائق محددة." if _wc_prev < 200 else "احذف الحشو واحتفظ بالحقائق فقط."
+            _p += f"\n\nالمحاولة السابقة: {_wc_prev} كلمة — الهدف 230-260. {_size_note}"
+            _p += _ar_short_fix_note(ar_text)
         _result = _ai_script_call(_p, max_tokens=700, temperature=0.85,
                                    system_prompt=_AR_SHORT_SCRIPT_SYSTEM, premium=True).strip()
         _wc = clean_word_count(_result)
-        print(f"[AR Short] GPT-4o attempt {attempt + 1}: {_wc}w")
-        if _wc > clean_word_count(best_text):
+        _bad_r, _word_r, _cnt_r = _check_repeated_sentence_starters(_result)
+        print(f"[AR Short] GPT-4o attempt {attempt + 1}: {_wc}w | starter repeat: {'BAD ('+_word_r+' ×'+str(_cnt_r)+')' if _bad_r else 'OK'}")
+        if _wc > clean_word_count(best_text) and not _bad_r:
+            best_text = _result
+        elif not best_text:
             best_text = _result
         ar_text = _result
-        if _wc >= 200:
+        if _wc >= 200 and not _bad_r:
             break
 
-    # Phase 2: Groq fallback if GPT-4o under 200 words
-    if clean_word_count(ar_text) < 200:
-        print("[AR Short] GPT-4o under 200w — Groq fallback")
+    # Phase 2: Groq fallback if GPT-4o under 200 words or has repeated starters
+    if clean_word_count(ar_text) < 200 or _check_repeated_sentence_starters(ar_text)[0]:
+        print("[AR Short] GPT-4o issues — Groq fallback")
         for attempt in range(2):
             try:
+                _suffix = "\n\nاكتب على الأقل 200 كلمة. الهدف 230-260."
+                _suffix += _ar_short_fix_note(ar_text)
                 _r = _groq_call(
-                    messages=[{"role": "user", "content": prompt + "\n\nاكتب على الأقل 200 كلمة. الهدف 230-260."}],
+                    messages=[{"role": "user", "content": prompt + _suffix}],
                     max_tokens=700,
                     temperature=0.85,
                 )
                 _result = _r.choices[0].message.content.strip()
                 _wc = clean_word_count(_result)
-                print(f"[AR Short] Groq attempt {attempt + 1}: {_wc}w")
-                if _wc > clean_word_count(best_text):
+                _bad_r, _word_r, _cnt_r = _check_repeated_sentence_starters(_result)
+                print(f"[AR Short] Groq attempt {attempt + 1}: {_wc}w | starter repeat: {'BAD ('+_word_r+' ×'+str(_cnt_r)+')' if _bad_r else 'OK'}")
+                if _wc > clean_word_count(best_text) and not _bad_r:
                     best_text = _result
                 ar_text = _result
-                if _wc >= 200:
+                if _wc >= 200 and not _bad_r:
                     break
             except Exception as _e:
                 print(f"[AR Short] Groq error (attempt {attempt + 1}): {_e}")
@@ -7789,13 +7957,19 @@ def write_arabic_short(ar_long_script: dict) -> dict:
 
     if not ar_text and best_text:
         ar_text = best_text
+    # Always prefer a clean version over a repeated-starter one
+    if _check_repeated_sentence_starters(ar_text)[0] and best_text and not _check_repeated_sentence_starters(best_text)[0]:
+        ar_text = best_text
 
     # Enforce minimum via expand_short_script
     if ar_text and clean_word_count(ar_text) < 200:
         ar_text = expand_short_script(ar_text, "arabic", topic, 230)
 
+    _final_bad, _final_word, _final_cnt = _check_repeated_sentence_starters(ar_text)
     _final_wc   = clean_word_count(ar_text)
     _final_secs = estimate_short_duration_secs(ar_text, "arabic") if ar_text else 0.0
+    if _final_bad:
+        print(f"[AR Short] WARNING: repeated starter '{_final_word}' ×{_final_cnt} in final output")
     print(f"[AR Short] Final: {_final_wc}w → ~{_final_secs:.0f}s")
 
     return {
