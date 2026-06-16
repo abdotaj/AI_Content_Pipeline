@@ -531,8 +531,9 @@ def _trim_plain_text_to_words(text: str, max_words: int) -> str:
 _GROQ_RATE_LIMITED_UNTIL:         float = 0.0   # epoch seconds; Groq is skipped until this time
 _OPENAI_QUOTA_EXCEEDED_UNTIL:     float = 0.0  # epoch seconds; OpenAI is skipped until this time
 _GEMINI_QUOTA_EXCEEDED_UNTIL:     float = 0.0  # epoch seconds; Gemini is skipped until this time
-_CLAUDE_QUOTA_EXCEEDED_UNTIL:     float = 0.0  # epoch seconds; Claude is skipped until this time
-_CLAUDE_CONN_ERROR_COUNT:         int   = 0    # consecutive connection failures; suspends Claude at 3
+_CLAUDE_QUOTA_EXCEEDED_UNTIL:     float = 0.0   # epoch seconds; Claude is skipped until this time
+_CLAUDE_CONN_ERROR_COUNT:         int   = 0     # consecutive connection failures before proxy/suspend
+_CLAUDE_USE_PROXY:                bool  = False  # switched on after 3 conn errors when ANTHROPIC_PROXY_URL is set
 
 # Content-refusal signals — short phrases OpenAI returns when it refuses to write
 # sensitive/lengthy Arabic content. Checked inside _openai_call so Gemini is tried next.
@@ -766,10 +767,11 @@ def _ai_script_call(prompt: str, max_tokens: int = 1000,
         return ''
 
     def _claude_call(model: str = 'claude-sonnet-4-6') -> str:
-        """Single Claude (Anthropic) call with quota tracking and refusal detection."""
-        global _CLAUDE_QUOTA_EXCEEDED_UNTIL, _CLAUDE_CONN_ERROR_COUNT
+        """Single Claude (Anthropic) call with quota tracking, refusal detection, and proxy fallback."""
+        global _CLAUDE_QUOTA_EXCEEDED_UNTIL, _CLAUDE_CONN_ERROR_COUNT, _CLAUDE_USE_PROXY
         import os as _os
-        api_key = _os.getenv('ANTHROPIC_API_KEY', '').strip()
+        api_key   = _os.getenv('ANTHROPIC_API_KEY', '').strip()
+        proxy_url = _os.getenv('ANTHROPIC_PROXY_URL', '').strip()
         if not api_key:
             print('[Script] Claude: ANTHROPIC_API_KEY not configured — skipping')
             return ''
@@ -777,11 +779,22 @@ def _ai_script_call(prompt: str, max_tokens: int = 1000,
             _rem = int(_CLAUDE_QUOTA_EXCEEDED_UNTIL - time.time())
             print(f'[Script] Claude: cooldown {_rem}s remaining — skipping')
             return ''
+
+        def _make_client(via_proxy: bool):
+            import anthropic as _anthropic
+            if via_proxy and proxy_url:
+                import httpx as _httpx
+                return _anthropic.Anthropic(
+                    api_key=api_key,
+                    http_client=_httpx.Client(proxy=proxy_url, timeout=90.0),
+                )
+            return _anthropic.Anthropic(api_key=api_key, timeout=_anthropic.Timeout(90.0, connect=15.0))
+
         try:
             import anthropic as _anthropic
-            _t0     = time.time()
-            client  = _anthropic.Anthropic(api_key=api_key, timeout=_anthropic.Timeout(90.0, connect=15.0))
-            kwargs  = dict(
+            _t0    = time.time()
+            client = _make_client(_CLAUDE_USE_PROXY)
+            kwargs = dict(
                 model      = model,
                 max_tokens = max_tokens,
                 temperature= min(temperature, 1.0),  # Claude clamps at 1.0
@@ -789,9 +802,9 @@ def _ai_script_call(prompt: str, max_tokens: int = 1000,
             )
             if system_prompt:
                 kwargs['system'] = system_prompt
-            msg     = client.messages.create(**kwargs)
+            msg      = client.messages.create(**kwargs)
             _elapsed = time.time() - _t0
-            content = msg.content[0].text.strip() if msg.content else ''
+            content  = msg.content[0].text.strip() if msg.content else ''
             if not content:
                 print(f'[Script] Claude {model}: empty response')
                 return ''
@@ -799,7 +812,8 @@ def _ai_script_call(prompt: str, max_tokens: int = 1000,
                 print(f'[Script] Claude {model} CONTENT REFUSAL — skipping to next provider')
                 return ''
             _CLAUDE_CONN_ERROR_COUNT = 0  # reset on success
-            print(f'[Script] Claude {model} ✅ ({len(content)}chars, {_elapsed:.1f}s)')
+            _proxy_tag = ' [proxy]' if _CLAUDE_USE_PROXY else ''
+            print(f'[Script] Claude {model}{_proxy_tag} ✅ ({len(content)}chars, {_elapsed:.1f}s)')
             return content
         except Exception as _e:
             err = str(_e).lower()
@@ -811,9 +825,28 @@ def _ai_script_call(prompt: str, max_tokens: int = 1000,
                 print(f'[Script] Claude overloaded — cooldown 120s: {_e}')
             elif 'connection' in err or 'timeout' in err or 'network' in err or 'connect' in err:
                 _CLAUDE_CONN_ERROR_COUNT += 1
-                if _CLAUDE_CONN_ERROR_COUNT >= 3:
+                if _CLAUDE_CONN_ERROR_COUNT >= 3 and proxy_url and not _CLAUDE_USE_PROXY:
+                    # Direct connection failed 3 times — try proxy immediately for this call
+                    print(f'[Script] Claude {_CLAUDE_CONN_ERROR_COUNT} connection errors — switching to proxy')
+                    try:
+                        import anthropic as _anthropic
+                        _pc     = _make_client(True)
+                        _pmsg   = _pc.messages.create(**kwargs)
+                        _ptext  = _pmsg.content[0].text.strip() if _pmsg.content else ''
+                        if _ptext:
+                            _CLAUDE_USE_PROXY        = True
+                            _CLAUDE_CONN_ERROR_COUNT = 0
+                            print(f'[Script] Claude {model} [proxy] ✅ — proxy mode enabled for this run')
+                            return _ptext
+                        print('[Script] Claude proxy: empty response — suspending')
+                    except Exception as _ep:
+                        print(f'[Script] Claude proxy failed: {_ep}')
                     _CLAUDE_QUOTA_EXCEEDED_UNTIL = time.time() + 3600
-                    print(f'[Script] Claude {_CLAUDE_CONN_ERROR_COUNT} consecutive connection errors — suspended for 1h')
+                    print('[Script] Claude suspended for 1h (direct + proxy both failed)')
+                elif _CLAUDE_CONN_ERROR_COUNT >= 3:
+                    _CLAUDE_QUOTA_EXCEEDED_UNTIL = time.time() + 3600
+                    _reason = 'proxy still failing' if _CLAUDE_USE_PROXY else 'no proxy configured'
+                    print(f'[Script] Claude {_CLAUDE_CONN_ERROR_COUNT} connection errors — suspended for 1h ({_reason})')
                 else:
                     print(f'[Script] Claude connection error ({_CLAUDE_CONN_ERROR_COUNT}/3): {_e}')
             else:
