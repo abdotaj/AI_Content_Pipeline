@@ -682,12 +682,13 @@ def _ai_script_call(prompt: str, max_tokens: int = 1000,
     _o_wait_s   = max(0, int(_OPENAI_QUOTA_EXCEEDED_UNTIL  - _now))
     _gem_wait_s = max(0, int(_GEMINI_QUOTA_EXCEEDED_UNTIL  - _now))
     _cl_wait_s  = max(0, int(_CLAUDE_QUOTA_EXCEEDED_UNTIL  - _now))
-    print(
-        f"[Provider Status] Claude={'✅' if _cl_wait_s == 0 else f'❌ {_cl_wait_s}s'} | "
-        f"OpenAI={'✅' if _o_wait_s == 0 else f'❌ {_o_wait_s}s'} | "
-        f"Groq={'✅' if _g_wait_s == 0 else f'❌ {_g_wait_s}s'} | "
-        f"Gemini={'✅' if _gem_wait_s == 0 else f'❌ {_gem_wait_s}s'}"
-    )
+    if _cl_wait_s or _o_wait_s or _g_wait_s or _gem_wait_s:
+        print(
+            f"[Provider Status] Claude={'✅' if _cl_wait_s == 0 else f'❌ {_cl_wait_s}s'} | "
+            f"OpenAI={'✅' if _o_wait_s == 0 else f'❌ {_o_wait_s}s'} | "
+            f"Groq={'✅' if _g_wait_s == 0 else f'❌ {_g_wait_s}s'} | "
+            f"Gemini={'✅' if _gem_wait_s == 0 else f'❌ {_gem_wait_s}s'}"
+        )
 
     def _openai_call(model: str) -> str:
         """Single OpenAI call with strict per-status-code error handling."""
@@ -806,6 +807,18 @@ def _ai_script_call(prompt: str, max_tokens: int = 1000,
             elif 'overloaded' in err:
                 _CLAUDE_QUOTA_EXCEEDED_UNTIL = time.time() + 120
                 print(f'[Script] Claude overloaded — cooldown 120s: {_e}')
+            elif 'connection' in err or 'timeout' in err or 'network' in err:
+                print(f'[Script] Claude {model} connection error — retrying in 8s: {_e}')
+                time.sleep(8)
+                try:
+                    msg2     = client.messages.create(**kwargs)
+                    content2 = msg2.content[0].text.strip() if msg2.content else ''
+                    if content2:
+                        _elapsed2 = time.time() - _t0
+                        print(f'[Script] Claude {model} ✅ retry OK ({len(content2)}chars, {_elapsed2:.1f}s)')
+                        return content2
+                except Exception as _e2:
+                    print(f'[Script] Claude {model} retry failed: {_e2}')
             else:
                 print(f'[Script] Claude {model} exception: {_e}')
             return ''
