@@ -4924,20 +4924,38 @@ def format_for_tts_arabic(text: str) -> str:
 
 
 def translate_to_arabic_google(text: str) -> str:
-    """Translate English text to Arabic using Google Translate free REST API."""
+    """Translate English text to Arabic using Google Translate free REST API.
+    Quoted strings and parenthesized names are protected so they survive translation.
+    """
+    import re as _re
+    import requests as _requests
+
+    # Protect quoted strings (e.g., "Black Mass") and parenthesized names
+    # (e.g., (Dick Lehr)) so Google Translate doesn't drop or mangle them.
+    _store: list[tuple[str, str]] = []
+    def _protect(m: _re.Match) -> str:
+        key = f"__NAME{len(_store)}__"
+        _store.append((key, m.group()))
+        return key
+    safe_text = _re.sub(r'"[^"]{2,60}"|\'[^\']{2,60}\'|\([^)]{2,60}\)', _protect, text)
+
     url = "https://translate.googleapis.com/translate_a/single"
     params = {
         "client": "gtx",
         "sl":     "en",
         "tl":     "ar",
         "dt":     "t",
-        "q":      text,
+        "q":      safe_text,
     }
-    import requests as _requests
     response = _requests.get(url, params=params, timeout=30)
     response.raise_for_status()
     result     = response.json()
     translated = "".join([item[0] for item in result[0]])
+
+    # Restore protected names
+    for key, original in _store:
+        translated = translated.replace(key, original)
+
     return _fix_arabic(translated)
 
 
@@ -6095,7 +6113,11 @@ def _write_arabic_from_research(en_script: dict, ar_research: dict, target_minut
 
     entity_lock = (
         f"[قفل الموضوع] اكتب فقط عن: {topic_str}. "
-        f"لا تذكر جرائم أو مجرمين غير ذوي صلة مباشرة بهذا الموضوع.\n\n"
+        f"لا تذكر جرائم أو مجرمين غير ذوي صلة مباشرة بهذا الموضوع.\n"
+        f"[الأسماء الأجنبية] لكل فيلم أو كتاب أو مسلسل أو شخص أجنبي: "
+        f"اكتب الاسم بالعربية أولاً ثم الاسم الأصلي بالإنجليزية في قوسين. "
+        f"مثال: فيلم بلاك ماس (Black Mass)، الممثل جوني ديب (Johnny Depp)، "
+        f"كتاب كينغ بين (King Pin)، شبكة ABC (ABC Network).\n\n"
     )
 
     is_doc = (angle or "").lower() not in ("movie", "series", "mini-series")
@@ -7188,6 +7210,18 @@ def _translate_arabic_short_script(english_text: str, topic: str, series_name: s
         f"النص الإنجليزي المصدر:\n{english_text}\n\n"
         f"اكتب التعليق الصوتي العربي فقط. لا عناوين. لا شرح."
     )
+
+    import time as _time
+
+    def _fix_note(text: str) -> str:
+        """Build a correction instruction when repeated starters are detected."""
+        _bad, _word, _cnt = _check_repeated_sentence_starters(text)
+        if not _bad:
+            return ""
+        return (
+            f"\n\nخطأ في المحاولة السابقة: الكلمة \"{_word}\" تفتح {_cnt} جمل — الحد الأقصى 3. "
+            f"أعد الكتابة بالكامل. كل جملة يجب أن تبدأ بكلمة مختلفة عن الجملة السابقة."
+        )
 
     ar_text = ""
     best_text = ""

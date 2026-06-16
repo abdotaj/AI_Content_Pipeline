@@ -751,6 +751,16 @@ def enforce_arabic_purity(ar_text: str) -> str:
     }
     placeholders: dict[str, str] = {}
     protected = ar_text
+
+    # Protect parenthesized content — English movie/book/show titles and actor names
+    # that appear as (Black Mass), (Johnny Depp) etc. must survive the Latin filter.
+    # Tokens use offset 1000 so they never collide with allowed_latin tokens (0-99).
+    def _paren_protect(m: re.Match) -> str:
+        key = f"__{1000 + len(placeholders)}__"
+        placeholders[key] = m.group()
+        return key
+    protected = re.sub(r'\([^)\n]{1,80}\)', _paren_protect, protected)
+
     for idx, name in enumerate(sorted(allowed_latin, key=len, reverse=True)):
         token = f"__{idx}__"
         protected = re.sub(re.escape(name), token, protected, flags=re.IGNORECASE)
