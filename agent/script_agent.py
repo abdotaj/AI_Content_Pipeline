@@ -674,15 +674,17 @@ def _ai_script_call(prompt: str, max_tokens: int = 1000,
     """
     import requests as _req
     import time
-    global _OPENAI_QUOTA_EXCEEDED_UNTIL
+    global _OPENAI_QUOTA_EXCEEDED_UNTIL, _CLAUDE_QUOTA_EXCEEDED_UNTIL
 
     _now = time.time()
-    _g_wait_s   = max(0, int(_GROQ_RATE_LIMITED_UNTIL    - _now))
-    _o_wait_s   = max(0, int(_OPENAI_QUOTA_EXCEEDED_UNTIL - _now))
-    _gem_wait_s = max(0, int(_GEMINI_QUOTA_EXCEEDED_UNTIL - _now))
+    _g_wait_s   = max(0, int(_GROQ_RATE_LIMITED_UNTIL     - _now))
+    _o_wait_s   = max(0, int(_OPENAI_QUOTA_EXCEEDED_UNTIL  - _now))
+    _gem_wait_s = max(0, int(_GEMINI_QUOTA_EXCEEDED_UNTIL  - _now))
+    _cl_wait_s  = max(0, int(_CLAUDE_QUOTA_EXCEEDED_UNTIL  - _now))
     print(
-        f"[Provider Status] Groq={'✅' if _g_wait_s == 0 else f'❌ {_g_wait_s}s'} | "
+        f"[Provider Status] Claude={'✅' if _cl_wait_s == 0 else f'❌ {_cl_wait_s}s'} | "
         f"OpenAI={'✅' if _o_wait_s == 0 else f'❌ {_o_wait_s}s'} | "
+        f"Groq={'✅' if _g_wait_s == 0 else f'❌ {_g_wait_s}s'} | "
         f"Gemini={'✅' if _gem_wait_s == 0 else f'❌ {_gem_wait_s}s'}"
     )
 
@@ -760,14 +762,64 @@ def _ai_script_call(prompt: str, max_tokens: int = 1000,
             print(f'[Script] OpenAI {model} exception: {_e}')
         return ''
 
+    def _claude_call(model: str = 'claude-sonnet-4-6') -> str:
+        """Single Claude (Anthropic) call with quota tracking and refusal detection."""
+        global _CLAUDE_QUOTA_EXCEEDED_UNTIL
+        import os as _os
+        api_key = _os.getenv('ANTHROPIC_API_KEY', '').strip()
+        if not api_key:
+            print('[Script] Claude: ANTHROPIC_API_KEY not configured — skipping')
+            return ''
+        if time.time() < _CLAUDE_QUOTA_EXCEEDED_UNTIL:
+            _rem = int(_CLAUDE_QUOTA_EXCEEDED_UNTIL - time.time())
+            print(f'[Script] Claude: cooldown {_rem}s remaining — skipping')
+            return ''
+        try:
+            import anthropic as _anthropic
+            _t0     = time.time()
+            client  = _anthropic.Anthropic(api_key=api_key)
+            kwargs  = dict(
+                model      = model,
+                max_tokens = max_tokens,
+                temperature= min(temperature, 1.0),  # Claude clamps at 1.0
+                messages   = [{'role': 'user', 'content': prompt}],
+            )
+            if system_prompt:
+                kwargs['system'] = system_prompt
+            msg     = client.messages.create(**kwargs)
+            _elapsed = time.time() - _t0
+            content = msg.content[0].text.strip() if msg.content else ''
+            if not content:
+                print(f'[Script] Claude {model}: empty response')
+                return ''
+            if len(content) < 300 and any(sig in content for sig in _AR_REFUSAL_SIGNALS):
+                print(f'[Script] Claude {model} CONTENT REFUSAL — skipping to next provider')
+                return ''
+            print(f'[Script] Claude {model} ✅ ({len(content)}chars, {_elapsed:.1f}s)')
+            return content
+        except Exception as _e:
+            err = str(_e).lower()
+            if 'rate_limit' in err or '429' in err:
+                _CLAUDE_QUOTA_EXCEEDED_UNTIL = time.time() + 300
+                print(f'[Script] Claude rate limited — cooldown 300s: {_e}')
+            elif 'overloaded' in err:
+                _CLAUDE_QUOTA_EXCEEDED_UNTIL = time.time() + 120
+                print(f'[Script] Claude overloaded — cooldown 120s: {_e}')
+            else:
+                print(f'[Script] Claude {model} exception: {_e}')
+            return ''
+
     if premium:
-        # ── Premium path: Groq → OpenAI gpt-4o (fallback) → Gemini ──────────
-        # OpenAI is reserved as fallback only — Groq handles most content well.
-        result = _groq_fallback(prompt, max_tokens, json_mode, system_prompt=system_prompt)
+        # ── Premium path: Claude primary → OpenAI gpt-4o → Groq backup → Gemini ──
+        result = _claude_call('claude-sonnet-4-6')
         if result:
             return result
-        print('[Script] Groq failed (premium path) — OpenAI gpt-4o fallback')
+        print('[Script] Claude failed (premium path) — OpenAI gpt-4o fallback')
         result = _openai_call('gpt-4o')
+        if result:
+            return result
+        print('[Script] OpenAI failed (premium path) — Groq backup')
+        result = _groq_fallback(prompt, max_tokens, json_mode, system_prompt=system_prompt)
         if result:
             return result
         result = _gemini_call(prompt, max_tokens, system_prompt=system_prompt)
@@ -776,11 +828,14 @@ def _ai_script_call(prompt: str, max_tokens: int = 1000,
         print('[Script] ❌ All providers exhausted (premium path) — returning empty')
         return ''
 
-    # ── Standard path: Groq primary → OpenAI mini fallback → Gemini ─────────
-    result = _groq_fallback(prompt, max_tokens, json_mode, system_prompt=system_prompt)
+    # ── Standard path: Claude primary → OpenAI gpt-4o-mini → Groq backup → Gemini ──
+    result = _claude_call('claude-sonnet-4-6')
     if result:
         return result
     result = _openai_call('gpt-4o-mini')
+    if result:
+        return result
+    result = _groq_fallback(prompt, max_tokens, json_mode, system_prompt=system_prompt)
     if result:
         return result
     result = _gemini_call(prompt, max_tokens, system_prompt=system_prompt)
