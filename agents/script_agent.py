@@ -528,10 +528,11 @@ def _trim_plain_text_to_words(text: str, max_words: int) -> str:
     return trimmed
 
 
-_GROQ_RATE_LIMITED_UNTIL:     float = 0.0   # epoch seconds; Groq is skipped until this time
-_OPENAI_QUOTA_EXCEEDED_UNTIL: float = 0.0  # epoch seconds; OpenAI is skipped until this time
-_GEMINI_QUOTA_EXCEEDED_UNTIL: float = 0.0  # epoch seconds; Gemini is skipped until this time
-_CLAUDE_QUOTA_EXCEEDED_UNTIL: float = 0.0  # epoch seconds; Claude is skipped until this time
+_GROQ_RATE_LIMITED_UNTIL:         float = 0.0   # epoch seconds; Groq is skipped until this time
+_OPENAI_QUOTA_EXCEEDED_UNTIL:     float = 0.0  # epoch seconds; OpenAI is skipped until this time
+_GEMINI_QUOTA_EXCEEDED_UNTIL:     float = 0.0  # epoch seconds; Gemini is skipped until this time
+_CLAUDE_QUOTA_EXCEEDED_UNTIL:     float = 0.0  # epoch seconds; Claude is skipped until this time
+_CLAUDE_CONN_ERROR_COUNT:         int   = 0    # consecutive connection failures; suspends Claude at 3
 
 # Content-refusal signals — short phrases OpenAI returns when it refuses to write
 # sensitive/lengthy Arabic content. Checked inside _openai_call so Gemini is tried next.
@@ -766,7 +767,7 @@ def _ai_script_call(prompt: str, max_tokens: int = 1000,
 
     def _claude_call(model: str = 'claude-sonnet-4-6') -> str:
         """Single Claude (Anthropic) call with quota tracking and refusal detection."""
-        global _CLAUDE_QUOTA_EXCEEDED_UNTIL
+        global _CLAUDE_QUOTA_EXCEEDED_UNTIL, _CLAUDE_CONN_ERROR_COUNT
         import os as _os
         api_key = _os.getenv('ANTHROPIC_API_KEY', '').strip()
         if not api_key:
@@ -779,7 +780,7 @@ def _ai_script_call(prompt: str, max_tokens: int = 1000,
         try:
             import anthropic as _anthropic
             _t0     = time.time()
-            client  = _anthropic.Anthropic(api_key=api_key)
+            client  = _anthropic.Anthropic(api_key=api_key, timeout=_anthropic.Timeout(90.0, connect=15.0))
             kwargs  = dict(
                 model      = model,
                 max_tokens = max_tokens,
@@ -797,6 +798,7 @@ def _ai_script_call(prompt: str, max_tokens: int = 1000,
             if len(content) < 300 and any(sig in content for sig in _AR_REFUSAL_SIGNALS):
                 print(f'[Script] Claude {model} CONTENT REFUSAL — skipping to next provider')
                 return ''
+            _CLAUDE_CONN_ERROR_COUNT = 0  # reset on success
             print(f'[Script] Claude {model} ✅ ({len(content)}chars, {_elapsed:.1f}s)')
             return content
         except Exception as _e:
@@ -807,18 +809,13 @@ def _ai_script_call(prompt: str, max_tokens: int = 1000,
             elif 'overloaded' in err:
                 _CLAUDE_QUOTA_EXCEEDED_UNTIL = time.time() + 120
                 print(f'[Script] Claude overloaded — cooldown 120s: {_e}')
-            elif 'connection' in err or 'timeout' in err or 'network' in err:
-                print(f'[Script] Claude {model} connection error — retrying in 8s: {_e}')
-                time.sleep(8)
-                try:
-                    msg2     = client.messages.create(**kwargs)
-                    content2 = msg2.content[0].text.strip() if msg2.content else ''
-                    if content2:
-                        _elapsed2 = time.time() - _t0
-                        print(f'[Script] Claude {model} ✅ retry OK ({len(content2)}chars, {_elapsed2:.1f}s)')
-                        return content2
-                except Exception as _e2:
-                    print(f'[Script] Claude {model} retry failed: {_e2}')
+            elif 'connection' in err or 'timeout' in err or 'network' in err or 'connect' in err:
+                _CLAUDE_CONN_ERROR_COUNT += 1
+                if _CLAUDE_CONN_ERROR_COUNT >= 3:
+                    _CLAUDE_QUOTA_EXCEEDED_UNTIL = time.time() + 3600
+                    print(f'[Script] Claude {_CLAUDE_CONN_ERROR_COUNT} consecutive connection errors — suspended for 1h')
+                else:
+                    print(f'[Script] Claude connection error ({_CLAUDE_CONN_ERROR_COUNT}/3): {_e}')
             else:
                 print(f'[Script] Claude {model} exception: {_e}')
             return ''
