@@ -1,2 +1,2 @@
 # AI-agent_content_social_media
-social_media_youtube_tiktok
+generate content,script,videos (long,short) for social media auto publish on youtube ,manual publish on another social media.
