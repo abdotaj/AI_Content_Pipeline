@@ -423,7 +423,7 @@ def _cap_script_max_words(script_text: str, max_words: int = LONG_SCRIPT_MAX_WOR
     return result
 
 
-_TTS_WPM = {"english": 160, "arabic": 220}   # Calibrated: Arabic Marin/gpt-4o-mini-tts speed=1.1 ~220 WPM (range 210-230) | English Alloy 1.0 ~160 WPM
+_TTS_WPM = {"english": 160, "arabic": 185}   # Arabic: recalibrated for edge-tts HamdanNeural +25% (est. 175-190 WPM) — was 220 for OpenAI Marin speed=1.1 | English Alloy 1.0 ~160 WPM (edge-tts ChristopherNeural +10% ≈ similar)
 
 # Runtime floors (minutes) by mode — ABSOLUTE MINIMUMS.
 # Any long video below 15 minutes is an automatic failure.

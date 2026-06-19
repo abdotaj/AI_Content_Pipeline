@@ -18,7 +18,7 @@ jobs:
     timeout-minutes: 360
     concurrency:
       group: animation-pipeline
-      cancel-in-progress: true
+      cancel-in-progress: false
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
       PIPELINE_MODE: animation
