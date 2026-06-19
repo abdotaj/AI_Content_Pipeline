@@ -792,6 +792,14 @@ def _ai_script_call(prompt: str, max_tokens: int = 1000,
             import anthropic as _anthropic
             if proxy:
                 import httpx as _httpx
+                # Webshare format: host:port:user:pass → http://user:pass@host:port
+                if '://' not in proxy:
+                    _parts = proxy.split(':')
+                    if len(_parts) == 4:
+                        _h, _p, _u, _pw = _parts
+                        proxy = f'http://{_u}:{_pw}@{_h}:{_p}'
+                    else:
+                        proxy = 'http://' + proxy
                 return _anthropic.Anthropic(
                     api_key=api_key,
                     http_client=_httpx.Client(proxy=proxy, timeout=90.0),

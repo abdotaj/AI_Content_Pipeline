@@ -887,6 +887,28 @@ def run_pipeline():
                 ar_long_path = _make_video(ar_long, ar_long_id, stats, user_images=user_images, user_videos=user_videos)
                 _log("VideoGen", f"[AR] Render complete — {ar_long_path}", "OK")
 
+        # ── Disk cleanup before EN render ─────────────────────────────────────
+        # Arabic final video stays (needed for upload). Intermediates are safe to remove.
+        import glob as _glob, shutil as _shutil
+        _ar_prefix = f"{today}_{_slug}_arabic_long"
+        for _cleanup_dir in [
+            os.path.join("output", "images"),
+            os.path.join("output", "stock_videos"),
+            os.path.join("output", "dark_crime", "audio"),
+        ]:
+            for _f in _glob.glob(os.path.join(_cleanup_dir, f"*{_ar_prefix}*")):
+                try:
+                    os.remove(_f)
+                except Exception:
+                    pass
+        # Also clear temp segment files from Arabic render
+        for _f in _glob.glob(os.path.join("output", "dark_crime", "final", "seg_*.mp4")):
+            try:
+                os.remove(_f)
+            except Exception:
+                pass
+        _log("VideoGen", "[Disk] Arabic intermediates cleaned before EN render")
+
         # ── EN long ──────────────────────────────────────────────────────────
         _log("VideoGen", "Step 2/2 — Rendering EN long (second)")
         if not en_long or en_long.get("script_failed"):

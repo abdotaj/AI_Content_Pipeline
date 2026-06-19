@@ -837,7 +837,7 @@ def _elevenlabs_chunk(chunk: str, voice_id: str, api_key: str, chunk_path: str) 
 
 
 def generate_voiceover(script_text: str, filename: str, language: str = "english") -> str:
-    """Generate voiceover — OpenAI TTS (tts-1-hd) → edge-tts fallback."""
+    """Generate voiceover — edge-tts (primary) → OpenAI TTS (backup)."""
     script_text = _strip_section_markers(script_text)
     try:
         from agents.script_agent import format_for_tts as _fmt
@@ -853,10 +853,17 @@ def generate_voiceover(script_text: str, filename: str, language: str = "english
     if language == "arabic":
         script_text = _apply_arabic_pronunciation(script_text)
 
-    # Priority 1: OpenAI TTS (primary — Arabic: marin/gpt-4o-mini-tts/1.1 WAV, English: alloy/1.0 MP3)
+    # Priority 1: edge-tts (primary — free, no quota)
+    print("[Voice] Trying edge-tts (primary)...")
+    result = generate_voiceover_edgetts(script_text, filename, language)
+    if result:
+        return result
+    print("[TTS] edge-tts failed — falling back to OpenAI TTS")
+
+    # Priority 2: OpenAI TTS (backup — Arabic: marin/gpt-4o-mini-tts/1.1 WAV, English: alloy/1.0 MP3)
     openai_key = os.getenv("OPENAI_API_KEY", "").strip()
     if openai_key and not _OPENAI_QUOTA_EXCEEDED:
-        print("[Voice] Trying OpenAI TTS (primary)...")
+        print("[Voice] Trying OpenAI TTS (backup)...")
         _oai_ext  = "wav" if language == "arabic" else "mp3"
         _oai_path = os.path.join(AUDIO_DIR, f"{filename}.{_oai_ext}")
         _is_short = "short" in filename.lower()
@@ -865,22 +872,20 @@ def generate_voiceover(script_text: str, filename: str, language: str = "english
         if result:
             return result
 
-        # Priority 2: OpenAI safe fallback — alloy/1.0, no preprocessing
         if not _OPENAI_QUOTA_EXCEEDED:
-            print("[TTS] OpenAI primary failed — trying safe fallback (alloy, 1.0, no preprocess)")
+            print("[TTS] OpenAI backup failed — trying safe fallback (alloy, 1.0, no preprocess)")
             result = generate_voiceover_openai(
                 script_text, language, _oai_path, is_short=_is_short,
                 voice_override="alloy", speed_override=1.0,
             )
             if result:
                 return result
-            print("[TTS] OpenAI safe fallback failed — falling back to edge-tts")
+            print("[TTS] OpenAI safe fallback failed")
         else:
-            print("[TTS] OpenAI quota exceeded — falling back to edge-tts")
+            print("[TTS] OpenAI quota exceeded")
 
-    # Priority 3: edge-tts (final fallback — unchanged)
-    print("[Voice] Using edge-tts")
-    return generate_voiceover_edgetts(script_text, filename, language)
+    print("[Voice] ❌ All TTS providers failed")
+    return None
 
 
 # â"€â"€ AI Image generation (Pollinations — free, no key) â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
@@ -9759,7 +9764,7 @@ def assemble_video_with_hook(
                 _seg.write_videofile(
                     _bp, fps=24, codec="libx264", audio=False,
                     preset="ultrafast", logger=None,
-                    ffmpeg_params=["-threads", "0", "-crf", "20", "-pix_fmt", "yuv420p"],
+                    ffmpeg_params=["-threads", "0", "-crf", "26", "-pix_fmt", "yuv420p"],
                 )
                 _seg.close()
             except Exception as _be:
