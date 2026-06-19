@@ -424,7 +424,7 @@ def generate_voiceover_edgetts(script_text: str, filename: str, language: str = 
         rate  = "+25%"
     else:
         voice = "en-US-ChristopherNeural"
-        rate  = EDGETTS_RATE_120
+        rate  = "+10%"
 
     audio_path = os.path.join(AUDIO_DIR, f"{filename}.mp3")
 
