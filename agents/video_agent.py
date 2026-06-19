@@ -420,8 +420,8 @@ def generate_voiceover_edgetts(script_text: str, filename: str, language: str = 
         import edge_tts
 
     if language.lower() == "arabic":
-        voice = "ar-SA-ZariyahNeural"
-        rate  = EDGETTS_RATE_120
+        voice = "ar-SA-HamdanNeural"
+        rate  = "+25%"
     else:
         voice = "en-US-ChristopherNeural"
         rate  = EDGETTS_RATE_120
