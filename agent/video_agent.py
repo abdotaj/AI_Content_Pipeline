@@ -6779,36 +6779,36 @@ def _search_duckduckgo_images(query: str, max_results: int = 5) -> list[str]:
                 type_image="photo",
                 safesearch="on",
             )
-            urls: list[str] = []
-            _blocked = _BLOCKED_IMAGE_DOMAINS | _BLOCKED_CHILD_PATTERNS | _VIDEO_ADULT_DOMAINS
-            for r in (raw or []):
-                url = r.get("image", "")
-                if not url or not url.startswith("http"):
-                    continue
-                u_lower = url.lower()
-                if any(d in u_lower for d in _blocked):
-                    continue
-                if any(p in u_lower for p in _BLOCKED_ADULT_PATTERNS):
-                    continue
-                # Filter on DDG result metadata before downloading
-                _title  = (r.get("title")  or "").lower()
-                _source = (r.get("source") or "").lower()
-                if any(kw in _title or kw in _source for kw in _ART_RESULT_KEYWORDS):
-                    continue
-                if any(kw in _title or kw in _source for kw in _BLOCKED_ADULT_PATTERNS):
-                    continue
-                # Skip images with known-small dimensions (likely thumbnails/icons)
-                _w = int(r.get("width")  or 0)
-                _h = int(r.get("height") or 0)
-                if _w and _h and (_w < 400 or _h < 300):
-                    continue
-                urls.append(url)
-                if len(urls) >= max_results:
-                    break
-            if urls:
-                print(f"[Image] DuckDuckGo: {len(urls)} result(s) for '{query}'")
-                _DDG_SEARCH_CACHE[cache_key] = urls
-                return urls
+        urls: list[str] = []
+        _blocked = _BLOCKED_IMAGE_DOMAINS | _BLOCKED_CHILD_PATTERNS | _VIDEO_ADULT_DOMAINS
+        for r in (raw or []):
+            url = r.get("image", "")
+            if not url or not url.startswith("http"):
+                continue
+            u_lower = url.lower()
+            if any(d in u_lower for d in _blocked):
+                continue
+            if any(p in u_lower for p in _BLOCKED_ADULT_PATTERNS):
+                continue
+            # Filter on DDG result metadata before downloading
+            _title  = (r.get("title")  or "").lower()
+            _source = (r.get("source") or "").lower()
+            if any(kw in _title or kw in _source for kw in _ART_RESULT_KEYWORDS):
+                continue
+            if any(kw in _title or kw in _source for kw in _BLOCKED_ADULT_PATTERNS):
+                continue
+            # Skip images with known-small dimensions (likely thumbnails/icons)
+            _w = int(r.get("width")  or 0)
+            _h = int(r.get("height") or 0)
+            if _w and _h and (_w < 400 or _h < 300):
+                continue
+            urls.append(url)
+            if len(urls) >= max_results:
+                break
+        if urls:
+            print(f"[Image] DuckDuckGo: {len(urls)} result(s) for '{query}'")
+            _DDG_SEARCH_CACHE[cache_key] = urls
+            return urls
     except Exception as e:
         _last_err = e
     if _last_err:
