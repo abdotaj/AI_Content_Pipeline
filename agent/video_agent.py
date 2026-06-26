@@ -431,12 +431,21 @@ def generate_voiceover_edgetts(script_text: str, filename: str, language: str = 
         rate  = "+10%"
 
     # Split on [SECTION:] markers — one edge-tts call per section (same structure as OpenAI TTS)
+    # edge-tts limit: ~15,000 chars / 2,500 words per request — cap at 10,000 chars for safety
+    _EDGETTS_MAX_CHARS = 10_000
     _raw_sections = _re.split(r'\[SECTION:[^\]]*\]', script_text)
-    sections = [s.strip() for s in _raw_sections if s.strip()]
-    if not sections:
-        sections = [script_text]
+    _coarse = [s.strip() for s in _raw_sections if s.strip()]
+    if not _coarse:
+        _coarse = [script_text]
+    # Sub-split any section that exceeds the per-request char limit
+    sections: list[str] = []
+    for _sec in _coarse:
+        if len(_sec) <= _EDGETTS_MAX_CHARS:
+            sections.append(_sec)
+        else:
+            sections.extend(_split_text(_sec, max_chars=_EDGETTS_MAX_CHARS))
 
-    print(f"[Video] edge-tts: {len(sections)} section(s) for {language}")
+    print(f"[Video] edge-tts: {len(sections)} chunk(s) for {language} (limit {_EDGETTS_MAX_CHARS} chars)")
 
     base        = os.path.join(AUDIO_DIR, filename)
     audio_path  = os.path.join(AUDIO_DIR, f"{filename}.mp3")
