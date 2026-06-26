@@ -7265,40 +7265,40 @@ def _search_duckduckgo_videos(query: str, max_results: int = 5) -> list[str]:
         _clean_vid_query = _sanitize_search_query(query)
         _vid_query = f"{_clean_vid_query} news footage"
         raw = DDGS().videos(_vid_query, max_results=max_results * 4, safesearch="on")
-            urls: list[str] = []
-            for r in (raw or []):
-                url = r.get("content", "") or r.get("embed_url", "")
-                if not url or not url.startswith("http"):
-                    continue
-                if _is_blacklisted_source(url):
-                    continue
-                # Also check description/title for adult content signals
-                _title = (r.get("title") or "").lower()
-                _desc  = (r.get("description") or "").lower()
-                _combined = f"{_title} {_desc} {url.lower()}"
-                if any(kw in _combined for kw in (
-                    "nude", "naked", "porn", "sex", "xxx", "nsfw", "explicit",
-                    "erotic", "adult", "lingerie", "topless", "fetish",
-                )):
-                    print(f"[Stock] Blocked adult video result: {url[:60]}")
-                    continue
-                # Skip very long videos (duration field is in seconds when present)
-                _dur = r.get("duration", "") or ""
-                if _dur and ":" in str(_dur):
-                    # e.g. "10:30" → 630s — skip anything over 5 minutes
-                    _parts = str(_dur).split(":")
-                    try:
-                        _total_s = int(_parts[-2]) * 60 + int(_parts[-1]) if len(_parts) >= 2 else 0
-                        if _total_s > 300:
-                            continue
-                    except (ValueError, IndexError):
-                        pass
-                urls.append(url)
-                if len(urls) >= max_results:
-                    break
-            if urls:
-                print(f"[Stock] DuckDuckGo videos: {len(urls)} result(s) for '{query}'")
-                return urls
+        urls: list[str] = []
+        for r in (raw or []):
+            url = r.get("content", "") or r.get("embed_url", "")
+            if not url or not url.startswith("http"):
+                continue
+            if _is_blacklisted_source(url):
+                continue
+            # Also check description/title for adult content signals
+            _title = (r.get("title") or "").lower()
+            _desc  = (r.get("description") or "").lower()
+            _combined = f"{_title} {_desc} {url.lower()}"
+            if any(kw in _combined for kw in (
+                "nude", "naked", "porn", "sex", "xxx", "nsfw", "explicit",
+                "erotic", "adult", "lingerie", "topless", "fetish",
+            )):
+                print(f"[Stock] Blocked adult video result: {url[:60]}")
+                continue
+            # Skip very long videos (duration field is in seconds when present)
+            _dur = r.get("duration", "") or ""
+            if _dur and ":" in str(_dur):
+                # e.g. "10:30" → 630s — skip anything over 5 minutes
+                _parts = str(_dur).split(":")
+                try:
+                    _total_s = int(_parts[-2]) * 60 + int(_parts[-1]) if len(_parts) >= 2 else 0
+                    if _total_s > 300:
+                        continue
+                except (ValueError, IndexError):
+                    pass
+            urls.append(url)
+            if len(urls) >= max_results:
+                break
+        if urls:
+            print(f"[Stock] DuckDuckGo videos: {len(urls)} result(s) for '{query}'")
+            return urls
     except Exception as e:
         _last_err = e
     if _last_err:
