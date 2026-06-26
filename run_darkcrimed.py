@@ -713,6 +713,8 @@ def run_pipeline():
         _sdir = os.path.join("output", "dark_crime", "scripts")
         Path(_sdir).mkdir(parents=True, exist_ok=True)
         _slug = _topic_slug(en.get("topic", "video") if en else "video")
+
+        # Individual readable .txt files
         for _lang, _data in [("en", en), ("ar", ar)]:
             if not _data:
                 continue
@@ -724,10 +726,27 @@ def run_pipeline():
                     _short = _data.get(f"short_script_{_lang}", "")
                     if _short:
                         _f.write(f"\n\n--- SHORT ({_lang.upper()}) ---\n{_short}")
-                with open(_base + ".json", "w", encoding="utf-8") as _f:
-                    json.dump(_data, _f, ensure_ascii=False, indent=2)
             except Exception as _be:
-                _log("Scripts", f"Backup save failed ({_lang}): {_be}", "WARN")
+                _log("Scripts", f"Backup .txt failed ({_lang}): {_be}", "WARN")
+
+        # Combined injection-ready JSON — drop into content/scripts/ to skip generation
+        try:
+            _inject = {
+                "title":           (en or {}).get("title", ""),
+                "title_ar":        (ar or {}).get("title", ""),
+                "topic":           (en or ar or {}).get("topic", ""),
+                "series_name":     (en or ar or {}).get("series_name", "") or None,
+                "script":          (en or {}).get("script", ""),
+                "script_ar":       (ar or {}).get("script", ""),
+                "short_script_en": (en or {}).get("short_script_en", ""),
+                "short_script_ar": (ar or {}).get("short_script_ar", ""),
+            }
+            _inject_path = os.path.join(_sdir, f"INJECT_{today}_{_slug}.json")
+            with open(_inject_path, "w", encoding="utf-8") as _f:
+                json.dump(_inject, _f, ensure_ascii=False, indent=2)
+            _log("Scripts", f"Injection JSON: output/dark_crime/scripts/INJECT_{today}_{_slug}.json", "OK")
+        except Exception as _be:
+            _log("Scripts", f"Backup injection JSON failed: {_be}", "WARN")
 
     try:
         _today_str = datetime.date.today().strftime("%Y-%m-%d")
