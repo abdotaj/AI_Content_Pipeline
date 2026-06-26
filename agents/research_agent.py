@@ -17,34 +17,6 @@ except ImportError:
     from duckduckgo_search import DDGS
 
 
-def _ddgs_proxy() -> str | None:
-    """Return a randomly selected proxy URL for DDGS.
-
-    Reads DDG_PROXY_LIST (newline-separated host:port:user:pass), picks randomly.
-    Falls back to DDG_PROXY (single URL) then HTTPS_PROXY.
-    """
-    import os as _os, random as _random
-    proxy_list_raw = _os.getenv("DDG_PROXY_LIST", "")
-    if proxy_list_raw:
-        proxies: list[str] = []
-        for line in proxy_list_raw.strip().splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            parts = line.split(":")
-            if len(parts) == 4:
-                host, port, user, pwd = parts
-                proxies.append(f"http://{user}:{pwd}@{host}:{port}")
-            elif line.startswith(("http://", "socks5://")):
-                proxies.append(line)
-        if proxies:
-            return _random.choice(proxies)
-    return (
-        _os.getenv("DDG_PROXY")
-        or _os.getenv("HTTPS_PROXY")
-        or _os.getenv("https_proxy")
-        or None
-    )
 
 import groq as groq_lib
 from groq import Groq
@@ -56,7 +28,7 @@ _groq = Groq(api_key=GROQ_API_KEY)
 
 _FALLBACK_MODELS = [
     "llama-3.3-70b-versatile",   # primary
-    "llama-3.1-8b-instant",      # fallback
+    "openai/gpt-oss-20b",        # fallback (replaces deprecated llama-3.1-8b-instant)
 ]
 
 # Session-level Groq disable flag — set when rate-limited to skip all Groq calls this run
@@ -1370,44 +1342,29 @@ def fetch_wikipedia_arabic(query: str) -> str | None:
 # ── DuckDuckGo search helper (fallback) ────────────────────
 
 def web_search(query: str, max_results: int = 5) -> str:
-    """Search DuckDuckGo and return concatenated snippet text.
-    Retries up to 3× with different random proxies when DDG_PROXY_LIST is set."""
-    import os as _os, time as _time
-    _max_attempts = 3 if _os.getenv("DDG_PROXY_LIST") else 1
-    for _attempt in range(_max_attempts):
-        try:
-            with DDGS(proxy=_ddgs_proxy()) as ddgs:
-                results = list(ddgs.text(query, max_results=max_results))
-            text = " ".join(r.get("body", "") for r in results)[:3000]
-            return text or "(no results)"
-        except Exception as e:
-            if _attempt < _max_attempts - 1:
-                _time.sleep(1)
-            else:
-                return f"(search error: {e})"
-    return "(no results)"
+    """Search DuckDuckGo and return concatenated snippet text."""
+    try:
+        with DDGS() as ddgs:
+            results = list(ddgs.text(query, max_results=max_results))
+        text = " ".join(r.get("body", "") for r in results)[:3000]
+        return text or "(no results)"
+    except Exception as e:
+        return f"(search error: {e})"
 
 
 def web_search_with_sources(query: str, max_results: int = 5) -> tuple[str, list[dict]]:
     """Like web_search but also returns source dicts [{title, url}] for the hits."""
-    import os as _os, time as _time
-    _max_attempts = 3 if _os.getenv("DDG_PROXY_LIST") else 1
-    for _attempt in range(_max_attempts):
-        try:
-            with DDGS(proxy=_ddgs_proxy()) as ddgs:
-                results = list(ddgs.text(query, max_results=max_results))
-            text    = " ".join(r.get("body", "") for r in results)[:3000]
-            sources = [
-                {"title": r.get("title", "").strip(), "url": r.get("href", "").strip()}
-                for r in results if r.get("href", "").strip()
-            ]
-            return (text or "(no results)", sources)
-        except Exception as e:
-            if _attempt < _max_attempts - 1:
-                _time.sleep(1)
-            else:
-                return (f"(search error: {e})", [])
-    return ("(no results)", [])
+    try:
+        with DDGS() as ddgs:
+            results = list(ddgs.text(query, max_results=max_results))
+        text    = " ".join(r.get("body", "") for r in results)[:3000]
+        sources = [
+            {"title": r.get("title", "").strip(), "url": r.get("href", "").strip()}
+            for r in results if r.get("href", "").strip()
+        ]
+        return (text or "(no results)", sources)
+    except Exception as e:
+        return (f"(search error: {e})", [])
 
 
 # ── Covered topics tracker ──────────────────────────────────
@@ -2108,7 +2065,7 @@ def research_series(topic: str, series_name: str | None = None, user_note: str |
 
     # ── STEP 2: DuckDuckGo (additional details) ────────────
     try:
-        with DDGS(proxy=_ddgs_proxy()) as ddgs:
+        with DDGS() as ddgs:
             ddg_real = list(ddgs.text(
                 f"{topic} real true story historical facts biography",
                 max_results=5

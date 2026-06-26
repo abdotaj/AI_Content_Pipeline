@@ -21,7 +21,7 @@ _groq = Groq(api_key=GROQ_API_KEY)
 
 _FALLBACK_MODELS = [
     "llama-3.3-70b-versatile",   # primary
-    "llama-3.1-8b-instant",      # fallback
+    "openai/gpt-oss-20b",        # fallback (replaces deprecated llama-3.1-8b-instant)
 ]
 
 
@@ -42,11 +42,7 @@ def _groq_call(**kwargs):
 
     last_err = None
     for model in _FALLBACK_MODELS:
-        # llama-3.1-8b-instant has a 6000 TPM limit — cap max_tokens so
-        # prompt + response stays under 6000 total tokens
         call_kwargs = dict(kwargs)
-        if model == "llama-3.1-8b-instant":
-            call_kwargs["max_tokens"] = min(call_kwargs.get("max_tokens", 2000), 4000)
 
         for attempt in range(2):
             try:
@@ -587,7 +583,7 @@ def _groq_fallback(prompt: str, max_tokens: int, json_mode: bool,
     # Only try the primary model; do NOT fall back to a weaker Groq model on rate limit
     for model, model_max in [
         ("llama-3.3-70b-versatile", 2000),
-        ("llama-3.1-8b-instant",    1000),
+        ("openai/gpt-oss-20b",      2000),
     ]:
         try:
             resp = groq_client.chat.completions.create(

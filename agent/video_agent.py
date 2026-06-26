@@ -412,12 +412,16 @@ def expand_arabic_numbers(text: str) -> str:
 
 
 def generate_voiceover_edgetts(script_text: str, filename: str, language: str = "english") -> str:
-    """Generate voiceover using edge-tts."""
+    """Generate voiceover using edge-tts, one call per [SECTION:] segment (mirrors OpenAI TTS)."""
     try:
         import edge_tts
     except ImportError:
         os.system("pip install edge-tts -q")
         import edge_tts
+
+    import re as _re
+    import shutil as _shutil
+    import subprocess
 
     if language.lower() == "arabic":
         voice = "ar-SA-HamdanNeural"
@@ -426,28 +430,74 @@ def generate_voiceover_edgetts(script_text: str, filename: str, language: str = 
         voice = "en-US-ChristopherNeural"
         rate  = "+10%"
 
-    audio_path = os.path.join(AUDIO_DIR, f"{filename}.mp3")
+    # Split on [SECTION:] markers — one edge-tts call per section (same structure as OpenAI TTS)
+    _raw_sections = _re.split(r'\[SECTION:[^\]]*\]', script_text)
+    sections = [s.strip() for s in _raw_sections if s.strip()]
+    if not sections:
+        sections = [script_text]
 
-    async def _generate():
-        communicate = edge_tts.Communicate(
-            text=script_text,
-            voice=voice,
-            rate=rate,
-            volume="+0%",
-        )
-        await communicate.save(audio_path)
+    print(f"[Video] edge-tts: {len(sections)} section(s) for {language}")
 
-    for _attempt in range(3):
-        try:
-            asyncio.run(_generate())
-            print(f"[Video] Voiceover saved (edge-tts): {audio_path}")
-            return audio_path
-        except Exception as _e:
-            print(f"[Video] edge-tts attempt {_attempt + 1} failed: {_e}")
-            if _attempt < 2:
-                import time as _t; _t.sleep(5)
-    print("[Video] edge-tts failed all 3 attempts — returning None")
-    return None
+    base        = os.path.join(AUDIO_DIR, filename)
+    audio_path  = os.path.join(AUDIO_DIR, f"{filename}.mp3")
+    chunk_paths: list[str] = []
+
+    async def _gen_section(text: str, path: str):
+        communicate = edge_tts.Communicate(text=text, voice=voice, rate=rate, volume="+0%")
+        await communicate.save(path)
+
+    for i, section in enumerate(sections):
+        chunk_path = f"{base}_edgetts_chunk{i}.mp3"
+        for _attempt in range(3):
+            try:
+                asyncio.run(_gen_section(section, chunk_path))
+                print(f"[Video] edge-tts section {i + 1}/{len(sections)} done")
+                chunk_paths.append(chunk_path)
+                break
+            except Exception as _e:
+                print(f"[Video] edge-tts section {i + 1} attempt {_attempt + 1} failed: {_e}")
+                if _attempt < 2:
+                    import time as _t; _t.sleep(5)
+        else:
+            print(f"[Video] edge-tts section {i + 1} failed all attempts — aborting")
+            for f in chunk_paths:
+                try: os.remove(f)
+                except OSError: pass
+            return None
+
+    if len(chunk_paths) == 1:
+        _shutil.move(chunk_paths[0], audio_path)
+    else:
+        ffmpeg_bin = _get_ffmpeg()
+        list_path  = f"{base}_edgetts_list.txt"
+        merged     = False
+        if ffmpeg_bin:
+            with open(list_path, "w", encoding="utf-8") as lf:
+                for cp in chunk_paths:
+                    lf.write(f"file '{os.path.abspath(cp)}'\n")
+            try:
+                subprocess.run(
+                    [ffmpeg_bin, "-y", "-f", "concat", "-safe", "0",
+                     "-i", list_path, "-c", "copy", audio_path],
+                    check=True, capture_output=True,
+                )
+                merged = True
+            except Exception as _e:
+                print(f"[Video] edge-tts ffmpeg merge failed: {_e}")
+            try: os.remove(list_path)
+            except OSError: pass
+        if not merged:
+            merged = _merge_chunks_pydub(chunk_paths, audio_path)
+        if not merged:
+            _shutil.copy(chunk_paths[0], audio_path)
+            print("[Video] edge-tts using first section only")
+        for f in chunk_paths:
+            if os.path.exists(f) and f != audio_path:
+                try: os.remove(f)
+                except OSError: pass
+
+    print(f"[Video] Voiceover saved (edge-tts, {len(sections)} sections): {audio_path}")
+    return audio_path
 
 
 def _pyarabic_normalize(text: str) -> str:
@@ -3454,39 +3504,6 @@ def _translate_arabic_chunk_for_search(chunk: str) -> str:
     return chunk
 
 
-def _ddgs_proxy() -> str | None:
-    """Return a randomly selected proxy URL for DDGS.
-
-    Reads DDG_PROXY_LIST first (newline-separated, host:port:user:pass format):
-      45.39.73.121:5536:mxzwyene:kqg2qsljouvb
-      23.26.68.181:6164:mxzwyene:kqg2qsljouvb
-      ...
-    Picks one at random each call so load is distributed and a blocked IP
-    is automatically avoided on the next request.
-
-    Falls back to DDG_PROXY (single URL), then HTTPS_PROXY.
-    """
-    proxy_list_raw = os.getenv("DDG_PROXY_LIST", "")
-    if proxy_list_raw:
-        proxies: list[str] = []
-        for line in proxy_list_raw.strip().splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            parts = line.split(":")
-            if len(parts) == 4:
-                host, port, user, pwd = parts
-                proxies.append(f"http://{user}:{pwd}@{host}:{port}")
-            elif line.startswith(("http://", "socks5://")):
-                proxies.append(line)
-        if proxies:
-            return random.choice(proxies)
-    return (
-        os.getenv("DDG_PROXY")
-        or os.getenv("HTTPS_PROXY")
-        or os.getenv("https_proxy")
-        or None
-    )
 
 
 # Short event-type context word to combine with the person name
@@ -5546,6 +5563,12 @@ def _apply_intro_outro_overlay(
         except Exception:
             _vid_dur = 0.0
 
+        # Skip overlay for very long videos — re-encoding a 30+ min video with
+        # libx264 takes longer than the 600s timeout can handle and wastes CI time.
+        if _vid_dur > 1200:
+            print(f"[Overlay] Skipped: video {_vid_dur/60:.0f}min too long for fade re-encode")
+            return video_path
+
         if _vid_dur > 10:
             outro_start = _vid_dur - 4.5
             filters += [f"fade=t=out:st={outro_start}:d=4.5"]
@@ -5559,8 +5582,9 @@ def _apply_intro_outro_overlay(
         "-c:a", "copy",
         out_path,
     ]
+    _overlay_timeout = max(600, int((_vid_dur if not is_short else 0) * 1.2))
     try:
-        subprocess.run(cmd, check=True, capture_output=True, timeout=600)
+        subprocess.run(cmd, check=True, capture_output=True, timeout=_overlay_timeout)
         os.replace(out_path, video_path)
         print(f"[Overlay] Intro/outro overlays applied: {os.path.basename(video_path)}")
     except subprocess.CalledProcessError as e:
@@ -6731,20 +6755,16 @@ def _search_duckduckgo_images(query: str, max_results: int = 5) -> list[str]:
     except ImportError:
         return []
 
-    # Retry up to 3 times, each time picking a different random proxy from the list
-    _max_attempts = 3 if os.getenv("DDG_PROXY_LIST") else 1
     _last_err: Exception | None = None
-    for _attempt in range(_max_attempts):
-        try:
-            _proxy = _ddgs_proxy()
-            # Sanitize query to strip adult/sensitive terms before searching
-            _clean_query = _sanitize_search_query(query)
-            # Append "photograph" to every query — forces Bing's index to rank
-            # actual photos (news, archive, press) over artwork and illustrations.
-            # type_image="photo" is DDG's category filter but is unreliable;
-            # the "photograph" keyword in the query itself is more effective.
-            _safe_query = f"{_clean_query} photograph {_CRIME_NEGATIVE_TERMS}"
-            raw = DDGS(proxy=_proxy).images(
+    try:
+        # Sanitize query to strip adult/sensitive terms before searching
+        _clean_query = _sanitize_search_query(query)
+        # Append "photograph" to every query — forces Bing's index to rank
+        # actual photos (news, archive, press) over artwork and illustrations.
+        # type_image="photo" is DDG's category filter but is unreliable;
+        # the "photograph" keyword in the query itself is more effective.
+        _safe_query = f"{_clean_query} photograph {_CRIME_NEGATIVE_TERMS}"
+        raw = DDGS().images(
                 _safe_query,
                 max_results=max_results * 3,
                 type_image="photo",
@@ -6777,14 +6797,11 @@ def _search_duckduckgo_images(query: str, max_results: int = 5) -> list[str]:
                 if len(urls) >= max_results:
                     break
             if urls:
-                print(f"[Image] DuckDuckGo: {len(urls)} result(s) for '{query}' "
-                      f"(proxy attempt {_attempt + 1})")
+                print(f"[Image] DuckDuckGo: {len(urls)} result(s) for '{query}'")
                 _DDG_SEARCH_CACHE[cache_key] = urls
                 return urls
-        except Exception as e:
-            _last_err = e
-            if _attempt < _max_attempts - 1:
-                time.sleep(1)  # brief pause before retrying with next proxy
+    except Exception as e:
+        _last_err = e
     if _last_err:
         print(f"[Image] DuckDuckGo images failed for '{query}': {_last_err}")
     return []
@@ -7223,8 +7240,7 @@ def _search_youtube_videos(query: str, max_results: int = 5) -> list[str]:
 
 def _search_duckduckgo_videos(query: str, max_results: int = 5) -> list[str]:
     """Search DuckDuckGo videos — finds news clips, reels, short videos.
-    Returns direct embed/source URLs; caller downloads via yt-dlp or direct HTTP.
-    Retries up to 3× with different random proxies when DDG_PROXY_LIST is set."""
+    Returns direct embed/source URLs; caller downloads via yt-dlp or direct HTTP."""
     try:
         try:
             from ddgs import DDGS
@@ -7233,16 +7249,13 @@ def _search_duckduckgo_videos(query: str, max_results: int = 5) -> list[str]:
     except ImportError:
         return []
 
-    _max_attempts = 3 if os.getenv("DDG_PROXY_LIST") else 1
     _last_err: Exception | None = None
-    for _attempt in range(_max_attempts):
-        try:
-            _proxy = _ddgs_proxy()
-            # Append "news footage" to bias toward short news clips/reels rather
-            # than long documentaries or unrelated uploads.
-            _clean_vid_query = _sanitize_search_query(query)
-            _vid_query = f"{_clean_vid_query} news footage"
-            raw = DDGS(proxy=_proxy).videos(_vid_query, max_results=max_results * 4, safesearch="on")
+    try:
+        # Append "news footage" to bias toward short news clips/reels rather
+        # than long documentaries or unrelated uploads.
+        _clean_vid_query = _sanitize_search_query(query)
+        _vid_query = f"{_clean_vid_query} news footage"
+        raw = DDGS().videos(_vid_query, max_results=max_results * 4, safesearch="on")
             urls: list[str] = []
             for r in (raw or []):
                 url = r.get("content", "") or r.get("embed_url", "")
@@ -7275,13 +7288,10 @@ def _search_duckduckgo_videos(query: str, max_results: int = 5) -> list[str]:
                 if len(urls) >= max_results:
                     break
             if urls:
-                print(f"[Stock] DuckDuckGo videos: {len(urls)} result(s) for '{query}' "
-                      f"(proxy attempt {_attempt + 1})")
+                print(f"[Stock] DuckDuckGo videos: {len(urls)} result(s) for '{query}'")
                 return urls
-        except Exception as e:
-            _last_err = e
-            if _attempt < _max_attempts - 1:
-                time.sleep(1)
+    except Exception as e:
+        _last_err = e
     if _last_err:
         print(f"[Stock] DuckDuckGo videos failed for '{query}': {_last_err}")
     return []
@@ -11959,7 +11969,7 @@ def run_full_pipeline(
                 if abs(_delta) > 2.0:
                     print(f"[AR AUDIO] Runtime mismatch: {_delta:+.1f}min")
                 if _dur < _rc["min_seconds"]:
-                    print(f"[AR AUDIO] Rebuild triggered — {_min:.1f}min < {_rc['min_seconds']/60:.0f}min contract minimum")
+                    print(f"[AR AUDIO] WARNING: audio {_min:.1f}min below {_rc['min_seconds']/60:.0f}min contract minimum — script was too short")
                 elif _dur > _rc["max_seconds"]:
                     print(f"[FULL] WARNING: Long audio too long: {_min:.1f} min (contract: {_rc['min_seconds']/60:.0f}-{_rc['max_seconds']/60:.0f} min)")
                 else:
