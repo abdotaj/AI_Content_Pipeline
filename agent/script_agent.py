@@ -5047,13 +5047,16 @@ def translate_to_arabic_google(text: str) -> str:
     import requests as _requests
 
     # Protect quoted strings (e.g., "Black Mass") and parenthesized names
-    # (e.g., (Dick Lehr)) so Google Translate doesn't drop or mangle them.
+    # (e.g., (Shimon Hayut)) so Google Translate doesn't translate or drop them.
+    # Use Unicode angle-bracket tokens (❰N❱) — Google Translate never translates
+    # these symbols, so restoration is reliable. Limit raised to 200 chars to
+    # cover long parenthetical descriptions.
     _store: list[tuple[str, str]] = []
     def _protect(m: _re.Match) -> str:
-        key = f"__NAME{len(_store)}__"
+        key = f"❰{len(_store)}❱"
         _store.append((key, m.group()))
         return key
-    safe_text = _re.sub(r'"[^"]{2,60}"|\'[^\']{2,60}\'|\([^)]{2,60}\)', _protect, text)
+    safe_text = _re.sub(r'"[^"]{2,200}"|\'[^\']{2,200}\'|\([^)]{2,200}\)', _protect, text)
 
     url = "https://translate.googleapis.com/translate_a/single"
     params = {
@@ -5071,6 +5074,11 @@ def translate_to_arabic_google(text: str) -> str:
     # Restore protected names
     for key, original in _store:
         translated = translated.replace(key, original)
+    # Log any un-restored placeholders so bugs are visible in the run log
+    import re as _re2
+    leftovers = _re2.findall(r'❰\d+❱', translated)
+    if leftovers:
+        print(f"[Script] ⚠️  {len(leftovers)} protection placeholder(s) not restored: {leftovers}")
 
     return _fix_arabic(translated)
 
