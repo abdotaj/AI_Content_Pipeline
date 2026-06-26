@@ -150,6 +150,17 @@ jobs:
           retention-days: 5
           if-no-files-found: warn
 
+      - name: Upload scripts and images as backup
+        if: always()
+        uses: actions/upload-artifact@v4.6.2
+        with:
+          name: dark-crime-content-${{ github.run_id }}
+          path: |
+            output/dark_crime/scripts/
+            output/images/
+          retention-days: 30
+          if-no-files-found: warn
+
       - name: Upload logs on failure
         if: failure()
         uses: actions/upload-artifact@v4.6.2

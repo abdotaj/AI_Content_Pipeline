@@ -708,6 +708,34 @@ def run_pipeline():
 
     _stage("Scripts AR done")
 
+    # ── 2D: Save scripts to disk as backup ────────────────────────────────────
+    def _backup_scripts(en: dict | None, ar: dict | None, today: str):
+        _sdir = os.path.join("output", "dark_crime", "scripts")
+        Path(_sdir).mkdir(parents=True, exist_ok=True)
+        _slug = _topic_slug(en.get("topic", "video") if en else "video")
+        for _lang, _data in [("en", en), ("ar", ar)]:
+            if not _data:
+                continue
+            try:
+                _base = os.path.join(_sdir, f"{today}_{_lang}_{_slug}")
+                with open(_base + ".txt", "w", encoding="utf-8") as _f:
+                    _f.write(f"TITLE: {_data.get('title','')}\n\n")
+                    _f.write(_data.get("script", ""))
+                    _short = _data.get(f"short_script_{_lang}", "")
+                    if _short:
+                        _f.write(f"\n\n--- SHORT ({_lang.upper()}) ---\n{_short}")
+                with open(_base + ".json", "w", encoding="utf-8") as _f:
+                    json.dump(_data, _f, ensure_ascii=False, indent=2)
+            except Exception as _be:
+                _log("Scripts", f"Backup save failed ({_lang}): {_be}", "WARN")
+
+    try:
+        _today_str = datetime.date.today().strftime("%Y-%m-%d")
+        _backup_scripts(en_long, ar_long, _today_str)
+        _log("Scripts", "Backup saved to output/dark_crime/scripts/", "OK")
+    except Exception as _bk_e:
+        _log("Scripts", f"Backup failed (non-fatal): {_bk_e}", "WARN")
+
     # ── STEP 3: Send scripts to Telegram for review (non-blocking) ────────────
     print("\n[3/5] Sending scripts to Telegram for review...")
     _dc_mode_label = os.getenv("PIPELINE_MODE", "fast").lower()
