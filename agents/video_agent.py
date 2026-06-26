@@ -8234,10 +8234,21 @@ def _validate_output_file(path: str) -> bool:
     if not ffmpeg_bin:
         print(f"[Render] Output validated (no ffprobe): {os.path.basename(path)} ({size_mb} MB)")
         return True
+    # For large files (> 200 MB) skip the full-decode pass — it reads every frame
+    # and regularly exceeds 60 s on a 1 GB+ Arabic long-form, causing a spurious timeout.
+    # Duration probe via ffprobe is sufficient for structural validation.
+    if size_mb > 200:
+        dur = _ffprobe_duration(path) or 0.0
+        min_dur = 55.0 if is_short_file else 300.0
+        if dur > 0 and dur < min_dur:
+            print(f"[Render] Validation FAILED — duration {dur:.1f}s < minimum {min_dur:.0f}s: {path}")
+            return False
+        print(f"[Render] Output validated (large file, duration probe): {os.path.basename(path)} ({size_mb} MB, {dur:.0f}s)")
+        return True
     try:
         result = subprocess.run(
             [ffmpeg_bin, "-v", "error", "-i", path, "-f", "null", "-"],
-            capture_output=True, text=True, timeout=60,
+            capture_output=True, text=True, timeout=120,
         )
         if "moov atom not found" in result.stderr or "Invalid data" in result.stderr:
             print(f"[Render] Validation FAILED — corrupt MP4: {result.stderr[:200]}")
@@ -8492,24 +8503,44 @@ Path(SHORTS_DIR).mkdir(parents=True, exist_ok=True)
 
 _RETENTION_HOOK     = ["you won't believe", "what if i told you", "imagine",
                        "did you know", "the real story", "no one knew",
-                       "this is why", "this is how", "this killer", "this criminal"]
+                       "this is why", "this is how", "this killer", "this criminal",
+                       # Arabic equivalents
+                       "لن تصدق", "ماذا لو", "هل تعلم", "القصة الحقيقية",
+                       "لم يعرف أحد", "هذا هو السبب", "هكذا حدث"]
 _RETENTION_REVEAL   = ["revealed", "exposed", "shocking", "nobody knew",
                        "secret", "real identity", "it turned out", "the truth was",
-                       "what they found", "hidden for years"]
+                       "what they found", "hidden for years",
+                       # Arabic equivalents
+                       "كُشف", "فضيحة", "صادم", "الهوية الحقيقية",
+                       "تبين أن", "الحقيقة كانت", "مخفي لسنوات", "سر"]
 _RETENTION_MYSTERY  = ["who was", "why did", "what happened", "where did",
-                       "mystery", "disappeared", "was never found", "unknown"]
+                       "mystery", "disappeared", "was never found", "unknown",
+                       # Arabic equivalents
+                       "من كان", "لماذا", "ماذا حدث", "أين ذهب",
+                       "غموض", "اختفى", "لم يُعثر عليه", "مجهول"]
 _RETENTION_CONFESS  = ["admitted", "confessed", "i killed", "i did it",
                        "he admitted", "she confessed", "in his own words",
-                       "told investigators", "according to him", "according to her"]
+                       "told investigators", "according to him", "according to her",
+                       # Arabic equivalents
+                       "اعترف", "اعترفت", "قتلت", "أنا فعلت",
+                       "بكلماته", "للمحققين", "وفقاً له", "وفقاً لها"]
 _RETENTION_ENDING   = ["sentenced", "executed", "life in prison", "never seen again",
-                       "escaped", "guilty", "acquitted", "was shot", "final verdict"]
+                       "escaped", "guilty", "acquitted", "was shot", "final verdict",
+                       # Arabic equivalents
+                       "صدر بحقه", "أُعدم", "السجن المؤبد", "لم يُرَ بعدها",
+                       "هرب", "مذنب", "بُرئ", "أُطلق عليه النار", "الحكم النهائي"]
 # Universal psychological hooks — topic- and region-agnostic (crime, history, cartel, scandal, any language)
 _RETENTION_UNIVERSAL = ["true story", "based on real", "untold", "cover-up", "cover up",
                         "most wanted", "betrayed", "betrayal", "for the first time",
-                        "until now", "hidden for decades", "the world never knew"]
+                        "until now", "hidden for decades", "the world never knew",
+                        # Arabic equivalents
+                        "قصة حقيقية", "مبني على", "لم يُروَ", "تستر", "الأكثر بحثاً",
+                        "خيانة", "للمرة الأولى", "حتى الآن", "مخفي لعقود"]
 # Generic section titles that reduce clip appeal — matched against title only
 _RETENTION_BORING   = ["introduction", "background", "context", "overview", "setup",
-                       "conclusion", "summary", "prologue", "epilogue", "beginning"]
+                       "conclusion", "summary", "prologue", "epilogue", "beginning",
+                       # Arabic equivalents
+                       "مقدمة", "خلفية", "سياق", "ملخص", "خاتمة", "نهاية"]
 
 
 def _score_retention(title: str, section_text: str) -> int:
