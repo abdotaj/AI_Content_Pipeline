@@ -2806,13 +2806,29 @@ _BLOCKED_ADULT_PATTERNS = {
     "erotic", "onlyfans", "chaturbate", "brazzers", "playboy", "hustler",
     "topless", "bottomless", "fetish", "bdsm",
 }
+# LGBT flags, symbols and related content — not appropriate for crime documentary channel
+_BLOCKED_LGBT_PATTERNS = frozenset({
+    "lgbt", "lgbtq", "lgbtqia", "lgbtq+",
+    "gay-pride", "gay_pride", "gaypride",
+    "pride-flag", "pride_flag", "prideflag",
+    "rainbow-flag", "rainbow_flag", "rainbowflag",
+    "/pride/", "pride-parade", "pride_parade", "prideparade",
+    "transgender-flag", "trans-flag", "trans_flag", "transflag",
+    "bisexual-flag", "bisexual_flag", "bisexualflag",
+    "nonbinary-flag", "non-binary-flag", "nonbinary_flag",
+    "queer-flag", "queer_flag",
+    # Arabic translations
+    "مثلي", "مثلية", "مثليون", "مثليين", "كوير", "ترانس",
+})
 _CRIME_NEGATIVE_TERMS = (
     "-cartoon -illustration -drawing -clipart -vector -anime -kids -children "
     "-coloring -painting -artwork -watercolor -sketch -doodle "
     "-painted -acrylic -mural -fresco -digital-art "
     "-nude -naked -nudity -sexual -explicit -nsfw -adult -porn -lingerie -bikini -erotic "
     "-mario -pokemon -minecraft -roblox -fortnite -zelda -sonic -pikachu "
-    "-videogame -\"video game\" -gameplay -screenshot -gaming"
+    "-videogame -\"video game\" -gameplay -screenshot -gaming "
+    "-lgbtq -lgbt -\"rainbow flag\" -\"pride flag\" -\"gay pride\" -\"pride parade\" "
+    "-transgender -\"trans flag\""
 )
 
 # ── Search query sanitization ─────────────────────────────────────────────────
@@ -2947,6 +2963,9 @@ def _is_valid_image_url(url: str) -> bool:
         return False
     if any(p in u for p in _BLOCKED_ADULT_PATTERNS):
         print(f"[Image] Blocked adult/sexual URL: {url[:80]}")
+        return False
+    if any(p in u for p in _BLOCKED_LGBT_PATTERNS):
+        print(f"[Image] Blocked LGBT content URL: {url[:80]}")
         return False
     # Accept if path ends with OR contains a known image extension
     # (CDN URLs often embed extensions mid-path, e.g. /photo.jpg/1280px-photo.jpg)
@@ -6788,12 +6807,16 @@ def _search_duckduckgo_images(query: str, max_results: int = 5) -> list[str]:
                 continue
             if any(p in u_lower for p in _BLOCKED_ADULT_PATTERNS):
                 continue
+            if any(p in u_lower for p in _BLOCKED_LGBT_PATTERNS):
+                continue
             # Filter on DDG result metadata before downloading
             _title  = (r.get("title")  or "").lower()
             _source = (r.get("source") or "").lower()
             if any(kw in _title or kw in _source for kw in _ART_RESULT_KEYWORDS):
                 continue
             if any(kw in _title or kw in _source for kw in _BLOCKED_ADULT_PATTERNS):
+                continue
+            if any(kw in _title or kw in _source for kw in _BLOCKED_LGBT_PATTERNS):
                 continue
             # Skip images with known-small dimensions (likely thumbnails/icons)
             _w = int(r.get("width")  or 0)
