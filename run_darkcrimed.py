@@ -120,7 +120,7 @@ def _load_injected_script() -> dict | None:
             result["script_ar"] = "\n".join(ar).strip()
             if not result["topic"]:
                 result["topic"] = result["title"]
-        if not result.get("script"):
+        if not result.get("script") and not result.get("script_ar"):
             return None
         ts   = _dt.datetime.now().strftime("%Y%m%d_%H%M")
         dest = os.path.join(_used_dir, f"{ts}_{candidates[0]}")
@@ -579,12 +579,15 @@ def run_pipeline():
 
         # ── 2A: English pipeline ───────────────────────────────────────────────
         en_long = None
-        if _inj and _inj.get("script"):
+        _EN_LONG_MIN_WORDS = 500  # ~3.5 min at normal speaking pace; below this = fallback
+        _inj_en_script = (_inj or {}).get("script", "")
+        _inj_en_words  = len(_inj_en_script.split())
+        if _inj and _inj_en_script and _inj_en_words >= _EN_LONG_MIN_WORDS:
             en_long = {
                 "title":           _inj["title"],
                 "title_ar":        _inj.get("title_ar", ""),
                 "topic":           _inj.get("topic", topic.get("topic", "")),
-                "script":          _inj["script"],
+                "script":          _inj_en_script,
                 "language":        "english",
                 "series_name":     _inj.get("series_name") or topic.get("series_name", ""),
                 "short_script_en": _inj.get("short_script_en", ""),
@@ -597,8 +600,16 @@ def run_pipeline():
                 "keywords":        topic.get("keywords", []),
                 "_injected":       True,
             }
-            _log("Scripts", f"EN (injected): '{en_long['title']}' | {len(en_long['script'].split())}w", "OK")
+            _log("Scripts", f"EN (injected): '{en_long['title']}' | {_inj_en_words}w", "OK")
         else:
+            if _inj and _inj_en_script:
+                _log("Scripts",
+                     f"EN inject only {_inj_en_words}w (< {_EN_LONG_MIN_WORDS} min) — AI-generating EN long",
+                     "WARN")
+                send_message(
+                    f"[Pipeline] Injected EN script too short ({_inj_en_words}w). "
+                    f"Generating English long script via AI instead."
+                )
             try:
                 en_long = write_script(topic, language="english")
                 _log("Scripts", f"EN done: '{en_long.get('title','?')}' | "
