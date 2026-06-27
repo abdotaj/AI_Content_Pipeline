@@ -98,26 +98,88 @@ def _load_injected_script() -> dict | None:
                 "short_script_ar": data.get("short_script_ar", "").strip(),
             }
         else:
+            import re as _re_inj
             raw = Path(src).read_text(encoding="utf-8")
             lines = raw.splitlines()
             result = {"title": "", "title_ar": "", "topic": "", "series_name": None,
                       "script": "", "script_ar": "", "short_script_en": "", "short_script_ar": ""}
-            body, ar, past_sep, in_ar = [], [], False, False
+
             def _sep(s):
                 s = s.strip(); return len(s) >= 3 and all(c in '-─━_=' for c in s)
+
+            def _arabic_ratio(text: str) -> float:
+                chars = [c for c in text if c.strip()]
+                if not chars: return 0.0
+                ar_chars = sum(1 for c in chars if '؀' <= c <= 'ۿ')
+                return ar_chars / len(chars)
+
+            # Telegram export timestamp pattern: [6/26/2026 3:41 PM]
+            _TG_TS = _re_inj.compile(r'^\[\d{1,2}/\d{1,2}/\d{4}')
+            _TG_DONE = ("Generating video automatically", "جاري إنشاء الفيديو")
+            _TG_EN_HDR = "English LONG script"
+
+            body, ar, past_sep, in_ar = [], [], False, False
             for line in lines:
                 if not past_sep and _sep(line):
                     past_sep = True; continue
                 if past_sep and not in_ar and _sep(line):
                     in_ar = True; continue
-                if in_ar: ar.append(line)
-                elif past_sep: body.append(line)
-                elif line.upper().startswith("TITLE_AR:"): result["title_ar"] = line.split(":", 1)[1].strip()
-                elif line.upper().startswith("TITLE:"): result["title"] = line.split(":", 1)[1].strip()
-                elif line.upper().startswith("TOPIC:"): result["topic"] = line.split(":", 1)[1].strip()
-                elif line.upper().startswith("SERIES:"): result["series_name"] = line.split(":", 1)[1].strip() or None
-            result["script"]    = "\n".join(body).strip()
-            result["script_ar"] = "\n".join(ar).strip()
+                if in_ar:
+                    # Stop AR collection at Telegram message boundaries or "done" markers
+                    if _TG_TS.match(line) or any(m in line for m in _TG_DONE):
+                        break
+                    ar.append(line)
+                elif past_sep:
+                    body.append(line)
+                elif line.upper().startswith("TITLE_AR:"):
+                    result["title_ar"] = line.split(":", 1)[1].strip()
+                    # Also pick up العنوان: (Arabic title header from Telegram exports)
+                elif line.startswith("العنوان:"):
+                    result["title_ar"] = line.split(":", 1)[1].strip()
+                elif line.upper().startswith("TITLE:"):
+                    result["title"] = line.split(":", 1)[1].strip()
+                elif line.upper().startswith("TOPIC:"):
+                    result["topic"] = line.split(":", 1)[1].strip()
+                elif line.upper().startswith("SERIES:"):
+                    result["series_name"] = line.split(":", 1)[1].strip() or None
+
+            body_text = "\n".join(body).strip()
+            ar_text   = "\n".join(ar).strip()
+
+            # Telegram export detection: if body (between sep1→sep2) is mostly Arabic
+            # but ar section is short/empty, the export has the Arabic script in the body slot.
+            # Swap and extract English script from the raw text after the Telegram EN marker.
+            if _arabic_ratio(body_text) > 0.35 and _arabic_ratio(ar_text) < 0.35:
+                print("[ScriptInject] Telegram export detected — body is Arabic; swapping EN/AR fields")
+                result["script_ar"] = body_text
+                # Try to extract EN long script from the raw text.
+                # The EN section has metadata (YOUR DISCOVERY, WHAT WE FOUND, research bullets)
+                # before the actual script (INTRO, MAIN STORY, CONCLUSION).
+                _en_lines, _capturing, _in_script = [], False, False
+                _EN_STOP  = ("SOURCES & REFERENCES:", "SEARCH QUERIES", "#Dark", "#Crime", "🔍")
+                _EN_SKIP  = ("YOUR DISCOVERY:", "WHAT WE FOUND:", "  -")
+                _EN_START = ("INTRO:", "MAIN STORY:", "CONCLUSION:")
+                for line in lines:
+                    if _TG_EN_HDR in line:
+                        _capturing = True; continue
+                    if not _capturing: continue
+                    if _TG_TS.match(line): break
+                    if any(m in line for m in _TG_DONE): break
+                    if line.startswith(_EN_STOP): break
+                    if _sep(line): continue
+                    if line.startswith("Title:"):
+                        result["title"] = line.split(":", 1)[1].strip(); continue
+                    if line.startswith(_EN_SKIP): continue
+                    if line.startswith(_EN_START):
+                        _in_script = True; continue
+                    if _in_script:
+                        _en_lines.append(line)
+                result["script"] = "\n".join(_en_lines).strip()
+                print(f"[ScriptInject] Telegram EN extracted: {len(result['script'].split())}w")
+            else:
+                result["script"]    = body_text
+                result["script_ar"] = ar_text
+
             if not result["topic"]:
                 result["topic"] = result["title"]
         if not result.get("script") and not result.get("script_ar"):
