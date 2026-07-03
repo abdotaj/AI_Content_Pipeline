@@ -1048,6 +1048,7 @@ def run_pipeline():
 
         # ── Disk cleanup before EN render ─────────────────────────────────────
         # Arabic final video stays (needed for upload). Intermediates are safe to remove.
+        # KEEP *_transformed_*.png — session cache lets EN reuse AR user-image AI transforms.
         import glob as _glob, shutil as _shutil
         _ar_prefix = f"{today}_{_slug}_arabic_long"
         for _cleanup_dir in [
@@ -1056,6 +1057,8 @@ def run_pipeline():
             os.path.join("output", "dark_crime", "audio"),
         ]:
             for _f in _glob.glob(os.path.join(_cleanup_dir, f"*{_ar_prefix}*")):
+                if "_transformed_" in os.path.basename(_f):
+                    continue  # keep AR transforms — EN reuses them via session cache
                 try:
                     os.remove(_f)
                 except Exception:
@@ -1066,7 +1069,7 @@ def run_pipeline():
                 os.remove(_f)
             except Exception:
                 pass
-        _log("VideoGen", "[Disk] Arabic intermediates cleaned before EN render")
+        _log("VideoGen", "[Disk] Arabic intermediates cleaned before EN render (transforms kept for EN reuse)")
 
         # ── EN long ──────────────────────────────────────────────────────────
         _log("VideoGen", "Step 2/2 — Rendering EN long (second)")

@@ -1259,6 +1259,12 @@ def _extract_person_name_from_topic(title: str, topic: str) -> str:
     return topic.split("—")[0].strip() if topic else ""
 
 
+# Session cache: caption_hash → generated file path.
+# AR and EN share the same user images — reuse the file rather than re-calling Pollinations.
+_transform_session_cache: dict[str, str] = {}
+_transform_cache_lock = _threading.Lock()
+
+
 def transform_user_image(
     user_image_path: str,
     caption: str,
@@ -1272,11 +1278,28 @@ def transform_user_image(
     Pollinations is a text-to-image API so we use the caption as the seed text,
     with a hash-derived seed for reproducibility (same caption → same image).
     The result is 100% original AI art — no copyright concerns.
+    Caches result by caption hash so AR→EN reuse skips Pollinations entirely.
     Returns the saved output path or None on failure.
     """
     import hashlib
+    import shutil as _shutil
 
     caption_clean = clean_caption_for_prompt(caption or "cinematic dark portrait")
+    cache_key = hashlib.md5(caption_clean.encode()).hexdigest()[:16]
+
+    # Return cached transform if it still exists on disk (AR→EN reuse)
+    with _transform_cache_lock:
+        cached = _transform_session_cache.get(cache_key)
+    if cached and os.path.exists(cached):
+        output_path = os.path.join(IMAGES_DIR, f"{video_id}_transformed_{index}.png")
+        if cached != output_path:
+            try:
+                _shutil.copy2(cached, output_path)
+            except Exception:
+                output_path = cached
+        print(f"[Image] Reusing cached AR transform for '{caption_clean[:60]}' → {os.path.basename(output_path)}")
+        return output_path
+
     if section_tags:
         tags_str = " ".join(section_tags)
         prompt = (
@@ -1295,6 +1318,8 @@ def transform_user_image(
     print(f"[Image] Transforming → AI cinematic: '{caption_clean[:60]}'")
     result = generate_ai_image(prompt, output_path, seed=seed)
     if result and os.path.exists(result):
+        with _transform_cache_lock:
+            _transform_session_cache[cache_key] = result
         return result
     return None
 
@@ -1303,7 +1328,7 @@ def process_user_images(user_images: list[dict], video_id: str,
                         script_text: str = "") -> list[dict]:
     """
     For each user image: generate an AI-cinematic version from its caption,
-    then include the original.
+    then include the original. AI transforms run in parallel (max 8 workers).
 
     Tags are derived from:
       1. The actual filename stem (not generic "cinematic dark portrait")
@@ -1314,6 +1339,7 @@ def process_user_images(user_images: list[dict], video_id: str,
       2. Original user image
     """
     import re as _re
+    from concurrent.futures import ThreadPoolExecutor as _TPE, as_completed as _asc
 
     # Pre-parse script sections to source keywords per image position
     section_texts: list[str] = []
@@ -1331,20 +1357,12 @@ def process_user_images(user_images: list[dict], video_id: str,
         words = [w.lower() for w in text.split()[:12] if len(w) > 3 and w.isalpha()]
         return words[:5]
 
-    processed: list[dict] = []
-
-    for i, img_info in enumerate(user_images):
-        path    = img_info.get("path", "")
-        fname   = os.path.splitext(os.path.basename(path))[0]
-
-        # Caption priority:
-        # 1. Telegram caption (user-provided, most specific)
-        # 2. Sidecar .txt file saved by notify_agent at download time
-        # 3. Filename stem
-        # 4. Script section keywords fallback
+    def _resolve_caption(img_info: dict, i: int) -> tuple[str, str, list, list]:
+        """Return (path, caption, base_tags, sec_kws) for one image entry."""
+        path  = img_info.get("path", "")
+        fname = os.path.splitext(os.path.basename(path))[0]
         telegram_caption = (img_info.get("caption") or "").strip()
         if not telegram_caption:
-            # Check for sidecar .txt written by notify_agent
             txt_path = _re.sub(r'\.[^.]+$', '.txt', path)
             if os.path.exists(txt_path):
                 try:
@@ -1354,47 +1372,55 @@ def process_user_images(user_images: list[dict], video_id: str,
                         print(f"[Image] Loaded caption from sidecar: '{telegram_caption[:80]}'")
                 except Exception:
                     pass
-
         caption = telegram_caption or fname or "documentary scene"
         if caption in ("cinematic dark portrait", "documentary scene", ""):
             caption = fname or f"image {i + 1}"
-
-        # Tags: if Telegram caption present, use it directly (most specific);
-        # otherwise fall back to script section keywords
         base_tags = img_info.get("tags", [])
-        if not path or not os.path.exists(path):
-            continue
-
         if telegram_caption:
-            # Caption words ARE the tags — no need for script section guessing
             caption_tags = [w.lower() for w in telegram_caption.split() if len(w) > 3]
             sec_kws = caption_tags[:8]
             print(f"[Image] Processing user image {i + 1}: caption='{caption[:80]}' (Telegram-tagged)")
         else:
-            # Fall back to script section keywords
             sec_kws = _section_keywords(i)
             print(f"[Image] Processing user image {i + 1}: '{caption[:60]}' section_kws={sec_kws}")
+        return path, caption, base_tags, sec_kws
 
-        # AI-transformed version
+    def _process_one(args: tuple) -> tuple[int, list[dict]]:
+        i, img_info = args
+        path, caption, base_tags, sec_kws = _resolve_caption(img_info, i)
+        if not path or not os.path.exists(path):
+            return i, []
+        result = []
         transformed = transform_user_image(path, caption, video_id, i, section_tags=sec_kws)
         if transformed:
-            processed.append({
+            result.append({
                 "path":    transformed,
                 "tags":    ["portrait", "cinematic"] + sec_kws + [t for t in base_tags if t not in {"portrait", "cinematic"}],
                 "caption": f"cinematic {caption}",
                 "type":    "ai_transformed",
             })
-
-        # Original user image
-        processed.append({
+        result.append({
             "path":    path,
             "tags":    ["real", "photo"] + sec_kws + [t for t in base_tags if t not in {"real", "photo"}],
             "caption": caption,
             "type":    "user_original",
         })
+        print(f"[Image] User image {i + 1}: AI transform {'OK' if transformed else 'SKIP'} + original queued")
+        return i, result
 
-        print(f"[Image] User image {i + 1}: AI transform + original queued (section tags: {sec_kws})")
+    n = len(user_images)
+    print(f"[Image] Processing {n} user image(s) in parallel (max_workers=8)")
+    results_by_index: dict[int, list[dict]] = {}
+    with _TPE(max_workers=8) as pool:
+        futs = {pool.submit(_process_one, (i, img)): i for i, img in enumerate(user_images)}
+        for fut in _asc(futs):
+            idx, entries = fut.result()
+            results_by_index[idx] = entries
 
+    # Preserve original order
+    processed: list[dict] = []
+    for i in range(n):
+        processed.extend(results_by_index.get(i, []))
     return processed
 
 
@@ -2340,8 +2366,8 @@ def generate_ai_image(prompt: str, output_path: str, seed: int = None) -> str:
     import io
     from PIL import Image as PILImage
 
-    if _pollinations_402_blocked:
-        return None  # circuit breaker open — Pollinations 402'd this session
+    if _pollinations_402_blocked or _pollinations_hard_blocked:
+        return None  # circuit breaker open — skip without any HTTP call or sleep
 
     output_path = output_path.replace(".jpg", ".png")
     encoded = requests.utils.quote(clean_prompt(prompt))
@@ -2406,6 +2432,7 @@ def generate_ai_image(prompt: str, output_path: str, seed: int = None) -> str:
                 print(f"[Image] Rate limited, waiting 45s... (attempt {attempt + 1}/3)")
                 time.sleep(45)
             else:
+                _record_pollinations_result(False)
                 print(f"[Image] Pollinations returned {response.status_code} (attempt {attempt + 1}/3)")
                 time.sleep(15)
         except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
@@ -10998,23 +11025,36 @@ _WORKERS: dict[str, int] = {
     "script":        2,                      # LLM script generation — API rate-limited
 }
 
-# ── Adaptive 429 throttle + 402 circuit breaker ──────────────────────────────
-# 402 = service-level block for this session (IP/key issue) — trip a hard breaker
-# so we don't waste 100+ requests after the first 402. Reset on each run start.
+# ── Adaptive 429 throttle + 402/500 circuit breakers ─────────────────────────
+# 402 = service-level block for this session (IP/key issue) — hard breaker.
+# 429/500 consecutive failures ≥10 — hard breaker to stop wasting 45s×3 per image.
 # 429 tracking halves the worker pool when rate > 25%.
 import threading as _threading
-_pollinations_429_lock  = _threading.Lock()
-_pollinations_429_count = 0
-_pollinations_req_count = 0
-_pollinations_402_blocked = False   # circuit breaker — True after first 402
+_pollinations_429_lock   = _threading.Lock()
+_pollinations_429_count  = 0
+_pollinations_req_count  = 0
+_pollinations_consec_fail = 0          # consecutive 429/500 failures
+_pollinations_402_blocked = False      # circuit breaker — True after first 402
+_pollinations_hard_blocked = False     # circuit breaker — True after 10 consec fails
+_POLLINATIONS_CONSEC_LIMIT = 10       # trip hard breaker after this many consecutive failures
 
 
 def _record_pollinations_result(success: bool) -> None:
     global _pollinations_429_count, _pollinations_req_count
+    global _pollinations_consec_fail, _pollinations_hard_blocked
     with _pollinations_429_lock:
         _pollinations_req_count += 1
         if not success:
             _pollinations_429_count += 1
+            _pollinations_consec_fail += 1
+            if _pollinations_consec_fail >= _POLLINATIONS_CONSEC_LIMIT and not _pollinations_hard_blocked:
+                _pollinations_hard_blocked = True
+                print(
+                    f"[Image] Pollinations {_pollinations_consec_fail} consecutive failures — "
+                    f"circuit breaker tripped, skipping all remaining Pollinations calls this run"
+                )
+        else:
+            _pollinations_consec_fail = 0
 
 
 def _adaptive_pollinations_workers() -> int:
@@ -12464,13 +12504,16 @@ def create_video(
     """Dispatcher: routes to run_fast_pipeline() or run_full_pipeline()."""
     global _PIPELINE_START, _wikimedia_429_blocked, _pollinations_402_blocked
     global _pollinations_429_count, _pollinations_req_count
+    global _pollinations_consec_fail, _pollinations_hard_blocked
     global _google_cse_blocked, _pexels_blocked, _pixabay_blocked
     _PIPELINE_START = time.time()
     # Reset per-run circuit breakers so each video starts fresh
     _wikimedia_429_blocked = False
     _pollinations_402_blocked = False
+    _pollinations_hard_blocked = False
     _pollinations_429_count = 0
     _pollinations_req_count = 0
+    _pollinations_consec_fail = 0
     _google_cse_blocked = False
     _pexels_blocked = False
     _pixabay_blocked = False
