@@ -67,8 +67,13 @@ from agent.content_agent import ingest_content_files
 from pipelines.approval import wait_for_approval
 
 
-def _load_injected_script() -> dict | None:
-    """Check content/scripts/ for a queued .json or .txt script file and return it."""
+def _load_injected_script(current_topic: str | None = None) -> dict | None:
+    """Check content/scripts/ for a queued .json or .txt script file and return it.
+
+    If current_topic is provided, skips any file whose name or content topic
+    clearly belongs to a different person/topic (prevents stale inject files
+    from bleeding into a new pipeline run).
+    """
     import datetime as _dt
     _scripts_dir = os.path.join(os.path.dirname(__file__), "content", "scripts")
     _used_dir    = os.path.join(_scripts_dir, "_used")
@@ -82,6 +87,40 @@ def _load_injected_script() -> dict | None:
     ])
     if not candidates:
         return None
+
+    # Topic-match guard: skip files that clearly belong to a different topic.
+    # Generic filenames (script.json, inject_2026-07-03.txt) pass through.
+    # Named filenames (Shimon Hayut.txt, anna_sorokin.json) must match the topic.
+    if current_topic:
+        # Words that indicate a generic/utility filename — not a person/topic name.
+        _GENERIC = {
+            "script", "inject", "topic", "long", "short", "english", "arabic",
+            "dark", "crime", "decoded", "content", "pipeline", "template",
+            "alias", "real", "story", "behind", "the", "and", "with", "from",
+        }
+        _topic_sig = {
+            w for w in current_topic.lower().replace("-", " ").split()
+            if len(w) > 3 and w not in _GENERIC
+        }
+        _fname_clean = (
+            candidates[0].lower()
+            .replace(".txt", "").replace(".json", "")
+            .replace("-", " ").replace("_", " ")
+        )
+        # Keep only words that look like proper names (not generic/utility words, not dates).
+        _fname_name_words = {
+            w for w in _fname_clean.split()
+            if len(w) > 3 and w not in _GENERIC and not w.isdigit()
+        }
+        # Only reject when the filename has name-like words AND none overlap with the topic.
+        if _fname_name_words and _topic_sig and _fname_name_words.isdisjoint(_topic_sig):
+            print(
+                f"[ScriptInject] SKIP '{candidates[0]}' — filename topic mismatch "
+                f"(file: {sorted(_fname_name_words)} | current topic: {sorted(_topic_sig)}). "
+                f"Place this file in content/scripts/ only when its topic is active."
+            )
+            return None
+
     src = os.path.join(_scripts_dir, candidates[0])
     try:
         if candidates[0].endswith(".json"):
@@ -621,7 +660,7 @@ def run_pipeline():
         # ── Script injection check ─────────────────────────────────────────────
         _inj: dict | None = None
         try:
-            _inj = _load_injected_script()
+            _inj = _load_injected_script(current_topic=topic.get("topic", "") if topic else None)
             if _inj:
                 _log("Scripts", f"[INJECT] Pre-written script: '{_inj.get('title','?')}' — skipping generation", "OK")
                 send_message(
