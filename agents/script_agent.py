@@ -3198,7 +3198,10 @@ Good example formats (adapted to THIS topic):
 Return JSON only, no extra text:
 {{"angle_title": "...", "angle_hook": "...", "angle_content": "..."}}
 
-angle_title: 5-8 words — must name {topic} or a specific figure from this story
+angle_title: 5-8 words — MUST feature "{topic}" as the primary subject, not a secondary person.
+  ✅ GOOD: "{topic}'s Secret That Changed Everything"
+  ✅ GOOD: "The Document About {topic} Nobody Saw"
+  ❌ BAD: "Why [secondary character] Was Never Charged" — secondary person becomes the focus, NOT {topic}
 angle_hook: One sentence — must contain a real name, date, or fact from {topic}'s documented history
 angle_content: 2-3 sentences — all facts must be from {topic}'s actual documented story"""
 
@@ -3209,6 +3212,12 @@ angle_content: 2-3 sentences — all facts must be from {topic}'s actual documen
             required_keys=["angle_title", "angle_hook", "angle_content"],
         )
         if all(data.get(k) for k in ('angle_title', 'angle_hook', 'angle_content')):
+            # Ensure angle_title keeps the main topic as subject — not a secondary character.
+            _atitle = data["angle_title"]
+            _topic_words = {w.lower() for w in topic.split() if len(w) > 2}
+            if _topic_words and not any(w in _atitle.lower() for w in _topic_words):
+                data["angle_title"] = f"{topic}: {_atitle}"
+                print(f"[Script] Angle title reanchored to topic: {data['angle_title']}")
             print(f"[Script] Untold angle: {data['angle_title']}")
             return data
         print("[Fallback] Angle generation returned incomplete data — using default angle")
@@ -4218,7 +4227,15 @@ def _write_darkcrimed_script(topic: dict) -> dict:
             part_suffix = f" — Part {part_number}" if part_number else ""
             _doc_angle = generate_untold_angle(topic["topic"], "")
             _doc_angle_title = _doc_angle.get("angle_title", "")
-            if _doc_angle_title and "hidden truth" not in _doc_angle_title.lower():
+            # Guard: title must contain the main topic name — prevents secondary characters
+            # from becoming the title subject (e.g. "Why Rachel Williams..." for an Anna Sorokin video).
+            _topic_sig = {w.lower() for w in topic["topic"].split() if len(w) > 2}
+            _title_ok = (
+                _doc_angle_title
+                and "hidden truth" not in _doc_angle_title.lower()
+                and any(w in _doc_angle_title.lower() for w in _topic_sig)
+            )
+            if _title_ok:
                 doc_title = f"{_doc_angle_title}{part_suffix} | Dark Crime Decoded"
             else:
                 doc_title = (
@@ -5833,6 +5850,7 @@ _AR_SCRIPT_SYSTEM_PROMPT = """أنت راوٍ سينمائي عربي متخصص
 - هادئة. تحقيقية. مثيرة للقلق بشكل خفيف ومحكوم
 - الراوي يعرف أكثر مما يقول — والمستمع يحس بذلك
 - لا أكاديمية. لا عامية. لا حماس مبالغ. لا إثارة يوتيوب
+- ممنوع تماماً كلمات العامية المصرية أو الشامية: مش / إيه / عشان / بتاع / ازاي / مفيش / أهو / ده / دي / دول / معاك / معانا / فين / كمان (بمعنى أيضاً) / هيكون / بيكون. البديل دائماً الفصحى: ليس، ماذا، لأن، خاص بـ، كيف، لا يوجد، هذا/هذه، معك/معنا، أين، أيضاً/كذلك، سيكون، يكون
 - 85% تحكم ظلامي. 15% تعليق جاف ساخر عند أخطاء المجرمين. سطر واحد فقط
 - لا تسخر من الضحايا. التعليق الساخر فقط على المجرمين أو الفساد
 
@@ -6277,6 +6295,9 @@ def _write_arabic_from_research(en_script: dict, ar_research: dict, target_minut
             "قبل الانتقال للمعلومة التالية.\n"
             "[إيقاع TTS الرهيب]: تناوب بين الجمل القصيرة (6-10 كلمات لحظات التوتر) "
             "والمتوسطة (14-18 كلمة للسرد العادي). لا جملة تتجاوز 22 كلمة.\n"
+            "[لغة — فصحى إلزامي]: ممنوع تماماً أي كلمة عامية مصرية أو شامية. "
+            "الكلمات المحظورة: مش / إيه / عشان / بتاع / ازاي / مفيش / أهو / ده / دي / دول / معاك / معانا / فين / كمان (بمعنى أيضاً) / هيكون / بيكون. "
+            "البديل الفصيح: ليس — ماذا — لأن/لكي — خاص بـ — كيف — لا يوجد/لم يكن هناك — هذا/هذه/هؤلاء — معك/معنا — أين — أيضاً/كذلك — سيكون — يكون.\n"
         )
     else:
         _tts_reminder = (
@@ -6286,6 +6307,9 @@ def _write_arabic_from_research(en_script: dict, ar_research: dict, target_minut
             "الجمل الجوية مقبولة بنسبة 30-45% من النص — ادمجها مع الحقائق بشكل طبيعي.\n"
             "[إيقاع TTS]: تناوب بين الجمل القصيرة (8-12 كلمة) والمتوسطة (15-20 كلمة). "
             "لا جملة تتجاوز 22 كلمة.\n"
+            "[لغة — فصحى إلزامي]: ممنوع تماماً أي كلمة عامية مصرية أو شامية. "
+            "الكلمات المحظورة: مش / إيه / عشان / بتاع / ازاي / مفيش / أهو / ده / دي / دول / معاك / معانا / فين / كمان (بمعنى أيضاً) / هيكون / بيكون. "
+            "البديل الفصيح: ليس — ماذا — لأن/لكي — خاص بـ — كيف — لا يوجد/لم يكن هناك — هذا/هذه/هؤلاء — معك/معنا — أين — أيضاً/كذلك — سيكون — يكون.\n"
         )
 
     _intro_min_str = f"ما يعادل 4-6 دقائق من السرد (~{_intro_target} كلمة)"
