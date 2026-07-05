@@ -1301,6 +1301,8 @@ def transform_user_image(
         return output_path
 
     if section_tags:
+        # section_tags is a single safe, categorized scene description (see
+        # process_user_images._section_keywords) — not raw script words.
         tags_str = " ".join(section_tags)
         prompt = (
             f"{tags_str} cinematic documentary dark dramatic "
@@ -1325,14 +1327,20 @@ def transform_user_image(
 
 
 def process_user_images(user_images: list[dict], video_id: str,
-                        script_text: str = "") -> list[dict]:
+                        script_text: str = "", topic: str = "") -> list[dict]:
     """
     For each user image: generate an AI-cinematic version from its caption,
     then include the original. AI transforms run in parallel (max 8 workers).
 
     Tags are derived from:
       1. The actual filename stem (not generic "cinematic dark portrait")
-      2. First 5 meaningful words from the corresponding script section at image position i
+      2. A safe, categorized scene description (courtroom/evidence/childhood/etc.)
+         for the corresponding script section at image position i — NOT the raw
+         script words. Raw fragments (e.g. "while hollywood ignored this young")
+         are meaningless out of context and occasionally combine into prompts
+         that read as sexual/inappropriate to the image generator. Routing
+         through the same keyword classifier used for every other AI image in
+         this pipeline keeps prompts meaningful and on-topic instead.
 
     Returns expanded list in this order per image:
       1. AI-transformed version
@@ -1341,7 +1349,7 @@ def process_user_images(user_images: list[dict], video_id: str,
     import re as _re
     from concurrent.futures import ThreadPoolExecutor as _TPE, as_completed as _asc
 
-    # Pre-parse script sections to source keywords per image position
+    # Pre-parse script sections to source a safe scene description per image position
     section_texts: list[str] = []
     if script_text:
         try:
@@ -1354,8 +1362,12 @@ def process_user_images(user_images: list[dict], video_id: str,
         if not section_texts:
             return []
         text = section_texts[idx % len(section_texts)]
-        words = [w.lower() for w in text.split()[:12] if len(w) > 3 and w.isalpha()]
-        return words[:5]
+        pos = idx / max(len(section_texts) - 1, 1)
+        # Classify the section into a safe category template (courtroom, evidence,
+        # childhood, atmosphere, ...) instead of slicing out raw script words —
+        # same safety mechanism already used for every gap-fill/event image.
+        _vtype, safe_prompt = _classify_visual_event(text.lower(), pos, topic)
+        return [safe_prompt]
 
     def _resolve_caption(img_info: dict, i: int) -> tuple[str, str, list, list]:
         """Return (path, caption, base_tags, sec_kws) for one image entry."""
@@ -1550,7 +1562,7 @@ def get_person_images(
     # 1 — User uploads → AI transform + original for each
     raw_uploads = [img for img in (user_images or []) if img.get("path") and os.path.exists(img["path"])]
     if raw_uploads:
-        images.extend(process_user_images(raw_uploads, video_id, script_text=script_text))
+        images.extend(process_user_images(raw_uploads, video_id, script_text=script_text, topic=topic))
         print(f"[Image] Priority 1: {len(raw_uploads)} user image(s) → {len(images)} processed")
 
     # 2 — Wikipedia real photo
@@ -2632,6 +2644,11 @@ def _vision_topic_filter(paths: list[str], topic: str, max_checks: int = 9999) -
     with detail='low' (cheapest tier, ~$0.0004/image).  Falls back to returning
     all paths unchanged if no API key, provider unhealthy, or any error.
     Runs up to max_checks images in parallel (4 workers) to control cost + latency.
+
+    User-submitted photos (filename contains "_ui_") are human-curated via
+    Telegram and are never checked — they're trusted as-is. Every other image
+    (search results, Pollinations AI generations, AI transforms of user photos)
+    is the actual risk surface and is checked, uncapped by default.
     """
     if not topic or not paths:
         return paths
@@ -2645,61 +2662,97 @@ def _vision_topic_filter(paths: list[str], topic: str, max_checks: int = 9999) -
     import mimetypes as _mt
 
     def _check_one(img_path: str) -> bool:
+        # Video clips previously skipped moderation entirely (unconditional
+        # keep) — off-topic/irrelevant stock clips could reach the final cut
+        # with zero relevance/content screening. Extract a representative
+        # frame and run it through the exact same check as a still image.
+        check_path = img_path
+        _temp_frame = None
         if _is_video_file(img_path):
-            return True
+            _temp_frame = img_path + "._visionqc_frame.jpg"
+            if not extract_first_frame(img_path, _temp_frame):
+                return True  # couldn't extract a frame — nothing more we can verify
+            check_path = _temp_frame
+
         try:
-            mime, _ = _mt.guess_type(img_path)
+            mime, _ = _mt.guess_type(check_path)
             if not mime or not mime.startswith("image/"):
                 mime = "image/png"
-            with open(img_path, "rb") as _f:
+            with open(check_path, "rb") as _f:
                 data = _b64.b64encode(_f.read()).decode("utf-8")
-            r = requests.post(
-                "https://api.openai.com/v1/chat/completions",
-                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                json={
-                    "model": "gpt-4o-mini",
-                    "messages": [{"role": "user", "content": [
-                        {"type": "text", "text": (
-                            f"You are a content moderator for a true crime documentary channel about '{topic}'.\n"
-                            "Review this image and answer with exactly one word.\n\n"
-                            "Answer REJECT if ANY of these are true:\n"
-                            "- Contains nudity, sexual content, or explicit material\n"
-                            "- Contains graphic violence, blood, gore, or body parts\n"
-                            "- Shows pornographic or sexually suggestive content\n"
-                            "- Is completely unrelated to the documentary topic\n"
-                            "- Is a solid colour, texture, abstract, or cartoon/illustration\n\n"
-                            "Answer KEEP only if: the image is a real photograph relevant to "
-                            f"'{topic}' (person, location, event, investigation) AND contains "
-                            "no explicit, sexual, or graphically violent content.\n\n"
-                            "Reply with only: KEEP or REJECT"
-                        )},
-                        {"type": "image_url", "image_url": {
-                            "url": f"data:{mime};base64,{data}",
-                            "detail": "low"
-                        }}
-                    ]}],
-                    "max_tokens": 5,
-                    "temperature": 0,
-                },
-                timeout=15,
-            )
-            if r.status_code == 200:
-                answer = r.json()["choices"][0]["message"]["content"].strip().upper()
-                if "REJECT" in answer:
-                    print(f"[VisionQC] Rejected (explicit/off-topic): {os.path.basename(img_path)}")
-                    return False
-            elif r.status_code == 429:
-                _provider_health.record_failure("openai")
         except Exception as _ve:
             print(f"[VisionQC] Check skipped ({os.path.basename(img_path)}): {_ve}")
-        return True  # fail open — keep image
+            return True  # can't even read the file — nothing more we can do
+        finally:
+            if _temp_frame and os.path.exists(_temp_frame):
+                try:
+                    os.remove(_temp_frame)
+                except Exception:
+                    pass
 
-    videos   = [p for p in paths if _is_video_file(p)]
-    images   = [p for p in paths if not _is_video_file(p)]
-    to_check = images[:max_checks]
-    skipped  = images[max_checks:]  # beyond budget — keep unchecked
+        # Retry once on transient failures (timeout, connection reset, 5xx)
+        # before falling back to fail-open — a single network blip shouldn't
+        # silently wave an unchecked search/AI image straight into the video.
+        for attempt in range(2):
+            try:
+                r = requests.post(
+                    "https://api.openai.com/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                    json={
+                        "model": "gpt-4o-mini",
+                        "messages": [{"role": "user", "content": [
+                            {"type": "text", "text": (
+                                f"You are a content moderator for a true crime documentary channel about '{topic}'.\n"
+                                "Review this image and answer with exactly one word.\n\n"
+                                "Answer REJECT if ANY of these are true:\n"
+                                "- Contains nudity, sexual content, or explicit material\n"
+                                "- Contains graphic violence, blood, gore, or body parts\n"
+                                "- Shows pornographic or sexually suggestive content\n"
+                                "- Is completely unrelated to the documentary topic\n"
+                                "- Is a solid colour, texture, abstract, or cartoon/illustration\n\n"
+                                "Answer KEEP only if: the image is a real photograph relevant to "
+                                f"'{topic}' (person, location, event, investigation) AND contains "
+                                "no explicit, sexual, or graphically violent content.\n\n"
+                                "Reply with only: KEEP or REJECT"
+                            )},
+                            {"type": "image_url", "image_url": {
+                                "url": f"data:{mime};base64,{data}",
+                                "detail": "low"
+                            }}
+                        ]}],
+                        "max_tokens": 5,
+                        "temperature": 0,
+                    },
+                    timeout=15,
+                )
+                if r.status_code == 200:
+                    answer = r.json()["choices"][0]["message"]["content"].strip().upper()
+                    if "REJECT" in answer:
+                        print(f"[VisionQC] Rejected (explicit/off-topic): {os.path.basename(img_path)}")
+                        return False
+                    return True
+                elif r.status_code == 429:
+                    _provider_health.record_failure("openai")
+                    break  # provider-wide issue — retrying this image won't help
+                elif r.status_code >= 500 and attempt == 0:
+                    continue  # transient server error — retry once
+                else:
+                    break
+            except Exception as _ve:
+                if attempt == 0:
+                    continue  # transient network error — retry once
+                print(f"[VisionQC] Check failed after retry ({os.path.basename(img_path)}): {_ve}")
+        return True  # fail open only after a retried, still-inconclusive check
 
-    print(f"[VisionQC] Checking {len(to_check)} image(s) for topic relevance: '{topic}'")
+    videos      = [p for p in paths if _is_video_file(p)]
+    non_video   = [p for p in paths if not _is_video_file(p)]
+    user_images = [p for p in non_video if "_ui_" in os.path.basename(p)]
+    images      = [p for p in non_video if "_ui_" not in os.path.basename(p)]
+    to_check    = images[:max_checks]
+    skipped     = images[max_checks:]  # beyond budget — keep unchecked
+
+    print(f"[VisionQC] Checking {len(to_check)} search/AI image(s) for topic relevance: '{topic}' "
+          f"({len(user_images)} user-submitted photo(s) trusted, skipped)")
     from concurrent.futures import ThreadPoolExecutor as _VTE, as_completed as _VAS
     passed: list[str] = []
     with _VTE(max_workers=4) as _vp:
@@ -2714,11 +2767,13 @@ def _vision_topic_filter(paths: list[str], topic: str, max_checks: int = 9999) -
 
     removed = len(to_check) - len(passed)
     if removed:
-        print(f"[VisionQC] Removed {removed} off-topic image(s) — {len(passed) + len(skipped)} remain")
+        print(f"[VisionQC] Removed {removed} off-topic image(s) — "
+              f"{len(passed) + len(skipped) + len(user_images)} remain")
 
-    # Preserve original order: checked-and-passed + unchecked overflow + videos
+    # Preserve original order: checked-and-passed + unchecked overflow + user photos + videos
     passed_set = set(passed)
-    ordered = [p for p in paths if p in passed_set or _is_video_file(p) or p in set(skipped)]
+    keep_set = passed_set | set(skipped) | set(user_images)
+    ordered = [p for p in paths if p in keep_set or _is_video_file(p)]
     return ordered
 
 
@@ -3305,14 +3360,6 @@ _VE_EVIDENCE = frozenset({
     "تحليل", "تشريح", "مختبر", "مصادرة", "استرداد",
     "طعن", "أطلق", "قتل", "مقتل", "خنق", "تسمم", "اعتقل", "قبض",
 })
-_VE_NEWSPAPER = frozenset({
-    "newspaper", "headline", "article", "press", "media", "coverage",
-    "published", "breaking", "broadcast", "news", "declared", "announced",
-    "aired", "reporters", "journalist", "front page",
-    # Arabic
-    "جريدة", "صحيفة", "عنوان", "مقال", "صحافة", "إعلام", "تغطية",
-    "نشر", "عاجل", "أخبار", "خبر", "أعلن", "صحفي", "بث",
-})
 _VE_CCTV = frozenset({
     "camera", "footage", "surveillance", "security", "recorded", "tape",
     "video", "caught on", "captured", "monitored", "cctv", "screenshot",
@@ -3390,7 +3437,6 @@ _VE_ATMOSPHERE_POOL = [
     "prison corridor dark bars single light atmospheric documentary",
     "dark telephone booth vintage crime city night cinematic",
     "money stacks crime dark atmospheric documentary cinematic",
-    "newspaper archive dark library documentary cinematic atmospheric",
 ]
 
 
@@ -3406,7 +3452,6 @@ def _clean_topic_name(topic: str) -> str:
 _SCENE_BASE_QUERIES: dict[str, str] = {
     "courtroom":     "courtroom empty wooden benches judge",
     "evidence":      "forensic evidence table crime lab",
-    "newspaper":     "newspaper front page headline close-up",
     "cctv":          "surveillance camera footage grainy timestamp",
     "prison":        "prison cell corridor iron bars",
     "location":      "building exterior street daytime",
@@ -3565,7 +3610,6 @@ def _translate_arabic_chunk_for_search(chunk: str) -> str:
 _TYPE_CONTEXT: dict[str, str] = {
     "courtroom":     "courtroom",
     "evidence":      "FBI investigation",
-    "newspaper":     "newspaper",
     "cctv":          "surveillance footage",
     "prison":        "prison",
     "location":      "location",
@@ -3730,7 +3774,6 @@ def _classify_visual_event(
       interrogation keyword → interrogation
       evidence keyword → evidence
       CCTV keyword → cctv
-      newspaper keyword → newspaper
       map keyword → map
       prison keyword → prison
       childhood keyword → childhood
@@ -3750,12 +3793,12 @@ def _classify_visual_event(
 
     if any(k in chunk_lower for k in _VE_COURTROOM):
         return ("courtroom",
-                f"courtroom trial judge jury dramatic dark documentary cinematic evidence"
+                f"{_pfx}courtroom trial judge jury dramatic dark documentary cinematic evidence"
                 f"{_IMAGE_PROMPT_SUFFIX}")
 
     if any(k in chunk_lower for k in _VE_INTERROGATION):
         return ("interrogation",
-                f"police interrogation room single overhead light shadow suspect detective dark cinematic"
+                f"{_pfx}police interrogation room single overhead light shadow suspect detective dark cinematic"
                 f"{_IMAGE_PROMPT_SUFFIX}")
 
     if any(k in chunk_lower for k in _VE_EVIDENCE):
@@ -3765,12 +3808,7 @@ def _classify_visual_event(
 
     if any(k in chunk_lower for k in _VE_CCTV):
         return ("cctv",
-                f"CCTV surveillance footage grainy timestamp night dark crime documentary cinematic"
-                f"{_IMAGE_PROMPT_SUFFIX}")
-
-    if any(k in chunk_lower for k in _VE_NEWSPAPER):
-        return ("newspaper",
-                f"{_pfx}crime newspaper front page headline archival black white documentary"
+                f"{_pfx}CCTV surveillance footage grainy timestamp night dark crime documentary cinematic"
                 f"{_IMAGE_PROMPT_SUFFIX}")
 
     if any(k in chunk_lower for k in _VE_MAP):
@@ -3780,10 +3818,16 @@ def _classify_visual_event(
 
     if any(k in chunk_lower for k in _VE_PRISON):
         return ("prison",
-                f"prison cell bars cold light cinematic atmospheric dark documentary"
+                f"{_pfx}prison cell bars cold light cinematic atmospheric dark documentary"
                 f"{_IMAGE_PROMPT_SUFFIX}")
 
-    if any(k in chunk_lower for k in _VE_CHILDHOOD):
+    # Childhood/"young"/"family" imagery is only ever safe to generate or search
+    # for when it's explicitly anchored to a named, real documentary subject
+    # (e.g. "Anna Sorokin childhood archive photograph"). Without a resolved
+    # name (_pfx empty), these bare words risk generating or pulling real
+    # photographs of actual, unrelated, unconsenting children — never fire
+    # this category unanchored; fall through to a safer generic type instead.
+    if _pfx and any(k in chunk_lower for k in _VE_CHILDHOOD):
         return ("childhood",
                 f"{_pfx}childhood archive family photograph vintage documentary dark cinematic"
                 f"{_IMAGE_PROMPT_SUFFIX}")
@@ -3881,7 +3925,7 @@ def _llm_json_call(prompt: str, max_tokens: int = 2500, label: str = "LLM") -> s
 
 _VALID_EVENT_TYPES = {
     "portrait", "childhood", "location", "evidence", "courtroom",
-    "map", "newspaper", "cctv", "prison", "interrogation", "atmosphere",
+    "map", "cctv", "prison", "interrogation", "atmosphere",
 }
 
 
@@ -3944,10 +3988,10 @@ def _extract_events_groq(
         f"Rules:\n"
         f"- pos: 0.0 (opening) → 1.0 (ending), evenly spaced\n"
         f"- type: one of: portrait, childhood, location, evidence, courtroom, "
-        f"map, newspaper, cctv, prison, interrogation, atmosphere\n"
+        f"map, cctv, prison, interrogation, atmosphere\n"
         f"- First 20% pos: portrait/childhood/location (establish characters)\n"
         f"- Middle 50% pos: evidence/atmosphere/location/interrogation (tension)\n"
-        f"- Last 30% pos: courtroom/prison/newspaper/atmosphere (resolution)\n"
+        f"- Last 30% pos: courtroom/prison/atmosphere (resolution)\n"
         f"- description: 1 vivid cinematic sentence IN ENGLISH\n"
         f"- chunk: key phrase (max 80 chars) IN ENGLISH\n\n"
         f"Return ONLY a JSON array of exactly {n_events} objects:\n"
@@ -3969,6 +4013,16 @@ def _extract_events_groq(
             if text.startswith("json"):
                 text = text[4:]
             text = text.strip()
+        # Strip chatty prose the model adds before/after the array (e.g.
+        # "Here is the JSON array of visual events:\n[...]") — without this,
+        # json.loads fails immediately at char 0 and we fall through to the
+        # naive word-chunk regex fallback, which is what produces garbled,
+        # decontextualized search/generation prompts like "while hollywood
+        # ignored this young".
+        start = text.find('[')
+        end = text.rfind(']')
+        if start != -1 and end != -1 and end > start:
+            text = text[start:end + 1]
         return _json.loads(text)
 
     events_raw: list[dict] = []
@@ -3976,12 +4030,17 @@ def _extract_events_groq(
         events_raw = _parse_events_raw(raw)
     except Exception as _ex:
         print(f"[EventExtractor] JSON parse failed ({_ex}) — attempting partial repair")
-        # Partial JSON repair: find last complete object and close the array.
-        # This handles Groq truncation mid-array (unterminated string / missing closing ]).
+        # Partial JSON repair: strip leading prose, find last complete
+        # object, and close the array. Handles Groq truncation mid-array
+        # (unterminated string / missing closing ]) as well as chatty
+        # preambles — previously this only handled truncation, so a prose
+        # preamble made the repair fail too (still starting mid-sentence).
         try:
-            _last = max(raw.rfind('},'), raw.rfind('}'))
+            _start = raw.find('[')
+            _body  = raw[_start:] if _start != -1 else raw
+            _last  = max(_body.rfind('},'), _body.rfind('}'))
             if _last > 0:
-                _repaired = raw[:_last + 1].strip()
+                _repaired = _body[:_last + 1].strip()
                 if not _repaired.startswith('['):
                     _repaired = '[' + _repaired
                 _repaired += ']'
@@ -4117,7 +4176,6 @@ def extract_visual_events(
 _TYPE_SEARCH_QUERIES: dict[str, str] = {
     "courtroom":     "{topic} courtroom trial",
     "evidence":      "{topic} crime evidence investigation",
-    "newspaper":     "{topic} newspaper headline",
     "cctv":          "{topic} surveillance security camera",
     "prison":        "prison cell bars inmates",
     "location":      "{topic} building location exterior",
@@ -4142,7 +4200,7 @@ def _prefetch_real_urls(events: list[dict], topic: str) -> dict[str, list[str]]:
     """
     # Ordered type tiers: characters → static context → dynamic narrative
     _STATIC_TYPES  = ("portrait", "childhood", "location", "map")
-    _DYNAMIC_TYPES = ("evidence", "atmosphere", "newspaper", "cctv",
+    _DYNAMIC_TYPES = ("evidence", "atmosphere", "cctv",
                       "courtroom", "interrogation", "prison")
 
     # Take a representative chunk for each event type
@@ -9998,11 +10056,10 @@ def _generate_emergency_visuals(
         f"police detective office 1970s cinematic file cabinet dramatic{_IMAGE_PROMPT_SUFFIX}",
         f"crime scene night urban atmospheric yellow tape dramatic{_IMAGE_PROMPT_SUFFIX}",
         f"interrogation room single overhead light shadow two chairs{_IMAGE_PROMPT_SUFFIX}",
-        f"evidence board crime photos newspaper clippings map pins{_IMAGE_PROMPT_SUFFIX}",
+        f"evidence board crime photos case files map pins{_IMAGE_PROMPT_SUFFIX}",
         f"{_top} court trial gavel dramatic cinematic{_IMAGE_PROMPT_SUFFIX}",
         f"surveillance camera footage grainy documentary moody{_IMAGE_PROMPT_SUFFIX}",
         f"prison cell iron bars shadow dramatic cinematic{_IMAGE_PROMPT_SUFFIX}",
-        f"newspaper front page 1980s crime headline dramatic{_IMAGE_PROMPT_SUFFIX}",
         f"city skyline night rain neon reflections atmospheric{_IMAGE_PROMPT_SUFFIX}",
         f"detective notebook handwriting evidence moody cinematic{_IMAGE_PROMPT_SUFFIX}",
         f"abandoned building interior shadow cinematic atmospheric{_IMAGE_PROMPT_SUFFIX}",
@@ -10044,12 +10101,11 @@ def calculate_total_images(user_images=None) -> int:
 
 # Cinematic insert prompts for Netflix-documentary texture
 _CINEMATIC_INSERT_PROMPTS = [
-    "crime investigation evidence board photographs newspaper clippings case files dark cinematic documentary",
+    "crime investigation evidence board photographs case files dark cinematic documentary",
     "vintage CCTV surveillance camera screenshot grainy black white crime scene night documentary",
-    "newspaper front page headline arrest conviction crime black white archival documentary photo",
     "police interrogation room single overhead light table chair shadow dramatic cinematic",
     "crime scene chalk outline police tape night urban dark atmospheric forensic documentary",
-    "courtroom trial evidence exhibit newspaper photograph dramatic documentary cinematic",
+    "courtroom trial evidence exhibit dramatic documentary cinematic",
     "detective wall case notes photos string map crime connections dark investigation",
     "police evidence file folder case documents dramatic cinematic dark documentary",
     "urban street map crime location pin night documentary noir cinematic aerial",
@@ -10067,7 +10123,7 @@ def _generate_cinematic_inserts(
 ) -> list[str]:
     """Generate AI cinematic inserts via Pollinations for documentary texture.
 
-    Types: evidence boards, CCTV stills, newspaper clips, interrogation rooms,
+    Types: evidence boards, CCTV stills, interrogation rooms,
     crime scenes, detective walls, court exhibits — interleaved into visual pool
     to prevent the static slideshow feel.
     """
@@ -12217,7 +12273,7 @@ def run_full_pipeline(
         else:
             # ── FULL mode auto path: scene-driven unique visual pool ───────
             # build_documentary_visual_pool() generates ONE unique AI image per
-            # narrative event (portrait/evidence/location/CCTV/newspaper/map/…)
+            # narrative event (portrait/evidence/location/CCTV/map/…)
             # driven by what is HAPPENING in each 12-word script chunk.
             # This produces 120-240 SEMANTICALLY UNIQUE visuals, not PIL recycles.
             print(f"[FULL] Building documentary visual pool ({n_images} target events)")
@@ -12329,7 +12385,7 @@ def run_full_pipeline(
     # Filter dark placeholders, B&W/grayscale, solid backgrounds, and off-topic before assembly
     all_image_paths = _filter_dark_placeholders(all_image_paths, label="FULL")
     all_image_paths = _filter_grayscale_images(all_image_paths, label="FULL")
-    all_image_paths = _vision_topic_filter(all_image_paths, topic_str, max_checks=15)
+    all_image_paths = _vision_topic_filter(all_image_paths, topic_str)
 
     # Pre-export validation (warnings only — never abort on warnings alone)
     _full_audio_secs = _real_audio_secs if _real_audio_secs > 0 else 0.0
