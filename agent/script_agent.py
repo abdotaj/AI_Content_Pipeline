@@ -299,24 +299,10 @@ def clean_word_count(text: str) -> int:
 #   Arabic: FAST 30-75 min | ANIMATION 35-60 min | FULL 30-75 min
 #   English: FAST 10-15 min | ANIMATION 12-18 min | FULL 15-20 min
 # WPM calibration (measured from production):
-#   Arabic Marin speed=1.1 (gpt-4o-mini-tts): ~220 WPM  (range 210-230, Marin is faster than Nova)
+#   Arabic Marin speed=1.1 (gpt-4o-mini-tts): ~115 WPM  (range 114-119, measured from real rendered audio)
 #   English Alloy 1.0: ~160 WPM (range 155-165, very consistent)
-#   NOTE: Marin replaced Nova in Jun 2026. Old Nova calibration was ~185 WPM.
-_WORD_FLOORS = {
-    "fast":      {"english": 2_325, "arabic": 6_600},   # 15 min EN × 155 | 30 min AR × 220 (hard minimum)
-    "full":      {"english": 4_000, "arabic": 6_600},   # 15 min EN × 160 | 30 min AR × 220
-    "animation": {"english": 2_500, "arabic": 7_700},   # 12 min EN × 160 | 35 min AR × 220
-    "short":     {"english": 0,     "arabic": 0},
-}
-_WORD_CEILINGS = {
-    "fast":      {"english": 3_000,  "arabic": 16_500},  # 18 min EN × 160 | 75 min AR × 220
-    "full":      {"english": 6_500,  "arabic": 16_500},  # 20 min EN × 160 | 75 min AR × 220
-    "animation": {"english": 4_000,  "arabic": 13_200},  # 18 min EN × 160 | 60 min AR × 220
-    "short":     {"english": 500,    "arabic": 500},
-}
-# Legacy aliases — write_long_script_split and callers use fast/full English by default.
-LONG_SCRIPT_MIN_WORDS: int = _WORD_FLOORS["fast"]["english"]    # 2,325 (15 min × 155 WPM)
-LONG_SCRIPT_MAX_WORDS: int = _WORD_CEILINGS["fast"]["english"]  # 3,000 (18 min × 160 WPM)
+#   NOTE: _WORD_FLOORS/_WORD_CEILINGS below are derived from _TTS_WPM (defined further down as the
+#   single source of truth) so this class of stale-WPM drift can't recur — see _TTS_WPM comment.
 
 # ── Story variation profiles — prevents formula fatigue ──────────────────────
 # Each profile shifts the narrative APPROACH without removing the 5-act structure.
@@ -425,6 +411,27 @@ _TTS_WPM = {"english": 160, "arabic": 115}   # Arabic: recalibrated from measure
 # or 220 (stale OpenAI estimate). That mismatch made a 45-min-target AR script render as 85:29 of real
 # audio — nearly 2x over target — which then required ~2x the visual assets and blew the pipeline's runtime.
 # English Alloy 1.0 ~160 WPM unchanged (verified consistent).
+
+# _WORD_FLOORS/_WORD_CEILINGS are safety-net word counts derived from _TTS_WPM so a recalibration here
+# automatically propagates — previously these were separately hardcoded at the old ~220 WPM and silently
+# drifted out of sync with _TTS_WPM, forcing every Arabic script up to a ~57min floor regardless of the
+# actual per-video target (observed: kray_twins run landed at 60min instead of the requested 45min because
+# 6,600 words / 115 WPM = 57.4min, not the "30 min" the old comment claimed).
+_WORD_FLOORS = {
+    "fast":      {"english": 2_325,                        "arabic": int(30 * _TTS_WPM["arabic"])},  # 15 min EN × 155 | 30 min AR × 115 (hard minimum)
+    "full":      {"english": 4_000,                        "arabic": int(30 * _TTS_WPM["arabic"])},  # 15 min EN × 160 | 30 min AR × 115
+    "animation": {"english": 2_500,                        "arabic": int(35 * _TTS_WPM["arabic"])},  # 12 min EN × 160 | 35 min AR × 115
+    "short":     {"english": 0,                            "arabic": 0},
+}
+_WORD_CEILINGS = {
+    "fast":      {"english": 3_000,  "arabic": int(75 * _TTS_WPM["arabic"])},  # 18 min EN × 160 | 75 min AR × 115
+    "full":      {"english": 6_500,  "arabic": int(75 * _TTS_WPM["arabic"])},  # 20 min EN × 160 | 75 min AR × 115
+    "animation": {"english": 4_000,  "arabic": int(60 * _TTS_WPM["arabic"])},  # 18 min EN × 160 | 60 min AR × 115
+    "short":     {"english": 500,    "arabic": 500},
+}
+# Legacy aliases — write_long_script_split and callers use fast/full English by default.
+LONG_SCRIPT_MIN_WORDS: int = _WORD_FLOORS["fast"]["english"]    # 2,325 (15 min × 155 WPM)
+LONG_SCRIPT_MAX_WORDS: int = _WORD_CEILINGS["fast"]["english"]  # 3,000 (18 min × 160 WPM)
 
 # Runtime floors (minutes) by mode — ABSOLUTE MINIMUMS.
 # Any long video below 15 minutes is an automatic failure.

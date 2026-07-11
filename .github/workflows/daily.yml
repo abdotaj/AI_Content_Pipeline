@@ -130,7 +130,24 @@ jobs:
           X_ACCESS_TOKEN:                    ${{ secrets.X_ACCESS_TOKEN }}
           X_ACCESS_TOKEN_SECRET:             ${{ secrets.X_ACCESS_TOKEN_SECRET }}
           X_BEARER_TOKEN:                    ${{ secrets.X_BEARER_TOKEN }}
-        run: python run_darkcrimed.py
+        run: |
+          # Background resource monitor — same step, so its output lands in this
+          # step's own live log. If the runner is later OOM-killed or fills its disk
+          # ("lost communication with the server"), if:always() upload steps never
+          # run, but this already streamed to GitHub's log service and survives in
+          # the raw log — giving the actual memory/disk trend leading up to the
+          # crash instead of guessing.
+          ( while true; do
+              echo "=== [monitor] $(date -u +%H:%M:%S) ==="
+              free -h | grep -E 'Mem|Swap'
+              df -h / | tail -1
+              sleep 120
+            done ) &
+          MONITOR_PID=$!
+          python run_darkcrimed.py
+          EXIT_CODE=$?
+          kill "$MONITOR_PID" 2>/dev/null || true
+          exit $EXIT_CODE
 
       - name: Upload all videos as artifacts
         if: always()
