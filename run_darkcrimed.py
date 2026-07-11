@@ -141,7 +141,8 @@ def _load_injected_script(current_topic: str | None = None) -> dict | None:
             raw = Path(src).read_text(encoding="utf-8")
             lines = raw.splitlines()
             result = {"title": "", "title_ar": "", "topic": "", "series_name": None,
-                      "script": "", "script_ar": "", "short_script_en": "", "short_script_ar": ""}
+                      "script": "", "script_ar": "", "short_script_en": "", "short_script_ar": "",
+                      "hashtags": "", "source_urls": [], "search_queries": []}
 
             def _sep(s):
                 s = s.strip(); return len(s) >= 3 and all(c in '-─━_=' for c in s)
@@ -238,6 +239,38 @@ def _load_injected_script(current_topic: str | None = None) -> dict | None:
 
             if not result["topic"]:
                 result["topic"] = result["title"]
+
+            # ── Sources / search queries / hashtags ────────────────────────────
+            # These live in a "SOURCES & REFERENCES:" / "SEARCH QUERIES USED:" block
+            # plus a trailing hashtag line — metadata for the YouTube description,
+            # not narration, so they were never part of the script/script_ar capture
+            # above. Extract them here so injected videos don't publish without them.
+            _SRC_HDR   = "SOURCES & REFERENCES:"
+            _QUERY_HDR = "SEARCH QUERIES USED:"
+            _section, _pending_title = None, ""
+            for line in lines:
+                _stripped = _TG_PREFIX.sub('', line, count=1).strip()
+                if _stripped.startswith(_SRC_HDR):
+                    _section = "sources"; continue
+                if _stripped.startswith(_QUERY_HDR):
+                    _section = "queries"; continue
+                if _section == "sources" and _stripped.startswith("-"):
+                    _pending_title = _stripped.lstrip("- ").strip()
+                    continue
+                if _section == "sources" and _stripped.startswith("http"):
+                    result["source_urls"].append({"title": _pending_title, "url": _stripped})
+                    _pending_title = ""
+                    continue
+                if _section == "queries" and _stripped.startswith(("🔍", '"')):
+                    _q = _stripped.lstrip("🔍 ").strip().strip('"')
+                    if _q:
+                        result["search_queries"].append(_q)
+                    continue
+                # Real hashtag line has several "#word" tokens ("#Legend #Movie ...");
+                # a markdown heading ("# Title" / "## Title") only ever has one leading #.
+                if _stripped.startswith("#") and _stripped.count("#") >= 3:
+                    result["hashtags"] = _stripped
+                    _section = None
         if not result.get("script") and not result.get("script_ar"):
             return None
         ts   = _dt.datetime.now().strftime("%Y%m%d_%H%M")
@@ -712,10 +745,12 @@ def run_pipeline():
                 "short_script_ar": _inj.get("short_script_ar", ""),
                 "on_screen_texts": [],
                 "caption":         "",
-                "hashtags":        "",
-                "chapters":        "",
+                "hashtags":        _inj.get("hashtags", ""),
+                "chapters":        generate_chapters(_inj_en_words, language="english"),
                 "hook":            "",
                 "keywords":        topic.get("keywords", []),
+                "source_urls":     _inj.get("source_urls", []),
+                "search_queries":  _inj.get("search_queries", []),
                 "_injected":       True,
             }
             _log("Scripts", f"EN (injected): '{en_long['title']}' | {_inj_en_words}w", "OK")
@@ -760,6 +795,7 @@ def run_pipeline():
     _research = topic.get("research", {}) if topic else {}
     _inj_ar = (_inj or {}).get("script_ar", "").strip()
     if _inj and _inj_ar:
+        _inj_ar_words = len(_inj_ar.split())
         ar_long = {
             "title":           (_inj.get("title_ar") or _inj.get("title", "")),
             "topic":           _inj.get("topic", topic.get("topic", "")),
@@ -769,13 +805,15 @@ def run_pipeline():
             "short_script_ar": _inj.get("short_script_ar", ""),
             "on_screen_texts": [],
             "caption":         "",
-            "hashtags":        "",
-            "chapters":        "",
+            "hashtags":        _inj.get("hashtags", ""),
+            "chapters":        generate_chapters(_inj_ar_words, language="arabic"),
             "hook":            "",
             "keywords":        topic.get("keywords", []),
+            "source_urls":     _inj.get("source_urls", []),
+            "search_queries":  _inj.get("search_queries", []),
             "_injected":       True,
         }
-        _log("Scripts", f"AR (injected): '{ar_long['title']}' | {len(ar_long['script'].split())}w", "OK")
+        _log("Scripts", f"AR (injected): '{ar_long['title']}' | {_inj_ar_words}w", "OK")
     else:
         try:
             ar_long = write_arabic_script(topic, _research)
