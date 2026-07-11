@@ -10,6 +10,7 @@ import asyncio
 import subprocess
 import shutil
 import tempfile
+import threading as _threading
 import requests
 from pathlib import Path
 try:
@@ -11086,7 +11087,6 @@ _WORKERS: dict[str, int] = {
 # 402 = service-level block for this session (IP/key issue) — hard breaker.
 # 429/500 consecutive failures ≥10 — hard breaker to stop wasting 45s×3 per image.
 # 429 tracking halves the worker pool when rate > 25%.
-import threading as _threading
 _pollinations_429_lock   = _threading.Lock()
 _pollinations_429_count  = 0
 _pollinations_req_count  = 0
