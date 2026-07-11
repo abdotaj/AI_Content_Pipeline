@@ -904,7 +904,13 @@ def run_pipeline():
     _rewrite_count = 0
     while True:
         _approval_1 = wait_for_approval(
-            stage_name=f"Scripts Ready — {(en_long.get('title') or '')[:60]}\nReview the scripts above.",
+            stage_name=(
+                f"Scripts Ready — {(en_long.get('title') or '')[:60]}\n"
+                f"Review the scripts above.\n\n"
+                f"Rewrite only part: /rewrite <numbers>\n"
+                f"  1=all  2=long AR  3=short AR  4=long EN  5=short EN\n"
+                f"  example: /rewrite 2&3"
+            ),
             available_commands=["approve", "rewrite", "cancel"],
             mode="PIPELINE",
         )
@@ -913,33 +919,73 @@ def run_pipeline():
             return
         elif _approval_1 == "approve":
             break
-        elif _approval_1 == "rewrite":
+        elif _approval_1 == "rewrite" or _approval_1.startswith("rewrite:"):
             if topic is None:
                 send_message("[Pipeline] Rewrite unavailable for content-file ingested scripts.")
                 continue
             _rewrite_count += 1
-            _log("Scripts", f"Rewrite requested (#{_rewrite_count}) — regenerating", "WARN")
-            _cost_note = (
-                "Note: each rewrite regenerates both English and Arabic scripts "
-                "from scratch and typically takes 25-35 minutes. "
-                "Please wait for the result before sending /rewrite again."
-            )
-            if _rewrite_count >= 2:
-                send_message(
-                    f"[Pipeline] Rewriting scripts... (attempt #{_rewrite_count})\n"
-                    f"{_cost_note}\nRepeated rewrites add up quickly — "
-                    f"consider /approve if the scripts are close enough."
+            _sel_raw   = _approval_1.split(":", 1)[1] if ":" in _approval_1 else ""
+            _selection = set(_sel_raw.split(",")) if _sel_raw else {"all"}
+            if not _selection:
+                _selection = {"all"}
+            _sel_label = "all" if "all" in _selection else "+".join(sorted(_selection))
+            _log("Scripts", f"Rewrite requested (#{_rewrite_count}, {_sel_label}) — regenerating", "WARN")
+            if "all" in _selection:
+                _cost_note = (
+                    "Note: a full rewrite regenerates both English and Arabic scripts "
+                    "from scratch and typically takes 25-35 minutes. "
+                    "Tip: /rewrite 2&3 (etc.) regenerates only part of it, much faster."
                 )
             else:
-                send_message(f"[Pipeline] Rewriting scripts...\n{_cost_note}")
+                _cost_note = f"Regenerating only: {_sel_label} (skips the rest — faster than a full rewrite)."
+            if _rewrite_count >= 2 and "all" in _selection:
+                send_message(
+                    f"[Pipeline] Rewriting scripts... (attempt #{_rewrite_count})\n"
+                    f"{_cost_note}\nRepeated full rewrites add up quickly — "
+                    f"consider /approve, or /rewrite <numbers> for a partial redo."
+                )
+            else:
+                send_message(f"[Pipeline] Rewriting scripts... (attempt #{_rewrite_count})\n{_cost_note}")
             try:
-                en_long = write_script(topic, language="english")
-                ar_long = translate_script(en_long, research=topic.get("research", {}))
-                _short_rw = write_short_script(en_long)
-                en_long["short_script_en"] = _short_rw.get("short_script_en", "")
-                ar_long["short_script_ar"] = _short_rw.get("short_script_ar", "")
-                send_arabic_script_preview(ar_long, label="Arabic LONG script (rewrite)")
-                send_english_script_preview(en_long, label="English LONG script (rewrite)")
+                if "all" in _selection:
+                    en_long = write_script(topic, language="english")
+                    ar_long = translate_script(en_long, research=topic.get("research", {}))
+                    _short_rw = write_short_script(en_long)
+                    en_long["short_script_en"] = _short_rw.get("short_script_en", "")
+                    ar_long["short_script_ar"] = _short_rw.get("short_script_ar", "")
+                    send_arabic_script_preview(ar_long, label="Arabic LONG script (rewrite)")
+                    send_english_script_preview(en_long, label="English LONG script (rewrite)")
+                    if en_long.get("short_script_en"):
+                        send_english_script_preview(
+                            {**en_long, "script": en_long["short_script_en"]},
+                            label="English SHORT script (rewrite)")
+                    if ar_long.get("short_script_ar"):
+                        send_arabic_script_preview(
+                            {**ar_long, "script": ar_long["short_script_ar"]},
+                            label="Arabic SHORT script (rewrite)")
+                else:
+                    if "long_en" in _selection:
+                        _old_short_en = en_long.get("short_script_en", "")
+                        en_long = write_script(topic, language="english")
+                        en_long["short_script_en"] = _old_short_en
+                        send_english_script_preview(en_long, label="English LONG script (rewrite)")
+                    if "long_ar" in _selection:
+                        _old_short_ar = ar_long.get("short_script_ar", "")
+                        ar_long = translate_script(en_long, research=topic.get("research", {}))
+                        ar_long["short_script_ar"] = _old_short_ar
+                        send_arabic_script_preview(ar_long, label="Arabic LONG script (rewrite)")
+                    if "short_en" in _selection or "short_ar" in _selection:
+                        _short_rw = write_short_script(en_long)
+                        if "short_en" in _selection:
+                            en_long["short_script_en"] = _short_rw.get("short_script_en", "")
+                            send_english_script_preview(
+                                {**en_long, "script": en_long["short_script_en"]},
+                                label="English SHORT script (rewrite)")
+                        if "short_ar" in _selection:
+                            ar_long["short_script_ar"] = _short_rw.get("short_script_ar", "")
+                            send_arabic_script_preview(
+                                {**ar_long, "script": ar_long["short_script_ar"]},
+                                label="Arabic SHORT script (rewrite)")
             except Exception as _re:
                 send_message(f"[Pipeline] Rewrite failed: {_re}")
 

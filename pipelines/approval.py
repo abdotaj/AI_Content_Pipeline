@@ -12,13 +12,17 @@
 #
 # Supported commands (case-insensitive, leading / optional):
 #   /approve   — proceed to next stage
-#   /rewrite   — regenerate scripts  (scripts gate)
+#   /rewrite   — regenerate ALL scripts  (scripts gate)
+#   /rewrite <selection> — regenerate only part of the scripts (scripts gate)
+#       1 = all | 2 = long AR | 3 = short AR | 4 = long EN | 5 = short EN
+#       combine with & , or space:  "/rewrite 2&3"  "/rewrite 4,5"
 #   /rerender  — rebuild videos      (render gate)
 #   /publish   — same as /approve at the render/upload gate
 #   /retry     — alias for /approve
 #   /cancel    — stop pipeline safely
 
 import os
+import re
 import time
 import requests
 
@@ -40,6 +44,33 @@ _COMMAND_ALIASES: dict[str, str] = {
     "abort":    "cancel",
     "no":       "cancel",
 }
+
+# Sub-selection menu for "/rewrite <selection>" at the scripts gate.
+_REWRITE_MENU: dict[str, str] = {
+    "1": "all",       "all":      "all",
+    "2": "long_ar",   "longar":   "long_ar",
+    "3": "short_ar",  "shortar":  "short_ar",
+    "4": "long_en",   "longen":   "long_en",
+    "5": "short_en",  "shorten":  "short_en",
+}
+
+
+def _parse_rewrite_selection(raw: str) -> str:
+    """Parse a rewrite sub-selection like '2&3', '2,3', '2 and 3' into a
+    canonical comma-joined key string, e.g. 'long_ar,short_ar'.
+
+    Returns 'all' if any token maps to "all", or '' if nothing recognisable
+    is found (caller falls back to a full rewrite either way).
+    """
+    tokens = [t for t in re.split(r'[,&/]|\band\b|\s+', raw.strip().lower()) if t]
+    seen: list[str] = []
+    for t in tokens:
+        key = _REWRITE_MENU.get(t)
+        if key == "all":
+            return "all"
+        if key and key not in seen:
+            seen.append(key)
+    return ",".join(seen)
 
 
 def _get_timeout_minutes() -> int:
@@ -187,10 +218,17 @@ def wait_for_approval(
             text = (msg_obj.get("text") or "").strip()
             cmd  = text.lower().lstrip("/").strip()
 
-            if cmd not in _COMMAND_ALIASES:
+            # "rewrite <selection>" — e.g. "rewrite 2&3" — split off the base
+            # command word so the alias lookup below still matches "rewrite".
+            _base, _, _selection_raw = cmd.partition(" ")
+            if _base not in _COMMAND_ALIASES:
                 continue  # unknown input — ignore, keep waiting
 
-            resolved = _COMMAND_ALIASES[cmd]
+            resolved = _COMMAND_ALIASES[_base]
+            if resolved == "rewrite" and _selection_raw.strip():
+                _sel = _parse_rewrite_selection(_selection_raw)
+                if _sel and _sel != "all":
+                    resolved = f"rewrite:{_sel}"
             print(f"[APPROVAL] '{cmd}' → {resolved}")
             try:
                 requests.post(
