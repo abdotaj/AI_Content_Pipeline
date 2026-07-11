@@ -2402,6 +2402,10 @@ def generate_ai_image(prompt: str, output_path: str, seed: int = None) -> str:
     )
 
     for attempt in range(3):
+        if _pollinations_402_blocked or _pollinations_hard_blocked:
+            # Another thread tripped the circuit breaker while this call was
+            # sleeping between retries — stop burning more time on a dead service.
+            return None
         try:
             response = requests.get(url, timeout=90)
             if response.status_code == 200:
@@ -11108,6 +11112,24 @@ def _record_pollinations_result(success: bool) -> None:
                 _pollinations_hard_blocked = True
                 print(
                     f"[Image] Pollinations {_pollinations_consec_fail} consecutive failures — "
+                    f"circuit breaker tripped, skipping all remaining Pollinations calls this run"
+                )
+            # Rate-based trip: with several parallel workers, an occasional lucky
+            # success on one thread resets the consecutive-fail streak on every
+            # thread, so a service that is mostly down (e.g. ~85% failure rate
+            # sustained for 30+ minutes) can go the whole run without ever hitting
+            # 10 CONSECUTIVE fails. Trip on sustained high failure rate too, once
+            # there's a large-enough sample to be confident it isn't a brief blip.
+            elif (
+                not _pollinations_hard_blocked
+                and _pollinations_req_count >= 15
+                and (_pollinations_429_count / _pollinations_req_count) > 0.7
+            ):
+                _pollinations_hard_blocked = True
+                print(
+                    f"[Image] Pollinations failure rate "
+                    f"{_pollinations_429_count}/{_pollinations_req_count} "
+                    f"({_pollinations_429_count / _pollinations_req_count:.0%}) — "
                     f"circuit breaker tripped, skipping all remaining Pollinations calls this run"
                 )
         else:

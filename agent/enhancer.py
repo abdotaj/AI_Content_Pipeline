@@ -69,6 +69,10 @@ if not log.handlers:
     _h.setFormatter(logging.Formatter("%(message)s"))
     log.addHandler(_h)
 log.setLevel(logging.INFO)
+log.propagate = False  # this logger has its own handler — don't also emit through
+                        # the root logger's handler (logging.basicConfig() elsewhere
+                        # in the pipeline), which was printing every line twice as
+                        # "INFO:enhancer:[Enhancer] ..." right after the clean copy.
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -80,11 +84,21 @@ _ON_CI = bool(os.getenv("CI") or os.getenv("GITHUB_ACTIONS"))
 
 # ── Capability detection (runs once at import, never per-call) ────────────────
 
+_CV2_IMPORT_ERROR: str | None = None
+
+
 def _check_cv2() -> bool:
+    global _CV2_IMPORT_ERROR
     try:
         import cv2  # noqa: F401
         return True
-    except ImportError:
+    except Exception as e:
+        # Catch broadly, not just ImportError — a missing shared library (e.g.
+        # libGL.so.1 on a bare CI runner) raises ImportError/OSError with the
+        # real cause in the message. Silently swallowing it left "cv2=no" with
+        # no way to diagnose why every image enhancement fell back to the much
+        # slower pure-PIL path (~10-14s/image vs cv2's near-instant filters).
+        _CV2_IMPORT_ERROR = f"{type(e).__name__}: {e}"
         return False
 
 
@@ -128,6 +142,8 @@ log.info(
     "yes" if _HAVE_ESRGAN else "no",
     "yes" if _HAVE_GFPGAN else "no",
 )
+if not _HAVE_CV2 and _CV2_IMPORT_ERROR:
+    log.info("[Enhancer] cv2 import failed — %s", _CV2_IMPORT_ERROR)
 
 
 # ── Step 1 — Smart resize ─────────────────────────────────────────────────────
