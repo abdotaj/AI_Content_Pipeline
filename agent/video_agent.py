@@ -12113,14 +12113,15 @@ def run_full_pipeline(
                 else:           print(f"[FULL] Short duration OK: {_dur:.1f}s")
             else:
                 try:
-                    from agents.script_agent import get_runtime_contract as _grc
+                    from agents.script_agent import get_runtime_contract as _grc, _TTS_WPM as _sa_wpm
                 except ImportError:
                     try:
-                        from script_agent import get_runtime_contract as _grc  # type: ignore
+                        from script_agent import get_runtime_contract as _grc, _TTS_WPM as _sa_wpm  # type: ignore
                     except ImportError:
                         def _grc(m): return {"min_seconds": 900.0, "max_seconds": 5400.0}  # type: ignore
+                        _sa_wpm = {"arabic": 115.0, "english": 160.0}
                 _rc = _grc("full")
-                _est_min = len(script_data.get("script", "").split()) / (185.0 if language == "arabic" else 145.0)
+                _est_min = len(script_data.get("script", "").split()) / (_sa_wpm["arabic"] if language == "arabic" else _sa_wpm["english"])
                 print(f"[AR AUDIO] Estimated: {_est_min:.1f}min")
                 print(f"[AR AUDIO] Rendered:  {_min:.1f}min")
                 _delta = _min - _est_min

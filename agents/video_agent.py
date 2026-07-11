@@ -4875,7 +4875,9 @@ def _is_video_file(path: str) -> bool:
 
 _pexels_blocked = False  # circuit breaker for Pexels rate/auth errors
 
-# Tags/descriptions that indicate a royal mismatch when query is not about royals
+
+# Terms in Pexels/Pixabay metadata that indicate royal/celebrity mismatch.
+# Applied when the query targets a specific crime figure, not royalty.
 _STOCK_ROYAL_REJECT = frozenset({
     "queen elizabeth", "princess diana", "royal family", "buckingham palace",
     "king charles", "queen victoria", "prince william", "duchess cambridge",
@@ -4885,10 +4887,10 @@ _STOCK_ROYAL_REJECT = frozenset({
 
 
 def _stock_result_is_royal_mismatch(description: str, query: str) -> bool:
-    """Return True if a stock result looks like royal content but the query isn't about royals."""
+    """Return True if a stock photo description looks like royal content we didn't ask for."""
     desc_lower = description.lower()
     query_lower = query.lower()
-    # If the query itself is about royals, don't filter
+    # Only reject if query doesn't itself mention royalty
     if any(t in query_lower for t in ("queen", "royal", "princess", "king", "monarch")):
         return False
     return any(t in desc_lower for t in _STOCK_ROYAL_REJECT)
@@ -4919,16 +4921,16 @@ def _search_pexels_images(query: str, max_results: int = 5) -> list[str]:
             return []
         urls = []
         for photo in r.json().get("photos", []):
-            alt = photo.get("alt", "")
+            alt = photo.get("alt", "") or ""
             if _stock_result_is_royal_mismatch(alt, query):
-                print(f"[Image] Pexels rejected royal mismatch: '{alt}' for query '{query}'")
+                print(f"[Image] Pexels: rejected royal mismatch — '{alt[:60]}'")
                 continue
             src = photo.get("src", {})
             url = src.get("portrait") or src.get("large2x") or src.get("large") or src.get("original")
             if url:
                 urls.append(url)
-                if len(urls) >= max_results:
-                    break
+            if len(urls) >= max_results:
+                break
         return urls
     except Exception as e:
         print(f"[Image] Pexels photo search error: {e}")
@@ -4970,15 +4972,15 @@ def _search_pixabay_images(query: str, max_results: int = 5) -> list[str]:
             return []
         urls = []
         for hit in r.json().get("hits", []):
-            tags = hit.get("tags", "")
+            tags = hit.get("tags", "") or ""
             if _stock_result_is_royal_mismatch(tags, query):
-                print(f"[Image] Pixabay rejected royal mismatch: '{tags}' for query '{query}'")
+                print(f"[Image] Pixabay: rejected royal mismatch — '{tags[:60]}'")
                 continue
             url = hit.get("largeImageURL", "")
             if url:
                 urls.append(url)
-                if len(urls) >= max_results:
-                    break
+            if len(urls) >= max_results:
+                break
         return urls
     except Exception as e:
         print(f"[Image] Pixabay image search error: {e}")
@@ -8344,8 +8346,7 @@ def _validate_output_file(path: str) -> bool:
         print(f"[Render] Output validated (no ffprobe): {os.path.basename(path)} ({size_mb} MB)")
         return True
     # For large files (> 200 MB) skip the full-decode pass — it reads every frame
-    # and regularly exceeds 60 s on a 1 GB+ Arabic long-form, causing a spurious timeout.
-    # Duration probe via ffprobe is sufficient for structural validation.
+    # and times out (60 s budget) on multi-GB Arabic long-form videos.
     if size_mb > 200:
         dur = _ffprobe_duration(path) or 0.0
         min_dur = 55.0 if is_short_file else 300.0
@@ -12112,14 +12113,15 @@ def run_full_pipeline(
                 else:           print(f"[FULL] Short duration OK: {_dur:.1f}s")
             else:
                 try:
-                    from agents.script_agent import get_runtime_contract as _grc
+                    from agents.script_agent import get_runtime_contract as _grc, _TTS_WPM as _sa_wpm
                 except ImportError:
                     try:
-                        from script_agent import get_runtime_contract as _grc  # type: ignore
+                        from script_agent import get_runtime_contract as _grc, _TTS_WPM as _sa_wpm  # type: ignore
                     except ImportError:
                         def _grc(m): return {"min_seconds": 900.0, "max_seconds": 5400.0}  # type: ignore
+                        _sa_wpm = {"arabic": 115.0, "english": 160.0}
                 _rc = _grc("full")
-                _est_min = len(script_data.get("script", "").split()) / (185.0 if language == "arabic" else 145.0)
+                _est_min = len(script_data.get("script", "").split()) / (_sa_wpm["arabic"] if language == "arabic" else _sa_wpm["english"])
                 print(f"[AR AUDIO] Estimated: {_est_min:.1f}min")
                 print(f"[AR AUDIO] Rendered:  {_min:.1f}min")
                 _delta = _min - _est_min

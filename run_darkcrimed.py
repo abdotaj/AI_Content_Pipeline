@@ -1099,9 +1099,9 @@ def run_pipeline():
                 _log("VideoGen", f"[AR SKIP] Script empty ({_ar_wc_pre}w) — skipping", "ERROR")
             else:
                 if _ar_wc_pre < 8_000:
-                    _log("VideoGen", f"[AR SHORT] {_ar_wc_pre}w (~{round(_ar_wc_pre/100,1)}min) below 8000w target — rendering anyway", "WARN")
+                    _log("VideoGen", f"[AR SHORT] {_ar_wc_pre}w (~{round(_ar_wc_pre/115,1)}min) below 8000w target — rendering anyway", "WARN")
                 else:
-                    _log("VideoGen", f"[AR AUDIO] Script: {_ar_wc_pre}w | est. ~{round(_ar_wc_pre/100,1)}min")
+                    _log("VideoGen", f"[AR AUDIO] Script: {_ar_wc_pre}w | est. ~{round(_ar_wc_pre/115,1)}min")
                 ar_long_id   = f"{today}_{_slug}_arabic_long"
                 ar_long_path = _make_video(ar_long, ar_long_id, stats, user_images=user_images, user_videos=user_videos)
                 _log("VideoGen", f"[AR] Render complete — {ar_long_path}", "OK")

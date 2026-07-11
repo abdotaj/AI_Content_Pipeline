@@ -419,7 +419,12 @@ def _cap_script_max_words(script_text: str, max_words: int = LONG_SCRIPT_MAX_WOR
     return result
 
 
-_TTS_WPM = {"english": 160, "arabic": 185}   # Arabic: recalibrated for edge-tts HamdanNeural +25% (est. 175-190 WPM) — was 220 for OpenAI Marin speed=1.1 | English Alloy 1.0 ~160 WPM (edge-tts ChristopherNeural +10% ≈ similar)
+_TTS_WPM = {"english": 160, "arabic": 115}   # Arabic: recalibrated from measured production audio (kray_twins run, 2026-07-11) —
+# OpenAI TTS (Marin, gpt-4o-mini-tts, speed=1.1) is the actual PRIMARY engine (edge-tts is fallback only),
+# and 3 independently-sized sections all measured ~114-119 WPM, not the previously assumed 185 (edge-tts)
+# or 220 (stale OpenAI estimate). That mismatch made a 45-min-target AR script render as 85:29 of real
+# audio — nearly 2x over target — which then required ~2x the visual assets and blew the pipeline's runtime.
+# English Alloy 1.0 ~160 WPM unchanged (verified consistent).
 
 # Runtime floors (minutes) by mode — ABSOLUTE MINIMUMS.
 # Any long video below 15 minutes is an automatic failure.
@@ -2085,7 +2090,7 @@ CHAPTER_LABELS_AR = [
 def generate_chapters(total_words: int, language: str = "english",
                       angle_title: str = "") -> str:
     """Generate YouTube chapter timestamps for 5-chapter structure."""
-    words_per_minute = 220 if language == "arabic" else 160
+    words_per_minute = _TTS_WPM["arabic"] if language == "arabic" else _TTS_WPM["english"]
     total_seconds = (total_words / words_per_minute) * 60
 
     if language == "arabic":
@@ -2203,7 +2208,7 @@ def generate_chapters_from_script(
     Timestamps computed from word count using _CHAPTER_PROPORTIONS_5.
     """
     total_words = clean_word_count(script_text)
-    wpm = 220 if language == "arabic" else 156
+    wpm = _TTS_WPM["arabic"] if language == "arabic" else _TTS_WPM["english"]
     total_seconds = (total_words / max(wpm, 1)) * 60
 
     llm_titles = None
@@ -6277,7 +6282,10 @@ def _write_arabic_from_research(en_script: dict, ar_research: dict, target_minut
 
     # Section word budgets — derived from minutes target when available,
     # falling back to English word count ratios (legacy behaviour).
-    _AR_WPM = 220  # Marin/gpt-4o-mini-tts speed=1.1 (range 210-230 WPM)
+    # Uses the single calibrated _TTS_WPM constant (not a separate hardcoded value) —
+    # this used to be a local 220 WPM that silently drifted from the recalibrated
+    # _TTS_WPM["arabic"], causing a 45-min-target script to render as 85 min of audio.
+    _AR_WPM = _TTS_WPM["arabic"]
     if target_minutes and target_minutes > 0:
         _total_target_w = int(target_minutes * _AR_WPM)
         if _anim_mode:

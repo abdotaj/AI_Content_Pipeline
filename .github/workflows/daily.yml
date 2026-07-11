@@ -17,7 +17,13 @@ jobs:
   dark-crime-pipeline:
     if: github.event_name == 'workflow_dispatch' && github.event.inputs.channel == 'darkcrimed'
     runs-on: ubuntu-latest
-    timeout-minutes: 480
+    # GitHub-hosted runners hard-kill any job at 6h0m0s regardless of this setting —
+    # and when that hard cap fires (not this timeout), the if:always()/if:failure()
+    # upload-artifact steps below never even start, so a run that hits it loses
+    # everything (confirmed via run 29139245374: all upload steps stayed "pending").
+    # Keep this comfortably under 360min so OUR timeout fires first and the
+    # graceful-cancellation path still runs the cleanup/upload steps.
+    timeout-minutes: 340
     concurrency:
       group: dark-crime-pipeline
       cancel-in-progress: false
