@@ -154,8 +154,16 @@ def _load_injected_script(current_topic: str | None = None) -> dict | None:
 
             # Telegram export timestamp pattern: [6/26/2026 3:41 PM]
             _TG_TS = _re_inj.compile(r'^\[\d{1,2}/\d{1,2}/\d{4}')
+            # Full prefix incl. sender — messages over Telegram's length limit split into
+            # several bot messages, each restarting with this prefix; it is NOT a new
+            # section, just a continuation, so it gets stripped rather than treated as a stop.
+            _TG_PREFIX = _re_inj.compile(r'^\[\d{1,2}/\d{1,2}/\d{4}\s+\d{1,2}:\d{2}\s*[AP]M\]\s*My Content Bot:\s*')
             _TG_DONE = ("Generating video automatically", "جاري إنشاء الفيديو")
             _TG_EN_HDR = "English LONG script"
+            # Section headers that mark a genuinely NEW script section starting (vs. just
+            # a length-continuation of the current one, which shares the same TG prefix).
+            _TG_NEW_SECTION = ("Arabic LONG script", "English LONG script",
+                               "English SHORT script", "Arabic SHORT script")
 
             body, ar, past_sep, in_ar = [], [], False, False
             for line in lines:
@@ -169,7 +177,9 @@ def _load_injected_script(current_topic: str | None = None) -> dict | None:
                         break
                     ar.append(line)
                 elif past_sep:
-                    body.append(line)
+                    # Strip length-continuation message prefixes so they don't leak
+                    # into the narration as literal text.
+                    body.append(_TG_PREFIX.sub('', line, count=1))
                 elif line.upper().startswith("TITLE_AR:"):
                     result["title_ar"] = line.split(":", 1)[1].strip()
                     # Also pick up العنوان: (Arabic title header from Telegram exports)
@@ -202,7 +212,14 @@ def _load_injected_script(current_topic: str | None = None) -> dict | None:
                     if _TG_EN_HDR in line:
                         _capturing = True; continue
                     if not _capturing: continue
-                    if _TG_TS.match(line): break
+                    if _TG_TS.match(line):
+                        # Only a real section boundary if it starts a DIFFERENT script
+                        # section; otherwise it's just a length-continuation message,
+                        # so strip the prefix and keep capturing this same section.
+                        _stripped = _TG_PREFIX.sub('', line, count=1)
+                        if any(h in _stripped for h in _TG_NEW_SECTION) or any(m in line for m in _TG_DONE):
+                            break
+                        line = _stripped
                     if any(m in line for m in _TG_DONE): break
                     if line.startswith(_EN_STOP): break
                     if _sep(line): continue
@@ -908,8 +925,8 @@ def run_pipeline():
                 f"Scripts Ready — {(en_long.get('title') or '')[:60]}\n"
                 f"Review the scripts above.\n\n"
                 f"Rewrite only part: /rewrite <numbers>\n"
-                f"  1=all  2=long AR  3=short AR  4=long EN  5=short EN\n"
-                f"  example: /rewrite 2&3"
+                f"  1=all  2=long AR  3=long EN  4=short EN  5=short AR\n"
+                f"  (matches the order sent above)  example: /rewrite 2&3"
             ),
             available_commands=["approve", "rewrite", "cancel"],
             mode="PIPELINE",

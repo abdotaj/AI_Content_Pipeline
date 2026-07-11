@@ -14,7 +14,8 @@
 #   /approve   — proceed to next stage
 #   /rewrite   — regenerate ALL scripts  (scripts gate)
 #   /rewrite <selection> — regenerate only part of the scripts (scripts gate)
-#       1 = all | 2 = long AR | 3 = short AR | 4 = long EN | 5 = short EN
+#       1 = all | 2 = long AR | 3 = long EN | 4 = short EN | 5 = short AR
+#       (matches the order scripts are actually sent to Telegram, not grouped by language)
 #       combine with & , or space:  "/rewrite 2&3"  "/rewrite 4,5"
 #   /rerender  — rebuild videos      (render gate)
 #   /publish   — same as /approve at the render/upload gate
@@ -46,12 +47,16 @@ _COMMAND_ALIASES: dict[str, str] = {
 }
 
 # Sub-selection menu for "/rewrite <selection>" at the scripts gate.
+# Numbers match the ACTUAL order scripts are sent to Telegram (run_darkcrimed.py
+# "STEP 3: Send scripts to Telegram for review"): long AR, long EN, short EN,
+# short AR — so "/rewrite 3" always means "the 3rd script you just read above",
+# not a language-grouped ordering that doesn't match what's on screen.
 _REWRITE_MENU: dict[str, str] = {
     "1": "all",       "all":      "all",
     "2": "long_ar",   "longar":   "long_ar",
-    "3": "short_ar",  "shortar":  "short_ar",
-    "4": "long_en",   "longen":   "long_en",
-    "5": "short_en",  "shorten":  "short_en",
+    "3": "long_en",   "longen":   "long_en",
+    "4": "short_en",  "shorten":  "short_en",
+    "5": "short_ar",  "shortar":  "short_ar",
 }
 
 
