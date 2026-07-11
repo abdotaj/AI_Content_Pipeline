@@ -1491,6 +1491,9 @@ _UPGRADE_ARABIC_PROMPT = """أنت محرر لغوي عربي متخصص، وك�
 - لا تضف معلومات خيالية أو تفسيرات خارجية
 - لا تغيّر الترتيب الزمني للأحداث
 - لا تكتب ملاحظات أو تعليقات خارج النص
+- ممنوع تماماً أي صيغة "قبل/بعد" أو مقارنة تصحيحية أو تعليق نقدي على تعديلاتك — طبّق التصحيح مباشرة داخل النص فقط، لا تشرحه
+- ممنوع استخدام رموز Markdown مثل ** أو -- أو فواصل ---
+- إذا كتبت اسماً أجنبياً بين قوسين، لا تترك القوسين فارغين أبداً — اكتب الاسم الأصلي كاملاً أو احذف القوسين تماماً
 - الناتج النهائي جاهز مباشرة للـ TTS بدون أي تحرير إضافي
 
 النص:
@@ -1551,6 +1554,44 @@ def deduplicate_script_facts(script: str) -> str:
     return result
 
 
+def strip_leaked_editorial_artifacts(script: str) -> str:
+    """Remove model self-critique / correction-note leakage that occasionally
+    survives the rewrite/upgrade pass instead of being silently applied — e.g.
+    markdown bullet notes like '- **قبل** "x" **بعد** "y".', bare '---'/'___'
+    separator lines, and empty '( )' remnants left by the foreign-name
+    transliteration rule. [SECTION:] markers and normal narration are untouched."""
+    import re as _re
+
+    if not script or not script.strip():
+        return script
+
+    lines = script.splitlines()
+    kept: list[str] = []
+    removed = 0
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("[SECTION:"):
+            kept.append(line)
+            continue
+        # Bare separator lines: ---, ___, ===, or mixes of dashes/dots
+        if _re.fullmatch(r'[-_=.\s]{2,}', stripped):
+            removed += 1
+            continue
+        # Leaked markdown correction-note bullets: "- **...** ... "quoted" ... "quoted""
+        if stripped.startswith('-') and '**' in stripped and stripped.count('"') >= 2:
+            removed += 1
+            continue
+        kept.append(line)
+
+    result = "\n".join(kept)
+    # Empty parenthetical remnants from the "Arabic name (English name)" rule
+    result = _re.sub(r'\(\s*\)', '', result)
+    result = _re.sub(r'[ \t]{2,}', ' ', result)
+    if removed:
+        print(f"[Sanitize] Removed {removed} leaked editorial-note line(s) from script")
+    return result
+
+
 def upgrade_script_for_retention(script: str) -> str:
     try:
         prompt = _UPGRADE_PROMPT.replace("{script}", script)
@@ -1570,6 +1611,7 @@ def upgrade_script_for_retention(script: str) -> str:
             print(f"[Upgrade] English rejected — compression: {_upgraded_wc}w < {_original_wc}w×90%")
             return script
         improved = deduplicate_script_facts(improved)
+        improved = strip_leaked_editorial_artifacts(improved)
         print(f"[Upgrade] English script upgraded ({_upgraded_wc} words)")
         return improved
     except Exception as e:
@@ -1608,6 +1650,7 @@ def upgrade_arabic_script(script: str) -> str:
             )
             return script
         improved = deduplicate_script_facts(improved)
+        improved = strip_leaked_editorial_artifacts(improved)
         print(f"[Upgrade] Arabic script upgraded ({_orig_wc}w → {_new_wc}w | {_orig_min:.1f}min → {_new_min:.1f}min)")
         return improved
     except Exception as e:
@@ -5851,6 +5894,7 @@ _AR_SCRIPT_SYSTEM_PROMPT = """أنت راوٍ سينمائي عربي متخصص
 - الراوي يعرف أكثر مما يقول — والمستمع يحس بذلك
 - لا أكاديمية. لا عامية. لا حماس مبالغ. لا إثارة يوتيوب
 - ممنوع تماماً كلمات العامية المصرية أو الشامية: مش / إيه / عشان / بتاع / ازاي / مفيش / أهو / ده / دي / دول / معاك / معانا / فين / كمان (بمعنى أيضاً) / هيكون / بيكون. البديل دائماً الفصحى: ليس، ماذا، لأن، خاص بـ، كيف، لا يوجد، هذا/هذه، معك/معنا، أين، أيضاً/كذلك، سيكون، يكون
+- ممنوع تماماً أيضاً أي كلمة عامية خليجية أو سعودية: ليش / شلون / زين / وايد / يبي أو يبغى / خايف أو خايفة / حد (بمعنى أحد) / شنو / شي (بمعنى شيء) / عاد / طلعوا (بمعنى تبين) / وش / منو / كذا (بمعنى هكذا) / حق (بمعنى خاص بـ). البديل دائماً الفصحى: لماذا، كيف، جيد، كثيراً، يريد، خائف/خائفة، أحد، ماذا، شيء، إذن، تبيّن أنّ، ماذا، من، هكذا، خاص بـ
 - 85% تحكم ظلامي. 15% تعليق جاف ساخر عند أخطاء المجرمين. سطر واحد فقط
 - لا تسخر من الضحايا. التعليق الساخر فقط على المجرمين أو الفساد
 
@@ -6295,9 +6339,10 @@ def _write_arabic_from_research(en_script: dict, ar_research: dict, target_minut
             "قبل الانتقال للمعلومة التالية.\n"
             "[إيقاع TTS الرهيب]: تناوب بين الجمل القصيرة (6-10 كلمات لحظات التوتر) "
             "والمتوسطة (14-18 كلمة للسرد العادي). لا جملة تتجاوز 22 كلمة.\n"
-            "[لغة — فصحى إلزامي]: ممنوع تماماً أي كلمة عامية مصرية أو شامية. "
-            "الكلمات المحظورة: مش / إيه / عشان / بتاع / ازاي / مفيش / أهو / ده / دي / دول / معاك / معانا / فين / كمان (بمعنى أيضاً) / هيكون / بيكون. "
-            "البديل الفصيح: ليس — ماذا — لأن/لكي — خاص بـ — كيف — لا يوجد/لم يكن هناك — هذا/هذه/هؤلاء — معك/معنا — أين — أيضاً/كذلك — سيكون — يكون.\n"
+            "[لغة — فصحى إلزامي]: ممنوع تماماً أي كلمة عامية — مصرية أو شامية أو خليجية أو سعودية. "
+            "الكلمات المحظورة: مش / إيه / عشان / بتاع / ازاي / مفيش / أهو / ده / دي / دول / معاك / معانا / فين / كمان (بمعنى أيضاً) / هيكون / بيكون / "
+            "ليش / شلون / زين / وايد / يبي أو يبغى / خايف أو خايفة / حد (بمعنى أحد) / شنو / شي (بمعنى شيء) / عاد / طلعوا (بمعنى تبين) / وش / منو / كذا (بمعنى هكذا) / حق (بمعنى خاص بـ). "
+            "البديل الفصيح: ليس — ماذا — لأن/لكي — خاص بـ — كيف — لا يوجد/لم يكن هناك — هذا/هذه/هؤلاء — معك/معنا — أين — أيضاً/كذلك — سيكون — يكون — أحد — شيء — إذن — تبيّن أنّ.\n"
         )
     else:
         _tts_reminder = (
@@ -6307,9 +6352,10 @@ def _write_arabic_from_research(en_script: dict, ar_research: dict, target_minut
             "الجمل الجوية مقبولة بنسبة 30-45% من النص — ادمجها مع الحقائق بشكل طبيعي.\n"
             "[إيقاع TTS]: تناوب بين الجمل القصيرة (8-12 كلمة) والمتوسطة (15-20 كلمة). "
             "لا جملة تتجاوز 22 كلمة.\n"
-            "[لغة — فصحى إلزامي]: ممنوع تماماً أي كلمة عامية مصرية أو شامية. "
-            "الكلمات المحظورة: مش / إيه / عشان / بتاع / ازاي / مفيش / أهو / ده / دي / دول / معاك / معانا / فين / كمان (بمعنى أيضاً) / هيكون / بيكون. "
-            "البديل الفصيح: ليس — ماذا — لأن/لكي — خاص بـ — كيف — لا يوجد/لم يكن هناك — هذا/هذه/هؤلاء — معك/معنا — أين — أيضاً/كذلك — سيكون — يكون.\n"
+            "[لغة — فصحى إلزامي]: ممنوع تماماً أي كلمة عامية — مصرية أو شامية أو خليجية أو سعودية. "
+            "الكلمات المحظورة: مش / إيه / عشان / بتاع / ازاي / مفيش / أهو / ده / دي / دول / معاك / معانا / فين / كمان (بمعنى أيضاً) / هيكون / بيكون / "
+            "ليش / شلون / زين / وايد / يبي أو يبغى / خايف أو خايفة / حد (بمعنى أحد) / شنو / شي (بمعنى شيء) / عاد / طلعوا (بمعنى تبين) / وش / منو / كذا (بمعنى هكذا) / حق (بمعنى خاص بـ). "
+            "البديل الفصيح: ليس — ماذا — لأن/لكي — خاص بـ — كيف — لا يوجد/لم يكن هناك — هذا/هذه/هؤلاء — معك/معنا — أين — أيضاً/كذلك — سيكون — يكون — أحد — شيء — إذن — تبيّن أنّ.\n"
         )
 
     _intro_min_str = f"ما يعادل 4-6 دقائق من السرد (~{_intro_target} كلمة)"
