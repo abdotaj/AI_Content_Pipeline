@@ -1084,7 +1084,12 @@ def _extract_score(text: str) -> int:
 def _extract_improved(text: str) -> str:
     if "IMPROVED:" not in text:
         return ""
-    return text.split("IMPROVED:")[-1].strip()
+    after = text.split("IMPROVED:")[-1].strip()
+    # The model sometimes appends self-critique after the rewrite itself
+    # (e.g. "**Why the rewrite scores higher:** - **Curiosity gap** -> ...").
+    # That commentary must never reach the narration — cut at the first
+    # paragraph break, which is where the actual improved hook ends.
+    return after.split("\n\n")[0].strip()
 
 
 def evaluate_and_fix_script(script: str) -> str:
@@ -1208,7 +1213,9 @@ def _hook_is_generic(hook: str) -> bool:
 def _validate_hook_on_topic(hook: str, topic: str, series: str = "") -> bool:
     """Return True if hook is clearly about the active topic, not a random entity.
 
-    For multi-word topics, requires ≥ 2 keyword hits (topic + optional series).
+    Requires at least 1 topic keyword hit — a hook naming the topic's
+    distinctive word (e.g. a surname) is sufficient evidence it's on-topic;
+    it does not need to repeat every word of a multi-word topic verbatim.
     Rejects hooks that name blocked entities unrelated to the active topic.
     """
     if not hook:
@@ -1217,17 +1224,13 @@ def _validate_hook_on_topic(hook: str, topic: str, series: str = "") -> bool:
         return True
     h_lower = hook.lower()
 
-    # Build keyword pool: topic words + series words (all > 3 chars)
-    topic_words  = [w for w in topic.lower().split() if len(w) > 3]
-    series_words = [w for w in (series or "").lower().split() if len(w) > 3]
-    all_kw       = topic_words + series_words
+    # Topic words only (> 3 chars) — series name is context, not required in the hook
+    topic_words = [w for w in topic.lower().split() if len(w) > 3]
 
-    if all_kw:
-        matches = sum(1 for w in all_kw if w in h_lower)
-        # Require at least 2 matches for multi-word topics; 1 for single-word
-        min_required = 2 if len(topic_words) >= 2 else 1
-        if matches < min_required:
-            print(f"[Hook] REJECTED (only {matches}/{min_required} keyword(s) matched "
+    if topic_words:
+        matches = sum(1 for w in topic_words if w in h_lower)
+        if matches < 1:
+            print(f"[Hook] REJECTED (0/{len(topic_words)} topic keyword(s) matched "
                   f"from '{topic}'): {hook[:70]}")
             return False
 
@@ -2794,8 +2797,8 @@ Return ONLY valid JSON — no other text:
         "hook":            meta.get("hook") or script_text[:120],
         "script":          script_text,
         "on_screen_texts": [],
-        "caption":         meta.get("caption", f"The real story of {real_person}. Follow Dark Crime Decoded."),
-        "hashtags":        meta.get("hashtags", "#truecrime #documentary #darkcrimedeocded"),
+        "caption":         meta.get("caption") or f"The real story of {real_person}. Follow Dark Crime Decoded.",
+        "hashtags":        meta.get("hashtags") or "#truecrime #documentary #darkcrimedeocded",
         "thumbnail_text":  meta.get("thumbnail_text") or real_person[:30],
         "chapters":        generate_chapters(_wc),
         "topic":           topic_text,
@@ -2861,12 +2864,12 @@ Return ONLY this JSON with no extra text:
     )
     script_data = {
         "title":           meta.get("title") or f"Shopmart: {topic['topic']}",
-        "hook":            meta.get("hook", ""),
+        "hook":            meta.get("hook") or "",
         "script":          script_text,
         "on_screen_texts": meta.get("on_screen_texts", []),
-        "caption":         meta.get("caption", ""),
-        "hashtags":        meta.get("hashtags", ""),
-        "thumbnail_text":  meta.get("thumbnail_text", ""),
+        "caption":         meta.get("caption") or "",
+        "hashtags":        meta.get("hashtags") or "",
+        "thumbnail_text":  meta.get("thumbnail_text") or "",
         "topic":           topic["topic"],
         "niche":           topic["niche"],
         "search_query":    topic.get("search_query", ""),
@@ -3579,7 +3582,7 @@ Return ONLY valid JSON, no explanation:
 {{"act1": ["...", "..."], "act2": ["...", "...", "..."], "act3": ["...", "...", "...", "..."], "act4": ["...", "...", "..."], "act5": ["...", "..."]}}"""
 
         try:
-            raw  = _ai_script_call(_outline_prompt, max_tokens=900, json_mode=True, temperature=0.4)
+            raw  = _ai_script_call(_outline_prompt, max_tokens=1500, json_mode=True, temperature=0.4)
             data = normalize_ai_json_response(
                 raw,
                 required_keys=["act1", "act2", "act3", "act4", "act5"],
@@ -4645,13 +4648,13 @@ Return ONLY this JSON with no extra text:
         if _angle_str else f"The True Story of {topic['topic']} | Dark Crime Decoded"
     )
     script_data = {
-        "title":          meta.get("title", _fallback_title),
-        "hook":           meta.get("hook", ""),
+        "title":          meta.get("title") or _fallback_title,
+        "hook":           meta.get("hook") or "",
         "script":         script_text,
         "on_screen_texts": meta.get("on_screen_texts", []),
-        "caption":        meta.get("caption", ""),
-        "hashtags":       _build_darkcrimed_hashtags(meta.get("hashtags", ""), _series_info),
-        "thumbnail_text": meta.get("thumbnail_text", ""),
+        "caption":        meta.get("caption") or "",
+        "hashtags":       _build_darkcrimed_hashtags(meta.get("hashtags") or "", _series_info),
+        "thumbnail_text": meta.get("thumbnail_text") or "",
         "chapters":       generate_chapters_from_script(
             script_text,
             topic["topic"],

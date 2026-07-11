@@ -901,6 +901,7 @@ def run_pipeline():
     _stage("Scripts sent to Telegram")
 
     # ── Approval gate 1: Scripts ─────────────────────────────────────────────
+    _rewrite_count = 0
     while True:
         _approval_1 = wait_for_approval(
             stage_name=f"Scripts Ready — {(en_long.get('title') or '')[:60]}\nReview the scripts above.",
@@ -916,8 +917,21 @@ def run_pipeline():
             if topic is None:
                 send_message("[Pipeline] Rewrite unavailable for content-file ingested scripts.")
                 continue
-            _log("Scripts", "Rewrite requested — regenerating", "WARN")
-            send_message("[Pipeline] Rewriting scripts...")
+            _rewrite_count += 1
+            _log("Scripts", f"Rewrite requested (#{_rewrite_count}) — regenerating", "WARN")
+            _cost_note = (
+                "Note: each rewrite regenerates both English and Arabic scripts "
+                "from scratch and typically takes 25-35 minutes. "
+                "Please wait for the result before sending /rewrite again."
+            )
+            if _rewrite_count >= 2:
+                send_message(
+                    f"[Pipeline] Rewriting scripts... (attempt #{_rewrite_count})\n"
+                    f"{_cost_note}\nRepeated rewrites add up quickly — "
+                    f"consider /approve if the scripts are close enough."
+                )
+            else:
+                send_message(f"[Pipeline] Rewriting scripts...\n{_cost_note}")
             try:
                 en_long = write_script(topic, language="english")
                 ar_long = translate_script(en_long, research=topic.get("research", {}))
