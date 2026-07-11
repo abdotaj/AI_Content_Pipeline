@@ -531,7 +531,6 @@ _CLAUDE_QUOTA_EXCEEDED_UNTIL:     float = 0.0   # epoch seconds; Claude is skipp
 _CLAUDE_CONN_ERROR_COUNT:         int   = 0     # consecutive connection failures before proxy/suspend
 _CLAUDE_USE_PROXY:                bool  = False  # switched on after 3 conn errors when proxies are configured
 _CLAUDE_PROXY_INDEX:              int   = 0     # index into proxy list; advances on each proxy failure
-_CLAUDE_USE_PROXY:                bool  = False  # switched on after 3 conn errors when ANTHROPIC_PROXY_URL is set
 
 # Content-refusal signals — short phrases OpenAI returns when it refuses to write
 # sensitive/lengthy Arabic content. Checked inside _openai_call so Gemini is tried next.
@@ -7383,10 +7382,8 @@ def _translate_arabic_short_script(english_text: str, topic: str, series_name: s
         _p = prompt
         if attempt > 0 and ar_text:
             _wc_prev = clean_word_count(ar_text)
-            _p += (
-                f"\n\nالمحاولة السابقة: {_wc_prev} كلمة — الهدف 230-260. "
-                + ("وسّع القسمين الثاني والثالث بحقائق محددة." if _wc_prev < 200 else "احذف الحشو.")
-            )
+            _size_note = ("وسّع القسمين الثاني والثالث بحقائق محددة." if _wc_prev < 200 else "احذف الحشو.")
+            _p += f"\n\nالمحاولة السابقة: {_wc_prev} كلمة — الهدف 230-260. {_size_note}"
             _p += _fix_note(ar_text)
         _result = _ai_script_call(
             _p, max_tokens=700, temperature=0.82,
@@ -7407,7 +7404,6 @@ def _translate_arabic_short_script(english_text: str, topic: str, series_name: s
         print("[AR Trans] GPT-4o issues — Groq fallback")
         for attempt in range(2):
             try:
-                import time as _time
                 _suffix = "\n\nاكتب على الأقل 200 كلمة. الهدف 230-260."
                 _suffix += _fix_note(ar_text)
                 _r = _groq_call(
@@ -7430,6 +7426,7 @@ def _translate_arabic_short_script(english_text: str, topic: str, series_name: s
 
     if not ar_text and best_text:
         ar_text = best_text
+    # Always prefer a clean (non-repeated) version even if shorter
     if _check_repeated_sentence_starters(ar_text)[0] and best_text and not _check_repeated_sentence_starters(best_text)[0]:
         ar_text = best_text
 
@@ -8199,6 +8196,7 @@ def write_arabic_short(ar_long_script: dict) -> dict:
 
     if not ar_text and best_text:
         ar_text = best_text
+    # Always prefer a clean version over a repeated-starter one
     if _check_repeated_sentence_starters(ar_text)[0] and best_text and not _check_repeated_sentence_starters(best_text)[0]:
         ar_text = best_text
 
