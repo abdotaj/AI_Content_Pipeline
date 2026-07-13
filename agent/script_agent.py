@@ -352,12 +352,15 @@ def _pick_variation_profile(topic_name: str, series_name: str = "") -> dict:
     return profile
 
 
-def _cap_script_max_words(script_text: str, max_words: int = LONG_SCRIPT_MAX_WORDS) -> str:
+def _cap_script_max_words(script_text: str, max_words: int = None) -> str:
     """
     Hard-cap spoken script length by word count while preserving section marker lines.
     Keeps long videos safely under publishing limits.
     """
     import re
+
+    if max_words is None:
+        max_words = LONG_SCRIPT_MAX_WORDS
 
     if clean_word_count(script_text) <= max_words:
         return script_text
