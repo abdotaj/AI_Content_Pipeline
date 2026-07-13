@@ -44,16 +44,14 @@ enhance_image(input_path: str) -> str
     Saves {stem}_enh.png beside the original.
     Cache-aware: skips if _enh.png is newer than source.
     Returns original path on any failure.
-
-enhance_folder(folder_path: str) -> list[str]
-    Parallel (≤4 workers). Returns enhanced paths, sorted filename order.
+    Callers parallelize this themselves (see agents/video_agent.py's
+    _WORKERS["enhance"] ThreadPoolExecutor) rather than via this module.
 """
 
 import hashlib
 import logging
 import os
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import lru_cache
 from pathlib import Path
 
@@ -501,45 +499,3 @@ def enhance_image(input_path: str) -> str:
     except Exception as exc:
         log.warning("[Enhancer] Failed on %s (%s) — using original", in_path.name, exc)
         return input_path
-
-
-def enhance_folder(folder_path: str) -> list[str]:
-    """
-    Enhance all supported images in folder_path with up to 4 parallel workers.
-
-    Already-enhanced files (stem ending '_enh') are always skipped.
-    Returns enhanced paths in sorted filename order.
-    """
-    folder = Path(folder_path)
-    if not folder.is_dir():
-        log.warning("[Enhancer] Not a directory: %s", folder_path)
-        return []
-
-    files = sorted(
-        f for f in folder.iterdir()
-        if f.is_file()
-        and f.suffix.lower() in _SUPPORTED_EXTS
-        and not f.stem.endswith("_enh")
-    )
-    if not files:
-        log.info("[Enhancer] No images to enhance in %s", folder_path)
-        return []
-
-    log.info("[Enhancer] Enhancing %d image(s) in %s", len(files), folder_path)
-
-    results: list[str] = [""] * len(files)
-    with ThreadPoolExecutor(max_workers=min(20, len(files))) as pool:
-        future_to_idx = {
-            pool.submit(enhance_image, str(f)): i
-            for i, f in enumerate(files)
-        }
-        for future in as_completed(future_to_idx):
-            idx = future_to_idx[future]
-            try:
-                results[idx] = future.result()
-            except Exception as exc:
-                results[idx] = str(files[idx])
-                log.warning("[Enhancer] Worker error on %s: %s", files[idx].name, exc)
-
-    log.info("[Enhancer] Done — %d image(s) enhanced", len(results))
-    return results
