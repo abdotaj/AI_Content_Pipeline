@@ -11091,7 +11091,10 @@ USE_CLIPS: bool = PIPELINE_MODE == "full"
 # GitHub Actions safe mode: slightly lower IO workers to stay within runner limits.
 _IS_CI = bool(os.getenv("GITHUB_ACTIONS") or os.getenv("CI"))
 _WORKERS: dict[str, int] = {
-    "search":       16 if _IS_CI else 20,   # multi-source image URL search (IO-bound)
+    # IO-bound (waiting on DuckDuckGo/Wikimedia/stock-site HTTP responses, no
+    # local CPU work per thread) — safe to raise toward the local/non-CI value
+    # since threads sit blocked on network I/O rather than competing for cores.
+    "search":       24 if _IS_CI else 24,   # multi-source image URL search (IO-bound)
     "pollinations":  4 if _IS_CI else  6,   # Pollinations free API — strict rate limit, keep low
     "doc_visual":    4 if _IS_CI else  6,   # documentary visual pool — same Pollinations limit
     # CPU-bound (OpenCV bilateral+CLAHE+sharpen+grain), not IO-bound as the old
@@ -11101,7 +11104,9 @@ _WORKERS: dict[str, int] = {
     # worker (fixed via cv2.setNumThreads(1) in enhancer.py) — see that file
     # for why. Left at 30 to match the historically-working configuration.
     "enhance":      30 if _IS_CI else 40,   # image post-processing (CPU-bound)
-    "tts":          12 if _IS_CI else 14,   # TTS sections — API rate-limit aware
+    # IO-bound (blocked on OpenAI/edge-tts API round-trip, no local CPU work
+    # per thread) — safe to raise for the same reason as "search".
+    "tts":          16 if _IS_CI else 16,   # TTS sections — API rate-limit aware
     "ffmpeg":        1,                      # CPU-bound — never increase
     "render":        1,                      # CPU-bound — never increase
     "script":        2,                      # LLM script generation — API rate-limited
