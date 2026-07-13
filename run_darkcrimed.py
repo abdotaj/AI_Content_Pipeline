@@ -549,147 +549,148 @@ def run_pipeline():
                 "manual_topic": True,
             }
 
-    elif not topic:
-        # ── 1A: Clear ALL old messages so only new ones are read ──────────────
-        print("[1/5] Clearing old Telegram messages...")
-        clear_telegram_queue()
+    else:
+        if not topic:
+            # ── 1A: Clear ALL old messages so only new ones are read ──────────────
+            print("[1/5] Clearing old Telegram messages...")
+            clear_telegram_queue()
 
-        # ── 1B: Tell user pipeline is ready and wait 60s for topic ───────────
-        send_message(
-            f"Pipeline ready — send your topic now!\n\n"
-            f"Examples:\n"
-            f"  Frank Lucas\n"
-            f"  Al Capone\n"
-            f"  Pablo Escobar\n\n"
-            f"Waiting 60 seconds..."
-        )
-        print("[1/5] Waiting 60 seconds for topic...")
-        time.sleep(60)
-
-        # ── 1C: Read ONLY messages sent after the clear ───────────────────────
-        print("[1/5] Checking for topic sent in last 60 seconds...")
-        telegram_result = check_telegram_for_script(timeout=30)
-
-        if telegram_result:
-            raw_input  = telegram_result["content"]
-            print(f"[Pipeline] TELEGRAM TOPIC: '{raw_input}'")
-
-            # Parse "frank lucas = American Gangster" or "frank lucas, ..."
-            topic_text = raw_input
-            if "=" in topic_text:
-                topic_text = topic_text.split("=")[0].strip()
-            if "," in topic_text:
-                topic_text = topic_text.split(",")[0].strip()
-            topic_text = topic_text.strip()
-            print(f"[Pipeline] Clean topic: '{topic_text}'")
-
-            from agent.script_agent import get_series_for_person as _gsfp
-            series_info = _gsfp(topic_text)
-            series_name = series_info[0] if series_info else None
-            series_type = series_info[1] if series_info else None
-            print(f"[Pipeline] Series: {series_name} ({series_type})")
-
-            _part_number = detect_part_number(raw_input)
-            _series_name_for_filter = series_name
-            if _part_number:
-                print(f"[Pipeline] Part {_part_number} detected in user note")
-
-            # ── 1D: Ask for photos now that topic is confirmed ────────────────
-            # Quick show_characters lookup (uses hardcoded map — no API call for known shows)
-            _is_show, _show_key = _detect_show_topic(topic_text)
-            _quick_chars: list = []
-            if _is_show:
-                _quick_chars = _fetch_show_cast_from_wikipedia(series_name or _show_key or topic_text)
-            send_topic_confirmation(
-                topic_text=topic_text,
-                series_name=series_name,
-                show_characters=_quick_chars,
-                is_show_topic=_is_show,
-            )
-            print("[1/5] Waiting 3 minutes for photos...")
-            time.sleep(180)
-
-            # ── 1E: Collect images + videos sent AFTER pipeline start ────────
-            user_images = check_telegram_for_images(after_timestamp=pipeline_start_time)
-            user_videos = check_telegram_for_videos(after_timestamp=pipeline_start_time)
-            if user_videos:
-                print(f"[1/5] Found {len(user_videos)} video(s) from Telegram")
-            if user_images:
-                print(f"[1/5] Found {len(user_images)} image(s) for '{topic_text}' — checking relevance...")
-                _use_now, _save_later, _ignored = process_user_images_smart(
-                    user_images,
-                    topic=topic_text,
-                    series_name=series_name,
-                    part_number=_part_number,
-                )
-                user_images = _use_now
-                send_message(
-                    f"📸 Image Check Complete for: {topic_text}\n\n"
-                    f"✅ Using now: {len(_use_now)} images\n"
-                    f"📦 Saved for Part 2: {len(_save_later)} images\n"
-                    f"❌ Not relevant: {len(_ignored)} images"
-                )
-            else:
-                print("[1/5] No photos — AI images will be generated")
-
-            # ── 1F: Research exact topic ──────────────────────────────────────
-            _log("Research", f"Researching: {topic_text}")
-            try:
-                research = _with_retry(research_series, topic_text, series_name,
-                                       user_note=raw_input, retries=3, delay=12,
-                                       label="research_series")
-                if research is None:
-                    _log("Research", "research_series returned None — aborting", "ERROR")
-                    return
-            except Exception as e:
-                _log("Research", f"Web research failed for '{topic_text}': {e}", "WARN")
-                research = {}
-
-            # Force correct person — never let research override the user's choice
-            if research is not None:
-                research["real_person"] = topic_text
-                research["series_name"] = series_name or topic_text
-            print(f"[Pipeline] Research locked to: '{topic_text}'")
-
-            topic = {
-                "topic":        topic_text,
-                "niche":        f"Real story behind {series_name or topic_text}",
-                "angle":        "",
-                "keywords":     [topic_text],
-                "search_query": topic_text,
-                "series_name":  series_name,
-                "research":     research,
-                "manual_topic": True,
-            }
-
-            # ── Risk classification — manual topics always allowed ────────────
-            try:
-                from agent.topic_risk import classify_topic_risk, log_risk
-                _risk_manual = classify_topic_risk(topic_text, is_manual=True)
-                log_risk(topic_text, _risk_manual)
-                topic["risk_info"] = _risk_manual
-                if _risk_manual["editorial_mode"]:
-                    send_message(
-                        f"⚠ï¸ Sensitive topic detected: {topic_text}\n\n"
-                        f"Risk level: {_risk_manual['risk_level']}\n"
-                        f"Editorial-assist mode is ACTIVE — narration will use evidential framing.\n"
-                        f"Creator retains full editorial control."
-                    )
-            except Exception as _risk_e:
-                print(f"[RISK] Classification failed (non-fatal): {_risk_e}")
-                topic["risk_info"] = {}
-
-        else:
-            # No topic sent — strict manual-only policy: abort instead of auto-select
-            print("[Pipeline] No topic received — aborting (manual topic required)")
+            # ── 1B: Tell user pipeline is ready and wait 60s for topic ───────────
             send_message(
-                "⛔ No topic received.\n\n"
-                "Send your topic name (e.g. 'Jeffrey Epstein') within 60 seconds of starting.\n"
-                "Or use topic_inject.json to pre-set a topic.\n\n"
-                "Pipeline stopped."
+                f"Pipeline ready — send your topic now!\n\n"
+                f"Examples:\n"
+                f"  Frank Lucas\n"
+                f"  Al Capone\n"
+                f"  Pablo Escobar\n\n"
+                f"Waiting 60 seconds..."
             )
-            _log("Research", "No topic received — pipeline aborted (manual required)", "WARN")
-            return
+            print("[1/5] Waiting 60 seconds for topic...")
+            time.sleep(60)
+
+            # ── 1C: Read ONLY messages sent after the clear ───────────────────────
+            print("[1/5] Checking for topic sent in last 60 seconds...")
+            telegram_result = check_telegram_for_script(timeout=30)
+
+            if telegram_result:
+                raw_input  = telegram_result["content"]
+                print(f"[Pipeline] TELEGRAM TOPIC: '{raw_input}'")
+
+                # Parse "frank lucas = American Gangster" or "frank lucas, ..."
+                topic_text = raw_input
+                if "=" in topic_text:
+                    topic_text = topic_text.split("=")[0].strip()
+                if "," in topic_text:
+                    topic_text = topic_text.split(",")[0].strip()
+                topic_text = topic_text.strip()
+                print(f"[Pipeline] Clean topic: '{topic_text}'")
+
+                from agent.script_agent import get_series_for_person as _gsfp
+                series_info = _gsfp(topic_text)
+                series_name = series_info[0] if series_info else None
+                series_type = series_info[1] if series_info else None
+                print(f"[Pipeline] Series: {series_name} ({series_type})")
+
+                _part_number = detect_part_number(raw_input)
+                _series_name_for_filter = series_name
+                if _part_number:
+                    print(f"[Pipeline] Part {_part_number} detected in user note")
+
+                # ── 1D: Ask for photos now that topic is confirmed ────────────────
+                # Quick show_characters lookup (uses hardcoded map — no API call for known shows)
+                _is_show, _show_key = _detect_show_topic(topic_text)
+                _quick_chars: list = []
+                if _is_show:
+                    _quick_chars = _fetch_show_cast_from_wikipedia(series_name or _show_key or topic_text)
+                send_topic_confirmation(
+                    topic_text=topic_text,
+                    series_name=series_name,
+                    show_characters=_quick_chars,
+                    is_show_topic=_is_show,
+                )
+                print("[1/5] Waiting 3 minutes for photos...")
+                time.sleep(180)
+
+                # ── 1E: Collect images + videos sent AFTER pipeline start ────────
+                user_images = check_telegram_for_images(after_timestamp=pipeline_start_time)
+                user_videos = check_telegram_for_videos(after_timestamp=pipeline_start_time)
+                if user_videos:
+                    print(f"[1/5] Found {len(user_videos)} video(s) from Telegram")
+                if user_images:
+                    print(f"[1/5] Found {len(user_images)} image(s) for '{topic_text}' — checking relevance...")
+                    _use_now, _save_later, _ignored = process_user_images_smart(
+                        user_images,
+                        topic=topic_text,
+                        series_name=series_name,
+                        part_number=_part_number,
+                    )
+                    user_images = _use_now
+                    send_message(
+                        f"📸 Image Check Complete for: {topic_text}\n\n"
+                        f"✅ Using now: {len(_use_now)} images\n"
+                        f"📦 Saved for Part 2: {len(_save_later)} images\n"
+                        f"❌ Not relevant: {len(_ignored)} images"
+                    )
+                else:
+                    print("[1/5] No photos — AI images will be generated")
+
+                # ── 1F: Research exact topic ──────────────────────────────────────
+                _log("Research", f"Researching: {topic_text}")
+                try:
+                    research = _with_retry(research_series, topic_text, series_name,
+                                           user_note=raw_input, retries=3, delay=12,
+                                           label="research_series")
+                    if research is None:
+                        _log("Research", "research_series returned None — aborting", "ERROR")
+                        return
+                except Exception as e:
+                    _log("Research", f"Web research failed for '{topic_text}': {e}", "WARN")
+                    research = {}
+
+                # Force correct person — never let research override the user's choice
+                if research is not None:
+                    research["real_person"] = topic_text
+                    research["series_name"] = series_name or topic_text
+                print(f"[Pipeline] Research locked to: '{topic_text}'")
+
+                topic = {
+                    "topic":        topic_text,
+                    "niche":        f"Real story behind {series_name or topic_text}",
+                    "angle":        "",
+                    "keywords":     [topic_text],
+                    "search_query": topic_text,
+                    "series_name":  series_name,
+                    "research":     research,
+                    "manual_topic": True,
+                }
+
+                # ── Risk classification — manual topics always allowed ────────────
+                try:
+                    from agent.topic_risk import classify_topic_risk, log_risk
+                    _risk_manual = classify_topic_risk(topic_text, is_manual=True)
+                    log_risk(topic_text, _risk_manual)
+                    topic["risk_info"] = _risk_manual
+                    if _risk_manual["editorial_mode"]:
+                        send_message(
+                            f"⚠ï¸ Sensitive topic detected: {topic_text}\n\n"
+                            f"Risk level: {_risk_manual['risk_level']}\n"
+                            f"Editorial-assist mode is ACTIVE — narration will use evidential framing.\n"
+                            f"Creator retains full editorial control."
+                        )
+                except Exception as _risk_e:
+                    print(f"[RISK] Classification failed (non-fatal): {_risk_e}")
+                    topic["risk_info"] = {}
+
+            else:
+                # No topic sent — strict manual-only policy: abort instead of auto-select
+                print("[Pipeline] No topic received — aborting (manual topic required)")
+                send_message(
+                    "⛔ No topic received.\n\n"
+                    "Send your topic name (e.g. 'Jeffrey Epstein') within 60 seconds of starting.\n"
+                    "Or use topic_inject.json to pre-set a topic.\n\n"
+                    "Pipeline stopped."
+                )
+                _log("Research", "No topic received — pipeline aborted (manual required)", "WARN")
+                return
 
         print(f"[Pipeline] FINAL TOPIC: {topic.get('topic', '?')}")
         print(f"[Pipeline] Starting pipeline for: {topic.get('topic', '?')}")
