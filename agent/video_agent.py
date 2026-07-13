@@ -9779,6 +9779,20 @@ def assemble_video_with_hook(
     # _dur_cap ≥ main_duration / 200 keeps MoviePy composition manageable.
     # Floor cap (8s for FAST, 6s for FULL) preserved for short videos.
     _dur_cap_base = 8.0 if PIPELINE_MODE == "fast" else 6.0
+    # Safety valve: the ideal pacing is ~1 image per 8s. When the post-QC
+    # image pool (already filtered for quality + topic relevance upstream —
+    # this does not relax those filters) covers under 10% of that ideal, the
+    # coverage loop below repeats the same handful of images hundreds of
+    # times to fill a long video, ballooning total clip count. Observed to
+    # combine with concurrent stock-video ffmpeg processes and OOM-kill the
+    # runner (24 images / 3485s target = 0.6% coverage, exit 143). Extending
+    # clip duration keeps runtime intact while cutting total clips built.
+    _ideal_imgs = max(1, int(main_duration / 8))
+    _pool_ratio = _n_imgs / _ideal_imgs
+    if _pool_ratio < 0.10:
+        _dur_cap_base = max(_dur_cap_base, main_duration / 150.0)
+        print(f"[Visual] SAFETY: image pool {_n_imgs}/{_ideal_imgs} ({_pool_ratio:.0%} of ideal) "
+              f"— extending clip duration to bound total clip count")
     _dur_cap = max(_dur_cap_base, min(16.0, main_duration / 200.0))
     _floor   = 2.5 if PIPELINE_MODE == "fast" else 3.0
     _adaptive_base = max(_floor, min(_dur_cap, main_duration / (2.0 * _n_imgs + 1)))
@@ -12140,9 +12154,9 @@ def run_full_pipeline(
                     try:
                         from script_agent import get_runtime_contract as _grc, _TTS_WPM as _sa_wpm  # type: ignore
                     except ImportError:
-                        def _grc(m): return {"min_seconds": 900.0, "max_seconds": 5400.0}  # type: ignore
+                        def _grc(m, lang="english"): return {"min_seconds": 900.0, "max_seconds": 5400.0}  # type: ignore
                         _sa_wpm = {"arabic": 115.0, "english": 160.0}
-                _rc = _grc("full")
+                _rc = _grc("full", language)
                 _est_min = len(script_data.get("script", "").split()) / (_sa_wpm["arabic"] if language == "arabic" else _sa_wpm["english"])
                 print(f"[AR AUDIO] Estimated: {_est_min:.1f}min")
                 print(f"[AR AUDIO] Rendered:  {_min:.1f}min")
