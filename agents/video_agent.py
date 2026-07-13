@@ -12528,44 +12528,17 @@ def run_full_pipeline(
         if _thumb:
             script_data["thumbnail_path"] = _thumb
 
-    # ── Quality processing ─────────────────────────────────────────────────
-    if not is_short and video_path and os.path.exists(video_path):
-        try:
-            import sys as _sys
-            _proj_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            if _proj_root not in _sys.path:
-                _sys.path.insert(0, _proj_root)
-            from video_quality import process_video as _process_video
-            _base      = os.path.splitext(os.path.basename(video_path))[0]
-            long_path  = os.path.abspath(os.path.join("output_videos", f"{_base}_long.mp4"))
-            short_path = os.path.abspath(os.path.join("output_videos", f"{_base}_short.mp4"))
-            if os.path.exists(long_path) and os.path.exists(short_path):
-                print(f"[Quality] Already processed — Long: {long_path} | Short: {short_path}")
-                video_path = long_path
-                script_data["short_clip_path"] = short_path
-            else:
-                long_ok, short_ok = _process_video(video_path)
-                if not long_ok and not short_ok:
-                    print("[Quality] Both outputs failed — using original assets")
-                else:
-                    if not (long_ok and short_ok):
-                        print(f"[Quality] Partial success: long_ok={long_ok} short_ok={short_ok}")
-                    if long_ok and os.path.exists(long_path):
-                        print(f"[Quality] Using long: {long_path}")
-                        video_path = long_path
-                    else:
-                        print(f"[Quality] Long output missing — keeping original: {video_path}")
-                    if short_ok and os.path.exists(short_path):
-                        print(f"[Quality] Using short: {short_path}")
-                        script_data["short_clip_path"] = short_path
-                    else:
-                        print("[Quality] Short output missing — keeping existing short clip")
-            _assigned = script_data.get("short_clip_path", "")
-            if _assigned and not os.path.exists(_assigned):
-                print(f"[Quality] WARNING: short_clip_path missing: {_assigned} — clearing")
-                script_data.pop("short_clip_path", None)
-        except Exception as _qe:
-            print(f"[Quality] Processing skipped (non-fatal): {_qe}")
+    # ── Quality processing — disabled ──────────────────────────────────────
+    # video_quality.process_video() re-encoded the already-correct 1080x1920
+    # output through two no-op passes: the "long" variant targets 1920x1080
+    # landscape (pad filter crashes on every call — vertical input is already
+    # taller than that target) and the "short" variant re-encoded the FULL
+    # long video (not a trimmed clip) at 1080x1920 — a scale/crop no-op since
+    # the source is already that size, costing ~30 min per language for zero
+    # visual change, and it overwrote the real ~90s short_clip_path (set above
+    # via cut_short_clip) with this mislabeled full-length file. Both variants
+    # are redundant now that renders are produced directly in the target
+    # 1080x1920 format, so this whole pass is skipped.
 
     # ── Validate + resource cleanup ────────────────────────────────────────
     if video_path:
