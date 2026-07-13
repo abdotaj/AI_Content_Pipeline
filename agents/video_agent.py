@@ -11094,7 +11094,13 @@ _WORKERS: dict[str, int] = {
     "search":       16 if _IS_CI else 20,   # multi-source image URL search (IO-bound)
     "pollinations":  4 if _IS_CI else  6,   # Pollinations free API — strict rate limit, keep low
     "doc_visual":    4 if _IS_CI else  6,   # documentary visual pool — same Pollinations limit
-    "enhance":      30 if _IS_CI else 40,   # image post-processing (IO-bound)
+    # CPU-bound (OpenCV bilateral+CLAHE+sharpen+grain), not IO-bound as the old
+    # comment claimed — but this worker count itself isn't the problem (30
+    # concurrent workers has produced successful 45-90min renders before).
+    # The actual issue was cv2's own internal thread pool stacking under each
+    # worker (fixed via cv2.setNumThreads(1) in enhancer.py) — see that file
+    # for why. Left at 30 to match the historically-working configuration.
+    "enhance":      30 if _IS_CI else 40,   # image post-processing (CPU-bound)
     "tts":          12 if _IS_CI else 14,   # TTS sections — API rate-limit aware
     "ffmpeg":        1,                      # CPU-bound — never increase
     "render":        1,                      # CPU-bound — never increase

@@ -135,6 +135,20 @@ _HAVE_ESRGAN = _check_realesrgan()
 _HAVE_GFPGAN = _check_gfpgan()
 _MODE        = "PREMIUM" if (_HAVE_ESRGAN or _HAVE_GFPGAN) else "STANDARD"
 
+if _HAVE_CV2:
+    # OpenCV spawns its own internal thread pool (sized to core count) inside
+    # calls like bilateralFilter/CLAHE. This module is already parallelized
+    # at the Python level (video_agent.py runs ~30 of these concurrently via
+    # ThreadPoolExecutor), so leaving cv2's default multithreading on stacks
+    # 30 workers x cv2's own N internal threads on top of each other — up to
+    # 100+ competing threads on a 4-core CI runner. cv2 previously failed to
+    # import here (silent ImportError, fixed 2026-07-11) and enhancement ran
+    # on the single-threaded PIL fallback instead, which never hit this —
+    # now that cv2 is active, cap it to 1 thread per call so only the outer
+    # ThreadPoolExecutor controls concurrency.
+    import cv2 as _cv2_threads
+    _cv2_threads.setNumThreads(1)
+
 log.info(
     "[Enhancer] Mode: %s | cv2=%s | esrgan=%s | gfpgan=%s",
     _MODE,
