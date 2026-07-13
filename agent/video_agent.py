@@ -2445,13 +2445,19 @@ def generate_ai_image(prompt: str, output_path: str, seed: int = None) -> str:
                 print(f"[Image] Pollinations {response.status_code} — circuit breaker tripped, all future Pollinations calls disabled: {prompt[:60]}")
                 return None
             elif response.status_code == 429:
+                # Fail fast instead of sleeping 45s x up to 3 attempts (~90s) per
+                # image — Pollinations rate limits have been observed sustained
+                # for 30+ min at a time, so retrying within this same call rarely
+                # helps. The global circuit breaker (_record_pollinations_result)
+                # already tracks failures across calls and trips once the pattern
+                # is confirmed; this image just moves on to the next source now.
                 _record_pollinations_result(False)
-                print(f"[Image] Rate limited, waiting 45s... (attempt {attempt + 1}/3)")
-                time.sleep(45)
+                print(f"[Image] Rate limited — skipping to next image: {prompt[:60]}")
+                break
             else:
                 _record_pollinations_result(False)
-                print(f"[Image] Pollinations returned {response.status_code} (attempt {attempt + 1}/3)")
-                time.sleep(15)
+                print(f"[Image] Pollinations returned {response.status_code} — skipping to next image: {prompt[:60]}")
+                break
         except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
             print(f"[Image] Network error attempt {attempt + 1}: {e} — switching to AI fallback")
             break
