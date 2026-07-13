@@ -38,3 +38,7 @@ temp_clips/
 *TEMP_MPY_wvf_snd*
 # External reference repos — cloned locally, not part of this project
 ViMax/
+# Accidentally-committed local Python environment dump (Windows .pyd binaries,
+# dist-info metadata) — untracked 2026-07-13, was never referenced by any
+# import or CI step, just 547MB of dead weight in every checkout.
+.deps/

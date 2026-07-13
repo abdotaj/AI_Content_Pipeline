@@ -9315,7 +9315,10 @@ def _secs_to_ass_time(s: float) -> str:
     return f"{h}:{m:02d}:{sec:05.2f}"
 
 
-ENABLE_SUBTITLES = False  # set True to re-enable Whisper subtitles
+ENABLE_SUBTITLES = False  # set True to re-enable Whisper subtitles — also re-add
+                          # `pip install openai-whisper` to daily.yml (removed
+                          # 2026-07-13 since it installed ~2GB of unused torch/CUDA
+                          # deps every run while this flag was False)
 
 _WHISPER_MODEL = None   # module-level cache — loaded once per process
 
