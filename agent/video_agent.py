@@ -9670,6 +9670,27 @@ def assemble_video_with_hook(
             _frame_cache[img_path] = _load_frame(img_path)
         return _frame_cache[img_path]
 
+    # Video clip cache: each unique video source's ffmpeg reader is opened only once.
+    # Without this, every repeat use of the same video source (routine when the
+    # image/video pool is small and has to stretch across a 60+min timeline via the
+    # coverage loop) spawned a brand-new VideoFileClip — and its own ffmpeg decoder
+    # subprocess — that was never closed. Dozens of live decoders exhausted runner
+    # RAM+swap in under 30s (observed: 15/15GB mem + 2.7/3GB swap, run 29233274008).
+    _video_cache: dict = {}
+
+    def _get_video_clip(src_path: str):
+        if src_path not in _video_cache:
+            try:
+                v = VideoFileClip(src_path).without_audio()
+                if v.duration <= 0:
+                    v.close()
+                    v = None
+            except Exception as _vfe:
+                print(f"[Video] VideoFileClip failed ({os.path.basename(src_path)}): {_vfe} — using image fallback")
+                v = None
+            _video_cache[src_path] = v
+        return _video_cache[src_path]
+
     def _fit_vertical(clip):
         """Scale clip to fill 1080×1920 with center crop — no black bars for any aspect ratio."""
         cw, ch = clip.size
@@ -9732,14 +9753,8 @@ def assemble_video_with_hook(
     def _media_clip(src_path: str, dur: float, zoom_in: bool = True, first_clip: bool = False):
         fi = 0.0 if first_clip else 0.2   # no fade-in on opening shot
         if _is_video_file(src_path):
-            try:
-                v = VideoFileClip(src_path).without_audio()  # mute — TTS voice is the only audio
-            except Exception as _vfe:
-                print(f"[Video] VideoFileClip failed ({os.path.basename(src_path)}): {_vfe} — using image fallback")
-                frame = _load_frame(src_path)
-                return _zoom_clip(frame, dur, 1.00, 1.06 if zoom_in else 1.00, fade_in=fi)
-            if v.duration <= 0:
-                v.close()
+            v = _get_video_clip(src_path)
+            if v is None:
                 frame = _load_frame(src_path)
                 return _zoom_clip(frame, dur, 1.00, 1.06 if zoom_in else 1.00, fade_in=fi)
             # Timeline clip: start=0, end=min(assigned_duration, actual_duration)
