@@ -12101,6 +12101,42 @@ def run_fast_pipeline(
     return video_path or ""
 
 
+def _audio_slug(topic_key: str) -> str:
+    import re
+    return re.sub(r"[^a-z0-9]+", "_", (topic_key or "default").lower()).strip("_") or "default"
+
+
+def _audio_inject_filename(topic_key: str, language: str, is_short: bool) -> str:
+    kind = "short" if is_short else "long"
+    return f"{_audio_slug(topic_key)}_{language}_{kind}.mp3"
+
+
+def _find_injected_audio(topic_key: str, language: str, is_short: bool) -> str | None:
+    """Check content/audio_inject/ for a pre-generated audio file to reuse, skipping TTS.
+
+    Lets a crash-interrupted run resume without regenerating (and re-paying for) TTS —
+    download the audio Telegram already sent after generation, rename it to match
+    _audio_inject_filename()'s pattern, and drop it in content/audio_inject/ before
+    rerunning the same topic. Consumed files move to content/audio_inject/_used/.
+    """
+    _dir = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "content", "audio_inject"))
+    _used_dir = os.path.join(_dir, "_used")
+    os.makedirs(_dir, exist_ok=True)
+    os.makedirs(_used_dir, exist_ok=True)
+    _fname = _audio_inject_filename(topic_key, language, is_short)
+    _path = os.path.join(_dir, _fname)
+    if not os.path.exists(_path):
+        return None
+    import datetime as _dt
+    _dest = os.path.join(_used_dir, f"{_dt.datetime.now().strftime('%Y%m%d_%H%M')}_{_fname}")
+    try:
+        os.rename(_path, _dest)
+    except Exception:
+        _dest = _path
+    print(f"[AudioInject] Reusing pre-generated audio: {_fname} — skipping TTS")
+    return _dest
+
+
 # FULL PIPELINE
 def run_full_pipeline(
     script_data: dict,
@@ -12148,6 +12184,16 @@ def run_full_pipeline(
         _library_clips = []
 
     # ── Audio ──────────────────────────────────────────────────────────────
+    # Reuse a pre-generated audio file if one was checked in via _find_injected_audio()
+    # — lets a crash that happens *after* TTS (e.g. during video assembly, the common
+    # case) resume without re-paying OpenAI TTS quota/time for identical audio.
+    _injected_audio = None
+    if not custom_audio_path:
+        try:
+            _injected_audio = _find_injected_audio(_topic_key, language, is_short)
+        except Exception as _aie:
+            print(f"[AudioInject] check failed (non-fatal): {_aie}")
+
     try:
         if custom_audio_path and Path(custom_audio_path).exists():
             audio_path = clean_voice(
@@ -12155,6 +12201,9 @@ def run_full_pipeline(
                 os.path.join(AUDIO_DIR, f"{video_id}_enhanced.mp3"),
             )
             print(f"[FULL] Using custom audio: {audio_path}")
+        elif _injected_audio:
+            audio_path = _injected_audio
+            print(f"[FULL] Using injected audio (pre-generated, skipping TTS): {audio_path}")
         elif not is_short:
             audio_path, dynamic_chapters = generate_tts_sections(
                 script_data["script"], video_id, language
@@ -12169,6 +12218,27 @@ def run_full_pipeline(
             if audio_path and os.path.exists(audio_path):
                 audio_path = process_audio_netflix(audio_path, is_short=True)
         print(f"[FULL] Audio ready: {audio_path}")
+
+        # Checkpoint: send freshly-generated audio to Telegram so a later crash (e.g.
+        # during video assembly, the step that has actually crashed) doesn't waste this
+        # TTS pass. To resume from it next run: download the file Telegram just sent,
+        # rename it to match _find_injected_audio()'s pattern, and drop it in
+        # content/audio_inject/ before rerunning the same topic.
+        if not custom_audio_path and not _injected_audio and audio_path and os.path.exists(audio_path):
+            try:
+                _size_mb = os.path.getsize(audio_path) / (1024 * 1024)
+                if _size_mb <= 45:
+                    from agents.notify_agent import send_document as _send_doc
+                    _kind = "short" if is_short else "long"
+                    _send_doc(
+                        audio_path,
+                        caption=f"[TTS checkpoint] {title} — {language} {_kind} ({_size_mb:.1f}MB)\n"
+                                f"Rename to resume: {_audio_inject_filename(_topic_key, language, is_short)}",
+                    )
+                else:
+                    print(f"[FULL] TTS checkpoint skipped — audio too large for Telegram ({_size_mb:.1f}MB > 45MB)")
+            except Exception as _se:
+                print(f"[FULL] TTS checkpoint send failed (non-fatal): {_se}")
         _real_audio_secs = 0.0
         try:
             try:
