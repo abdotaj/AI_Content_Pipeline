@@ -582,10 +582,13 @@ def generate_voiceover_openai(text: str, language: str, output_path: str,
 
     _INSTRUCTIONS = {
         "onyx": (
-            "Deep cinematic war-documentary narrator. "
-            "Powerful, dark, commanding. Calm confidence with subtle tension underneath every sentence. "
-            "Slight dramatic pause after shocking facts. "
-            "Lower slower tone during tragic moments. Never robotic or exaggerated."
+            "راوٍ وثائقي عربي محترف بصوت رجولي عميق. "
+            "نبرة هادئة وموثوقة وجادة، بلا مبالغة ولا صوت روبوتي. "
+            "احترم علامات الترقيم كإيقاع صوتي: الفاصلة وقفة قصيرة، النقطة وقفة كاملة، النقاط الثلاث وقفة درامية. "
+            "انطق الأسماء والتواريخ والأرقام بوضوح تام. "
+            "تصاعد تدريجي ومتحكم به في التوتر دون افتعال. "
+            "خفض النبرة عند الحديث عن المآسي والضحايا. "
+            "الإحساس العام: هيبة، جدية، مصداقية، قوة هادئة، سرد سينمائي وثائقي."
         ),
         "nova": (
             "Sharp modern investigative narrator. "
