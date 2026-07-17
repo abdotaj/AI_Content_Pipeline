@@ -621,8 +621,8 @@ def generate_voiceover_openai(text: str, language: str, output_path: str,
 
     if language == "arabic":
         model = "gpt-4o-mini-tts"
-        voice = voice_override or "marin"
-        speed = speed_override if speed_override is not None else 1.1
+        voice = voice_override or "onyx"
+        speed = speed_override if speed_override is not None else 1.0
         label = "Arabic"
     else:
         model = "tts-1"
@@ -2677,83 +2677,107 @@ def _vision_topic_filter(paths: list[str], topic: str, max_checks: int = 9999) -
         # keep) — off-topic/irrelevant stock clips could reach the final cut
         # with zero relevance/content screening. Extract a representative
         # frame and run it through the exact same check as a still image.
-        check_path = img_path
-        _temp_frame = None
+        # For video clips: a single first-frame check only verifies the opening
+        # instant of a ~15s clip — content later in the clip (the actual failure
+        # mode seen in production: off-topic/explicit content mid-clip with a
+        # benign opening frame) goes completely unchecked. Sample start/middle/
+        # end frames instead and reject if ANY of them trips the check.
+        check_paths: list[str] = []
+        _temp_frames: list[str] = []
         if _is_video_file(img_path):
-            _temp_frame = img_path + "._visionqc_frame.jpg"
-            if not extract_first_frame(img_path, _temp_frame):
-                return True  # couldn't extract a frame — nothing more we can verify
-            check_path = _temp_frame
+            _dur = _ffprobe_duration(img_path) or 0.0
+            _offsets = [0.1, _dur / 2, max(_dur - 0.5, 0.1)] if _dur > 1.0 else [0.1]
+            for _oi, _off in enumerate(dict.fromkeys(_offsets)):  # de-dup e.g. very short clips
+                _tf = f"{img_path}._visionqc_frame_{_oi}.jpg"
+                if extract_first_frame(img_path, _tf, at_seconds=_off):
+                    check_paths.append(_tf)
+                    _temp_frames.append(_tf)
+            if not check_paths:
+                return True  # couldn't extract any frame — nothing more we can verify
+        else:
+            check_paths = [img_path]
+
+        def _b64_of(check_path: str) -> tuple[str, str] | None:
+            try:
+                mime, _ = _mt.guess_type(check_path)
+                if not mime or not mime.startswith("image/"):
+                    mime = "image/png"
+                with open(check_path, "rb") as _f:
+                    return mime, _b64.b64encode(_f.read()).decode("utf-8")
+            except Exception as _ve:
+                print(f"[VisionQC] Check skipped ({os.path.basename(img_path)}): {_ve}")
+                return None
+
+        def _check_frame(mime: str, data: str) -> bool | None:
+            """Returns True=keep, False=reject, None=inconclusive (fail-open)."""
+            # Retry once on transient failures (timeout, connection reset, 5xx)
+            # before falling back to fail-open — a single network blip shouldn't
+            # silently wave an unchecked search/AI image straight into the video.
+            for attempt in range(2):
+                try:
+                    r = requests.post(
+                        "https://api.openai.com/v1/chat/completions",
+                        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                        json={
+                            "model": "gpt-4o-mini",
+                            "messages": [{"role": "user", "content": [
+                                {"type": "text", "text": (
+                                    f"You are a content moderator for a true crime documentary channel about '{topic}'.\n"
+                                    "Review this image and answer with exactly one word.\n\n"
+                                    "Answer REJECT if ANY of these are true:\n"
+                                    "- Contains nudity, sexual content, or explicit material\n"
+                                    "- Contains graphic violence, blood, gore, or body parts\n"
+                                    "- Shows pornographic or sexually suggestive content\n"
+                                    "- Is completely unrelated to the documentary topic\n"
+                                    "- Is a solid colour, texture, abstract, or cartoon/illustration\n\n"
+                                    "Answer KEEP only if: the image is a real photograph relevant to "
+                                    f"'{topic}' (person, location, event, investigation) AND contains "
+                                    "no explicit, sexual, or graphically violent content.\n\n"
+                                    "Reply with only: KEEP or REJECT"
+                                )},
+                                {"type": "image_url", "image_url": {
+                                    "url": f"data:{mime};base64,{data}",
+                                    "detail": "low"
+                                }}
+                            ]}],
+                            "max_tokens": 5,
+                            "temperature": 0,
+                        },
+                        timeout=15,
+                    )
+                    if r.status_code == 200:
+                        answer = r.json()["choices"][0]["message"]["content"].strip().upper()
+                        return "REJECT" not in answer
+                    elif r.status_code == 429:
+                        _provider_health.record_failure("openai")
+                        break  # provider-wide issue — retrying this frame won't help
+                    elif r.status_code >= 500 and attempt == 0:
+                        continue  # transient server error — retry once
+                    else:
+                        break
+                except Exception as _ve:
+                    if attempt == 0:
+                        continue  # transient network error — retry once
+                    print(f"[VisionQC] Check failed after retry ({os.path.basename(img_path)}): {_ve}")
+            return None  # fail open only after a retried, still-inconclusive check
 
         try:
-            mime, _ = _mt.guess_type(check_path)
-            if not mime or not mime.startswith("image/"):
-                mime = "image/png"
-            with open(check_path, "rb") as _f:
-                data = _b64.b64encode(_f.read()).decode("utf-8")
-        except Exception as _ve:
-            print(f"[VisionQC] Check skipped ({os.path.basename(img_path)}): {_ve}")
-            return True  # can't even read the file — nothing more we can do
+            for _cp in check_paths:
+                _enc = _b64_of(_cp)
+                if _enc is None:
+                    continue
+                _result = _check_frame(*_enc)
+                if _result is False:
+                    print(f"[VisionQC] Rejected (explicit/off-topic): {os.path.basename(img_path)}")
+                    return False
+            return True
         finally:
-            if _temp_frame and os.path.exists(_temp_frame):
-                try:
-                    os.remove(_temp_frame)
-                except Exception:
-                    pass
-
-        # Retry once on transient failures (timeout, connection reset, 5xx)
-        # before falling back to fail-open — a single network blip shouldn't
-        # silently wave an unchecked search/AI image straight into the video.
-        for attempt in range(2):
-            try:
-                r = requests.post(
-                    "https://api.openai.com/v1/chat/completions",
-                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                    json={
-                        "model": "gpt-4o-mini",
-                        "messages": [{"role": "user", "content": [
-                            {"type": "text", "text": (
-                                f"You are a content moderator for a true crime documentary channel about '{topic}'.\n"
-                                "Review this image and answer with exactly one word.\n\n"
-                                "Answer REJECT if ANY of these are true:\n"
-                                "- Contains nudity, sexual content, or explicit material\n"
-                                "- Contains graphic violence, blood, gore, or body parts\n"
-                                "- Shows pornographic or sexually suggestive content\n"
-                                "- Is completely unrelated to the documentary topic\n"
-                                "- Is a solid colour, texture, abstract, or cartoon/illustration\n\n"
-                                "Answer KEEP only if: the image is a real photograph relevant to "
-                                f"'{topic}' (person, location, event, investigation) AND contains "
-                                "no explicit, sexual, or graphically violent content.\n\n"
-                                "Reply with only: KEEP or REJECT"
-                            )},
-                            {"type": "image_url", "image_url": {
-                                "url": f"data:{mime};base64,{data}",
-                                "detail": "low"
-                            }}
-                        ]}],
-                        "max_tokens": 5,
-                        "temperature": 0,
-                    },
-                    timeout=15,
-                )
-                if r.status_code == 200:
-                    answer = r.json()["choices"][0]["message"]["content"].strip().upper()
-                    if "REJECT" in answer:
-                        print(f"[VisionQC] Rejected (explicit/off-topic): {os.path.basename(img_path)}")
-                        return False
-                    return True
-                elif r.status_code == 429:
-                    _provider_health.record_failure("openai")
-                    break  # provider-wide issue — retrying this image won't help
-                elif r.status_code >= 500 and attempt == 0:
-                    continue  # transient server error — retry once
-                else:
-                    break
-            except Exception as _ve:
-                if attempt == 0:
-                    continue  # transient network error — retry once
-                print(f"[VisionQC] Check failed after retry ({os.path.basename(img_path)}): {_ve}")
-        return True  # fail open only after a retried, still-inconclusive check
+            for _tf in _temp_frames:
+                if os.path.exists(_tf):
+                    try:
+                        os.remove(_tf)
+                    except Exception:
+                        pass
 
     videos      = [p for p in paths if _is_video_file(p)]
     non_video   = [p for p in paths if not _is_video_file(p)]
@@ -7552,11 +7576,20 @@ def fetch_stock_videos(script_text: str, count: int, video_id: str, topic: str =
     Build a stock-video pool from free licensed sources.
 
     Priority order per chunk:
-      1. Internet Archive (real archival/documentary footage, public domain)
-      2. Wikimedia Commons (public domain)
-      3. Coverr.co (free cinematic stock)
-      4. Pexels (free licensed)
-      5. Pixabay (free licensed)
+      1. Wikimedia Commons (public domain)
+      2. Library of Congress (public domain)
+      3. DuckDuckGo video search
+      4. Pixabay (free licensed)
+      5. OpenVerse / Coverr.co / Vimeo CC (free cinematic stock)
+
+    Internet Archive, Pexels, and YouTube CC (yt-dlp scrape) were removed as
+    sources 2026-07-14 — off-topic/explicit content (unrelated to the script
+    or documentary topic) reached production through them, undetected by the
+    metadata/keyword-based adult-content blocklist since the offending clips
+    weren't tagged or hosted anywhere that blocklist could catch. DuckDuckGo
+    is kept (also downloaded via yt-dlp) since it's explicitly trusted per
+    user direction, and every clip — regardless of source — still goes
+    through the multi-frame VisionQC explicit-content check before use.
 
     Queries extracted from actual script content.
     Tries 2-3 alternative queries before falling back to generic.
@@ -7583,13 +7616,13 @@ def fetch_stock_videos(script_text: str, count: int, video_id: str, topic: str =
 
     def _try_all_sources(query: str, out_path: str) -> str | None:
         # (src_name, search_fn, use_ytdlp, max_bytes_override)
+        # Internet Archive, Pexels, and YouTube CC removed 2026-07-14 — see the
+        # docstring above for why. Do not re-add without also confirming every
+        # clip they return goes through the multi-frame VisionQC check first.
         for src_name, src_fn, use_ytdlp, mb_override in [
-            ("Internet Archive", _search_internet_archive, False, _ARCHIVE_VIDEO_MAX_BYTES),
             ("Wikimedia Videos", _search_wikimedia_videos, False, _VIDEO_MAX_BYTES),
             ("Library of Congress", _search_loc_videos,    False, _VIDEO_MAX_BYTES),
             ("DuckDuckGo",       _search_duckduckgo_videos, True, None),
-            ("YouTube CC",       _search_youtube_cc,        True, None),
-            ("Pexels",           _search_pexels_videos,    False, _VIDEO_MAX_BYTES),
             ("Pixabay",          _search_pixabay_videos,   False, _VIDEO_MAX_BYTES),
             ("OpenVerse",        _search_openverse_videos, False, _VIDEO_MAX_BYTES),
             ("Coverr",           _search_coverr,           False, _VIDEO_MAX_BYTES),
@@ -8066,15 +8099,8 @@ def fetch_real_images(script_text: str, count: int, video_id: str,
                 if _saved:
                     break
 
-        # Step 4: Pexels video clip (assembler handles .mp4 natively)
-        if not _saved and _scene_qs:
-            _pex_vids = _search_pexels_videos(_scene_qs[0], per_page=5)
-            if _pex_vids:
-                _vid_out = out_path.replace(".png", "_pv.mp4")
-                _saved = _download_first_valid_video(_pex_vids, _vid_out)
-                if _saved:
-                    print(f"[Image] chunk {ci}: Pexels video '{_scene_qs[0]}'")
-                    _kind = "real-pexels-video"
+        # Step 4 (Pexels video clip) removed 2026-07-14 — Pexels dropped as a
+        # video source; see fetch_stock_videos() docstring for why.
 
         # Step 6: Pollinations AI photo — inject character appearance for consistency
         if not _saved:
@@ -9563,12 +9589,12 @@ def burn_subtitles_ffmpeg(
         return None
 
 
-def extract_first_frame(video_path: str, output_path: str) -> str:
-    """Extract the first frame of a video as a JPEG thumbnail. Returns path or ''."""
+def extract_first_frame(video_path: str, output_path: str, at_seconds: float = 2.0) -> str:
+    """Extract a frame of a video as a JPEG thumbnail (default: 2s in). Returns path or ''."""
     try:
         import subprocess
         result = subprocess.run(
-            ["ffmpeg", "-y", "-ss", "2", "-i", video_path,
+            ["ffmpeg", "-y", "-ss", str(max(0.0, at_seconds)), "-i", video_path,
              "-frames:v", "1", "-q:v", "2", output_path],
             capture_output=True, timeout=30,
         )
@@ -9971,10 +9997,13 @@ def assemble_video_with_hook(
                 print(f"[Video] Segment write error: {_be}")
                 traceback.print_exc()
                 raise
-            finally:
-                for _c in _batch:
-                    try: _c.close()
-                    except Exception: pass
+            # Do NOT close _batch clips here: many wrap the shared _video_cache
+            # reader (one VideoFileClip per unique source, reused across batches
+            # to avoid reopening dozens of ffmpeg readers). Closing it while a
+            # sibling batch running in another thread still needs it kills that
+            # reader out from under it ("read of closed file" / permanent first-
+            # frame failure). Cached readers are closed once, after every batch
+            # is done, in the outer finally below.
             return _bi, _bp
 
         import concurrent.futures as _cf_seg
@@ -10017,6 +10046,12 @@ def assemble_video_with_hook(
         print(f"[Video] CRASH in batch render: {_e}")
         traceback.print_exc()
     finally:
+        # All batches (parallel or sequential) are done with their clips by now —
+        # safe to release every shared cached reader exactly once.
+        for _v in _video_cache.values():
+            if _v is not None:
+                try: _v.close()
+                except Exception: pass
         shutil.rmtree(_tmp_dir, ignore_errors=True)
         for _ in range(5):
             try:
@@ -12343,152 +12378,205 @@ def run_full_pipeline(
         print(f"[Clip] Timeline assignment skipped (non-fatal): {_te}")
 
     # ── Visual assembly pool ───────────────────────────────────────────────
-    mode = _detect_assembly_mode(all_user_images, all_user_videos)
-    try:
-        if _clip_timeline:
-            _tl_clips = [
-                c for seg in _clip_timeline
-                if not seg.get("is_breathing")
-                for c in (seg.get("clips") or [])
+    if is_short:
+        # Shorts get manually posted to TikTok/Instagram/YouTube Shorts with far
+        # less review than a private-by-default long upload — any off-topic or
+        # unsafe content here reaches the public directly. Use ONLY user-
+        # submitted images (Telegram-curated, fully trusted) plus Pollinations
+        # AI generation as a top-up — never stock-video search, image search,
+        # or portrait search (those are the actual risk surface: unrelated/
+        # unvetted content scraped from the open internet).
+        image_paths: list[str] = []
+        for i, ui in enumerate(all_user_images):
+            path = ui.get("path", "")
+            if path and os.path.exists(path):
+                ext  = os.path.splitext(path)[1] or ".jpg"
+                dest = os.path.abspath(os.path.join(IMAGES_DIR, f"{video_id}_ui_{i}{ext}"))
+                try:
+                    import shutil as _shutil
+                    _shutil.copy2(path, dest)
+                    if os.path.exists(dest):
+                        image_paths.append(dest)
+                        print(f"[FULL] User image added (short — user images only): {ui.get('caption','')[:60]}")
+                    else:
+                        print(f"[FULL] WARNING: Copy ok but {dest} not found")
+                except Exception as _e:
+                    print(f"[FULL] Could not copy user image {path}: {_e}")
+
+        if len(image_paths) < n_images:
+            _needed = n_images - len(image_paths)
+            print(f"[FULL] Short pool: {len(image_paths)} user image(s), "
+                  f"generating {_needed} AI image(s) to top up (no search)")
+            _clean_t = _clean_topic_name(topic_str)
+            style_hint = f", {_style_profile}" if _style_profile else ""
+            _poll_prompts = [
+                f"{_clean_t} crime investigation documentary cinematic dark{style_hint}",
+                f"{_clean_t} courtroom documentary cinematic{style_hint}",
+                f"{_clean_t} evidence forensic dark cinematic documentary{style_hint}",
             ]
-            image_paths: list[str] = _tl_clips if _tl_clips else list(_library_clips)
-        else:
-            image_paths = list(_library_clips)
-        if _library_clips:
-            print(f"[Clip] MODE {'1' if mode == 'user_content' else '2'}: "
-                  f"{len(image_paths)} library clip(s) (timeline-ordered)")
+            _tasks = [
+                (_poll_prompts[i % len(_poll_prompts)],
+                 os.path.join(IMAGES_DIR, f"{video_id}_short_ai_{i}.png"))
+                for i in range(_needed)
+            ]
+            _poll_workers = _adaptive_pollinations_workers()
+            gen_results = parallel_map_safe(
+                lambda args: generate_ai_image(args[0], args[1]),
+                _tasks, max_workers=_poll_workers, timeout=120, label="AI image (short)",
+            )
+            for r in gen_results:
+                if r and os.path.exists(r):
+                    image_paths.append(r)
+
+        all_image_paths = image_paths
+        print(f"[FULL] Short pool: {len(all_image_paths)} total — user images + AI generation only, no search")
+    else:
+        mode = _detect_assembly_mode(all_user_images, all_user_videos)
+        try:
+            if _clip_timeline:
+                _tl_clips = [
+                    c for seg in _clip_timeline
+                    if not seg.get("is_breathing")
+                    for c in (seg.get("clips") or [])
+                ]
+                image_paths: list[str] = _tl_clips if _tl_clips else list(_library_clips)
+            else:
+                image_paths = list(_library_clips)
+            if _library_clips:
+                print(f"[Clip] MODE {'1' if mode == 'user_content' else '2'}: "
+                      f"{len(image_paths)} library clip(s) (timeline-ordered)")
+
+            if mode == "user_content":
+                for uv in all_user_videos:
+                    path = uv.get("path", "")
+                    if path and os.path.exists(path):
+                        dest = os.path.abspath(os.path.join(IMAGES_DIR, f"{video_id}_uv_{len(image_paths)}.mp4"))
+                        try:
+                            import shutil as _shutil
+                            _shutil.copy2(path, dest)
+                            if os.path.exists(dest):
+                                image_paths.append(dest)
+                                print(f"[FULL] User video added: {uv.get('caption','')[:60]}")
+                            else:
+                                print(f"[FULL] WARNING: Copy ok but {dest} not found")
+                        except Exception as _e:
+                            print(f"[FULL] Could not copy user video {path}: {_e}")
+                if not all_user_videos:
+                    print("[FULL] No user videos — auto-searching stock sources")
+                    auto_vids = fetch_stock_videos(
+                        script_text, min(4, max(2, n_images // 3)), video_id, topic=topic_str
+                    )
+                    for vpath in auto_vids:
+                        if vpath not in image_paths:
+                            image_paths.append(vpath)
+                for i, ui in enumerate(all_user_images):
+                    path = ui.get("path", "")
+                    if path and os.path.exists(path):
+                        ext  = os.path.splitext(path)[1] or ".jpg"
+                        dest = os.path.abspath(os.path.join(IMAGES_DIR, f"{video_id}_ui_{i}{ext}"))
+                        try:
+                            import shutil as _shutil
+                            _shutil.copy2(path, dest)
+                            if os.path.exists(dest):
+                                image_paths.append(dest)
+                                print(f"[FULL] User image added: {ui.get('caption','')[:60]}")
+                            else:
+                                print(f"[FULL] WARNING: Copy ok but {dest} not found")
+                        except Exception as _e:
+                            print(f"[FULL] Could not copy user image {path}: {_e}")
+                audio_duration = _ffprobe_duration(audio_path) or (n_images * 8)
+                is_sufficient, coverage_ratio = check_content_sufficiency(
+                    all_user_images, all_user_videos, audio_duration
+                )
+                if is_sufficient:
+                    print("[FULL] User content sufficient — skipping AI/stock generation")
+                elif len(image_paths) < n_images:
+                    missing = n_images - len(image_paths)
+                    print(f"[FULL] Gap: {missing} visuals needed (coverage {coverage_ratio*100:.0f}%)")
+                    gap_imgs = _fetch_gap_images(
+                        script_text, missing, video_id, topic_str, coverage_ratio,
+                        style_profile=_style_profile,
+                    )
+                    if gap_imgs:
+                        gap_imgs = _rank_visual_pool(gap_imgs, topic=topic_str)
+                    image_paths.extend(gap_imgs)
+            else:
+                # ── FULL mode auto path: scene-driven unique visual pool ───────
+                # build_documentary_visual_pool() generates ONE unique AI image per
+                # narrative event (portrait/evidence/location/CCTV/map/…)
+                # driven by what is HAPPENING in each 12-word script chunk.
+                # This produces 120-240 SEMANTICALLY UNIQUE visuals, not PIL recycles.
+                print(f"[FULL] Building documentary visual pool ({n_images} target events)")
+                _doc_pool = build_documentary_visual_pool(
+                    script_text, _real_audio_secs, topic_str, video_id,
+                    is_short=False, style_profile=_style_profile,
+                )
+                image_paths.extend(_doc_pool)
+                # B-roll: add up to 6 real stock video clips for motion texture
+                if _doc_pool:
+                    _broll = fetch_stock_videos(
+                        script_text, min(6, max(2, len(_doc_pool) // 20)),
+                        video_id, topic=topic_str,
+                    )
+                    if _broll:
+                        # Rank B-roll clips by quality, but do NOT re-rank the full pool.
+                        # build_documentary_visual_pool() already orders images by narrative
+                        # event — re-ranking destroys that order and clusters dark AI images
+                        # at the front, causing consecutive AI-generated runs.
+                        _broll = _rank_visual_pool(_broll, topic=topic_str)
+                        # Mark B-roll stock videos as real source assets
+                        for _bv in _broll:
+                            if _bv and _is_video_file(_bv):
+                                _REAL_IMAGE_PATHS.add(_bv)
+                    image_paths.extend(_broll)
+        except Exception as e:
+            print(f"[FULL] CRASH at visual generation: {e}")
+            traceback.print_exc()
+            return ""
+
+        if not image_paths:
+            print("[FULL] No visuals generated — aborting")
+            return ""
+
+        # ── Person images + moment matching ───────────────────────────────────
+        person_name     = _extract_person_name_from_topic(title, topic_str)
+        priority_images = get_person_images(
+            person_name, video_id,
+            all_user_images if all_user_images else None,
+            script_text=script_text,
+            topic=topic_str,
+        )
+        if whisper_segments and priority_images:
+            def _img_ts(img):
+                tags = img.get("tags", []) or img.get("caption", "").split()
+                ts   = find_keyword_timestamp(whisper_segments, tags)
+                return ts if ts is not None else float("inf")
+            priority_images.sort(key=_img_ts)
+            print("[Visual] User images sorted by audio keyword timestamp")
 
         if mode == "user_content":
-            for uv in all_user_videos:
-                path = uv.get("path", "")
-                if path and os.path.exists(path):
-                    dest = os.path.abspath(os.path.join(IMAGES_DIR, f"{video_id}_uv_{len(image_paths)}.mp4"))
-                    try:
-                        import shutil as _shutil
-                        _shutil.copy2(path, dest)
-                        if os.path.exists(dest):
-                            image_paths.append(dest)
-                            print(f"[FULL] User video added: {uv.get('caption','')[:60]}")
-                        else:
-                            print(f"[FULL] WARNING: Copy ok but {dest} not found")
-                    except Exception as _e:
-                        print(f"[FULL] Could not copy user video {path}: {_e}")
-            if not all_user_videos:
-                print("[FULL] No user videos — auto-searching archive/YouTube CC")
-                auto_vids = fetch_stock_videos(
-                    script_text, min(4, max(2, n_images // 3)), video_id, topic=topic_str
-                )
-                for vpath in auto_vids:
-                    if vpath not in image_paths:
-                        image_paths.append(vpath)
-            for i, ui in enumerate(all_user_images):
-                path = ui.get("path", "")
-                if path and os.path.exists(path):
-                    ext  = os.path.splitext(path)[1] or ".jpg"
-                    dest = os.path.abspath(os.path.join(IMAGES_DIR, f"{video_id}_ui_{i}{ext}"))
-                    try:
-                        import shutil as _shutil
-                        _shutil.copy2(path, dest)
-                        if os.path.exists(dest):
-                            image_paths.append(dest)
-                            print(f"[FULL] User image added: {ui.get('caption','')[:60]}")
-                        else:
-                            print(f"[FULL] WARNING: Copy ok but {dest} not found")
-                    except Exception as _e:
-                        print(f"[FULL] Could not copy user image {path}: {_e}")
-            audio_duration = _ffprobe_duration(audio_path) or (n_images * 8)
-            is_sufficient, coverage_ratio = check_content_sufficiency(
-                all_user_images, all_user_videos, audio_duration
-            )
-            if is_sufficient:
-                print("[FULL] User content sufficient — skipping AI/stock generation")
-            elif len(image_paths) < n_images:
-                missing = n_images - len(image_paths)
-                print(f"[FULL] Gap: {missing} visuals needed (coverage {coverage_ratio*100:.0f}%)")
-                gap_imgs = _fetch_gap_images(
-                    script_text, missing, video_id, topic_str, coverage_ratio,
-                    style_profile=_style_profile,
-                )
-                if gap_imgs:
-                    gap_imgs = _rank_visual_pool(gap_imgs, topic=topic_str)
-                image_paths.extend(gap_imgs)
+            _ui_originals = {ui["path"] for ui in all_user_images}
+            extra_paths   = [
+                img["path"] for img in priority_images
+                if isinstance(img, dict) and img.get("path")
+                and img["path"] not in image_paths
+                and img["path"] not in _ui_originals
+                and os.path.exists(img["path"])
+            ]
+            all_image_paths = image_paths + extra_paths
+            print(f"[FULL] MODE 1 pool: {len(image_paths)} direct + {len(extra_paths)} extra = "
+                  f"{len(all_image_paths)} total")
         else:
-            # ── FULL mode auto path: scene-driven unique visual pool ───────
-            # build_documentary_visual_pool() generates ONE unique AI image per
-            # narrative event (portrait/evidence/location/CCTV/map/…)
-            # driven by what is HAPPENING in each 12-word script chunk.
-            # This produces 120-240 SEMANTICALLY UNIQUE visuals, not PIL recycles.
-            print(f"[FULL] Building documentary visual pool ({n_images} target events)")
-            _doc_pool = build_documentary_visual_pool(
-                script_text, _real_audio_secs, topic_str, video_id,
-                is_short=False, style_profile=_style_profile,
-            )
-            image_paths.extend(_doc_pool)
-            # B-roll: add up to 6 real stock video clips for motion texture
-            if _doc_pool:
-                _broll = fetch_stock_videos(
-                    script_text, min(6, max(2, len(_doc_pool) // 20)),
-                    video_id, topic=topic_str,
-                )
-                if _broll:
-                    # Rank B-roll clips by quality, but do NOT re-rank the full pool.
-                    # build_documentary_visual_pool() already orders images by narrative
-                    # event — re-ranking destroys that order and clusters dark AI images
-                    # at the front, causing consecutive AI-generated runs.
-                    _broll = _rank_visual_pool(_broll, topic=topic_str)
-                    # Mark B-roll stock videos as real source assets
-                    for _bv in _broll:
-                        if _bv and _is_video_file(_bv):
-                            _REAL_IMAGE_PATHS.add(_bv)
-                image_paths.extend(_broll)
-    except Exception as e:
-        print(f"[FULL] CRASH at visual generation: {e}")
-        traceback.print_exc()
-        return ""
-
-    if not image_paths:
-        print("[FULL] No visuals generated — aborting")
-        return ""
-
-    # ── Person images + moment matching ───────────────────────────────────
-    person_name     = _extract_person_name_from_topic(title, topic_str)
-    priority_images = get_person_images(
-        person_name, video_id,
-        all_user_images if all_user_images else None,
-        script_text=script_text,
-        topic=topic_str,
-    )
-    if whisper_segments and priority_images:
-        def _img_ts(img):
-            tags = img.get("tags", []) or img.get("caption", "").split()
-            ts   = find_keyword_timestamp(whisper_segments, tags)
-            return ts if ts is not None else float("inf")
-        priority_images.sort(key=_img_ts)
-        print("[Visual] User images sorted by audio keyword timestamp")
-
-    if mode == "user_content":
-        _ui_originals = {ui["path"] for ui in all_user_images}
-        extra_paths   = [
-            img["path"] for img in priority_images
-            if isinstance(img, dict) and img.get("path")
-            and img["path"] not in image_paths
-            and img["path"] not in _ui_originals
-            and os.path.exists(img["path"])
-        ]
-        all_image_paths = image_paths + extra_paths
-        print(f"[FULL] MODE 1 pool: {len(image_paths)} direct + {len(extra_paths)} extra = "
-              f"{len(all_image_paths)} total")
-    else:
-        try:
-            moments = parse_script_moments(script_text, topic=topic_str)
-            if moments and (priority_images or image_paths):
-                matched = match_images_to_moments(moments, priority_images, image_paths)
-                all_image_paths = matched if matched else build_image_list(priority_images, image_paths)
-            else:
+            try:
+                moments = parse_script_moments(script_text, topic=topic_str)
+                if moments and (priority_images or image_paths):
+                    matched = match_images_to_moments(moments, priority_images, image_paths)
+                    all_image_paths = matched if matched else build_image_list(priority_images, image_paths)
+                else:
+                    all_image_paths = build_image_list(priority_images, image_paths)
+            except Exception as e:
+                print(f"[Visual] Moment matching failed ({e}) — using default order")
                 all_image_paths = build_image_list(priority_images, image_paths)
-        except Exception as e:
-            print(f"[Visual] Moment matching failed ({e}) — using default order")
-            all_image_paths = build_image_list(priority_images, image_paths)
 
     print(f"[FULL] First 5 images: {[os.path.basename(p) for p in all_image_paths[:5]]}")
 
@@ -12647,7 +12735,10 @@ def run_full_pipeline(
 
     # ── Validate + resource cleanup ────────────────────────────────────────
     if video_path:
-        _validate_output_file(video_path)
+        _valid_full = _validate_output_file(video_path)
+        if not _valid_full and not is_short:
+            print(f"[FULL] CRITICAL: long-form output failed validation — "
+                  f"likely a short-fallback stub, not the real render: {video_path}")
     _kill_orphan_ffmpeg()
     try:
         import gc as _gc; _gc.collect()

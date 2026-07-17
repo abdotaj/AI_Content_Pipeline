@@ -1478,9 +1478,12 @@ def run_pipeline():
     _log("Validate", f"Output validation: {_valid_count}/4 outputs valid",
          "OK" if _en_long_ok else "ERROR")
 
-    # Block upload if the EN long is missing — it's the primary deliverable
-    if not _en_long_ok and not en_long_path:
-        _crit = "[CRITICAL] EN long video missing — cannot upload. Check logs above."
+    # Block upload if the EN long is missing OR fails validation (e.g. a short-
+    # fallback stub rendered after a crash) — either way it's not the real
+    # ~11-12min episode and must never reach YouTube silently.
+    if not _en_long_ok:
+        _en_reason = "missing" if not en_long_path else "failed validation (too short/small — likely a fallback stub)"
+        _crit = f"[CRITICAL] EN long video {_en_reason} — skipping YouTube upload. Check logs above."
         _log("Validate", _crit, "ERROR")
         send_message(f"[Pipeline] {_crit}")
 
@@ -1496,7 +1499,7 @@ def run_pipeline():
     _artifact_url = f"https://github.com/{_repo}/actions/runs/{_run_id}" if _run_id else ""
 
     yt_en_url = None
-    if en_long_path:
+    if en_long_path and _en_long_ok:
         _en_exists = os.path.exists(en_long_path)
         _en_mb = os.path.getsize(en_long_path) // 1024 // 1024 if _en_exists else 0
         _log("Publish", f"EN video on disk: {_en_exists} | path: {en_long_path} | size: {_en_mb}MB",
@@ -1534,8 +1537,16 @@ def run_pipeline():
             send_message(_fail_msg)
             stats["errors"] += 1
 
+    # Same guard as EN long above: block upload if the AR long is missing OR
+    # fails validation.
+    if not _ar_long_ok:
+        _ar_reason = "missing" if not ar_long_path else "failed validation (too short/small — likely a fallback stub)"
+        _crit_ar = f"[CRITICAL] AR long video {_ar_reason} — skipping YouTube upload. Check logs above."
+        _log("Validate", _crit_ar, "ERROR")
+        send_message(f"[Pipeline] {_crit_ar}")
+
     yt_ar_url = None
-    if ar_long_path:
+    if ar_long_path and _ar_long_ok:
         _ar_exists = os.path.exists(ar_long_path)
         _ar_mb = os.path.getsize(ar_long_path) // 1024 // 1024 if _ar_exists else 0
         _log("Publish", f"AR video on disk: {_ar_exists} | path: {ar_long_path} | size: {_ar_mb}MB",
