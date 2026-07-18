@@ -10893,17 +10893,17 @@ def process_audio_netflix(input_path: str, is_short: bool = None) -> str:
 # â"€â"€ Section-aware TTS + accurate chapter builder â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 _SECTION_DISPLAY = {
-    "Introduction":   "ðŸŽ¬ Introduction",
+    "Introduction":   "🎬 Introduction",
     "Background":     "🔺 Background & Context",
     "Main Story":     "🔍 Main Story",
     "Shocking Facts": "\U0001f480 Shocking Facts",
     "Conclusion":     "\U0001f3af Conclusion",
     "الرواية مقابل الواقع": "\U0001f3ad الرواية مقابل الواقع",
-    "مقدمة":          "ðŸŽ¬ مقدمة",
+    "مقدمة":          "🎬 مقدمة",
     "الخلفية":         "🔺 الخلفية والسياق",
     "القصة الرئيسية":  "🔍 القصة الرئيسية",
-    "حقائق صادمة":    "ðŸ'€ حقائق صادمة",
-    "الخاتمة":         "ðŸŽ¯ الخاتمة",
+    "حقائق صادمة":    "💀 حقائق صادمة",
+    "الخاتمة":         "🎯 الخاتمة",
 }
 
 
@@ -11125,7 +11125,7 @@ def generate_tts_sections(script_text: str, video_id: str, language: str) -> tup
 
     # Build chapter timestamps from cumulative durations
     cumulative = 0.0
-    chapter_lines = ["â±ï¸ CHAPTERS"]
+    chapter_lines = ["⏱️ CHAPTERS"]
     for i, (name, _) in enumerate(sections):
         display = _SECTION_DISPLAY.get(name, f"📖 {name}")
         chapter_lines.append(f"{format_time(cumulative)} {display}")

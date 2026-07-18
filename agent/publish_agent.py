@@ -28,14 +28,34 @@ _EDSA_DISCLAIMER_AR = (
 )
 
 
+def _format_sources_section(source_urls: list) -> str:
+    """Render a SOURCES & REFERENCES block for the YouTube description, or '' if none."""
+    lines = []
+    for s in (source_urls or [])[:8]:
+        title = (s.get("title") or "").strip()
+        url   = (s.get("url") or "").strip()
+        if not url:
+            continue
+        lines.append(f"- {title}\n  {url}" if title else f"- {url}")
+    if not lines:
+        return ""
+    return (
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"SOURCES & REFERENCES\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"{chr(10).join(lines)}\n"
+    )
+
+
 def build_youtube_description(script_data: dict, chapters: str) -> str:
-    """Build a rich YouTube description with chapter markers, EDSA disclaimer, and AI disclosure."""
+    """Build a rich YouTube description with chapter markers, sources, and EDSA disclaimer."""
     caption  = script_data.get("caption", script_data.get("title", ""))
     hashtags = script_data.get("hashtags", "")
     if isinstance(hashtags, list):
         hashtags = " ".join(hashtags)
     language = (script_data.get("language") or "english").lower()
     disclaimer = _EDSA_DISCLAIMER_AR if language == "arabic" else _EDSA_DISCLAIMER_EN
+    sources = _format_sources_section(script_data.get("source_urls"))
 
     return (
         f"{caption}\n\n"
@@ -44,6 +64,7 @@ def build_youtube_description(script_data: dict, chapters: str) -> str:
         f"CHAPTERS\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"{chapters.strip()}\n"
+        f"{sources}"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"Subscribe for daily true crime documentaries\n"
         f"TikTok: @DarkCrimeDecoded\n"
