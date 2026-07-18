@@ -109,7 +109,8 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add -A -- topic_inject.json content/scripts/
+          git add -A -- content/scripts/ 2>/dev/null || true
+          git add -A -- topic_inject.json 2>/dev/null || true
           if git diff --cached --quiet; then
             echo "No injection state to commit."
           else
