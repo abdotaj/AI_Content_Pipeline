@@ -15,6 +15,8 @@ jobs:
     concurrency:
       group: animation-pipeline-en
       cancel-in-progress: false
+    permissions:
+      contents: write
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
       PIPELINE_MODE: animation
@@ -100,6 +102,22 @@ jobs:
             echo "[TOPIC] Injected from workflow input: ${{ github.event.inputs.topic }}"
           fi
           python run_animation_en.py
+
+      # See daily.yml "Commit consumed injection files" for why this exists:
+      # topic_inject.json / content/scripts/ consumption only happens on the
+      # runner's disk and is lost unless committed back before checkout resets.
+      - name: Commit consumed injection files
+        if: success()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A -- topic_inject.json content/scripts/
+          if git diff --cached --quiet; then
+            echo "No injection state to commit."
+          else
+            git commit -m "chore: consume topic/script injection files [skip ci]"
+            git push
+          fi
 
       - name: Upload animation videos as artifacts
         if: always()

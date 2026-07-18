@@ -27,6 +27,8 @@ jobs:
     concurrency:
       group: dark-crime-pipeline
       cancel-in-progress: false
+    permissions:
+      contents: write
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
@@ -147,6 +149,26 @@ jobs:
           EXIT_CODE=$?
           kill "$MONITOR_PID" 2>/dev/null || true
           exit $EXIT_CODE
+
+      # topic_inject.json and content/scripts/*.txt|.json injection files are
+      # consumed on the runner's disk (os.remove / moved to content/scripts/_used/)
+      # but that disk is thrown away when the job ends. Without committing the
+      # consumption back, the next run's checkout still has the original committed
+      # file and re-injects the same topic forever (see: Kray Twins re-running
+      # after being deleted locally). Only do this on success — on failure we want
+      # the same injected topic to be retried next run.
+      - name: Commit consumed injection files
+        if: success()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A -- topic_inject.json content/scripts/
+          if git diff --cached --quiet; then
+            echo "No injection state to commit."
+          else
+            git commit -m "chore: consume topic/script injection files [skip ci]"
+            git push
+          fi
 
       - name: Upload all videos as artifacts
         if: always()
