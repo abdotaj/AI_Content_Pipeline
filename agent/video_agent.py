@@ -273,6 +273,27 @@ def _apply_arabic_pronunciation(text: str) -> str:
     return text
 
 
+def _strip_latin_glosses_for_tts(text: str) -> str:
+    """Remove parenthetical/quoted English-name glosses (e.g. "دينيس رادر (Dennis Rader)")
+    from Arabic narration before TTS. The script prompt deliberately writes names as
+    "Arabic transliteration (English original)" so viewers reading captions/description
+    see both — but naive TTS narrates the English gloss too, saying the name twice and
+    reading any stray Latin punctuation inside it (periods, commas, apostrophes) literally
+    as "dot"/"comma". Only affects the audio input — captions/description/Telegram keep
+    the bilingual text untouched.
+    """
+    import re as _pre
+    # Parenthetical spans containing at least one Latin letter: (Dennis Rader), (ABC Network)
+    text = _pre.sub(r'[ \t]*[\(（][^()（）]*[A-Za-z][^()（）]*[\)）]', '', text)
+    # Quoted spans containing at least one Latin letter: "Black Mass"
+    text = _pre.sub(r'[ \t]*"[^"]*[A-Za-z][^"]*"', '', text)
+    text = _pre.sub(r"[ \t]*'[^']*[A-Za-z][^']*'", '', text)
+    # Clean up dangling space before punctuation and collapsed double spaces left by removal
+    text = _pre.sub(r'[ \t]+([.,،؛:!؟])', r'\1', text)
+    text = _pre.sub(r'[ \t]{2,}', ' ', text)
+    return text
+
+
 # ── Selective tashkeel (diacritics) ──────────────────────────────────────────
 # Applied ONLY to high-ambiguity words — names, crime/legal terms, locations.
 # Never fully vowelize: that bloats the script and slows TTS.
@@ -902,6 +923,13 @@ def _elevenlabs_chunk(chunk: str, voice_id: str, api_key: str, chunk_path: str) 
 def generate_voiceover(script_text: str, filename: str, language: str = "english") -> str:
     """Generate voiceover — OpenAI TTS (primary) → edge-tts (fallback)."""
     script_text = _strip_section_markers(script_text)
+
+    # Strip "(English original)" glosses before sentence-splitting/formatting —
+    # a period inside a gloss (e.g. "(U.S. Marshals)") would otherwise trigger a
+    # premature sentence split mid-parenthesis and break the balanced-paren regex.
+    if language == "arabic":
+        script_text = _strip_latin_glosses_for_tts(script_text)
+
     try:
         from agents.script_agent import format_for_tts as _fmt
     except ImportError:
