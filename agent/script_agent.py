@@ -7519,6 +7519,73 @@ def _translate_arabic_short_script(english_text: str, topic: str, series_name: s
     return ar_text
 
 
+def _extract_short_story_beat(script_text: str, topic: str, series_name: str = "",
+                               niche: str = "", language: str = "english") -> dict:
+    """Read the FULL long script and extract the single strongest, story-tellable
+    moment as a structured beat (hook/setup/reveal/closing) — instead of slicing
+    raw text and hoping the writer AI figures out the story from a fragment.
+    Returns {} if extraction fails or is unusable, so callers can fall back."""
+    if not script_text:
+        return {}
+
+    _series_line = f"Show/Series: {series_name}\n" if series_name else ""
+    _niche_line  = f"Context: {niche}\n"           if niche        else ""
+
+    if language == "arabic":
+        prompt = (
+            f"اقرأ نص هذا الفيلم الوثائقي الجنائي كاملاً عن: {topic}\n"
+            f"{_series_line}{_niche_line}\n"
+            f"اعثر على اللحظة الأكثر إثارة وقابلية للحكي في النص كاملاً — اعتراف، انقلاب، "
+            f"خيانة، أو حقيقة مخفية. يجب أن تكون لحظة واحدة متماسكة، وليست ملخصاً للقضية كلها.\n\n"
+            f"استخرجها كبيانات JSON بهذه المفاتيح بالضبط (المفاتيح إنجليزية، القيم عربية):\n"
+            f"  hook    — جملة واحدة صادمة للافتتاح المباشر (بدون مقدمة)\n"
+            f"  setup   — 2-3 جمل: من كان متورطاً وما كان على المحك، بأسماء وتواريخ محددة من النص\n"
+            f"  reveal  — 4-5 جمل: الحقيقة أو الانقلاب الذي يغيّر كل شيء، بحقائق محددة من النص فقط\n"
+            f"  closing — 1-2 جملة: فكرة أو انطباع أخير يبقى في الذهن\n\n"
+            f"كل حقيقة يجب أن تأتي مباشرة من النص أدناه. لا تخترع أسماء أو تواريخ أو أحداثاً.\n\n"
+            f"أعد كائن JSON واحد فقط بهذه المفاتيح الأربعة. بدون markdown، بدون شرح.\n\n"
+            f"النص:\n{script_text}"
+        )
+    else:
+        prompt = (
+            f"Read this entire true-crime documentary script about: {topic}\n"
+            f"{_series_line}{_niche_line}\n"
+            f"Identify the SINGLE most gripping, story-tellable moment in the whole script — "
+            f"a confession, twist, betrayal, hidden truth, or reveal. This must be ONE coherent "
+            f"moment, not a summary of the whole case.\n\n"
+            f"Extract it as a structured story beat with these exact JSON keys:\n"
+            f"  hook    — ONE shocking sentence to open cold on (a fact or moment, no scene-setting, "
+            f"no \"In [year]...\")\n"
+            f"  setup   — 2-3 sentences: who was involved and what was at stake, using specific "
+            f"names/dates from the script\n"
+            f"  reveal  — 4-5 sentences: the twist or truth that changes everything, with specific "
+            f"facts, names, and details pulled directly from the script (nothing invented)\n"
+            f"  closing — 1-2 sentences: a lingering final thought or implication\n\n"
+            f"Every fact must come directly from the script below. Do not invent names, dates, or "
+            f"events.\n\n"
+            f"Return ONLY a single JSON object with those 4 keys. No markdown fences, no explanation.\n\n"
+            f"SCRIPT:\n{script_text}"
+        )
+
+    try:
+        raw = _ai_script_call(prompt, max_tokens=700, temperature=0.4, premium=True)
+        if not raw:
+            return {}
+        m = re.search(r'\{.*\}', raw, re.DOTALL)
+        if not m:
+            return {}
+        beat = json.loads(m.group(0))
+        if not isinstance(beat, dict):
+            return {}
+        beat = {k: str(v).strip() for k, v in beat.items() if k in ("hook", "setup", "reveal", "closing")}
+        if not all(beat.get(k) for k in ("hook", "setup", "reveal", "closing")):
+            return {}
+        return beat
+    except Exception as _e:
+        print(f"[Short Beat] Extraction failed ({language}): {_e}")
+        return {}
+
+
 def write_short_script(en_long_script: dict) -> dict:
     """Extract the strongest moment from the long script and rewrite it as a 60-90 second viral short."""
     topic        = en_long_script.get("topic", "")
@@ -7536,29 +7603,67 @@ def write_short_script(en_long_script: dict) -> dict:
         if show_chars else ""
     )
 
-    _hook_instruction = (
-        f"Open with EXACTLY this sentence: \"{_angle_hook}\"\n"
-        if _angle_hook else
-        "Open with the most shocking fact or unanswered question from the story. No setup. Drop straight in.\n"
-    )
-
     _short_active_entity = build_active_entity(topic) if is_single_subject(topic) else {}
     _short_entity_lock   = entity_lock_instruction(_short_active_entity)
 
+    # ── Comprehension pass: read the FULL long script and extract one coherent
+    #    story beat, instead of blindly slicing the first N characters ─────────
+    _beat = _extract_short_story_beat(long_script, topic, series_name, niche, "english")
+
+    if _beat:
+        _hook_instruction = (
+            f"Open with EXACTLY this sentence: \"{_angle_hook}\"\n"
+            if _angle_hook else
+            f"Open with this hook fact, in your own words if needed: \"{_beat['hook']}\"\n"
+        )
+        _task_line = (
+            "TASK: Below is the single strongest moment already identified inside the long script "
+            "for this story — a shocking reveal, confession, twist, or hidden truth. Turn it into a "
+            "flowing spoken voiceover. Do NOT just restate the fields verbatim — write natural "
+            "continuous prose. Do NOT summarize the whole story. Tell this one moment, fast and hard."
+        )
+        _source_block = f"""STORY BEAT (already identified as the strongest moment — tell THIS story):
+Hook fact: {_beat['hook']}
+Setup: {_beat['setup']}
+Reveal: {_beat['reveal']}
+Closing thought: {_beat['closing']}"""
+    else:
+        _hook_instruction = (
+            f"Open with EXACTLY this sentence: \"{_angle_hook}\"\n"
+            if _angle_hook else
+            "Open with the most shocking fact or unanswered question from the story. No setup. Drop straight in.\n"
+        )
+        _task_line = (
+            "TASK: Read the SOURCE SCRIPT below. Find the single most gripping moment — a shocking "
+            "reveal, confession, twist, or hidden truth. Rewrite it as a standalone viral voiceover. "
+            "Do NOT summarize the whole story. Tell one moment, fast and hard."
+        )
+        # Fallback: skip the intro like the Arabic path does, instead of a blind [:2000] slice
+        _fb_sections = re.split(r'\[SECTION:[^\]]+\]', long_script)
+        _fb_sections = [s.strip() for s in _fb_sections if s.strip()]
+        if len(_fb_sections) >= 3:
+            _fb_window = " ".join(_fb_sections[1:4])[:3000]
+        elif len(_fb_sections) == 2:
+            _fb_window = _fb_sections[1][:3000]
+        else:
+            _fb_skip = max(0, len(long_script) // 5)
+            _fb_window = long_script[_fb_skip:_fb_skip + 3000]
+        _source_block = f"SOURCE SCRIPT (extract the best moment from inside):\n{_fb_window}"
+
     prompt = f"""You are writing a spoken voiceover for a 60-90 second crime documentary short video.
 
-TASK: Read the SOURCE SCRIPT below. Find the single most gripping moment — a shocking reveal, confession, twist, or hidden truth. Rewrite it as a standalone viral voiceover. Do NOT summarize the whole story. Tell one moment, fast and hard.
+{_task_line}
 {_short_entity_lock}
 TOPIC LOCK — this short is specifically about:
 Topic: {topic}
 {_series_line}{_niche_line}{_chars_line}{f"Angle: {_angle_title}" if _angle_title else ""}
-STRICT RULE: Every fact you write must come directly from the SOURCE SCRIPT below. Do NOT invent events, names, dates, or details not in the script. Do NOT write generic crime content — stay on this specific story.
+STRICT RULE: Every fact you write must come directly from the material below. Do NOT invent events, names, dates, or details. Do NOT write generic crime content — stay on this specific story.
 
 {_hook_instruction}
 FLOW (4 beats — write them as continuous prose, NO headings or labels):
 - Beat 1 — HOOK: 2-3 sentences. Jump straight into the action or fact. No "In [year]...", no "This is the story of...", no setup.
-- Beat 2 — FAST SETUP: 2-3 sentences. Who was involved? What was at stake? Use specific names from the script.
-- Beat 3 — MAIN REVEAL: 4-5 sentences. The truth, the twist, the thing that changes everything. Use specific facts from the script.
+- Beat 2 — FAST SETUP: 2-3 sentences. Who was involved? What was at stake? Use specific names from the material.
+- Beat 3 — MAIN REVEAL: 4-5 sentences. The truth, the twist, the thing that changes everything. Use specific facts from the material.
 - Beat 4 — STRONG ENDING: 2 sentences. A line that lingers. End with: "Follow Dark Crime Decoded for more."
 
 STYLE:
@@ -7571,8 +7676,7 @@ STYLE:
 
 LENGTH: Target 190-215 words. Acceptable 170-230. Hard minimum 170. Count every word.
 
-SOURCE SCRIPT (extract the best moment from inside):
-{long_script[:2000]}
+{_source_block}
 
 Write ONLY the spoken words. No headings. No labels. No explanations."""
 
@@ -8174,23 +8278,42 @@ def write_arabic_short(ar_long_script: dict) -> dict:
         print("[AR Short] No Arabic long script — returning empty")
         return {"short_script_ar": ""}
 
-    # Extract the best window: skip the intro, use the middle/climax of the script
-    # Split by [SECTION:] markers and skip the first section (intro)
-    _sections = _re.split(r'\[SECTION:[^\]]+\]', long_script)
-    _sections = [s.strip() for s in _sections if s.strip()]
-    if len(_sections) >= 3:
-        # Skip intro (first section), use sections 2-4 where climax usually lives
-        _source_window = " ".join(_sections[1:4])[:3000]
-    elif len(_sections) == 2:
-        _source_window = _sections[1][:3000]
-    else:
-        # No markers — skip first 20% (intro) and take 3000 chars from middle
-        _skip = max(0, len(long_script) // 5)
-        _source_window = long_script[_skip:_skip + 3000]
+    # ── Comprehension pass: read the FULL Arabic long script and extract one
+    #    coherent story beat, instead of blindly splicing raw section text ─────
+    _beat = _extract_short_story_beat(long_script, topic, series_name, "", "arabic")
 
     _series_line = f"المسلسل/الفيلم: {series_name}\n" if series_name else ""
 
-    prompt = f"""المهمة: اقرأ النص المصدر أدناه. اعثر على اللحظة الأكثر إثارة — اعتراف، انقلاب، حكم، أو حقيقة مخفية. أعد كتابتها كتعليق صوتي مستقل وفيروسي. لا تلخّص القصة كلها. أخبر لحظة واحدة، بسرعة وقوة.
+    if _beat:
+        _task_line = (
+            "المهمة: أدناه اللحظة الأكثر إثارة، وقد تم تحديدها مسبقاً من النص الطويل الكامل لهذه "
+            "القصة — اعتراف، انقلاب، حكم، أو حقيقة مخفية. حوّلها إلى تعليق صوتي فيروسي متصل. "
+            "لا تكتفِ بإعادة صياغة العناصر كما هي — اكتب نثراً طبيعياً ومتصلاً. لا تلخّص القصة كلها."
+        )
+        _source_block = f"""لحظة القصة (تم تحديدها مسبقاً كأقوى لحظة — احكِ هذه اللحظة):
+الخطّاف: {_beat['hook']}
+البناء: {_beat['setup']}
+الكشف: {_beat['reveal']}
+الخاتمة: {_beat['closing']}"""
+    else:
+        _task_line = (
+            "المهمة: اقرأ النص المصدر أدناه. اعثر على اللحظة الأكثر إثارة — اعتراف، انقلاب، حكم، "
+            "أو حقيقة مخفية. أعد كتابتها كتعليق صوتي مستقل وفيروسي. لا تلخّص القصة كلها. أخبر "
+            "لحظة واحدة، بسرعة وقوة."
+        )
+        # Fallback: skip the intro, use the middle/climax of the script
+        _sections = _re.split(r'\[SECTION:[^\]]+\]', long_script)
+        _sections = [s.strip() for s in _sections if s.strip()]
+        if len(_sections) >= 3:
+            _source_window = " ".join(_sections[1:4])[:3000]
+        elif len(_sections) == 2:
+            _source_window = _sections[1][:3000]
+        else:
+            _skip = max(0, len(long_script) // 5)
+            _source_window = long_script[_skip:_skip + 3000]
+        _source_block = f"النص المصدر (استخرج منه أفضل لحظة):\n{_source_window}"
+
+    prompt = f"""{_task_line}
 
 الموضوع: {topic}
 {_series_line}
@@ -8212,8 +8335,7 @@ def write_arabic_short(ar_long_script: dict) -> dict:
 - محظور: أي عناوين أو تسميات في المخرجات.
 - الطول المستهدف: 230-260 كلمة. الحد الأدنى المطلق: 200 كلمة.
 
-النص المصدر (استخرج منه أفضل لحظة):
-{_source_window}
+{_source_block}
 
 اكتب التعليق الصوتي فقط. لا عناوين. لا تسميات. لا شرح."""
 
